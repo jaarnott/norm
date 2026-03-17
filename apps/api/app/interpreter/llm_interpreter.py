@@ -5,6 +5,7 @@ domain agents call with their own system prompts.  All persistence
 and lifecycle remain in the deterministic backend services.
 """
 
+import datetime
 import json
 import logging
 import os
@@ -13,6 +14,26 @@ import time
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+def _build_parsed_response(response) -> dict:
+    """Extract a human-readable summary from Anthropic response content blocks."""
+    parsed: dict = {"stop_reason": response.stop_reason}
+    text_parts = []
+    tool_calls_summary = []
+    for block in response.content:
+        if block.type == "text":
+            text_parts.append(block.text)
+        elif block.type == "tool_use":
+            tool_calls_summary.append({
+                "tool": block.name,
+                "input": block.input,
+            })
+    if text_parts:
+        parsed["text"] = "\n".join(text_parts)
+    if tool_calls_summary:
+        parsed["tool_calls"] = tool_calls_summary
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +64,9 @@ def call_llm(
 
     resolved_model = model or os.environ.get("LLM_INTERPRETER_MODEL", "claude-sonnet-4-20250514")
 
+    today = datetime.date.today().isoformat()
+    dated_user_prompt = f"[{today}] {user_prompt}"
+
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None
     t0 = time.time()
@@ -52,7 +76,7 @@ def call_llm(
             model=resolved_model,
             max_tokens=max_tokens,
             system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[{"role": "user", "content": dated_user_prompt}],
         )
         raw = response.content[0].text
         duration_ms = int((time.time() - t0) * 1000)
@@ -86,7 +110,7 @@ def call_llm(
 def _persist_llm_call(
     db: Session, *, task_id, call_type, model, system_prompt,
     user_prompt, raw_response, parsed_response, status,
-    error_message=None, duration_ms=None,
+    error_message=None, duration_ms=None, tools_provided=None,
 ) -> str:
     from app.db.models import LlmCall
     record = LlmCall(
@@ -100,10 +124,85 @@ def _persist_llm_call(
         status=status,
         error_message=error_message,
         duration_ms=duration_ms,
+        tools_provided=tools_provided,
     )
     db.add(record)
     db.flush()
     return record.id
+
+
+def call_llm_with_tools(
+    system_prompt: str,
+    messages: list[dict],
+    tools: list[dict],
+    model: str | None = None,
+    db: Session | None = None,
+    task_id: str | None = None,
+    call_type: str = "tool_use",
+    max_tokens: int = 4096,
+):
+    """Make an Anthropic API call with native tool use.
+
+    Returns the raw Anthropic Message object (not parsed JSON) since
+    tool-use responses have a different structure.
+    """
+    from app.services.secrets import get_api_key
+
+    api_key = get_api_key("anthropic", "api_key", db)
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is required for LLM calls")
+
+    import anthropic
+
+    resolved_model = model or os.environ.get("LLM_INTERPRETER_MODEL", "claude-sonnet-4-20250514")
+
+    today = datetime.date.today().isoformat()
+    dated_messages = [*messages]
+    last = dated_messages[-1]
+    if isinstance(last.get("content"), str):
+        dated_messages[-1] = {**last, "content": f"[{today}] {last['content']}"}
+
+    client = anthropic.Anthropic(api_key=api_key)
+    llm_call_id = None
+    t0 = time.time()
+
+    try:
+        response = client.messages.create(
+            model=resolved_model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=dated_messages,
+            tools=tools,
+        )
+        duration_ms = int((time.time() - t0) * 1000)
+
+        # Serialize for audit logging
+        raw_text = json.dumps([block.model_dump() for block in response.content])
+        user_prompt_summary = json.dumps(messages[-1]["content"][:500] if isinstance(messages[-1]["content"], str) else "[tool_results]")
+
+        if db is not None:
+            llm_call_id = _persist_llm_call(
+                db, task_id=task_id, call_type=call_type,
+                model=resolved_model, system_prompt=system_prompt,
+                user_prompt=user_prompt_summary, raw_response=raw_text,
+                parsed_response=_build_parsed_response(response),
+                status="success", duration_ms=duration_ms,
+                tools_provided=tools if tools else None,
+            )
+
+        return response, llm_call_id
+
+    except Exception as exc:
+        duration_ms = int((time.time() - t0) * 1000)
+        if db is not None:
+            _persist_llm_call(
+                db, task_id=task_id, call_type=call_type,
+                model=resolved_model, system_prompt=system_prompt,
+                user_prompt="[tool_use call]", raw_response=None,
+                parsed_response=None, status="error",
+                error_message=str(exc), duration_ms=duration_ms,
+            )
+        raise
 
 
 def _parse_response(raw: str) -> dict:

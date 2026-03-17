@@ -1,8 +1,12 @@
+import asyncio
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db
+from app.db.engine import get_db, SessionLocal
 from app.db.models import User
 from app.auth.dependencies import get_current_user
 from app.services.supervisor import handle_message
@@ -39,3 +43,54 @@ async def post_message(
                 detail="Could not connect to Anthropic API. Check your network and API configuration.",
             )
         raise
+
+
+@router.post("/messages/stream")
+async def post_message_stream(
+    req: MessageRequest,
+    user: User = Depends(get_current_user),
+):
+    """SSE endpoint that streams thinking steps as they happen, then the final result."""
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def on_event(event: dict):
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    async def generate():
+        # Bust proxy buffering (Codespaces, nginx, etc.) with a padding comment
+        yield ": " + " " * 2048 + "\n\n"
+
+        def run():
+            from app.agents.tool_loop import set_event_callback
+            set_event_callback(on_event)
+            db = SessionLocal()
+            try:
+                result = handle_message(req.message, db, user_id=user.id, task_id=req.task_id)
+                on_event({"type": "complete", "data": result})
+            except Exception as exc:
+                on_event({"type": "error", "message": str(exc)})
+            finally:
+                db.close()
+
+        bg = asyncio.ensure_future(asyncio.to_thread(run))
+        try:
+            while True:
+                event = await queue.get()
+                yield f"data: {json.dumps(event)}\n\n"
+                if event["type"] in ("complete", "error"):
+                    break
+                # Yield control so the ASGI server can flush the chunk to the client
+                await asyncio.sleep(0)
+        finally:
+            await bg
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

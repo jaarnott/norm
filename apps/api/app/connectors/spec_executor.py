@@ -123,8 +123,17 @@ def render_request(
     path = _jinja_env.from_string(operation.get("path_template", "")).render(**template_ctx)
     url = base_url.rstrip("/") + path
 
-    # Headers from operation definition
-    headers = dict(operation.get("headers", {}))
+    if ":///" in url:
+        raise ValueError(
+            f"Rendered URL has empty hostname: {url}. "
+            "Check base_url_template and credentials."
+        )
+
+    # Headers from operation definition (render values through Jinja2)
+    raw_headers = operation.get("headers", {})
+    headers = {}
+    for k, v in raw_headers.items():
+        headers[k] = _jinja_env.from_string(str(v)).render(**template_ctx).strip()
 
     # Apply auth
     headers, _ = _apply_auth(headers, spec.auth_type, spec.auth_config, credentials, spec=spec, db=db)
@@ -321,6 +330,12 @@ def execute_via_agent(
     path = parsed.get("path", "")
     url = base_url.rstrip("/") + path
 
+    if ":///" in url:
+        raise ValueError(
+            f"Rendered URL has empty hostname: {url}. "
+            "Check base_url_template and credentials."
+        )
+
     # Start with headers from LLM, then inject auth
     headers = parsed.get("headers", {})
     headers, _ = _apply_auth(headers, spec.auth_type, spec.auth_config, credentials, spec=spec, db=db)
@@ -337,6 +352,29 @@ def execute_via_agent(
 # Unified entry point
 # ---------------------------------------------------------------------------
 
+def _normalize_fields(extracted_fields: dict, operation: dict) -> dict:
+    """Normalize field values to fix common LLM formatting mistakes."""
+    import re
+    field_descs = operation.get("field_descriptions", {})
+    normalized = dict(extracted_fields)
+    for key, value in normalized.items():
+        if not isinstance(value, str):
+            continue
+        desc = field_descs.get(key, "")
+        # Fix datetime fields that need URL-encoded timezone offset (%2B)
+        if "%2B" in desc:
+            # "2026-03-16T07:00:00 13:00" → space before offset → %2B
+            value = re.sub(r'(\d{2}:\d{2}:\d{2})\s+(\d{1,2}:\d{2})$', r'\1%2B\2', value)
+            # "2026-03-16T07:00:00+13:00" → bare + → %2B
+            value = re.sub(r'(\d{2}:\d{2}:\d{2})\+(\d{1,2}:\d{2})$', r'\1%2B\2', value)
+            normalized[key] = value
+        elif "8601" in desc or "timezone" in desc.lower():
+            # Standard ISO format: space before offset → +
+            value = re.sub(r'(\d{2}:\d{2}:\d{2})\s+(\d{1,2}:\d{2})$', r'\1+\2', value)
+            normalized[key] = value
+    return normalized
+
+
 def execute_spec(
     spec,
     operation: dict,
@@ -346,6 +384,9 @@ def execute_spec(
     task_id: str | None = None,
 ) -> tuple[ConnectorResult, RenderedRequest]:
     """Execute a connector spec operation. Returns (result, rendered_request)."""
+    # Normalize field values to fix common LLM formatting mistakes
+    extracted_fields = _normalize_fields(extracted_fields, operation)
+
     # Validate required fields
     required = operation.get("required_fields", [])
     missing = [f for f in required if f not in extracted_fields or not extracted_fields[f]]

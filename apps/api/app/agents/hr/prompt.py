@@ -27,7 +27,7 @@ You must return valid JSON matching this exact schema:
 }
 
 Rules:
-1. Match venue names fuzzily. "Murdochs" = "Mr Murdoch's", "Freeman and Grey" = "Freeman & Grey", "zeppa" = "La Zeppa".
+1. Match venue names fuzzily. "zeppa" = "La Zeppa".
 2. Required fields are: employee_name, venue_name, role, start_date.
 3. For roles, match against known HR roles (bartender, barista, chef, head chef, sous chef, kitchen hand, dishwasher, waiter, waitress, host, hostess, manager, duty manager, floor manager, bar manager, kitchen manager, server).
 4. If there is an open task and the message looks like a reply, set is_followup=true.

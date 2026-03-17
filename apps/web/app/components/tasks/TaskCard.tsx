@@ -13,18 +13,19 @@ const DOMAIN_ICONS: Record<string, LucideIcon> = {
 
 const STATUS_STYLES: Record<string, { bg: string; color: string; label: string }> = {
   awaiting_approval: { bg: '#fff3cd', color: '#856404', label: 'Awaiting approval' },
+  awaiting_tool_approval: { bg: '#e8daef', color: '#6c3483', label: 'Tool approval needed' },
   awaiting_user_input: { bg: '#f5f0ea', color: '#8a7356', label: 'Needs input' },
   needs_clarification: { bg: '#f8d7da', color: '#721c24', label: 'Needs input' },
   needs_information: { bg: '#f8d7da', color: '#721c24', label: 'Needs input' },
+  in_progress: { bg: '#d1ecf1', color: '#0c5460', label: 'Working' },
+  completed: { bg: '#d4edda', color: '#155724', label: 'Completed' },
   approved: { bg: '#d4edda', color: '#155724', label: 'Approved' },
   rejected: { bg: '#e2e3e5', color: '#383d41', label: 'Rejected' },
   submitted: { bg: '#cce5ff', color: '#004085', label: 'Submitted' },
 };
 
 function getTaskTitle(task: Task): string {
-  if (task.domain === 'procurement') return 'Draft stock order';
-  if (task.domain === 'hr') return 'Employee setup';
-  return task.intent || 'Task';
+  return task.title || '';
 }
 
 function getTaskSummary(task: Task): string {
@@ -144,7 +145,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact 
           gap: '0.5rem',
           padding: '0.45rem 1rem',
           cursor: 'pointer',
-          backgroundColor: isSelected ? '#f5f0ea' : '#fff',
+          backgroundColor: isSelected ? '#f5f0ea' : 'transparent',
           borderLeft: `3px solid ${isSelected ? dc : 'transparent'}`,
           borderBottom: '1px solid #f8f8f8',
           transition: 'background-color 0.1s',
@@ -184,7 +185,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact 
         padding: '0.85rem 1rem',
         borderBottom: '1px solid #f0f0f0',
         cursor: 'pointer',
-        backgroundColor: isSelected ? '#f5f0ea' : isWaiting ? '#fdf6ee' : '#fff',
+        backgroundColor: isSelected ? '#f5f0ea' : isWaiting ? '#fdf6ee' : 'transparent',
         borderLeft: `3px solid ${isSelected ? dc : 'transparent'}`,
         transition: 'background-color 0.15s',
       }}

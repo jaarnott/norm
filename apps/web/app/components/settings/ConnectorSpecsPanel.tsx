@@ -13,12 +13,8 @@ export default function ConnectorSpecsPanel() {
   const [editingSpec, setEditingSpec] = useState<ConnectorSpecFull | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  // Dry-run state
-  const [dryRunOpen, setDryRunOpen] = useState<string | null>(null);
-  const [dryRunAction, setDryRunAction] = useState('');
-  const [dryRunFields, setDryRunFields] = useState('{}');
-  const [dryRunResult, setDryRunResult] = useState<Record<string, unknown> | null>(null);
-  const [dryRunLoading, setDryRunLoading] = useState(false);
+  // Error banner state
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
   // AI Generate state
   const [generateOpen, setGenerateOpen] = useState(false);
@@ -30,11 +26,11 @@ export default function ConnectorSpecsPanel() {
   const fetchSpecs = useCallback(async () => {
     try {
       const res = await apiFetch('/api/connector-specs');
-      if (!res.ok) return;
+      if (!res.ok) { setErrorBanner(`Failed to fetch specs (${res.status})`); return; }
       const data = await res.json();
       setSpecs(data.specs ?? data);
-    } catch {
-      // ignore
+    } catch (err) {
+      setErrorBanner(`Network error loading specs: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, []);
 
@@ -44,10 +40,11 @@ export default function ConnectorSpecsPanel() {
     if (!confirm(`Delete connector spec "${name}"?`)) return;
     setDeleting(name);
     try {
-      await apiFetch(`/api/connector-specs/${name}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/connector-specs/${name}`, { method: 'DELETE' });
+      if (!res.ok) { setErrorBanner(`Failed to delete "${name}" (${res.status})`); }
       await fetchSpecs();
-    } catch {
-      // ignore
+    } catch (err) {
+      setErrorBanner(`Network error deleting "${name}": ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setDeleting(null);
     }
@@ -56,39 +53,15 @@ export default function ConnectorSpecsPanel() {
   const handleEdit = async (name: string) => {
     try {
       const res = await apiFetch(`/api/connector-specs/${name}`);
-      if (!res.ok) return;
+      if (!res.ok) { setErrorBanner(`Failed to load spec "${name}" (${res.status})`); return; }
       const data = await res.json();
       setEditingSpec(data);
       setViewMode('edit');
-    } catch {
-      // ignore
+    } catch (err) {
+      setErrorBanner(`Network error loading spec: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
-  const handleDryRun = async (name: string) => {
-    setDryRunLoading(true);
-    setDryRunResult(null);
-    try {
-      let fields: Record<string, unknown> = {};
-      try { fields = JSON.parse(dryRunFields); } catch { /* ignore */ }
-      const res = await apiFetch(`/api/connector-specs/${name}/dry-run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          extracted_fields: fields,
-          operation_action: dryRunAction || null,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setDryRunResult(data.rendered_request || data);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setDryRunLoading(false);
-    }
-  };
 
   const handleGenerate = async () => {
     setGenerating(true);
@@ -115,10 +88,10 @@ export default function ConnectorSpecsPanel() {
           return;
         }
         const existing: ConnectorSpecFull = await existingRes.json();
-        const newOps = generated.operations ?? [];
+        const newTools = generated.tools ?? [];
         setEditingSpec({
           ...existing,
-          operations: [...existing.operations, ...newOps],
+          tools: [...existing.tools, ...newTools],
         });
         setViewMode('edit');
       } else {
@@ -136,11 +109,12 @@ export default function ConnectorSpecsPanel() {
           auth_type: 'bearer',
           auth_config: {},
           base_url_template: null,
-          operations: [],
+          tools: [],
           api_documentation: null,
           example_requests: [],
           credential_fields: [],
           oauth_config: null,
+          test_request: null,
           ...generated,
         });
         setViewMode('create');
@@ -165,12 +139,32 @@ export default function ConnectorSpecsPanel() {
         body: JSON.stringify(spec),
       });
       if (res.ok) {
-        setViewMode('list');
-        setEditingSpec(null);
+        if (isNew) {
+          // After creating, switch to editing the new spec
+          const saved = await apiFetch(`/api/connector-specs/${spec.connector_name}`);
+          if (saved.ok) {
+            const data = await saved.json();
+            setEditingSpec(data);
+            setViewMode('edit');
+          } else {
+            setViewMode('list');
+            setEditingSpec(null);
+          }
+        } else {
+          // After updating, stay on the same spec
+          const refreshed = await apiFetch(`/api/connector-specs/${spec.connector_name}`);
+          if (refreshed.ok) {
+            const data = await refreshed.json();
+            setEditingSpec(data);
+          }
+        }
         await fetchSpecs();
+      } else {
+        const errBody = await res.text();
+        setErrorBanner(`Failed to save spec (${res.status}): ${errBody}`);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      setErrorBanner(`Network error saving spec: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -204,6 +198,25 @@ export default function ConnectorSpecsPanel() {
 
   return (
     <>
+      {errorBanner && (
+        <div style={{
+          padding: '0.6rem 1rem',
+          marginBottom: '1rem',
+          backgroundColor: '#fff5f5',
+          border: '1px solid #f5c6cb',
+          borderRadius: 8,
+          fontSize: '0.82rem',
+          color: '#721c24',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}>
+          <span>{errorBanner}</span>
+          <button onClick={() => setErrorBanner(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '1rem', color: '#721c24' }}>
+            &#10005;
+          </button>
+        </div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
           Connector Specs
@@ -367,6 +380,28 @@ export default function ConnectorSpecsPanel() {
             Auth: {spec.auth_type}
           </div>
 
+          {/* OAuth Config (if present) */}
+          {(spec as Record<string, unknown>).oauth_config && (() => {
+            const oauth = (spec as Record<string, unknown>).oauth_config as Record<string, string>;
+            return (
+              <div style={{
+                fontSize: '0.78rem',
+                color: '#555',
+                marginBottom: '0.75rem',
+                padding: '0.6rem 0.75rem',
+                backgroundColor: '#fafafa',
+                border: '1px solid #edf2f7',
+                borderRadius: 6,
+              }}>
+                <div style={{ fontWeight: 500, marginBottom: 4, color: '#444' }}>OAuth Config</div>
+                {oauth.authorize_url && <div><span style={{ color: '#888' }}>Authorize URL:</span> {oauth.authorize_url}</div>}
+                {oauth.token_url && <div><span style={{ color: '#888' }}>Token URL:</span> {oauth.token_url}</div>}
+                {oauth.client_id && <div><span style={{ color: '#888' }}>Client ID:</span> {oauth.client_id}</div>}
+                {oauth.scopes && <div><span style={{ color: '#888' }}>Scopes:</span> {oauth.scopes}</div>}
+              </div>
+            );
+          })()}
+
           {/* Actions */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button
@@ -384,32 +419,6 @@ export default function ConnectorSpecsPanel() {
             >
               Edit
             </button>
-            {spec.execution_mode === 'template' && (
-              <button
-                onClick={() => {
-                  if (dryRunOpen === spec.connector_name) {
-                    setDryRunOpen(null);
-                  } else {
-                    setDryRunOpen(spec.connector_name);
-                    setDryRunResult(null);
-                    setDryRunAction('');
-                    setDryRunFields('{}');
-                  }
-                }}
-                style={{
-                  padding: '5px 12px',
-                  fontSize: '0.78rem',
-                  fontWeight: 500,
-                  border: '1px solid #ddd',
-                  borderRadius: 6,
-                  backgroundColor: '#fff',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
-              >
-                Dry Run
-              </button>
-            )}
             <button
               onClick={() => handleDelete(spec.connector_name)}
               disabled={deleting === spec.connector_name}
@@ -429,91 +438,6 @@ export default function ConnectorSpecsPanel() {
             </button>
           </div>
 
-          {/* Dry Run Panel */}
-          {dryRunOpen === spec.connector_name && (
-            <div style={{
-              marginTop: '0.75rem',
-              padding: '0.75rem',
-              border: '1px solid #edf2f7',
-              borderRadius: 8,
-              backgroundColor: '#fafafa',
-            }}>
-              <div style={{ marginBottom: '0.5rem' }}>
-                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                  Operation Action
-                </label>
-                <input
-                  type="text"
-                  value={dryRunAction}
-                  onChange={e => setDryRunAction(e.target.value)}
-                  placeholder="e.g. create_employee"
-                  style={{
-                    width: '100%',
-                    padding: '6px 8px',
-                    border: '1px solid #ddd',
-                    borderRadius: 6,
-                    fontSize: '0.82rem',
-                    fontFamily: 'inherit',
-                    boxSizing: 'border-box',
-                    outline: 'none',
-                  }}
-                />
-              </div>
-              <div style={{ marginBottom: '0.5rem' }}>
-                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                  Extracted Fields (JSON)
-                </label>
-                <textarea
-                  value={dryRunFields}
-                  onChange={e => setDryRunFields(e.target.value)}
-                  rows={4}
-                  style={{
-                    width: '100%',
-                    padding: '6px 8px',
-                    border: '1px solid #ddd',
-                    borderRadius: 6,
-                    fontSize: '0.82rem',
-                    fontFamily: 'monospace',
-                    boxSizing: 'border-box',
-                    outline: 'none',
-                    resize: 'vertical',
-                  }}
-                />
-              </div>
-              <button
-                onClick={() => handleDryRun(spec.connector_name)}
-                disabled={dryRunLoading}
-                style={{
-                  padding: '5px 12px',
-                  fontSize: '0.78rem',
-                  fontWeight: 500,
-                  border: 'none',
-                  borderRadius: 6,
-                  backgroundColor: '#c4a882',
-                  color: '#fff',
-                  cursor: dryRunLoading ? 'not-allowed' : 'pointer',
-                  fontFamily: 'inherit',
-                  marginBottom: dryRunResult ? '0.5rem' : 0,
-                }}
-              >
-                {dryRunLoading ? 'Rendering...' : 'Render'}
-              </button>
-              {dryRunResult && (
-                <pre style={{
-                  padding: '0.75rem',
-                  backgroundColor: '#1a202c',
-                  color: '#e2e8f0',
-                  borderRadius: 6,
-                  fontSize: '0.78rem',
-                  overflow: 'auto',
-                  lineHeight: 1.5,
-                  marginTop: '0.5rem',
-                }}>
-                  {JSON.stringify(dryRunResult, null, 2)}
-                </pre>
-              )}
-            </div>
-          )}
         </div>
       ))}
     </>

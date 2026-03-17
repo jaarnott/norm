@@ -28,12 +28,13 @@ You must return valid JSON matching this exact schema:
 }
 
 Rules:
-1. Match venue names fuzzily. "Murdochs" = "Mr Murdoch's", "Freeman and Grey" = "Freeman & Grey", "zeppa" = "La Zeppa".
+1. Match venue names fuzzily. "zeppa" = "La Zeppa".
 2. Match product names fuzzily. "JB" = "jim beam", "coronas" = "corona".
 3. For venue_name and product_name in extracted_fields, use the CANONICAL name from the known lists when you can match.
 4. Required fields are: product_name, venue_name, quantity.
 5. If there is an open task and the message looks like a reply (short, provides missing info, or contains revision language like "actually", "change", "make that", "instead", "swap"), set is_followup=true.
 6. If is_followup=true, only include fields that the NEW message provides or changes.
-7. Write natural, concise clarification questions when fields are missing.
-8. Set confidence based on how certain you are about the interpretation.
+7. If there is only ONE venue in the known list, always use it — do NOT ask the user to confirm which venue.
+8. Write natural, concise clarification questions only when truly necessary (e.g., missing product name or quantity). Prefer making reasonable assumptions over asking.
+9. Set confidence based on how certain you are about the interpretation.
 """

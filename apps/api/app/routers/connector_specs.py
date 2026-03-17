@@ -15,17 +15,20 @@ router = APIRouter(prefix="/connector-specs", tags=["connector-specs"])
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
-class OperationSchema(BaseModel):
+class ToolSchema(BaseModel):
     action: str
     method: str = "POST"
     path_template: str = ""
     headers: dict = {}
     required_fields: list[str] = []
     field_mapping: dict = {}
+    field_descriptions: dict = {}
     request_body_template: str | None = None
     success_status_codes: list[int] = [200, 201]
     response_ref_path: str | None = None
     timeout_seconds: int = 30
+    display_component: str | None = None
+    display_props: dict | None = None
 
 
 class ConnectorSpecCreate(BaseModel):
@@ -36,11 +39,12 @@ class ConnectorSpecCreate(BaseModel):
     auth_type: str
     auth_config: dict = {}
     base_url_template: str | None = None
-    operations: list[dict] = []
+    tools: list[dict] = []
     api_documentation: str | None = None
     example_requests: list[dict] = []
     credential_fields: list[dict] = []
     oauth_config: dict | None = None
+    test_request: dict | None = None
     enabled: bool = True
 
 
@@ -51,17 +55,18 @@ class ConnectorSpecUpdate(BaseModel):
     auth_type: str | None = None
     auth_config: dict | None = None
     base_url_template: str | None = None
-    operations: list[dict] | None = None
+    tools: list[dict] | None = None
     api_documentation: str | None = None
     example_requests: list[dict] | None = None
     credential_fields: list[dict] | None = None
     oauth_config: dict | None = None
+    test_request: dict | None = None
     enabled: bool | None = None
 
 
 class DryRunBody(BaseModel):
     extracted_fields: dict
-    operation_action: str | None = None
+    tool_action: str | None = None
 
 
 class GenerateBody(BaseModel):
@@ -82,11 +87,12 @@ def _spec_to_dict(spec: ConnectorSpec) -> dict:
         "auth_type": spec.auth_type,
         "auth_config": spec.auth_config,
         "base_url_template": spec.base_url_template,
-        "operations": spec.operations,
+        "tools": spec.tools,
         "api_documentation": spec.api_documentation,
         "example_requests": spec.example_requests,
         "credential_fields": spec.credential_fields,
         "oauth_config": spec.oauth_config,
+        "test_request": spec.test_request,
         "version": spec.version,
         "enabled": spec.enabled,
         "created_at": spec.created_at.isoformat() if spec.created_at else None,
@@ -127,11 +133,12 @@ async def create_spec(
         auth_type=body.auth_type,
         auth_config=body.auth_config,
         base_url_template=body.base_url_template,
-        operations=body.operations,
+        tools=body.tools,
         api_documentation=body.api_documentation,
         example_requests=body.example_requests,
         credential_fields=body.credential_fields,
         oauth_config=body.oauth_config,
+        test_request=body.test_request,
         enabled=body.enabled,
     )
     db.add(spec)
@@ -204,16 +211,19 @@ async def dry_run(
     if spec.execution_mode != "template":
         raise HTTPException(400, "Dry-run is only available for template-mode specs")
 
-    # Find operation
+    # Find tool
     operation = None
-    for op in (spec.operations or []):
-        if body.operation_action and op.get("action") == body.operation_action:
+    for op in (spec.tools or []):
+        if body.tool_action and op.get("action") == body.tool_action:
             operation = op
             break
-    if operation is None and spec.operations:
-        operation = spec.operations[0]
+    if operation is None and body.tool_action:
+        available = [op.get("action") for op in (spec.tools or [])]
+        raise HTTPException(400, f"Tool '{body.tool_action}' not found. Save the spec first. Available: {available}")
+    if operation is None and spec.tools:
+        operation = spec.tools[0]
     if operation is None:
-        raise HTTPException(400, "No operations defined on this spec")
+        raise HTTPException(400, "No tools defined on this spec")
 
     # Get credentials (use empty dict for dry-run if none configured)
     config_row = db.query(ConnectorConfig).filter(
@@ -242,16 +252,19 @@ async def test_spec(
     if not spec:
         raise HTTPException(404, f"Spec not found: {name}")
 
-    # Find operation
+    # Find tool
     operation = None
-    for op in (spec.operations or []):
-        if body.operation_action and op.get("action") == body.operation_action:
+    for op in (spec.tools or []):
+        if body.tool_action and op.get("action") == body.tool_action:
             operation = op
             break
-    if operation is None and spec.operations:
-        operation = spec.operations[0]
+    if operation is None and body.tool_action:
+        available = [op.get("action") for op in (spec.tools or [])]
+        raise HTTPException(400, f"Tool '{body.tool_action}' not found. Save the spec first. Available: {available}")
+    if operation is None and spec.tools:
+        operation = spec.tools[0]
     if operation is None:
-        raise HTTPException(400, "No operations defined on this spec")
+        raise HTTPException(400, "No tools defined on this spec")
 
     config_row = db.query(ConnectorConfig).filter(
         ConnectorConfig.connector_name == name,

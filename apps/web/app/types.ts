@@ -13,18 +13,22 @@ export interface ConnectorSpecSummary {
   updated_at: string | null;
 }
 
-export interface ConnectorSpecOperation {
+export interface ConnectorSpecTool {
   action: string;
   method: string;
   path_template: string;
   headers: Record<string, string>;
   required_fields: string[];
   field_mapping: Record<string, string>;
+  field_descriptions: Record<string, string>;
   request_body_template: string | null;
   success_status_codes: number[];
   response_ref_path: string | null;
   timeout_seconds: number;
   description?: string;
+  display_component?: string | null;
+  display_props?: Record<string, unknown> | null;
+  working_document?: { doc_type: string; sync_mode: string; ref_fields: string[] } | null;
 }
 
 export interface OAuthConfig {
@@ -35,21 +39,46 @@ export interface OAuthConfig {
   client_secret: string;
 }
 
+export interface TestRequest {
+  method: string;
+  path_template: string;
+  headers: Record<string, string>;
+  success_status_codes: number[];
+  timeout_seconds: number;
+}
+
 export interface ConnectorSpecFull extends ConnectorSpecSummary {
   auth_config: Record<string, unknown>;
   base_url_template: string | null;
-  operations: ConnectorSpecOperation[];
+  tools: ConnectorSpecTool[];
   api_documentation: string | null;
   example_requests: Record<string, unknown>[];
   credential_fields: { key: string; label: string; secret: boolean }[];
   oauth_config: OAuthConfig | null;
+  test_request: TestRequest | null;
 }
 
 // --- LLM Call types ---
 
+export interface ToolCallRecord {
+  id: string;
+  iteration: number;
+  tool_name: string;
+  connector_name: string;
+  action: string;
+  method: string;
+  input_params: Record<string, unknown> | null;
+  status: 'pending' | 'executed' | 'pending_approval' | 'approved' | 'rejected' | 'failed';
+  result_payload: Record<string, unknown> | null;
+  error_message: string | null;
+  duration_ms: number | null;
+  rendered_request: Record<string, unknown> | null;
+  created_at: string;
+}
+
 export interface LlmCall {
   id: string;
-  call_type: 'routing' | 'interpretation' | 'execution' | 'spec_generation';
+  call_type: 'routing' | 'interpretation' | 'execution' | 'spec_generation' | 'tool_use';
   model: string;
   system_prompt: string;
   user_prompt: string;
@@ -58,25 +87,42 @@ export interface LlmCall {
   status: 'success' | 'error';
   error_message: string | null;
   duration_ms: number | null;
+  tools_provided: Record<string, unknown>[] | null;
   created_at: string;
+}
+
+export interface DisplayBlock {
+  component: string;
+  data: Record<string, unknown>;
+  props?: Record<string, unknown>;
+}
+
+export interface WidgetAction {
+  connector_name: string;
+  action: string;
+  params: Record<string, unknown>;
 }
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
   text: string;
   created_at?: string | null;
+  display_blocks?: DisplayBlock[];
 }
 
 export interface BaseTask {
   id: string;
   domain: string;
   intent: string;
+  title: string | null;
   message: string;
   status: string;
   created_at: string;
   clarification_question?: string | null;
   conversation?: ConversationMessage[];
   llm_calls?: LlmCall[];
+  tool_calls?: ToolCallRecord[];
+  thinking_steps?: string[];
   integration_run?: {
     connector: string;
     status: string;

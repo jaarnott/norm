@@ -16,7 +16,7 @@ def query_sales_data(
     """Return mock sales records."""
     base_date = datetime(2024, 1, 1)
     records = []
-    venues = [venue_name] if venue_name else ["La Zeppa", "Mr Murdoch's", "Freeman & Grey"]
+    venues = [venue_name] if venue_name else ["La Zeppa"]
     products = [product_name] if product_name else ["Jim Beam", "Corona", "Sauvignon Blanc"]
 
     for day_offset in range(30):
@@ -41,7 +41,7 @@ def query_inventory(
     product_name: str | None = None,
 ) -> list[dict]:
     """Return mock inventory snapshot."""
-    venues = [venue_name] if venue_name else ["La Zeppa", "Mr Murdoch's", "Freeman & Grey"]
+    venues = [venue_name] if venue_name else ["La Zeppa"]
     products = [product_name] if product_name else ["Jim Beam", "Corona", "Sauvignon Blanc"]
 
     records = []

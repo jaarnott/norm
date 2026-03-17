@@ -7,6 +7,7 @@ connectors that use OAuth2 authentication.
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy.orm import Session
@@ -33,16 +34,16 @@ def build_authorize_url(spec: ConnectorSpec, redirect_uri: str, db: Session) -> 
     db.add(oauth_state)
     db.commit()
 
-    params = (
-        f"?client_id={client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&response_type=code"
-        f"&state={state}"
-    )
+    query: dict[str, str] = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "state": state,
+    }
     if scopes:
-        params += f"&scope={scopes}"
+        query["scope"] = scopes
 
-    return authorize_url + params
+    return authorize_url + "?" + urlencode(query)
 
 
 def exchange_code(

@@ -23,7 +23,7 @@ router = APIRouter()
 KNOWN_SLUGS = ["procurement", "hr", "reports", "router"]
 
 
-def _merge_capabilities(binding_caps: list[dict], spec_ops: list[dict]) -> list[dict]:
+def _merge_capabilities(binding_caps: list[dict], spec_tools: list[dict]) -> list[dict]:
     """Merge spec operations into binding capabilities.
 
     - Existing binding caps keep their enabled state
@@ -32,21 +32,23 @@ def _merge_capabilities(binding_caps: list[dict], spec_ops: list[dict]) -> list[
     """
     existing = {c["action"]: c for c in binding_caps}
     merged = []
-    for op in spec_ops:
+    seen = set()
+    for op in spec_tools:
         action = op.get("action", "")
+        if action in seen:
+            continue
+        seen.add(action)
         if action in existing:
-            merged.append(existing[action])
+            cap = {**existing[action]}
+            cap["label"] = op.get("description", action.replace("_", " ").title())
+            merged.append(cap)
         else:
             merged.append({
                 "action": action,
                 "label": op.get("description", action.replace("_", " ").title()),
                 "enabled": False,
             })
-    # Keep any binding caps whose action isn't in the spec (stale but don't lose them)
-    spec_actions = {op.get("action", "") for op in spec_ops}
-    for cap in binding_caps:
-        if cap["action"] not in spec_actions:
-            merged.append(cap)
+    # Stale binding caps (action no longer in spec) are dropped
     return merged
 
 
@@ -69,8 +71,8 @@ def _agent_to_dict(
         bound_connector_names.add(connector_name)
         spec = specs_by_name.get(connector_name)
         caps = b["capabilities"]
-        if spec and spec.operations:
-            caps = _merge_capabilities(caps, spec.operations)
+        if spec and spec.tools:
+            caps = _merge_capabilities(caps, spec.tools)
         label = spec.display_name if spec else connector_name
         enriched_bindings.append({
             "connector_name": connector_name,
@@ -220,8 +222,8 @@ async def upsert_binding(
     db.commit()
     spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == connector).first()
     caps = row.capabilities or []
-    if spec and spec.operations:
-        caps = _merge_capabilities(caps, spec.operations)
+    if spec and spec.tools:
+        caps = _merge_capabilities(caps, spec.tools)
     return {
         "connector_name": row.connector_name,
         "connector_label": spec.display_name if spec else row.connector_name,

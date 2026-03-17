@@ -82,10 +82,13 @@ class Task(Base):
     intent = Column(String)
     domain = Column(String)
     status = Column(String, nullable=False, default="awaiting_user_input")
+    title = Column(String, nullable=True)
     raw_prompt = Column(Text)
     extracted_fields = Column(JSON, default=dict)
     missing_fields = Column(JSON, default=list)
     clarification_question = Column(Text)
+    agent_loop_state = Column(JSON, nullable=True)
+    pending_tool_call_ids = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -95,6 +98,8 @@ class Task(Base):
     approvals = relationship("Approval", back_populates="task", order_by="Approval.performed_at", cascade="all, delete-orphan")
     integration_runs = relationship("IntegrationRun", back_populates="task", order_by="IntegrationRun.created_at", cascade="all, delete-orphan")
     llm_calls = relationship("LlmCall", back_populates="task", order_by="LlmCall.created_at", cascade="all, delete-orphan")
+    tool_calls = relationship("ToolCall", back_populates="task", order_by="ToolCall.created_at", cascade="all, delete-orphan")
+    working_documents = relationship("WorkingDocument", back_populates="task", cascade="all, delete-orphan")
     user = relationship("User", back_populates="tasks")
 
 
@@ -105,6 +110,7 @@ class Message(Base):
     task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
     role = Column(String, nullable=False)  # "user" or "assistant"
     content = Column(Text, nullable=False)
+    display_blocks = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
     task = relationship("Task", back_populates="messages")
@@ -187,6 +193,7 @@ class LlmCall(Base):
     status = Column(String, nullable=False, default="success")  # "success" | "error"
     error_message = Column(Text)
     duration_ms = Column(Integer)
+    tools_provided = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
     task = relationship("Task", back_populates="llm_calls")
@@ -203,11 +210,12 @@ class ConnectorSpec(Base):
     auth_type = Column(String, nullable=False)         # "bearer" | "api_key_header" | "basic" | "oauth2"
     auth_config = Column(JSON, nullable=False, default=dict)
     base_url_template = Column(String)                 # Jinja2 template
-    operations = Column(JSON, nullable=False, default=list)
+    tools = Column(JSON, nullable=False, default=list)
     api_documentation = Column(Text)                   # for agent mode
     example_requests = Column(JSON, nullable=False, default=list)
     credential_fields = Column(JSON, nullable=False, default=list)
     oauth_config = Column(JSON, nullable=True)         # {authorize_url, token_url, scopes, client_id, client_secret}
+    test_request = Column(JSON, nullable=True)          # {method, path_template, headers, success_status_codes}
     version = Column(Integer, nullable=False, default=1)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
@@ -265,6 +273,48 @@ class AgentConnectorBinding(Base):
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class ToolCall(Base):
+    __tablename__ = "tool_calls"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    llm_call_id = Column(String, ForeignKey("llm_calls.id", ondelete="SET NULL"), nullable=True)
+    iteration = Column(Integer, nullable=False)
+    tool_name = Column(String, nullable=False)          # e.g. "bidfood__check_stock"
+    connector_name = Column(String, nullable=False)
+    action = Column(String, nullable=False)
+    method = Column(String, nullable=False)              # GET/POST/PUT/DELETE
+    input_params = Column(JSON, nullable=True)
+    status = Column(String, nullable=False, default="pending")  # "executed", "pending_approval", "approved", "rejected", "failed"
+    result_payload = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    rendered_request = Column(JSON, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+    task = relationship("Task", back_populates="tool_calls")
+
+
+class WorkingDocument(Base):
+    __tablename__ = "working_documents"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    task_id = Column(String, ForeignKey("tasks.id"), nullable=False, index=True)
+    doc_type = Column(String, nullable=False)          # "roster", "order", etc.
+    connector_name = Column(String, nullable=False)
+    sync_mode = Column(String, nullable=False, default="auto")  # "auto" | "submit"
+    data = Column(JSON, nullable=False, default=dict)
+    external_ref = Column(JSON, nullable=True)         # e.g. {"roster_id": "abc", "search_date": "2026-03-09"}
+    sync_status = Column(String, nullable=False, default="synced")  # "synced" | "dirty" | "syncing" | "error" | "pending_submit"
+    sync_error = Column(Text, nullable=True)
+    pending_ops = Column(JSON, nullable=True, default=list)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    task = relationship("Task", back_populates="working_documents")
 
 
 class HrSetup(Base):

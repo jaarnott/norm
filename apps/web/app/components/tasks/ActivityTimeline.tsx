@@ -106,8 +106,6 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
           System Prompt
         </div>
         <pre style={{
-          maxHeight: 150,
-          overflow: 'auto',
           backgroundColor: '#f5f5f5',
           border: '1px solid #e2e2e2',
           borderRadius: 4,
@@ -122,6 +120,33 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
         </pre>
       </div>
 
+      {/* Tools provided */}
+      {call.tools_provided && call.tools_provided.length > 0 && (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <div style={{
+            fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase',
+            letterSpacing: '0.04em', color: '#999', marginBottom: '0.25rem',
+          }}>
+            Tools
+          </div>
+          <pre style={{
+            backgroundColor: '#f5f5f5',
+            border: '1px solid #e2e2e2',
+            borderRadius: 4,
+            padding: '0.5rem',
+            margin: 0,
+            fontSize: '0.7rem',
+            lineHeight: 1.4,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}>
+            {call.tools_provided.map((t: Record<string, unknown>) =>
+              `- ${t.name}: ${t.description || ''}`
+            ).join('\n')}
+          </pre>
+        </div>
+      )}
+
       {/* User prompt */}
       <div style={{ marginBottom: '0.5rem' }}>
         <div style={{
@@ -131,8 +156,6 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
           User Prompt
         </div>
         <pre style={{
-          maxHeight: 150,
-          overflow: 'auto',
           backgroundColor: '#f5f5f5',
           border: '1px solid #e2e2e2',
           borderRadius: 4,
@@ -178,8 +201,6 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
             )}
           </div>
           <pre style={{
-            maxHeight: 150,
-            overflow: 'auto',
             backgroundColor: '#f5f5f5',
             border: '1px solid #e2e2e2',
             borderRadius: 4,

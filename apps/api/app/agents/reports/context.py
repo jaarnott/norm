@@ -44,6 +44,7 @@ def _report_task_to_dict(task: Task) -> dict:
         "id": task.id,
         "domain": "reports",
         "intent": task.intent,
+        "title": task.title,
         "message": task.raw_prompt,
         "status": task.status,
         "created_at": task.created_at.isoformat() if task.created_at else None,

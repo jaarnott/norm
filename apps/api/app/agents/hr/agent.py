@@ -33,6 +33,12 @@ class HrAgent(BaseDomainAgent):
         user_id: str | None = None,
         task_id: str | None = None,
     ) -> dict:
+        # Try the agentic tool loop first (if tools are bound)
+        system_prompt, anthropic_tools = self.get_tool_definitions(db)
+        if anthropic_tools:
+            return self.handle_message_with_tools(message, db, user_id, task_id)
+
+        # Fallback to classic single-shot interpretation
         ctx = self.build_context(db, user_id)
 
         # If task_id provided, load it as open task for follow-up

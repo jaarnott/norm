@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
-import type { ConnectorSpecFull, ConnectorSpecOperation } from '../../types';
+import type { ConnectorSpecFull, ConnectorSpecTool } from '../../types';
+import { apiFetch } from '../../lib/api';
 
 interface Props {
   spec: ConnectorSpecFull | null;
@@ -11,17 +12,21 @@ interface Props {
   onCancel: () => void;
 }
 
-const EMPTY_OPERATION: ConnectorSpecOperation = {
+const EMPTY_TOOL: ConnectorSpecTool = {
   action: '',
   method: 'POST',
   path_template: '',
   headers: {},
   required_fields: [],
   field_mapping: {},
+  field_descriptions: {},
   request_body_template: null,
   success_status_codes: [200, 201],
   response_ref_path: null,
   timeout_seconds: 30,
+  display_component: null,
+  display_props: null,
+  working_document: null,
 };
 
 const EMPTY_SPEC: ConnectorSpecFull = {
@@ -35,11 +40,12 @@ const EMPTY_SPEC: ConnectorSpecFull = {
   base_url_template: null,
   version: 1,
   enabled: true,
-  operations: [],
+  tools: [],
   api_documentation: null,
   example_requests: [],
   credential_fields: [],
   oauth_config: null,
+  test_request: null,
   created_at: '',
   updated_at: null,
 };
@@ -71,13 +77,162 @@ const sectionStyle: React.CSSProperties = {
   backgroundColor: '#fafafa',
 };
 
+/** Textarea for JSON values that keeps a local draft so you can type invalid intermediate JSON. */
+function JsonTextarea({ value, onChange, rows, placeholder, style, autoResize }: {
+  value: unknown;
+  onChange: (parsed: unknown) => void;
+  rows?: number;
+  placeholder?: string;
+  style?: React.CSSProperties;
+  autoResize?: boolean;
+}) {
+  const serialized = value != null ? JSON.stringify(value, null, 2) : '';
+  const [draft, setDraft] = useState(serialized);
+  const [valid, setValid] = useState(true);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  // Sync draft when the external value changes (e.g. after save/reload)
+  useEffect(() => {
+    setDraft(serialized);
+    setValid(true);
+  }, [serialized]);
+
+  // Auto-resize to content
+  useEffect(() => {
+    if (autoResize && ref.current) {
+      ref.current.style.height = 'auto';
+      ref.current.style.height = ref.current.scrollHeight + 'px';
+    }
+  }, [draft, autoResize]);
+
+  return (
+    <textarea
+      ref={ref}
+      value={draft}
+      onChange={e => {
+        const raw = e.target.value;
+        setDraft(raw);
+        if (autoResize && ref.current) {
+          ref.current.style.height = 'auto';
+          ref.current.style.height = ref.current.scrollHeight + 'px';
+        }
+        if (!raw.trim()) {
+          setValid(true);
+          onChange(null);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          setValid(true);
+          onChange(parsed);
+        } catch {
+          setValid(false);
+        }
+      }}
+      rows={autoResize ? 1 : rows}
+      placeholder={placeholder}
+      style={{
+        ...style,
+        outline: valid ? undefined : '2px solid #e53e3e',
+        ...(autoResize ? { overflow: 'hidden', resize: 'none' } : {}),
+      }}
+    />
+  );
+}
+
+/** Plain textarea that auto-expands to fit content. */
+function AutoResizeTextarea({ value, onChange, placeholder, style }: {
+  value: string;
+  onChange: (e: { target: { value: string } }) => void;
+  placeholder?: string;
+  style?: React.CSSProperties;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.style.height = 'auto';
+      ref.current.style.height = ref.current.scrollHeight + 'px';
+    }
+  }, [value]);
+
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={e => {
+        onChange(e);
+        if (ref.current) {
+          ref.current.style.height = 'auto';
+          ref.current.style.height = ref.current.scrollHeight + 'px';
+        }
+      }}
+      rows={1}
+      placeholder={placeholder}
+      style={{ ...style, overflow: 'hidden', resize: 'none' }}
+    />
+  );
+}
+
 export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: Props) {
   const [form, setForm] = useState<ConnectorSpecFull>(spec ?? { ...EMPTY_SPEC });
   const [saving, setSaving] = useState(false);
-  const [collapsedOps, setCollapsedOps] = useState<Set<number>>(() => new Set(form.operations.map((_, i) => i)));
+  const [collapsedTools, setCollapsedTools] = useState<Set<number>>(() => new Set(form.tools.map((_, i) => i)));
 
-  const toggleOp = (index: number) => {
-    setCollapsedOps(prev => {
+  // Base URL mode state
+  const [baseUrlMode, setBaseUrlMode] = useState<'fixed' | 'dynamic'>(() =>
+    (form.base_url_template || '').includes('{{ creds.') ? 'dynamic' : 'fixed'
+  );
+  const [domainFieldKey, setDomainFieldKey] = useState<string>(() => {
+    const match = (form.base_url_template || '').match(/\{\{\s*creds\.(\w+)\s*\}\}/);
+    return match?.[1] || 'subdomain';
+  });
+  const [domainFieldLabel, setDomainFieldLabel] = useState<string>(() => {
+    const key = (form.base_url_template || '').match(/\{\{\s*creds\.(\w+)\s*\}\}/)?.[1];
+    const existing = form.credential_fields.find(cf => cf.key === key);
+    return existing?.label || 'Domain';
+  });
+
+  // Convert {{ creds.KEY }} to {{ domain }} for display
+  const displayPattern = (template: string) =>
+    template.replace(/\{\{\s*creds\.\w+\s*\}\}/g, '{{ domain }}');
+
+  // Convert {{ domain }} to {{ creds.KEY }} for storage
+  const storagePattern = (display: string, key: string) =>
+    display.replace(/\{\{\s*domain\s*\}\}/g, `{{ creds.${key} }}`);
+
+  // Sync credential field when dynamic mode params change
+  const syncDomainCredField = (key: string, label: string, oldKey?: string) => {
+    setForm(prev => {
+      const filtered = prev.credential_fields.filter(cf => cf.key !== (oldKey || key));
+      return {
+        ...prev,
+        credential_fields: [...filtered, { key, label, secret: false }],
+      };
+    });
+  };
+
+  const removeDomainCredField = (key: string) => {
+    setForm(prev => ({
+      ...prev,
+      credential_fields: prev.credential_fields.filter(cf => cf.key !== key),
+    }));
+  };
+
+  // Try Tool state
+  const [tryToolAction, setTryToolAction] = useState('');
+  const [tryToolFields, setTryToolFields] = useState<Record<string, string>>({});
+  const [tryDryRunResult, setTryDryRunResult] = useState<Record<string, unknown> | null>(null);
+  const [tryTestResult, setTryTestResult] = useState<Record<string, unknown> | null>(null);
+  const [tryLoading, setTryLoading] = useState<'render' | 'test' | null>(null);
+  const [tryError, setTryError] = useState<string | null>(null);
+
+  const selectedTool = useMemo(
+    () => form.tools.find(t => t.action === tryToolAction) ?? null,
+    [form.tools, tryToolAction],
+  );
+
+  const toggleTool = (index: number) => {
+    setCollapsedTools(prev => {
       const next = new Set(prev);
       if (next.has(index)) next.delete(index); else next.add(index);
       return next;
@@ -88,27 +243,51 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
     setForm(prev => ({ ...prev, [key]: value }));
   };
 
-  const updateOperation = (index: number, field: keyof ConnectorSpecOperation, value: unknown) => {
+  const updateTool = (index: number, field: keyof ConnectorSpecTool, value: unknown) => {
     setForm(prev => ({
       ...prev,
-      operations: prev.operations.map((op, i) =>
+      tools: prev.tools.map((op, i) =>
         i === index ? { ...op, [field]: value } : op
       ),
     }));
   };
 
-  const addOperation = () => {
+  const addTool = () => {
     setForm(prev => ({
       ...prev,
-      operations: [...prev.operations, { ...EMPTY_OPERATION }],
+      tools: [...prev.tools, { ...EMPTY_TOOL }],
     }));
   };
 
-  const removeOperation = (index: number) => {
+  const removeTool = (index: number) => {
     setForm(prev => ({
       ...prev,
-      operations: prev.operations.filter((_, i) => i !== index),
+      tools: prev.tools.filter((_, i) => i !== index),
     }));
+  };
+
+  // Drag-to-reorder tools
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const handleDragEnd = () => {
+    if (dragIdx !== null && dragOverIdx !== null && dragIdx !== dragOverIdx) {
+      setForm(prev => {
+        const tools = [...prev.tools];
+        const [moved] = tools.splice(dragIdx, 1);
+        tools.splice(dragOverIdx, 0, moved);
+        // Rebuild collapsed set based on action names to preserve state
+        const collapsedActions = new Set(
+          Array.from(collapsedTools).map(i => prev.tools[i]?.action).filter(Boolean)
+        );
+        setCollapsedTools(new Set(
+          tools.map((t, i) => collapsedActions.has(t.action) ? i : -1).filter(i => i >= 0)
+        ));
+        return { ...prev, tools };
+      });
+    }
+    setDragIdx(null);
+    setDragOverIdx(null);
   };
 
   const addCredentialField = () => {
@@ -132,6 +311,38 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
       ...prev,
       credential_fields: prev.credential_fields.filter((_, i) => i !== index),
     }));
+  };
+
+  const handleTryRun = async (mode: 'render' | 'test') => {
+    if (!tryToolAction) return;
+    setTryLoading(mode);
+    setTryError(null);
+    if (mode === 'render') setTryDryRunResult(null);
+    else setTryTestResult(null);
+
+    const endpoint = mode === 'render' ? 'dry-run' : 'test';
+    try {
+      const res = await apiFetch(`/api/connector-specs/${form.connector_name}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          extracted_fields: tryToolFields,
+          tool_action: tryToolAction,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setTryError(`${mode === 'render' ? 'Render' : 'Test'} failed (${res.status}): ${data.detail || JSON.stringify(data)}`);
+      } else if (mode === 'render') {
+        setTryDryRunResult(data.rendered_request || data);
+      } else {
+        setTryTestResult(data);
+      }
+    } catch (err) {
+      setTryError(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setTryLoading(null);
+    }
   };
 
   const handleSubmit = async () => {
@@ -200,17 +411,6 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
               <option value="agent">Agent</option>
             </select>
           </div>
-          <div>
-            <label style={labelStyle}>Enabled</label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={e => update('enabled', e.target.checked)}
-              />
-              Active
-            </label>
-          </div>
         </div>
       </div>
 
@@ -232,7 +432,32 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
             </select>
           </div>
           <div>
-            <label style={labelStyle}>Base URL Template</label>
+            <label style={labelStyle}>Base URL Mode</label>
+            <select
+              value={baseUrlMode}
+              onChange={e => {
+                const mode = e.target.value as 'fixed' | 'dynamic';
+                if (mode === 'fixed' && baseUrlMode === 'dynamic') {
+                  // Strip template vars for a clean starting point
+                  const clean = (form.base_url_template || '').replace(/\{\{[^}]*\}\}/g, '').replace(/\/+$/, '');
+                  update('base_url_template', clean || null);
+                  removeDomainCredField(domainFieldKey);
+                } else if (mode === 'dynamic' && baseUrlMode === 'fixed') {
+                  update('base_url_template', '');
+                  syncDomainCredField(domainFieldKey, domainFieldLabel);
+                }
+                setBaseUrlMode(mode);
+              }}
+              style={inputStyle}
+            >
+              <option value="fixed">Fixed URL</option>
+              <option value="dynamic">User-provided domain</option>
+            </select>
+          </div>
+        </div>
+        {baseUrlMode === 'fixed' ? (
+          <div style={{ marginTop: '0.75rem' }}>
+            <label style={labelStyle}>Base URL</label>
             <input
               type="text"
               value={form.base_url_template || ''}
@@ -241,14 +466,65 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
               style={inputStyle}
             />
           </div>
-        </div>
+        ) : (
+          <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <div>
+              <label style={labelStyle}>URL Pattern (use {'{{ domain }}'} as placeholder)</label>
+              <input
+                type="text"
+                value={displayPattern(form.base_url_template || '')}
+                onChange={e => {
+                  const stored = storagePattern(e.target.value, domainFieldKey);
+                  update('base_url_template', stored || null);
+                }}
+                placeholder="https://{{ domain }}.bamboohr.com/api"
+                style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem' }}
+              />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              <div>
+                <label style={labelStyle}>Field Key</label>
+                <input
+                  type="text"
+                  value={domainFieldKey}
+                  onChange={e => {
+                    const newKey = e.target.value;
+                    const oldKey = domainFieldKey;
+                    setDomainFieldKey(newKey);
+                    // Update the template to use the new key
+                    if (form.base_url_template) {
+                      update('base_url_template', form.base_url_template.replace(
+                        new RegExp(`\\{\\{\\s*creds\\.${oldKey}\\s*\\}\\}`, 'g'),
+                        `{{ creds.${newKey} }}`
+                      ));
+                    }
+                    syncDomainCredField(newKey, domainFieldLabel, oldKey);
+                  }}
+                  placeholder="subdomain"
+                  style={inputStyle}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Field Label</label>
+                <input
+                  type="text"
+                  value={domainFieldLabel}
+                  onChange={e => {
+                    setDomainFieldLabel(e.target.value);
+                    syncDomainCredField(domainFieldKey, e.target.value);
+                  }}
+                  placeholder="BambooHR Subdomain (e.g. mycompany)"
+                  style={inputStyle}
+                />
+              </div>
+            </div>
+          </div>
+        )}
         <div style={{ marginTop: '0.75rem' }}>
           <label style={labelStyle}>Auth Config (JSON)</label>
-          <textarea
-            value={JSON.stringify(form.auth_config, null, 2)}
-            onChange={e => {
-              try { update('auth_config', JSON.parse(e.target.value)); } catch { /* ignore */ }
-            }}
+          <JsonTextarea
+            value={form.auth_config}
+            onChange={v => update('auth_config', v ?? {})}
             rows={3}
             style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
           />
@@ -259,6 +535,19 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
       {form.auth_type === 'oauth2' && (
         <div style={sectionStyle}>
           <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>OAuth 2.0 Configuration</h4>
+          <div style={{
+            marginBottom: '0.75rem',
+            padding: '8px 10px',
+            backgroundColor: '#f0f4f8',
+            border: '1px solid #d2dce6',
+            borderRadius: 6,
+            fontSize: '0.82rem',
+            color: '#444',
+            wordBreak: 'break-all',
+          }}>
+            <span style={{ fontWeight: 500, color: '#555' }}>Redirect URI: </span>
+            {typeof window !== 'undefined' ? `${window.location.origin}/api/oauth/callback` : '(loading...)'}
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
             <div>
               <label style={labelStyle}>Authorize URL</label>
@@ -358,29 +647,296 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
         ))}
       </div>
 
+      {/* Connection Test */}
+      <div style={sectionStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+          <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Connection Test</h4>
+          {!form.test_request ? (
+            <button
+              onClick={() => update('test_request', { method: 'GET', path_template: '', headers: {}, success_status_codes: [200], timeout_seconds: 15 })}
+              style={{
+                padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
+                backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              + Add Test
+            </button>
+          ) : (
+            <button
+              onClick={() => update('test_request', null)}
+              style={{
+                padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #e53e3e', borderRadius: 4,
+                backgroundColor: '#fff', color: '#e53e3e', cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              Remove
+            </button>
+          )}
+        </div>
+        {!form.test_request ? (
+          <p style={{ color: '#999', fontSize: '0.78rem', margin: 0, fontStyle: 'italic' }}>
+            No test configured. Add a lightweight API call (e.g. a GET to a health or list endpoint) to verify credentials from the Connectors tab.
+          </p>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '0.5rem', alignItems: 'start' }}>
+            <div>
+              <label style={labelStyle}>Method</label>
+              <select
+                value={form.test_request.method}
+                onChange={e => update('test_request', { ...form.test_request, method: e.target.value })}
+                style={inputStyle}
+              >
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="HEAD">HEAD</option>
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Path</label>
+              <input
+                type="text"
+                value={form.test_request.path_template}
+                onChange={e => update('test_request', { ...form.test_request, path_template: e.target.value })}
+                placeholder="/api/v1/ping"
+                style={inputStyle}
+              />
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={labelStyle}>Success Status Codes (comma-separated)</label>
+              <input
+                type="text"
+                value={(form.test_request.success_status_codes || [200]).join(', ')}
+                onChange={e => update('test_request', {
+                  ...form.test_request,
+                  success_status_codes: e.target.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)),
+                })}
+                placeholder="200"
+                style={inputStyle}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Operations */}
       <div style={sectionStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Operations</h4>
-          <button onClick={addOperation} style={{
+          <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Tools</h4>
+          <button onClick={addTool} style={{
             padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
             backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
           }}>
-            + Add Operation
+            + Add Tool
           </button>
         </div>
-        {form.operations.map((op, idx) => {
-          const isCollapsed = collapsedOps.has(idx);
+        {form.tools.length > 0 && !isNew && (
+          <div style={{
+            border: '1px solid #d4e5f7',
+            borderRadius: 8,
+            padding: '0.75rem',
+            marginBottom: '0.75rem',
+            backgroundColor: '#f8fbff',
+          }}>
+            <h5 style={{ margin: '0 0 0.6rem', fontSize: '0.78rem', fontWeight: 600, color: '#444' }}>Try Tool</h5>
+            <div style={{ marginBottom: '0.5rem' }}>
+              <label style={labelStyle}>Tool</label>
+              <select
+                value={tryToolAction}
+                onChange={e => {
+                  const action = e.target.value;
+                  setTryToolAction(action);
+                  setTryDryRunResult(null);
+                  setTryTestResult(null);
+                  setTryError(null);
+                  // Pre-populate field inputs for the selected tool
+                  const tool = form.tools.find(t => t.action === action);
+                  if (tool) {
+                    const fields: Record<string, string> = {};
+                    for (const key of Object.keys(tool.field_mapping)) {
+                      // Extract example from format hint e.g. "(e.g., 2026-03-16T06:00:00+13:00)"
+                      const hint = tool.field_descriptions?.[key] || '';
+                      const exampleMatch = hint.match(/\(e\.g\.?,?\s*(.+?)\)\s*$/);
+                      fields[key] = exampleMatch ? exampleMatch[1].trim() : '';
+                    }
+                    setTryToolFields(fields);
+                  } else {
+                    setTryToolFields({});
+                  }
+                }}
+                style={inputStyle}
+              >
+                <option value="">Select a tool...</option>
+                {form.tools.map(t => (
+                  <option key={t.action} value={t.action}>
+                    {t.action} ({t.method} {t.path_template})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedTool && (
+              <>
+                <div style={{ marginBottom: '0.5rem' }}>
+                  <label style={{ ...labelStyle, marginBottom: 6 }}>Fields</label>
+                  {Object.keys(selectedTool.field_mapping).length === 0 && (
+                    <p style={{ color: '#999', fontSize: '0.78rem', margin: 0, fontStyle: 'italic' }}>
+                      No fields defined for this tool.
+                    </p>
+                  )}
+                  {Object.keys(selectedTool.field_mapping).map(fieldKey => (
+                    <div key={fieldKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <label style={{
+                        fontSize: '0.78rem',
+                        fontWeight: 500,
+                        color: '#555',
+                        width: 130,
+                        flexShrink: 0,
+                      }}>
+                        {fieldKey}
+                        {selectedTool.required_fields.includes(fieldKey) && (
+                          <span style={{ color: '#e53e3e', marginLeft: 2 }}>*</span>
+                        )}
+                      </label>
+                      <input
+                        type="text"
+                        value={tryToolFields[fieldKey] ?? ''}
+                        onChange={e => setTryToolFields(prev => ({ ...prev, [fieldKey]: e.target.value }))}
+                        placeholder={selectedTool.field_descriptions?.[fieldKey] || selectedTool.field_mapping[fieldKey] || fieldKey}
+                        style={{ ...inputStyle, flex: 1 }}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    onClick={() => handleTryRun('render')}
+                    disabled={tryLoading !== null}
+                    style={{
+                      padding: '5px 12px',
+                      fontSize: '0.78rem',
+                      fontWeight: 500,
+                      border: 'none',
+                      borderRadius: 6,
+                      backgroundColor: '#c4a882',
+                      color: '#fff',
+                      cursor: tryLoading !== null ? 'not-allowed' : 'pointer',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {tryLoading === 'render' ? 'Rendering...' : 'Render'}
+                  </button>
+                  <button
+                    onClick={() => handleTryRun('test')}
+                    disabled={tryLoading !== null}
+                    style={{
+                      padding: '5px 12px',
+                      fontSize: '0.78rem',
+                      fontWeight: 500,
+                      border: '1px solid #e53e3e',
+                      borderRadius: 6,
+                      backgroundColor: '#fff',
+                      color: '#e53e3e',
+                      cursor: tryLoading !== null ? 'not-allowed' : 'pointer',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {tryLoading === 'test' ? 'Testing...' : 'Test (Live)'}
+                  </button>
+                  <span style={{ fontSize: '0.72rem', color: '#999' }}>
+                    Test makes a real HTTP call
+                  </span>
+                </div>
+
+                {tryError && (
+                  <p style={{ color: '#e53e3e', fontSize: '0.82rem', marginTop: '0.5rem', marginBottom: 0 }}>
+                    {tryError}
+                  </p>
+                )}
+
+                {tryDryRunResult && (
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Rendered Request</div>
+                    <pre style={{
+                      padding: '0.75rem',
+                      backgroundColor: '#1a202c',
+                      color: '#e2e8f0',
+                      borderRadius: 6,
+                      fontSize: '0.78rem',
+                      overflow: 'auto',
+                      lineHeight: 1.5,
+                      margin: 0,
+                    }}>
+                      {JSON.stringify(tryDryRunResult, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                {tryTestResult && (
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      marginBottom: '0.4rem',
+                    }}>
+                      <span style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 600,
+                        padding: '2px 8px',
+                        borderRadius: 10,
+                        backgroundColor: tryTestResult.success ? '#d4edda' : '#f8d7da',
+                        color: tryTestResult.success ? '#155724' : '#721c24',
+                      }}>
+                        {tryTestResult.success ? 'SUCCESS' : 'FAILED'}
+                      </span>
+                      {'error' in tryTestResult && Boolean(tryTestResult.error) && (
+                        <span style={{ fontSize: '0.78rem', color: '#e53e3e' }}>
+                          {String(tryTestResult.error)}
+                        </span>
+                      )}
+                    </div>
+                    <pre style={{
+                      padding: '0.75rem',
+                      backgroundColor: '#1a202c',
+                      color: '#e2e8f0',
+                      borderRadius: 6,
+                      fontSize: '0.78rem',
+                      overflow: 'auto',
+                      lineHeight: 1.5,
+                      margin: 0,
+                    }}>
+                      {JSON.stringify(tryTestResult, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {form.tools.map((op, idx) => {
+          const isCollapsed = collapsedTools.has(idx);
+          const isDragOver = dragOverIdx === idx && dragIdx !== idx;
           return (
-            <div key={idx} style={{
-              border: '1px solid #e2e8f0',
-              borderRadius: 8,
-              marginBottom: '0.5rem',
-              backgroundColor: '#fff',
-              overflow: 'hidden',
-            }}>
+            <div
+              key={idx}
+              draggable
+              onDragStart={() => setDragIdx(idx)}
+              onDragOver={e => { e.preventDefault(); setDragOverIdx(idx); }}
+              onDragEnd={handleDragEnd}
+              style={{
+                border: isDragOver ? '1px solid #2563eb' : '1px solid #e2e8f0',
+                borderRadius: 8,
+                marginBottom: '0.5rem',
+                backgroundColor: dragIdx === idx ? '#f0f4ff' : '#fff',
+                overflow: 'hidden',
+                opacity: dragIdx === idx ? 0.6 : 1,
+                transition: 'border-color 0.1s, opacity 0.1s',
+              }}
+            >
               <div
-                onClick={() => toggleOp(idx)}
+                onClick={() => toggleTool(idx)}
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
@@ -393,12 +949,18 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  {/* Drag handle */}
+                  <span
+                    onMouseDown={e => e.stopPropagation()}
+                    style={{ cursor: 'grab', color: '#ccc', fontSize: '0.85rem', lineHeight: 1, padding: '0 2px', userSelect: 'none' }}
+                    title="Drag to reorder"
+                  >&#8942;&#8942;</span>
                   {isCollapsed
                     ? <ChevronRight size={14} strokeWidth={2} style={{ color: '#999' }} />
                     : <ChevronDown size={14} strokeWidth={2} style={{ color: '#999' }} />
                   }
                   <span style={{ fontWeight: 500, fontSize: '0.85rem', color: '#444' }}>
-                    {op.action || `Operation ${idx + 1}`}
+                    {op.action || `Tool ${idx + 1}`}
                   </span>
                   {op.method && (
                     <span style={{
@@ -419,7 +981,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     </span>
                   )}
                 </div>
-                <button onClick={(e) => { e.stopPropagation(); removeOperation(idx); }} style={{
+                <button onClick={(e) => { e.stopPropagation(); removeTool(idx); }} style={{
                   border: '1px solid #e53e3e', borderRadius: 4, backgroundColor: '#fff', color: '#e53e3e',
                   padding: '2px 8px', fontSize: '0.72rem', cursor: 'pointer', fontFamily: 'inherit',
                 }}>
@@ -434,7 +996,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       <input
                         type="text"
                         value={op.action}
-                        onChange={e => updateOperation(idx, 'action', e.target.value)}
+                        onChange={e => updateTool(idx, 'action', e.target.value)}
                         placeholder="create_employee"
                         style={inputStyle}
                       />
@@ -443,7 +1005,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       <label style={labelStyle}>Method</label>
                       <select
                         value={op.method}
-                        onChange={e => updateOperation(idx, 'method', e.target.value)}
+                        onChange={e => updateTool(idx, 'method', e.target.value)}
                         style={inputStyle}
                       >
                         <option value="GET">GET</option>
@@ -454,11 +1016,21 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       </select>
                     </div>
                     <div style={{ gridColumn: '1 / -1' }}>
+                      <label style={labelStyle}>Description</label>
+                      <input
+                        type="text"
+                        value={op.description || ''}
+                        onChange={e => updateTool(idx, 'description', e.target.value || undefined)}
+                        placeholder="e.g. Get a roster by date"
+                        style={inputStyle}
+                      />
+                    </div>
+                    <div style={{ gridColumn: '1 / -1' }}>
                       <label style={labelStyle}>Path Template</label>
                       <input
                         type="text"
                         value={op.path_template}
-                        onChange={e => updateOperation(idx, 'path_template', e.target.value)}
+                        onChange={e => updateTool(idx, 'path_template', e.target.value)}
                         placeholder="/api/v1/employees"
                         style={inputStyle}
                       />
@@ -468,7 +1040,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       <input
                         type="text"
                         value={op.success_status_codes.join(', ')}
-                        onChange={e => updateOperation(idx, 'success_status_codes', e.target.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)))}
+                        onChange={e => updateTool(idx, 'success_status_codes', e.target.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)))}
                         placeholder="200, 201"
                         style={inputStyle}
                       />
@@ -478,7 +1050,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       <input
                         type="text"
                         value={op.response_ref_path || ''}
-                        onChange={e => updateOperation(idx, 'response_ref_path', e.target.value || null)}
+                        onChange={e => updateTool(idx, 'response_ref_path', e.target.value || null)}
                         placeholder="body.id"
                         style={inputStyle}
                       />
@@ -488,7 +1060,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       <input
                         type="number"
                         value={op.timeout_seconds}
-                        onChange={e => updateOperation(idx, 'timeout_seconds', parseInt(e.target.value, 10) || 30)}
+                        onChange={e => updateTool(idx, 'timeout_seconds', parseInt(e.target.value, 10) || 30)}
                         style={inputStyle}
                       />
                     </div>
@@ -504,7 +1076,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                           let suffix = 1;
                           while (newKey in op.field_mapping) { newKey = `new_field_${suffix++}`; }
                           const updated = { ...op.field_mapping, [newKey]: '' };
-                          updateOperation(idx, 'field_mapping', updated);
+                          updateTool(idx, 'field_mapping', updated);
                         }}
                         style={{
                           padding: '2px 8px', fontSize: '0.72rem', border: '1px solid #ddd', borderRadius: 4,
@@ -527,7 +1099,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       }}>
                         <div style={{
                           display: 'grid',
-                          gridTemplateColumns: '1fr 1fr 70px 32px',
+                          gridTemplateColumns: '1fr 1fr 1.5fr 70px 32px',
                           gap: 0,
                           backgroundColor: '#f7f7f7',
                           padding: '6px 10px',
@@ -535,6 +1107,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                         }}>
                           <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Field Name</span>
                           <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.03em' }}>API Mapping</span>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Format Hint</span>
                           <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.03em', textAlign: 'center' }}>Required</span>
                           <span />
                         </div>
@@ -543,7 +1116,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                             key={fieldIdx}
                             style={{
                               display: 'grid',
-                              gridTemplateColumns: '1fr 1fr 70px 32px',
+                              gridTemplateColumns: '1fr 1fr 1.5fr 70px 32px',
                               gap: 0,
                               alignItems: 'center',
                               padding: '4px 10px',
@@ -559,10 +1132,15 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                                 entries[fieldIdx] = [newKey, apiMapping];
                                 const newMapping = Object.fromEntries(entries);
                                 const newRequired = op.required_fields.map(f => f === fieldKey ? newKey : f);
+                                const newDescs = { ...(op.field_descriptions || {}) };
+                                if (fieldKey in newDescs) {
+                                  newDescs[newKey] = newDescs[fieldKey];
+                                  delete newDescs[fieldKey];
+                                }
                                 setForm(prev => ({
                                   ...prev,
-                                  operations: prev.operations.map((o, i) =>
-                                    i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired } : o
+                                  tools: prev.tools.map((o, i) =>
+                                    i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired, field_descriptions: newDescs } : o
                                   ),
                                 }));
                               }}
@@ -575,10 +1153,20 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                               onChange={e => {
                                 const entries = Object.entries(op.field_mapping);
                                 entries[fieldIdx] = [fieldKey, e.target.value];
-                                updateOperation(idx, 'field_mapping', Object.fromEntries(entries));
+                                updateTool(idx, 'field_mapping', Object.fromEntries(entries));
                               }}
                               placeholder="apiFieldName"
                               style={{ ...inputStyle, border: 'none', padding: '4px 6px', fontSize: '0.82rem', fontFamily: 'monospace', backgroundColor: 'transparent' }}
+                            />
+                            <input
+                              type="text"
+                              value={(op.field_descriptions || {})[fieldKey] || ''}
+                              onChange={e => {
+                                const newDescs = { ...(op.field_descriptions || {}), [fieldKey]: e.target.value };
+                                updateTool(idx, 'field_descriptions', newDescs);
+                              }}
+                              placeholder="e.g. Date in YYYY-MM-DD"
+                              style={{ ...inputStyle, border: 'none', padding: '4px 6px', fontSize: '0.82rem', color: '#888', backgroundColor: 'transparent' }}
                             />
                             <div style={{ textAlign: 'center' }}>
                               <input
@@ -588,7 +1176,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                                   const newRequired = e.target.checked
                                     ? [...op.required_fields, fieldKey]
                                     : op.required_fields.filter(f => f !== fieldKey);
-                                  updateOperation(idx, 'required_fields', newRequired);
+                                  updateTool(idx, 'required_fields', newRequired);
                                 }}
                                 style={{ cursor: 'pointer' }}
                               />
@@ -597,11 +1185,13 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                               onClick={() => {
                                 const newMapping = { ...op.field_mapping };
                                 delete newMapping[fieldKey];
+                                const newDescs = { ...(op.field_descriptions || {}) };
+                                delete newDescs[fieldKey];
                                 const newRequired = op.required_fields.filter(f => f !== fieldKey);
                                 setForm(prev => ({
                                   ...prev,
-                                  operations: prev.operations.map((o, i) =>
-                                    i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired } : o
+                                  tools: prev.tools.map((o, i) =>
+                                    i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired, field_descriptions: newDescs } : o
                                   ),
                                 }));
                               }}
@@ -620,21 +1210,48 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
 
                   <div style={{ marginTop: '0.5rem' }}>
                     <label style={labelStyle}>Headers (JSON)</label>
-                    <textarea
-                      value={JSON.stringify(op.headers, null, 2)}
-                      onChange={e => {
-                        try { updateOperation(idx, 'headers', JSON.parse(e.target.value)); } catch { /* ignore */ }
-                      }}
-                      rows={2}
-                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
+                    <JsonTextarea
+                      value={op.headers}
+                      onChange={v => updateTool(idx, 'headers', v ?? {})}
+                      autoResize
+                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem' }}
                     />
                   </div>
                   <div style={{ marginTop: '0.5rem' }}>
                     <label style={labelStyle}>Request Body Template (JSON)</label>
-                    <textarea
+                    <AutoResizeTextarea
                       value={op.request_body_template || ''}
-                      onChange={e => updateOperation(idx, 'request_body_template', e.target.value || null)}
-                      rows={4}
+                      onChange={e => updateTool(idx, 'request_body_template', e.target.value || null)}
+                      placeholder=""
+                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem' }}
+                    />
+                  </div>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <label style={labelStyle}>Display Component</label>
+                    <input
+                      value={op.display_component || ''}
+                      onChange={e => updateTool(idx, 'display_component', e.target.value || null)}
+                      placeholder="e.g. generic_table"
+                      style={inputStyle}
+                    />
+                  </div>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <label style={labelStyle}>Display Props (JSON)</label>
+                    <JsonTextarea
+                      value={op.display_props}
+                      onChange={v => updateTool(idx, 'display_props', v)}
+                      rows={2}
+                      placeholder='{"title": "Results"}'
+                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
+                    />
+                  </div>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <label style={labelStyle}>Working Document (JSON)</label>
+                    <JsonTextarea
+                      value={op.working_document}
+                      onChange={v => updateTool(idx, 'working_document', v)}
+                      rows={2}
+                      placeholder='{"doc_type": "roster", "sync_mode": "auto", "ref_fields": ["search_date"]}'
                       style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
                     />
                   </div>
@@ -661,11 +1278,9 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
           </div>
           <div>
             <label style={labelStyle}>Example Requests (JSON array)</label>
-            <textarea
-              value={JSON.stringify(form.example_requests, null, 2)}
-              onChange={e => {
-                try { update('example_requests', JSON.parse(e.target.value)); } catch { /* ignore */ }
-              }}
+            <JsonTextarea
+              value={form.example_requests}
+              onChange={v => update('example_requests', v ?? [])}
               rows={4}
               style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
             />

@@ -34,6 +34,7 @@ export default function SettingsPanel() {
   const [forms, setForms] = useState<Record<string, Record<string, string>>>({});
   const [testStatus, setTestStatus] = useState<Record<string, TestStatus>>({});
   const [testMessage, setTestMessage] = useState<Record<string, string>>({});
+  const [testDetail, setTestDetail] = useState<Record<string, { rendered_request?: Record<string, unknown>; response?: Record<string, unknown> } | null>>({});
   const [saving, setSaving] = useState<Record<string, boolean>>({});
 
   // --- Agent state ---
@@ -90,6 +91,7 @@ export default function SettingsPanel() {
   const handleTest = async (name: string) => {
     setTestStatus(prev => ({ ...prev, [name]: 'testing' }));
     setTestMessage(prev => ({ ...prev, [name]: '' }));
+    setTestDetail(prev => ({ ...prev, [name]: null }));
     try {
       const res = await apiFetch(`/api/connectors/${name}/test`, {
         method: 'POST',
@@ -97,6 +99,7 @@ export default function SettingsPanel() {
         body: JSON.stringify({ config: forms[name] || {} }),
       });
       const data = await res.json();
+      const detail = { rendered_request: data.rendered_request, response: data.response };
       if (data.success) {
         setTestStatus(prev => ({ ...prev, [name]: 'success' }));
         setTestMessage(prev => ({ ...prev, [name]: data.message || 'Connected' }));
@@ -104,6 +107,7 @@ export default function SettingsPanel() {
         setTestStatus(prev => ({ ...prev, [name]: 'error' }));
         setTestMessage(prev => ({ ...prev, [name]: data.error || 'Test failed' }));
       }
+      setTestDetail(prev => ({ ...prev, [name]: detail }));
     } catch {
       setTestStatus(prev => ({ ...prev, [name]: 'error' }));
       setTestMessage(prev => ({ ...prev, [name]: 'Network error' }));
@@ -128,6 +132,17 @@ export default function SettingsPanel() {
     }
   };
 
+  const handleToggleEnabled = async (name: string) => {
+    try {
+      const res = await apiFetch(`/api/connectors/${name}/toggle`, { method: 'PATCH' });
+      if (res.ok) {
+        await fetchConnectors();
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   const handleDelete = async (name: string) => {
     try {
       await apiFetch(`/api/connectors/${name}`, { method: 'DELETE' });
@@ -143,9 +158,15 @@ export default function SettingsPanel() {
     try {
       const res = await apiFetch(`/api/oauth/authorize/${name}`);
       if (!res.ok) {
-        const err = await res.text();
+        let errMsg: string;
+        try {
+          const errJson = await res.json();
+          errMsg = errJson.detail || JSON.stringify(errJson);
+        } catch {
+          errMsg = await res.text();
+        }
         setTestStatus(prev => ({ ...prev, [name]: 'error' }));
-        setTestMessage(prev => ({ ...prev, [name]: `OAuth error: ${err}` }));
+        setTestMessage(prev => ({ ...prev, [name]: `OAuth error: ${errMsg}` }));
         return;
       }
       const data = await res.json();
@@ -315,6 +336,28 @@ export default function SettingsPanel() {
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Connectors
             </h3>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '0.5rem',
+              marginBottom: '1rem', padding: '0.6rem 0.75rem',
+              border: '1px solid #edf2f7', borderRadius: 8, backgroundColor: '#fafafa',
+            }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: '#555', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={(() => { try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; } })()}
+                  onChange={e => {
+                    localStorage.setItem('norm_show_tool_details', String(e.target.checked));
+                    // Force re-render
+                    setConnectors(c => [...c]);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                />
+                Show tool call details in conversations
+              </label>
+              <span style={{ fontSize: '0.72rem', color: '#999' }}>
+                Toggle request/response cards in the chat view
+              </span>
+            </div>
 
             {connectors.map(c => {
               const status = testStatus[c.name] || 'idle';
@@ -325,13 +368,14 @@ export default function SettingsPanel() {
                   padding: '1.25rem',
                   marginBottom: '1rem',
                   backgroundColor: '#fff',
+                  opacity: c.configured && !c.enabled ? 0.6 : 1,
+                  transition: 'opacity 0.2s',
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                    <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{c.label}</span>
                       {c.configured && (
                         <span style={{
-                          marginLeft: 8,
                           fontSize: '0.7rem',
                           backgroundColor: '#e6fffa',
                           color: '#234e52',
@@ -343,7 +387,38 @@ export default function SettingsPanel() {
                         </span>
                       )}
                     </div>
-                    <span style={{ fontSize: '0.75rem', color: '#999' }}>{c.domain}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      {c.configured && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.78rem', color: '#555' }}>
+                          <div
+                            onClick={() => handleToggleEnabled(c.name)}
+                            style={{
+                              width: 34,
+                              height: 18,
+                              borderRadius: 9,
+                              backgroundColor: c.enabled ? '#38a169' : '#cbd5e0',
+                              position: 'relative',
+                              cursor: 'pointer',
+                              transition: 'background-color 0.2s',
+                            }}
+                          >
+                            <div style={{
+                              width: 14,
+                              height: 14,
+                              borderRadius: '50%',
+                              backgroundColor: '#fff',
+                              position: 'absolute',
+                              top: 2,
+                              left: c.enabled ? 18 : 2,
+                              transition: 'left 0.2s',
+                              boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+                            }} />
+                          </div>
+                          {c.enabled ? 'Active' : 'Inactive'}
+                        </label>
+                      )}
+                      <span style={{ fontSize: '0.75rem', color: '#999' }}>{c.domain}</span>
+                    </div>
                   </div>
 
                   {/* OAuth2 connectors: show Connect button instead of manual fields */}
@@ -440,6 +515,36 @@ export default function SettingsPanel() {
                       }} />
                       {status === 'testing' ? 'Testing connection...' : testMessage[c.name]}
                     </div>
+                  )}
+
+                  {testDetail[c.name] && (status === 'success' || status === 'error') && (
+                    <details style={{ marginBottom: '0.75rem', fontSize: '0.78rem' }}>
+                      <summary style={{ cursor: 'pointer', color: '#666', marginBottom: '0.4rem' }}>
+                        Show request &amp; response
+                      </summary>
+                      {testDetail[c.name]?.rendered_request && (
+                        <div style={{ marginBottom: '0.4rem' }}>
+                          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: 3 }}>Request</div>
+                          <pre style={{
+                            padding: '0.5rem', backgroundColor: '#1a202c', color: '#e2e8f0',
+                            borderRadius: 6, fontSize: '0.75rem', overflow: 'auto', lineHeight: 1.4, margin: 0, maxHeight: 200,
+                          }}>
+                            {JSON.stringify(testDetail[c.name]?.rendered_request, null, 2)}
+                          </pre>
+                        </div>
+                      )}
+                      {testDetail[c.name]?.response && (
+                        <div>
+                          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: 3 }}>Response</div>
+                          <pre style={{
+                            padding: '0.5rem', backgroundColor: '#1a202c', color: '#e2e8f0',
+                            borderRadius: 6, fontSize: '0.75rem', overflow: 'auto', lineHeight: 1.4, margin: 0, maxHeight: 200,
+                          }}>
+                            {JSON.stringify(testDetail[c.name]?.response, null, 2)}
+                          </pre>
+                        </div>
+                      )}
+                    </details>
                   )}
 
                   <div style={{ display: 'flex', gap: 8 }}>
@@ -678,7 +783,7 @@ export default function SettingsPanel() {
                           </button>
                         </div>
                         {binding.capabilities.map((cap, idx) => (
-                          <label key={cap.action} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', color: '#444', cursor: 'pointer', marginBottom: 2 }}>
+                          <label key={`${binding.connector_name}__${cap.action}__${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', color: '#444', cursor: 'pointer', marginBottom: 2 }}>
                             <input
                               type="checkbox"
                               checked={cap.enabled}

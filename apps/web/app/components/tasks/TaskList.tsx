@@ -42,7 +42,7 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
       flex: 1,
       display: 'flex',
       flexDirection: 'column',
-      backgroundColor: '#fff',
+      backgroundColor: '#faf8f5',
       overflow: 'hidden',
     }}>
       <style>{`
@@ -157,7 +157,7 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
                 padding: '0.25rem 0.6rem',
                 borderRadius: 12,
                 border: filter === f.key ? '1px solid #c4a882' : '1px solid #e0e0e0',
-                backgroundColor: filter === f.key ? '#f5f0ea' : '#fff',
+                backgroundColor: filter === f.key ? '#f5f0ea' : 'transparent',
                 color: filter === f.key ? '#c4a882' : '#666',
                 cursor: 'pointer',
                 fontFamily: 'inherit',

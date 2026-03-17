@@ -49,7 +49,10 @@ async def oauth_authorize(
         raise HTTPException(400, f"Connector {connector} has no OAuth configuration")
 
     redirect_uri = _get_redirect_uri(request)
-    authorize_url = build_authorize_url(spec, redirect_uri, db)
+    try:
+        authorize_url = build_authorize_url(spec, redirect_uri, db)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     return {"authorize_url": authorize_url}
 
 

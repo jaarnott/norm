@@ -8,4 +8,4 @@ Will contain database schemas, migrations, and connection setup.
 - Or Prisma if we go TypeScript-first for DB layer
 
 ## Current State
-Data is in-memory via `apps/api/app/data/seed.py`.
+Data is managed via the admin UI and stored in PostgreSQL.

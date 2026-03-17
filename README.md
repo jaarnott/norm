@@ -23,7 +23,6 @@ cd apps/api
 uv venv                                          # one-time
 uv pip install -e ".[dev]"                        # one-time
 .venv/bin/python -m alembic upgrade head          # run migrations
-.venv/bin/python scripts/seed.py                  # seed sample data
 .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -62,8 +61,8 @@ Norm uses email/password authentication with JWT bearer tokens and two roles:
 
 | Role | Permissions |
 |------|-------------|
-| **admin** | Full access including connector management (Settings) |
-| **manager** | Can create tasks, approve/reject, but cannot manage connectors |
+| **admin** | Full access including connector management, agent config, and connector specs |
+| **manager** | Can create tasks, approve/reject, but cannot manage connectors or agents |
 
 - All API endpoints (except `/health` and `/api/auth/*`) require a valid `Authorization: Bearer <token>` header.
 - Tokens expire after 24 hours.
@@ -99,7 +98,7 @@ runtime via the Settings panel).
 
 ### LLM call logging
 
-Every LLM call (routing and interpretation) is logged to the `llm_calls` table with:
+Every LLM call (routing, interpretation, spec generation) is logged to the `llm_calls` table with:
 - System and user prompts sent
 - Raw response and parsed JSON
 - Model used, duration, and success/error status
@@ -118,6 +117,62 @@ This data is included in task detail API responses under the `llm_calls` key.
 | `BAMBOOHR_SUBDOMAIN` | - | BambooHR company subdomain (enables real HR connector) |
 | `BAMBOOHR_API_KEY` | - | BambooHR API key (required with subdomain) |
 | `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | API URL for the frontend |
+
+---
+
+## Connector Specs
+
+Connector specs define how Norm talks to external APIs as configuration rather than code. Each spec declares:
+
+- **Auth type** -- bearer, api_key_header, basic, or oauth2
+- **Base URL template** -- Jinja2 template with credential substitution (e.g. `https://{{subdomain}}.bamboohr.com/api/gateway.php/{{subdomain}}/v1`)
+- **Operations** -- a list of actions (e.g. `create_employee`, `check_stock`) each with HTTP method, path template, field mappings, request body template, and expected status codes
+- **Credential fields** -- what secrets the connector needs (rendered in the Connectors settings tab)
+- **Execution mode** -- `template` (deterministic Jinja2 rendering) or `agent` (LLM generates the HTTP request from API docs)
+
+### Seeded specs
+
+| Spec | Category | Auth | Operations |
+|------|----------|------|------------|
+| BambooHR | hr | basic | create_employee, terminate_employee |
+| Deputy | hr | bearer | create_roster, list_rosters |
+| Bidfood | procurement | api_key_header | create_order, check_stock |
+| LoadedHub | hr | oauth2 | create_roster, list_rosters, create_shift, update_shift, delete_shift |
+
+### AI-assisted spec generation
+
+`POST /api/connector-specs/generate` accepts API documentation text and uses Claude to produce a complete spec JSON. The generated spec can be reviewed and saved via the UI.
+
+---
+
+## Agent Configuration
+
+Each domain agent (procurement, HR, reports, router) has an admin-configurable profile:
+
+- **System prompt** -- editable with a "Reset to Default" option that reverts to the hardcoded prompt
+- **Description** -- short summary shown in the UI
+- **Connector bindings** -- which connectors the agent can use, with per-capability toggles
+
+### Capability sync
+
+Binding capabilities are merged at read time with the operations defined in the matching `ConnectorSpec`. When new operations are added to a spec, they automatically appear as unchecked capabilities in the agent's binding. Existing capability enabled/disabled states are preserved. Connector labels are read from `ConnectorSpec.display_name` rather than a hardcoded map.
+
+The `available_connectors` field in the agent response lists specs matching the agent's category that aren't yet bound, powering an "Add Connector" dropdown in the UI.
+
+---
+
+## OAuth 2.0
+
+Norm supports the OAuth 2.0 Authorization Code flow for connectors that require it (e.g. LoadedHub).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/oauth/authorize/{connector}` | Start OAuth flow, returns authorization URL |
+| GET | `/api/oauth/callback` | Provider callback (no auth, validates state) |
+| GET | `/api/oauth/status/{connector}` | Check connection status and token expiry |
+| POST | `/api/oauth/disconnect/{connector}` | Revoke stored tokens |
+
+Tokens are stored in `ConnectorConfig` and automatically refreshed (with a 60-second buffer) during spec execution. The UI opens the authorization URL in a popup and listens for a `postMessage` callback on completion.
 
 ---
 
@@ -170,8 +225,8 @@ If the connector fails the task stays **approved** and can be retried.
 
 ### 7. Role-based access
 
-- Sign in as admin -- Settings tab visible, can manage connectors.
-- Sign in as manager -- Settings tab hidden, PUT/DELETE on connectors returns 403.
+- Sign in as admin -- Settings tab visible, can manage connectors, agents, and specs.
+- Sign in as manager -- Settings tab hidden, PUT/DELETE on connectors/agents returns 403.
 
 ---
 
@@ -202,10 +257,16 @@ InterpretationResult {
       +---> [ReportsAgent]      -- report planner + mock tools -> Task
       |
       v  (on submit)
-[Connector]  -- adapter per supplier/system (mock or real)
+[Spec Executor]  -- template or agent mode
+      |
+      +-- Template mode: Jinja2 sandbox renders HTTP request from extracted fields
+      +-- Agent mode: LLM generates HTTP request from API docs
       |
       v
-[IntegrationRun logged]  -- request/response, status, duration
+[Connector]  -- adapter per supplier/system (spec-driven or legacy mock/real)
+      |
+      v
+[IntegrationRun logged]  -- rendered request (auth redacted), response, status, duration
       |
       v
 [Approval record saved]  -- user email, user_id, action, timestamp
@@ -264,6 +325,41 @@ All endpoints except `/health` and `/api/auth/*` require authentication.
 | DELETE | `/api/connectors/{name}` | Admin | Remove connector config |
 | POST | `/api/connectors/{name}/test` | Admin | Test connector credentials |
 
+### Connector Specs (admin only)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/connector-specs` | Bearer | List all specs |
+| POST | `/api/connector-specs` | Admin | Create a new spec |
+| GET | `/api/connector-specs/{name}` | Bearer | Get spec detail |
+| PUT | `/api/connector-specs/{name}` | Admin | Update a spec |
+| DELETE | `/api/connector-specs/{name}` | Admin | Delete a spec |
+| POST | `/api/connector-specs/{name}/dry-run` | Admin | Preview rendered request without executing |
+| POST | `/api/connector-specs/{name}/test` | Admin | Execute a test request against the real API |
+| POST | `/api/connector-specs/generate` | Admin | AI-generate spec from API docs |
+
+### Agents (admin only)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/agents` | Admin | List all agents with bindings and available connectors |
+| GET | `/api/agents/capabilities` | Bearer | Summary of enabled capabilities across all agents |
+| GET | `/api/agents/{slug}` | Admin | Get agent config + bindings |
+| PUT | `/api/agents/{slug}` | Admin | Update agent prompt, description, or display name |
+| POST | `/api/agents/{slug}/reset-prompt` | Admin | Revert to hardcoded default prompt |
+| GET | `/api/agents/{slug}/bindings` | Admin | List connector bindings |
+| PUT | `/api/agents/{slug}/bindings/{connector}` | Admin | Upsert binding with capabilities |
+| DELETE | `/api/agents/{slug}/bindings/{connector}` | Admin | Remove binding |
+
+### OAuth
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/oauth/authorize/{connector}` | Bearer | Start OAuth flow, returns authorization URL |
+| GET | `/api/oauth/callback` | None | OAuth provider callback |
+| GET | `/api/oauth/status/{connector}` | Bearer | Check OAuth connection status |
+| POST | `/api/oauth/disconnect/{connector}` | Bearer | Revoke stored OAuth tokens |
+
 ### Health
 
 | Method | Path | Auth | Description |
@@ -294,7 +390,16 @@ Key components:
 | `SubmissionConfirmation` | Order reference, connector status, retry on failure |
 | `HomePanel` | Message input when no task is selected |
 | `RoutingIndicator` | Shows interpretation routing status |
-| `SettingsPanel` | Connector management (admin only) |
+| `SettingsPanel` | Tabbed admin panel: Connectors, Agents, Connector Specs |
+| `ConnectorSpecsPanel` | Spec CRUD with dry-run, test, and AI generation |
+
+### Settings tabs
+
+The Settings panel (admin only) has three tabs:
+
+- **Connectors** -- configure credentials for each connector (API keys, OAuth connections)
+- **Agents** -- edit system prompts, descriptions, and toggle per-capability connector bindings; add new connector bindings from available specs
+- **Connector Specs** -- create/edit/delete spec definitions, dry-run templates, test against real APIs, or generate specs from API docs using AI
 
 ### Auth flow
 
@@ -314,7 +419,7 @@ apps/
   web/                          Next.js frontend (React 19, TypeScript)
     app/
       page.tsx                  Main page with auth gate + three-column layout
-      types.ts                  Task type definitions
+      types.ts                  Shared type definitions
       lib/
         api.ts                  apiFetch() helper with auto Bearer token
       components/
@@ -331,10 +436,10 @@ apps/
         routing/
           RoutingIndicator.tsx  Shows domain routing animation
         settings/
-          SettingsPanel.tsx     Connector management (admin only)
+          SettingsPanel.tsx     Tabbed admin panel (Connectors, Agents, Specs)
+          ConnectorSpecsPanel.tsx  Spec editor with dry-run, test, AI generate
   api/
     alembic/                    Database migrations
-    scripts/seed.py             Seed data (venues, suppliers, products, admin user)
     tests/
       test_llm_interpreter.py   LLM response parsing tests
       test_bamboohr_connector.py BambooHR connector + registry tests
@@ -348,7 +453,8 @@ apps/
         llm_interpreter.py      Anthropic Claude interpreter + LlmCall logging
       db/
         engine.py               SQLAlchemy engine + session
-        models.py               ORM models (User, Task, Order, HrSetup, LlmCall, etc.)
+        models.py               ORM models (User, Task, Order, HrSetup, LlmCall,
+                                 ConnectorSpec, AgentConfig, AgentConnectorBinding, etc.)
       agents/
         base.py                 Abstract domain agent interface
         router.py               LLM-based message routing
@@ -363,20 +469,29 @@ apps/
         orders.py               Order endpoints (auth required)
         venues.py               GET /api/venues (auth required)
         connectors.py           Connector CRUD (GET: any user, mutations: admin only)
+        connector_specs.py      Spec CRUD + dry-run, test, AI generate (admin only)
+        agents.py               Agent config + binding management (admin only)
+        oauth.py                OAuth 2.0 authorization code flow
         health.py               GET /health (no auth)
       connectors/
         base.py                 Abstract connector interface
         mock_supplier.py        Mock supplier connector (generates references)
         mock_hr.py              Mock HR system connector
         bamboohr.py             BambooHR API connector (real)
+        spec_executor.py        Spec-driven executor (template + agent modes)
         registry.py             Connector lookup by domain
       services/
         supervisor.py           Orchestrator (routes messages to domain agents)
         order_service.py        Procurement lifecycle (DB)
         hr_service.py           HR lifecycle (DB)
         integration_service.py  Runs connectors, logs IntegrationRun records
+        agent_config_service.py Agent config + binding CRUD, capability summaries
+        oauth_service.py        OAuth token exchange, refresh, credential storage
+        spec_generator.py       AI-assisted connector spec generation
         venue_resolver.py       Fuzzy venue matching against DB
         product_resolver.py     Product alias matching against DB
+      data/
+        seed.py                 Seed data definitions (specs, agents, bindings)
 scripts/
   dev.sh                        Start API + frontend together
 docs/
@@ -397,12 +512,17 @@ PostgreSQL 16 (Alpine) via Docker. Core models:
 - **Approval** -- tracks who approved/rejected (user email + user_id), with timestamp
 - **IntegrationRun** -- logs each connector call with request/response payloads, status, and duration
 - **LlmCall** -- logs every LLM invocation with prompts, response, model, duration, and status
-- **ConnectorConfig** -- stored connector credentials and enabled state
+- **ConnectorConfig** -- stored connector credentials, enabled state, and OAuth tokens
+- **ConnectorSpec** -- config-driven connector definitions (auth, operations, templates, credential fields)
+- **AgentConfig** -- per-agent display name, custom system prompt, description, enabled flag
+- **AgentConnectorBinding** -- links agents to connectors with per-capability enabled/disabled toggles
+- **OAuthState** -- temporary state storage for OAuth authorization code flow validation
 - **Venue**, **Supplier**, **Product**, **ProductAlias** -- reference data
 
 Seed data includes three Auckland venues (La Zeppa, Mr Murdoch's, Freeman & Grey),
 two suppliers (Bidfood, Generic Supplier), two products with aliases
-(Jim Beam, Corona), and one admin user (`admin@norm.local`).
+(Jim Beam, Corona), one admin user (`admin@norm.local`), four agent configs,
+and four connector specs (BambooHR, Deputy, Bidfood, LoadedHub).
 
 ---
 
@@ -434,6 +554,10 @@ Tests cover:
 | API endpoints and task lifecycle | **Real** -- Postgres-backed |
 | Database persistence | **Real** -- PostgreSQL + Alembic migrations |
 | Venue/product resolution | **Real** -- fuzzy DB queries |
+| Connector spec system | **Real** -- config-driven with template + agent execution modes |
+| OAuth 2.0 flow | **Real** -- authorization code grant with token refresh |
+| AI spec generation | **Real** -- Claude generates specs from API docs |
+| Agent configuration | **Real** -- editable prompts, capability sync with specs |
 | Supplier submission | **Real** -- connector adapter with mock supplier (generates references, logs integration runs) |
 | HR system submission | **Real** -- BambooHR connector when configured, mock fallback otherwise |
 | Reports | **Functional** -- mock data sources, real planning/aggregation pipeline |

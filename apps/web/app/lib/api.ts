@@ -29,6 +29,79 @@ export function setStoredUser(user: { id: string; email: string; full_name: stri
   localStorage.setItem('norm_user', JSON.stringify(user));
 }
 
+export async function apiStream(
+  url: string,
+  body: Record<string, unknown>,
+  onEvent: (event: { type: string; text?: string; message?: string; data?: unknown; domain?: string }) => void,
+): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${API}${url}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (res.status === 401) {
+    clearToken();
+    window.location.reload();
+    return;
+  }
+
+  if (!res.ok || !res.body) {
+    const text = await res.text();
+    onEvent({ type: 'error', message: `API error (${res.status}): ${text}` });
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  let receivedTerminal = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // Parse SSE lines
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    // Collect all events from this chunk, then process them with
+    // async breaks so React can render between each one.
+    const events: unknown[] = [];
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          events.push(JSON.parse(line.slice(6)));
+        } catch (e) {
+          console.warn('Failed to parse SSE event:', line.slice(0, 200), e);
+        }
+      }
+    }
+
+    for (const evt of events) {
+      const event = evt as { type: string; text?: string; message?: string; data?: unknown; domain?: string };
+      onEvent(event);
+      if (event.type === 'complete' || event.type === 'error') {
+        receivedTerminal = true;
+        return;
+      }
+      // Yield to the browser so React can flush the state update and paint
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  // Stream ended without a complete/error event — connection was likely dropped
+  if (!receivedTerminal) {
+    onEvent({ type: 'error', message: 'Connection lost — the response may still be processing. Retrying…' });
+  }
+}
+
 export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   const token = getToken();
   const headers = new Headers(init?.headers);

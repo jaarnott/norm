@@ -54,6 +54,16 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
     routing = classify(message, domain_descs, db=db)
     domain = routing["domain"]
 
+    # Emit routing event so the frontend knows which agent was selected
+    from app.agents.tool_loop import _emit_event
+    agent_display = caps.get(domain, {}).get("display_name", domain.title())
+    _emit_event({
+        "type": "routing",
+        "domain": domain,
+        "title": routing.get("title"),
+        "agent_label": agent_display,
+    })
+
     # Handle meta domain — self-description
     if domain == "meta":
         result = _build_capabilities_response(message, caps, db, user_id, prior_task=prior_task)
@@ -70,6 +80,15 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
     agent = get_agent(domain)
     if agent:
         result = agent.handle_message(message, db, user_id)
+
+        # Set the LLM-generated title on the task
+        title = routing.get("title")
+        if title and result.get("id"):
+            task_obj = db.query(Task).filter(Task.id == result["id"]).first()
+            if task_obj and not task_obj.title:
+                task_obj.title = title
+                db.flush()
+            result["title"] = title
 
         # Migrate prior meta/unknown conversation into the new task
         if prior_task and result.get("id"):
@@ -113,6 +132,7 @@ def _llm_call_to_dict(llm_call: LlmCall) -> dict:
         "status": llm_call.status,
         "error_message": llm_call.error_message,
         "duration_ms": llm_call.duration_ms,
+        "tools_provided": llm_call.tools_provided,
         "created_at": llm_call.created_at.isoformat() if llm_call.created_at else None,
     }
 
@@ -182,6 +202,7 @@ def _build_capabilities_response(message: str, caps: dict, db: Session, user_id:
         "id": task.id,
         "domain": "meta",
         "intent": "meta.capabilities",
+        "title": task.title,
         "message": message,
         "status": "completed",
         "created_at": task.created_at.isoformat(),
@@ -219,6 +240,7 @@ def _create_unknown(message: str, db: Session, user_id: str | None = None) -> di
         "id": task.id,
         "domain": "unknown",
         "intent": "unknown",
+        "title": task.title,
         "message": message,
         "status": "needs_clarification",
         "created_at": task.created_at.isoformat(),

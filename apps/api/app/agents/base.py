@@ -76,6 +76,56 @@ class BaseDomainAgent(ABC):
             return get_db_prompt(self.domain, db)
         return self._default_prompt()
 
+    def get_tool_definitions(self, db: Session) -> tuple[str, list[dict]]:
+        """Return (system_prompt, anthropic_tools) for the agentic tool loop.
+
+        Returns ("", []) if no tools are bound, meaning the agent should
+        fall back to the classic interpretation path.
+        """
+        from app.agents.prompt_builder import build_tool_definitions
+        return build_tool_definitions(self.domain, db)
+
+    def handle_message_with_tools(
+        self,
+        message: str,
+        db: Session,
+        user_id: str | None = None,
+        task_id: str | None = None,
+    ) -> dict:
+        """Process a message using the agentic tool loop.
+
+        Creates or loads a task, runs the tool loop, and returns the result.
+        """
+        from app.agents.tool_loop import run_tool_loop
+
+        system_prompt, anthropic_tools = self.get_tool_definitions(db)
+        ctx = self.build_context(db, user_id)
+
+        # Load or create task
+        if task_id:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if not task:
+                raise ValueError(f"Task not found: {task_id}")
+            # Add the user message
+            db.add(Message(task_id=task.id, role="user", content=message))
+            db.flush()
+        else:
+            task = Task(
+                user_id=user_id,
+                domain=self.domain,
+                intent=f"{self.domain}.tool_use",
+                status="in_progress",
+                raw_prompt=message,
+                extracted_fields={},
+                missing_fields=[],
+            )
+            db.add(task)
+            db.flush()
+            db.add(Message(task_id=task.id, role="user", content=message))
+            db.flush()
+
+        return run_tool_loop(message, task, db, system_prompt, anthropic_tools, context=ctx)
+
     def interpret(self, message: str, context: dict, db: Session | None = None, task_id: str | None = None) -> tuple[dict, str | None]:
         """Call the LLM with this agent's prompt. Returns (parsed_json, llm_call_id).
 

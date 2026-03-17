@@ -15,13 +15,19 @@ logger = logging.getLogger(__name__)
 ROUTER_PROMPT = """\
 You are a message router for Norm, a hospitality operations platform.
 Given a user message and the list of available domains, classify which domain
-should handle this message.
+should handle this message, and generate a short title for the task.
 
 Available domains:
 {domains}
 
+Title guidelines:
+- 3-6 words, no articles (a/an/the)
+- Describe the user's goal, not the domain (e.g. "Weekly roster request" not "HR query")
+- Use sentence case (capitalize first word only)
+- No trailing punctuation
+
 Return ONLY valid JSON:
-{{"domain": "<domain-slug or unknown>", "confidence": 0.0-1.0}}
+{{"domain": "<domain-slug or unknown>", "confidence": 0.0-1.0, "title": "<short task title>"}}
 """
 
 
@@ -92,6 +98,7 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
         return {
             "domain": parsed.get("domain", "unknown"),
             "confidence": parsed.get("confidence", 0.5),
+            "title": parsed.get("title"),
             "llm_call_id": llm_call_id,
         }
 

@@ -8,9 +8,9 @@ import RoutingIndicator from './components/routing/RoutingIndicator';
 import HomePanel from './components/home/HomePanel';
 import SettingsPanel from './components/settings/SettingsPanel';
 import LoginForm from './components/auth/LoginForm';
-import { apiFetch, getToken, setToken, clearToken, getStoredUser, setStoredUser } from './lib/api';
+import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from './lib/api';
 import { PanelLeft as PanelLeftIcon } from 'lucide-react';
-import type { Task } from './types';
+import type { Task, WidgetAction } from './types';
 
 type AuthUser = { id: string; email: string; full_name: string; role: string };
 
@@ -93,44 +93,127 @@ export default function Home() {
   const sendMessage = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
+
+    const messageText = input;
+    const taskIdForRequest = selectedTaskId;
+    setInput('');
     setLoading(true);
-    setRouting(true);
-    setRoutingDomain(null);
+
+    // Create an optimistic task so the conversation view appears immediately
+    const optimisticId = `_pending_${Date.now()}`;
+    if (!taskIdForRequest) {
+      const optimistic: Task = {
+        id: optimisticId,
+        domain: 'unknown',
+        intent: '',
+        title: null,
+        message: messageText,
+        status: 'in_progress',
+        created_at: new Date().toISOString(),
+        conversation: [{ role: 'user', text: messageText }],
+        thinking_steps: [],
+      };
+      setTasks(prev => [optimistic, ...prev]);
+      setSelectedTaskId(optimisticId);
+    } else {
+      // Existing task — append user message optimistically
+      setTasks(prev => prev.map(t =>
+        t.id === taskIdForRequest
+          ? { ...t, conversation: [...(t.conversation || []), { role: 'user', text: messageText }], thinking_steps: ['Working on it\u2026'] }
+          : t
+      ));
+    }
+
+    const currentId = taskIdForRequest || optimisticId;
+    let streamErrored = false;
+
     try {
-      const res = await apiFetch('/api/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(selectedTaskId ? { message: input, task_id: selectedTaskId } : { message: input }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        console.error('API error:', res.status, text);
-        alert(`API error (${res.status}). Is the backend running on port 8000?`);
-        return;
+      await apiStream(
+        '/api/messages/stream',
+        taskIdForRequest ? { message: messageText, task_id: taskIdForRequest } : { message: messageText },
+        (event) => {
+          if (event.type === 'routing') {
+            // Update optimistic task with the routed domain, title, and a routing status message
+            setTasks(prev => prev.map(t =>
+              t.id === currentId ? {
+                ...t,
+                domain: event.domain || t.domain,
+                title: event.title || t.title,
+                thinking_steps: [`I'll get the ${event.agent_label || event.domain} agent to look at this one…`],
+              } : t
+            ));
+          } else if (event.type === 'thinking') {
+            // Append thinking step to the current task
+            setTasks(prev => prev.map(t =>
+              t.id === currentId
+                ? { ...t, thinking_steps: [...(t.thinking_steps || []), event.text || ''] }
+                : t
+            ));
+          } else if (event.type === 'complete') {
+            const data = event.data as Task;
+            setTasks(prev => {
+              // Replace optimistic task or update existing
+              const idx = prev.findIndex(t => t.id === currentId);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = data;
+                return next;
+              }
+              return [data, ...prev];
+            });
+            setSelectedTaskId(data.id);
+          } else if (event.type === 'error') {
+            console.error('Stream error:', event.message);
+            streamErrored = true;
+          }
+        },
+      );
+
+      // If the stream errored (connection drop, backend error, etc.) try to
+      // recover by re-fetching the task — the backend may have finished.
+      if (streamErrored && taskIdForRequest) {
+        try {
+          const res = await apiFetch(`/api/tasks/${taskIdForRequest}`);
+          if (res.ok) {
+            const freshTask = await res.json();
+            setTasks(prev => prev.map(t => t.id === currentId ? freshTask : t));
+            setSelectedTaskId(freshTask.id);
+            streamErrored = false; // recovered
+          }
+        } catch { /* re-fetch failed too */ }
       }
-      const data: Task = await res.json();
-      setRoutingDomain(data.domain);
 
-      // Brief delay so the routing indicator is visible
-      await new Promise(r => setTimeout(r, 600));
-
-      setTasks(prev => {
-        const idx = prev.findIndex(t => t.id === data.id);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = data;
-          return next;
-        }
-        return [data, ...prev];
-      });
-      setSelectedTaskId(data.id);
-      setInput('');
+      // If we still haven't recovered, show the error in the conversation
+      if (streamErrored) {
+        setTasks(prev => prev.map(t =>
+          t.id === currentId
+            ? {
+                ...t,
+                thinking_steps: [],
+                status: t.status === 'in_progress' ? 'completed' : t.status,
+                conversation: [
+                  ...(t.conversation || []),
+                  { role: 'assistant' as const, text: 'Something went wrong. Please try again.' },
+                ],
+              }
+            : t
+        ));
+      }
     } catch (err) {
       console.error('Failed to send message:', err);
+      // Fallback: the backend may have succeeded even though the stream failed.
+      if (taskIdForRequest) {
+        try {
+          const res = await apiFetch(`/api/tasks/${taskIdForRequest}`);
+          if (res.ok) {
+            const freshTask = await res.json();
+            setTasks(prev => prev.map(t => t.id === currentId ? freshTask : t));
+            setSelectedTaskId(freshTask.id);
+          }
+        } catch { /* re-fetch failed too, user can retry manually */ }
+      }
     } finally {
       setLoading(false);
-      setRouting(false);
-      setRoutingDomain(null);
     }
   }, [input, selectedTaskId]);
 
@@ -152,6 +235,33 @@ export default function Home() {
       setTasks(prev => prev.map(t => (t.id === taskId ? updated : t)));
     } catch (err) {
       console.error(`Failed to ${action}:`, err);
+    }
+  }, []);
+
+  const handleWidgetAction = useCallback(async (taskId: string, action: WidgetAction): Promise<Record<string, unknown> | void> => {
+    try {
+      const res = await apiFetch(`/api/tasks/${taskId}/widget-action`, {
+        method: 'POST',
+        body: JSON.stringify(action),
+      });
+      if (!res.ok) {
+        console.error('Widget action error:', res.status);
+        return;
+      }
+      const result = await res.json();
+
+      if (result.status === 'pending_approval') {
+        // Re-fetch task to show approval UI
+        const taskRes = await apiFetch(`/api/tasks/${taskId}`);
+        if (taskRes.ok) {
+          const updated = await taskRes.json();
+          setTasks(prev => prev.map(t => t.id === taskId ? updated : t));
+        }
+      }
+
+      return result;
+    } catch (err) {
+      console.error('Widget action failed:', err);
     }
   }, []);
 
@@ -188,9 +298,9 @@ export default function Home() {
       <div style={{
         display: 'flex',
         flexDirection: 'column',
-        width: panelCollapsed ? 0 : 360,
-        minWidth: panelCollapsed ? 0 : 360,
-        borderRight: panelCollapsed ? 'none' : '1px solid #e2ddd7',
+        width: (panelCollapsed || activeAgent === 'settings') ? 0 : 360,
+        minWidth: (panelCollapsed || activeAgent === 'settings') ? 0 : 360,
+        borderRight: (panelCollapsed || activeAgent === 'settings') ? 'none' : '1px solid #e2ddd7',
         overflow: 'hidden',
         transition: 'width 0.2s ease, min-width 0.2s ease',
       }}>
@@ -243,6 +353,7 @@ export default function Home() {
           <TaskDetail
             task={selectedTask}
             onAction={handleAction}
+            onWidgetAction={handleWidgetAction}
             input={input}
             onInputChange={setInput}
             onSend={sendMessage}

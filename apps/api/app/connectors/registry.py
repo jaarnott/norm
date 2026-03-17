@@ -106,7 +106,7 @@ def resolve_connector(domain: str, action: str, db: Session) -> tuple | BaseConn
         if not spec:
             continue
 
-        for op in spec.operations or []:
+        for op in spec.tools or []:
             if op.get("action") == action:
                 config_row = (
                     db.query(ConnectorConfig)
@@ -149,12 +149,12 @@ def resolve_connector(domain: str, action: str, db: Session) -> tuple | BaseConn
 
             # Find matching operation or use first
             operation = None
-            for op in spec.operations or []:
+            for op in spec.tools or []:
                 if op.get("action") == action:
                     operation = op
                     break
-            if operation is None and spec.operations:
-                operation = spec.operations[0]
+            if operation is None and spec.tools:
+                operation = spec.tools[0]
 
             if operation is not None:
                 logger.info(

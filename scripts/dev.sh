@@ -2,18 +2,50 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+API_DIR="$ROOT/apps/api"
+WEB_DIR="$ROOT/apps/web"
 
 echo "Starting Norm development servers..."
 
-# Ensure Docker services (Postgres, etc.) are running
+# ── 1. Check .env ──────────────────────────────────────────────────
+if [ ! -f "$API_DIR/.env" ]; then
+  echo "Creating apps/api/.env from .env.example …"
+  cp "$API_DIR/.env.example" "$API_DIR/.env"
+fi
+
+# ── 2. Python venv & deps ─────────────────────────────────────────
+echo "Installing API dependencies …"
+(cd "$API_DIR" && uv sync)
+
+# ── 3. Frontend deps ──────────────────────────────────────────────
+echo "Installing frontend dependencies …"
+(cd "$WEB_DIR" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
+
+# ── 4. Docker services (Postgres) ─────────────────────────────────
 docker compose -f "$ROOT/docker-compose.yml" up -d
 
-# API
-(cd "$ROOT/apps/api" && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000) &
+echo "Waiting for Postgres …"
+until docker compose -f "$ROOT/docker-compose.yml" exec -T postgres pg_isready -U norm -q 2>/dev/null; do
+  sleep 1
+done
+echo "Postgres is ready."
+
+# ── 5. Run database migrations ────────────────────────────────────
+echo "Running Alembic migrations …"
+(cd "$API_DIR" && .venv/bin/alembic upgrade head)
+
+# ── 6. OAuth redirect URI (Codespaces / Gitpod / local) ──────────
+if [ -n "$CODESPACE_NAME" ]; then
+  export OAUTH_REDIRECT_URI="https://${CODESPACE_NAME}-3000.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/api/oauth/callback"
+  echo "  OAuth redirect: $OAUTH_REDIRECT_URI"
+fi
+
+# ── 7. Start API ──────────────────────────────────────────────────
+(cd "$API_DIR" && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000) &
 API_PID=$!
 
-# Frontend
-(cd "$ROOT/apps/web" && pnpm dev) &
+# ── 8. Start Frontend ────────────────────────────────────────────
+(cd "$WEB_DIR" && pnpm dev) &
 WEB_PID=$!
 
 echo ""

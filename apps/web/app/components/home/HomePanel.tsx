@@ -46,7 +46,7 @@ export default function HomePanel({ input, onInputChange, onSend, loading }: Hom
         </div>
       </div>
 
-      <form onSubmit={onSend} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', width: '100%', maxWidth: 600, padding: '0 1.5rem' }}>
+      <form onSubmit={onSend} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
         <textarea
           ref={textareaRef}
           value={input}
@@ -58,10 +58,10 @@ export default function HomePanel({ input, onInputChange, onSend, loading }: Hom
             flex: 1,
             minHeight: 50,
             maxHeight: 150,
-            padding: '14px 0.8rem',
+            padding: '14px 1.5rem',
             fontSize: '1rem',
             border: '1px solid #ddd',
-            borderRadius: 6,
+            borderRadius: 24,
             outline: 'none',
             fontFamily: 'inherit',
             resize: 'none',
@@ -81,7 +81,7 @@ export default function HomePanel({ input, onInputChange, onSend, loading }: Hom
             backgroundColor: '#111',
             color: '#fff',
             border: 'none',
-            borderRadius: 6,
+            borderRadius: 24,
             cursor: loading ? 'not-allowed' : 'pointer',
             fontFamily: 'inherit',
           }}

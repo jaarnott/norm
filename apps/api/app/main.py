@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth
+from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth, working_documents
 
 app = FastAPI(
     title="Norm API",
@@ -29,6 +29,7 @@ app.include_router(connectors.router, prefix="/api")
 app.include_router(connector_specs.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(oauth.router, prefix="/api")
+app.include_router(working_documents.router, prefix="/api")
 
 
 @app.on_event("startup")

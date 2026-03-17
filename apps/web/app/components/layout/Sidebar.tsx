@@ -77,25 +77,6 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
               }}
             >
               <agent.icon size={22} strokeWidth={1.75} />
-              {count > 0 && (
-                <span style={{
-                  position: 'absolute',
-                  top: 2,
-                  right: 2,
-                  fontSize: '0.55rem',
-                  fontWeight: 700,
-                  backgroundColor: '#1a1a1a',
-                  color: '#fff',
-                  padding: '0 4px',
-                  borderRadius: 8,
-                  minWidth: 14,
-                  height: 14,
-                  lineHeight: '14px',
-                  textAlign: 'center',
-                }}>
-                  {count}
-                </span>
-              )}
             </button>
           );
         })}

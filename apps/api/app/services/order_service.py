@@ -323,6 +323,7 @@ def _task_to_dict(task: Task) -> dict:
         "domain": "procurement",
         "message": task.raw_prompt,
         "intent": task.intent,
+        "title": task.title,
         "status": task.status,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
@@ -356,8 +357,26 @@ def _task_to_dict(task: Task) -> dict:
                 "status": c.status,
                 "error_message": c.error_message,
                 "duration_ms": c.duration_ms,
+                "tools_provided": c.tools_provided,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
             }
             for c in task.llm_calls
         ],
+        "tool_calls": [
+            {
+                "id": tc.id,
+                "iteration": tc.iteration,
+                "tool_name": tc.tool_name,
+                "connector_name": tc.connector_name,
+                "action": tc.action,
+                "method": tc.method,
+                "input_params": tc.input_params,
+                "status": tc.status,
+                "result_payload": tc.result_payload,
+                "error_message": tc.error_message,
+                "duration_ms": tc.duration_ms,
+                "created_at": tc.created_at.isoformat() if tc.created_at else None,
+            }
+            for tc in sorted(task.tool_calls, key=lambda x: x.created_at)
+        ] if task.tool_calls else [],
     }

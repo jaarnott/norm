@@ -53,7 +53,7 @@ async def list_connectors(db: Session = Depends(get_db), user: User = Depends(ge
 
     # Include connector specs from the database (graceful if table not yet migrated)
     try:
-        specs = db.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()
+        specs = db.query(ConnectorSpec).all()
     except Exception:
         db.rollback()
         specs = []
@@ -89,7 +89,10 @@ class ConnectorConfigBody(BaseModel):
 async def upsert_connector(name: str, body: ConnectorConfigBody, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
     meta = next((c for c in AVAILABLE_CONNECTORS if c["name"] == name), None)
     if not meta:
-        raise HTTPException(404, f"Unknown connector: {name}")
+        # Check if it's a spec-driven connector
+        spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+        if not spec:
+            raise HTTPException(404, f"Unknown connector: {name}")
 
     row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
     if row:
@@ -108,6 +111,20 @@ async def upsert_connector(name: str, body: ConnectorConfigBody, db: Session = D
         "name": row.connector_name,
         "enabled": row.enabled == "true",
         "config": _redact_config(row.config, name),
+    }
+
+
+@router.patch("/connectors/{name}/toggle")
+async def toggle_connector(name: str, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
+    row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+    if not row:
+        raise HTTPException(404, f"No config for connector: {name}")
+    row.enabled = "false" if row.enabled == "true" else "true"
+    db.commit()
+    db.refresh(row)
+    return {
+        "name": row.connector_name,
+        "enabled": row.enabled == "true",
     }
 
 
@@ -164,4 +181,36 @@ async def test_connector(name: str, body: TestBody, db: Session = Depends(get_db
         except Exception as exc:
             return {"success": False, "error": f"Connection error: {exc}"}
 
-    raise HTTPException(404, f"Unknown connector: {name}")
+    # Spec-driven connectors: use the test_request from the spec
+    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    if not spec:
+        raise HTTPException(404, f"Unknown connector: {name}")
+
+    if not spec.test_request:
+        return {"success": False, "error": "No test request configured for this connector. Add one in the Connector Spec editor."}
+
+    # Merge saved credentials with any values from the form (non-redacted only)
+    config_row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+    credentials = config_row.config if config_row else {}
+    for k, v in body.config.items():
+        if v and v != "••••••••":
+            credentials[k] = v
+
+    from app.connectors.spec_executor import render_request, execute_http
+
+    test_op = {
+        "method": spec.test_request.get("method", "GET"),
+        "path_template": spec.test_request.get("path_template", ""),
+        "headers": spec.test_request.get("headers", {}),
+        "success_status_codes": spec.test_request.get("success_status_codes", [200]),
+        "timeout_seconds": spec.test_request.get("timeout_seconds", 15),
+    }
+
+    try:
+        rendered = render_request(spec, test_op, {}, credentials, db=db)
+        result = execute_http(rendered, test_op, credentials=credentials, auth_type=spec.auth_type, auth_config=spec.auth_config)
+        if result.success:
+            return {"success": True, "message": "Connected successfully", "rendered_request": rendered.to_audit_dict(), "response": result.response_payload}
+        return {"success": False, "error": result.error_message or "API returned an error", "rendered_request": rendered.to_audit_dict(), "response": result.response_payload}
+    except Exception as exc:
+        return {"success": False, "error": f"Connection test failed: {exc}"}
