@@ -184,6 +184,12 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
     """
     op_type = op.get("op", "")
 
+    # --- Order metadata operations ---
+    if op_type == "update_notes":
+        if isinstance(data, dict):
+            data["notes"] = op.get("value", "")
+        return data
+
     # --- Order operations (lines-based documents) ---
     if op_type in ("update_line", "add_line", "remove_line"):
         if not isinstance(data, dict):
@@ -208,6 +214,7 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
             fields = op.get("fields", op)
             new_line = {
                 "product": fields.get("product", ""),
+                "supplier": fields.get("supplier", ""),
                 "quantity": fields.get("quantity", 1),
                 "unit": fields.get("unit", "case"),
                 "unit_price": fields.get("unit_price", 0),

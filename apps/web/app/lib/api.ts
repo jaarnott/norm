@@ -32,7 +32,7 @@ export function setStoredUser(user: { id: string; email: string; full_name: stri
 export async function apiStream(
   url: string,
   body: Record<string, unknown>,
-  onEvent: (event: { type: string; text?: string; message?: string; data?: unknown; domain?: string }) => void,
+  onEvent: (event: { type: string; text?: string; message?: string; data?: unknown; domain?: string; task_id?: string; title?: string; agent_label?: string }) => void,
 ): Promise<void> {
   const token = getToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -85,7 +85,7 @@ export async function apiStream(
     }
 
     for (const evt of events) {
-      const event = evt as { type: string; text?: string; message?: string; data?: unknown; domain?: string };
+      const event = evt as { type: string; text?: string; message?: string; data?: unknown; domain?: string; task_id?: string; title?: string; agent_label?: string };
       onEvent(event);
       if (event.type === 'complete' || event.type === 'error') {
         receivedTerminal = true;

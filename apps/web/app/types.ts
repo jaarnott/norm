@@ -104,7 +104,7 @@ export interface WidgetAction {
 }
 
 export interface ConversationMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'streaming';
   text: string;
   created_at?: string | null;
   display_blocks?: DisplayBlock[];

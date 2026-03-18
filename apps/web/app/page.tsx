@@ -125,6 +125,8 @@ export default function Home() {
     }
 
     const currentId = taskIdForRequest || optimisticId;
+    // realTaskId is the confirmed backend ID — used for recovery re-fetches.
+    let realTaskId: string | null = taskIdForRequest;
     let streamErrored = false;
 
     try {
@@ -132,8 +134,11 @@ export default function Home() {
         '/api/messages/stream',
         taskIdForRequest ? { message: messageText, task_id: taskIdForRequest } : { message: messageText },
         (event) => {
-          if (event.type === 'routing') {
-            // Update optimistic task with the routed domain, title, and a routing status message
+          if (event.type === 'task_created') {
+            // Store the real task ID for recovery — but don't remap the
+            // optimistic task yet to avoid a flash where selectedTask is null.
+            realTaskId = event.task_id as string;
+          } else if (event.type === 'routing') {
             setTasks(prev => prev.map(t =>
               t.id === currentId ? {
                 ...t,
@@ -143,16 +148,27 @@ export default function Home() {
               } : t
             ));
           } else if (event.type === 'thinking') {
-            // Append thinking step to the current task
-            setTasks(prev => prev.map(t =>
-              t.id === currentId
-                ? { ...t, thinking_steps: [...(t.thinking_steps || []), event.text || ''] }
-                : t
-            ));
+            setTasks(prev => prev.map(t => {
+              if (t.id !== currentId) return t;
+              return {
+                ...t,
+                thinking_steps: [...(t.thinking_steps || []), event.text || ''],
+                conversation: (t.conversation || []).filter(m => m.role !== 'streaming'),
+              };
+            }));
+          } else if (event.type === 'token') {
+            setTasks(prev => prev.map(t => {
+              if (t.id !== currentId) return t;
+              const conv = t.conversation || [];
+              const last = conv[conv.length - 1];
+              if (last?.role === 'streaming') {
+                return { ...t, conversation: [...conv.slice(0, -1), { ...last, text: last.text + (event.text || '') }] };
+              }
+              return { ...t, thinking_steps: [], conversation: [...conv, { role: 'streaming' as const, text: event.text || '' }] };
+            }));
           } else if (event.type === 'complete') {
             const data = event.data as Task;
             setTasks(prev => {
-              // Replace optimistic task or update existing
               const idx = prev.findIndex(t => t.id === currentId);
               if (idx >= 0) {
                 const next = [...prev];
@@ -169,21 +185,21 @@ export default function Home() {
         },
       );
 
-      // If the stream errored (connection drop, backend error, etc.) try to
-      // recover by re-fetching the task — the backend may have finished.
-      if (streamErrored && taskIdForRequest) {
+      // If the stream errored, try to recover by re-fetching the real task.
+      // realTaskId is set from the task_created event, so this works for both
+      // new conversations and follow-ups.
+      if (streamErrored && realTaskId) {
         try {
-          const res = await apiFetch(`/api/tasks/${taskIdForRequest}`);
+          const res = await apiFetch(`/api/tasks/${realTaskId}`);
           if (res.ok) {
             const freshTask = await res.json();
             setTasks(prev => prev.map(t => t.id === currentId ? freshTask : t));
             setSelectedTaskId(freshTask.id);
-            streamErrored = false; // recovered
+            streamErrored = false;
           }
         } catch { /* re-fetch failed too */ }
       }
 
-      // If we still haven't recovered, show the error in the conversation
       if (streamErrored) {
         setTasks(prev => prev.map(t =>
           t.id === currentId
@@ -201,10 +217,9 @@ export default function Home() {
       }
     } catch (err) {
       console.error('Failed to send message:', err);
-      // Fallback: the backend may have succeeded even though the stream failed.
-      if (taskIdForRequest) {
+      if (realTaskId) {
         try {
-          const res = await apiFetch(`/api/tasks/${taskIdForRequest}`);
+          const res = await apiFetch(`/api/tasks/${realTaskId}`);
           if (res.ok) {
             const freshTask = await res.json();
             setTasks(prev => prev.map(t => t.id === currentId ? freshTask : t));

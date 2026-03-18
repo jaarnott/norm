@@ -121,9 +121,10 @@ function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlock
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  const lastMessageText = messages[messages.length - 1]?.text;
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+  }, [messages.length, lastMessageText]);
 
   if (!messages || messages.length === 0) {
     return (
@@ -176,6 +177,9 @@ function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlock
               {isUser ? m.text : (
                 <div className="markdown-message">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                  {m.role === 'streaming' && (
+                    <span className="streaming-cursor">▋</span>
+                  )}
                 </div>
               )}
             </div>
@@ -781,7 +785,10 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
               {activeTab === 'details' && <DetailsView task={task} onAction={onAction} />}
               {activeTab === 'activity' && (
                 <ActivityTimeline messages={messages} createdAt={task.created_at} domain={task.domain}
-                  llmCalls={task.llm_calls} approval={task.approval} integrationRun={task.integration_run} />
+                  llmCalls={task.llm_calls}
+                  toolCalls={task.tool_calls}
+                  thinkingSteps={task.thinking_steps}
+                  approval={task.approval} integrationRun={task.integration_run} />
               )}
             </div>
             {inputBar}
@@ -803,7 +810,10 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
             {activeTab === 'details' && <DetailsView task={task} onAction={onAction} />}
             {activeTab === 'activity' && (
               <ActivityTimeline messages={messages} createdAt={task.created_at} domain={task.domain}
-                llmCalls={task.llm_calls} approval={task.approval} integrationRun={task.integration_run} />
+                llmCalls={task.llm_calls}
+                toolCalls={task.tool_calls}
+                thinkingSteps={task.thinking_steps}
+                approval={task.approval} integrationRun={task.integration_run} />
             )}
           </div>
           {inputBar}

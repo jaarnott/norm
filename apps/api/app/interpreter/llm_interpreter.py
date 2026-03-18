@@ -167,13 +167,17 @@ def call_llm_with_tools(
     t0 = time.time()
 
     try:
-        response = client.messages.create(
+        from app.agents.tool_loop import _emit_event
+        with client.messages.stream(
             model=resolved_model,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=dated_messages,
             tools=tools,
-        )
+        ) as stream:
+            for chunk in stream.text_stream:
+                _emit_event({"type": "token", "text": chunk})
+            response = stream.get_final_message()
         duration_ms = int((time.time() - t0) * 1000)
 
         # Serialize for audit logging

@@ -379,4 +379,5 @@ def _task_to_dict(task: Task) -> dict:
             }
             for tc in sorted(task.tool_calls, key=lambda x: x.created_at)
         ] if task.tool_calls else [],
+        "thinking_steps": task.thinking_steps or [],
     }

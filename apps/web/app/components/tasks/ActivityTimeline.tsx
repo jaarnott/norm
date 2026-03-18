@@ -1,45 +1,42 @@
 'use client';
 
 import { useState } from 'react';
-import type { ConversationMessage, LlmCall } from '../../types';
+import type { ConversationMessage, LlmCall, ToolCallRecord } from '../../types';
 
-function classifyMessage(msg: ConversationMessage, index: number, total: number): {
+function classifyMessage(msg: ConversationMessage, index: number): {
   label: string;
   icon: string;
 } {
   const text = msg.text.toLowerCase();
 
   if (msg.role === 'user' && index === 0) {
-    return { label: 'User request received', icon: '\u{1F4E9}' };
+    return { label: 'User request received', icon: '📩' };
   }
   if (msg.role === 'user') {
-    return { label: 'User replied', icon: '\u{1F4AC}' };
+    return { label: 'User replied', icon: '💬' };
   }
 
   // Assistant messages — classify by content
-
-  // Revisions (check first — revision messages contain "changed" / "updated")
   if (text.includes('changed from') || text.includes('updated from') || text.includes('updated and ready'))
-    return { label: 'Task revised', icon: '\u{270F}\u{FE0F}' };
-
+    return { label: 'Task revised', icon: '✏️' };
   if (text.includes('which venue') || text.includes('which location') || text.includes('what venue'))
-    return { label: 'Clarification requested: venue', icon: '\u{2753}' };
+    return { label: 'Clarification requested: venue', icon: '❓' };
   if (text.includes('which product') || text.includes('what product'))
-    return { label: 'Clarification requested: product', icon: '\u{2753}' };
+    return { label: 'Clarification requested: product', icon: '❓' };
   if (text.includes('how many') || text.includes('quantity'))
-    return { label: 'Clarification requested: quantity', icon: '\u{2753}' };
+    return { label: 'Clarification requested: quantity', icon: '❓' };
   if (text.includes('?'))
-    return { label: 'Clarification requested', icon: '\u{2753}' };
+    return { label: 'Clarification requested', icon: '❓' };
   if (text.includes('draft order') || text.includes('order created') || text.includes('ready for review') || text.includes('ready for your approval'))
-    return { label: 'Draft order created', icon: '\u{1F4CB}' };
+    return { label: 'Draft order created', icon: '📋' };
   if (text.includes('approved'))
-    return { label: 'Order approved', icon: '\u{2705}' };
+    return { label: 'Order approved', icon: '✅' };
   if (text.includes('submitted'))
-    return { label: 'Order submitted', icon: '\u{1F680}' };
+    return { label: 'Order submitted', icon: '🚀' };
   if (text.includes('set up') || text.includes('setup') || text.includes('onboarding'))
-    return { label: 'Employee setup initiated', icon: '\u{1F464}' };
+    return { label: 'Employee setup initiated', icon: '👤' };
 
-  return { label: 'Agent responded', icon: '\u{1F916}' };
+  return { label: 'Assistant responded', icon: '🤖' };
 }
 
 function formatTime(dateStr?: string | null): string {
@@ -50,6 +47,38 @@ function formatTime(dateStr?: string | null): string {
   } catch {
     return '';
   }
+}
+
+const CODE_STYLE: React.CSSProperties = {
+  backgroundColor: '#f5f5f5',
+  border: '1px solid #e2e2e2',
+  borderRadius: 4,
+  padding: '0.5rem',
+  margin: 0,
+  fontSize: '0.7rem',
+  lineHeight: 1.4,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  maxHeight: 300,
+  overflowY: 'auto',
+};
+
+const SECTION_LABEL_STYLE: React.CSSProperties = {
+  fontSize: '0.65rem',
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+  color: '#999',
+  marginBottom: '0.25rem',
+};
+
+function DetailBox({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: '0.5rem' }}>
+      <div style={SECTION_LABEL_STYLE}>{label}</div>
+      {children}
+    </div>
+  );
 }
 
 function LlmCallDetail({ call }: { call: LlmCall }) {
@@ -66,12 +95,9 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
       backgroundColor: '#fafafa',
       fontSize: '0.75rem',
     }}>
-      {/* Status indicator */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}>
         <span style={{
-          width: 8,
-          height: 8,
-          borderRadius: '50%',
+          width: 8, height: 8, borderRadius: '50%',
           backgroundColor: call.status === 'success' ? '#48bb78' : '#f56565',
           display: 'inline-block',
         }} />
@@ -85,136 +111,121 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
 
       {call.error_message && (
         <div style={{
-          padding: '0.4rem 0.6rem',
-          backgroundColor: '#fff5f5',
-          border: '1px solid #fed7d7',
-          borderRadius: 4,
-          color: '#c53030',
-          marginBottom: '0.5rem',
-          whiteSpace: 'pre-wrap',
+          padding: '0.4rem 0.6rem', backgroundColor: '#fff5f5',
+          border: '1px solid #fed7d7', borderRadius: 4, color: '#c53030',
+          marginBottom: '0.5rem', whiteSpace: 'pre-wrap',
         }}>
           {call.error_message}
         </div>
       )}
 
-      {/* System prompt */}
-      <div style={{ marginBottom: '0.5rem' }}>
-        <div style={{
-          fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase',
-          letterSpacing: '0.04em', color: '#999', marginBottom: '0.25rem',
-        }}>
-          System Prompt
+      {call.system_prompt ? (
+        <DetailBox label="System Prompt">
+          <pre style={CODE_STYLE}>{call.system_prompt}</pre>
+        </DetailBox>
+      ) : (
+        <div style={{ color: '#bbb', fontSize: '0.7rem', marginBottom: '0.5rem', fontStyle: 'italic' }}>
+          System prompt not available (open Activity tab after the call completes to load full data)
         </div>
-        <pre style={{
-          backgroundColor: '#f5f5f5',
-          border: '1px solid #e2e2e2',
-          borderRadius: 4,
-          padding: '0.5rem',
-          margin: 0,
-          fontSize: '0.7rem',
-          lineHeight: 1.4,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}>
-          {call.system_prompt}
-        </pre>
-      </div>
+      )}
 
-      {/* Tools provided */}
       {call.tools_provided && call.tools_provided.length > 0 && (
-        <div style={{ marginBottom: '0.5rem' }}>
-          <div style={{
-            fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase',
-            letterSpacing: '0.04em', color: '#999', marginBottom: '0.25rem',
-          }}>
-            Tools
-          </div>
-          <pre style={{
-            backgroundColor: '#f5f5f5',
-            border: '1px solid #e2e2e2',
-            borderRadius: 4,
-            padding: '0.5rem',
-            margin: 0,
-            fontSize: '0.7rem',
-            lineHeight: 1.4,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}>
+        <DetailBox label={`Tools (${call.tools_provided.length})`}>
+          <pre style={CODE_STYLE}>
             {call.tools_provided.map((t: Record<string, unknown>) =>
               `- ${t.name}: ${t.description || ''}`
             ).join('\n')}
           </pre>
-        </div>
+        </DetailBox>
       )}
 
-      {/* User prompt */}
-      <div style={{ marginBottom: '0.5rem' }}>
-        <div style={{
-          fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase',
-          letterSpacing: '0.04em', color: '#999', marginBottom: '0.25rem',
-        }}>
-          User Prompt
-        </div>
-        <pre style={{
-          backgroundColor: '#f5f5f5',
-          border: '1px solid #e2e2e2',
-          borderRadius: 4,
-          padding: '0.5rem',
-          margin: 0,
-          fontSize: '0.7rem',
-          lineHeight: 1.4,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}>
-          {call.user_prompt}
-        </pre>
-      </div>
+      {call.user_prompt && (
+        <DetailBox label="User Prompt">
+          <pre style={CODE_STYLE}>{call.user_prompt}</pre>
+        </DetailBox>
+      )}
 
-      {/* Response */}
       {(call.raw_response || call.parsed_response) && (
-        <div>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: '0.5rem',
-            marginBottom: '0.25rem',
-          }}>
-            <span style={{
-              fontSize: '0.65rem', fontWeight: 600, textTransform: 'uppercase',
-              letterSpacing: '0.04em', color: '#999',
-            }}>
-              Response
-            </span>
+        <DetailBox label="Response">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
             {call.raw_response && call.parsed_response && (
               <button
                 onClick={() => setShowRaw(!showRaw)}
                 style={{
-                  fontSize: '0.6rem',
-                  padding: '0.1rem 0.4rem',
-                  borderRadius: 3,
-                  border: '1px solid #ddd',
-                  backgroundColor: '#fff',
-                  cursor: 'pointer',
-                  color: '#666',
+                  fontSize: '0.6rem', padding: '0.1rem 0.4rem', borderRadius: 3,
+                  border: '1px solid #ddd', backgroundColor: '#fff', cursor: 'pointer', color: '#666',
                 }}
               >
                 {showRaw ? 'Parsed' : 'Raw'}
               </button>
             )}
           </div>
-          <pre style={{
-            backgroundColor: '#f5f5f5',
-            border: '1px solid #e2e2e2',
-            borderRadius: 4,
-            padding: '0.5rem',
-            margin: 0,
-            fontSize: '0.7rem',
-            lineHeight: 1.4,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}>
+          <pre style={CODE_STYLE}>
             {showRaw || !call.parsed_response
               ? call.raw_response
               : JSON.stringify(call.parsed_response, null, 2)}
           </pre>
+        </DetailBox>
+      )}
+    </div>
+  );
+}
+
+function ToolCallDetail({ tc }: { tc: ToolCallRecord }) {
+  return (
+    <div style={{
+      marginTop: '0.4rem',
+      marginBottom: '0.5rem',
+      marginLeft: '0.25rem',
+      border: '1px solid #e8e8e8',
+      borderRadius: 6,
+      padding: '0.75rem',
+      backgroundColor: '#fafafa',
+      fontSize: '0.75rem',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}>
+        <span style={{
+          width: 8, height: 8, borderRadius: '50%',
+          backgroundColor: tc.status === 'failed' ? '#f56565' : '#48bb78',
+          display: 'inline-block',
+        }} />
+        <span style={{ fontWeight: 600, color: tc.status === 'failed' ? '#c53030' : '#2f855a' }}>
+          {tc.status}
+        </span>
+        <span style={{
+          fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
+          borderRadius: 3, backgroundColor: '#e8f0fe', color: '#1a56db',
+        }}>
+          {tc.method}
+        </span>
+        {tc.duration_ms != null && (
+          <span style={{ color: '#999', marginLeft: 'auto' }}>{tc.duration_ms}ms</span>
+        )}
+      </div>
+
+      {tc.error_message && (
+        <div style={{
+          padding: '0.4rem 0.6rem', backgroundColor: '#fff5f5',
+          border: '1px solid #fed7d7', borderRadius: 4, color: '#c53030',
+          marginBottom: '0.5rem',
+        }}>
+          {tc.error_message}
+        </div>
+      )}
+
+      {tc.input_params && (
+        <DetailBox label="Input">
+          <pre style={CODE_STYLE}>{JSON.stringify(tc.input_params, null, 2)}</pre>
+        </DetailBox>
+      )}
+
+      {tc.result_payload ? (
+        <DetailBox label="Result">
+          <pre style={CODE_STYLE}>{JSON.stringify(tc.result_payload, null, 2)}</pre>
+        </DetailBox>
+      ) : (
+        <div style={{ color: '#bbb', fontSize: '0.7rem', fontStyle: 'italic' }}>
+          Result not yet available
         </div>
       )}
     </div>
@@ -240,63 +251,85 @@ interface ActivityTimelineProps {
   createdAt: string;
   domain: string;
   llmCalls?: LlmCall[];
+  toolCalls?: ToolCallRecord[];
+  thinkingSteps?: string[];
   approval?: ApprovalInfo | null;
   integrationRun?: IntegrationRunInfo | null;
 }
 
-export default function ActivityTimeline({ messages, createdAt, domain, llmCalls, approval, integrationRun }: ActivityTimelineProps) {
-  const [expandedCalls, setExpandedCalls] = useState<Set<string>>(new Set());
+const LLM_CALL_TYPE_LABELS: Record<string, string> = {
+  routing: 'Routing LLM call',
+  tool_use: 'Tool-use LLM call',
+  interpretation: 'Interpretation LLM call',
+  execution: 'Execution LLM call',
+  spec_generation: 'Spec generation LLM call',
+};
+
+export default function ActivityTimeline({ messages, createdAt, domain, llmCalls, toolCalls, thinkingSteps, approval, integrationRun }: ActivityTimelineProps) {
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
 
   if (!messages || messages.length === 0) return null;
 
-  const toggleCall = (id: string) => {
-    setExpandedCalls(prev => {
+  const toggle = (id: string) => {
+    setExpandedItems(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   };
 
-  // Find the earliest LLM routing call timestamp, or fall back to task createdAt
+  const toggleMsg = (idx: number) => {
+    setExpandedMessages(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+
   const routingCall = (llmCalls || []).find(c => c.call_type === 'routing');
   const routingSortKey = routingCall ? routingCall.created_at : createdAt;
 
-  // Build timeline events
   const routingEvents = [
-    { type: 'routing' as const, label: 'Supervisor analysed request', icon: '\u{1F9E0}', time: formatTime(routingSortKey), sortKey: routingSortKey, sortOrder: 0 },
-    { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: '\u{27A1}\u{FE0F}', time: formatTime(routingSortKey), sortKey: routingSortKey, sortOrder: 1 },
+    { type: 'routing' as const, label: 'Supervisor analysed request', icon: '🧠', time: formatTime(routingSortKey), sortKey: routingSortKey, sortOrder: 0 },
+    { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: '➡️', time: formatTime(routingSortKey), sortKey: routingSortKey, sortOrder: 1 },
   ];
 
   const messageEvents = messages.map((m, i) => {
-    const classified = classifyMessage(m, i, messages.length);
+    const classified = classifyMessage(m, i);
     const msgTime = m.created_at || createdAt;
-    return { type: 'message' as const, ...classified, time: formatTime(msgTime), text: m.text, role: m.role, sortKey: msgTime, sortOrder: 0 };
+    return { type: 'message' as const, ...classified, time: formatTime(msgTime), text: m.text, role: m.role, sortKey: msgTime, sortOrder: 0, index: i };
   });
 
-  // Build LLM call events
-  const llmEvents = (llmCalls || []).map(call => ({
+  const llmEvents = (llmCalls || []).map((call, idx) => ({
     type: 'llm' as const,
     call,
-    label: call.call_type === 'routing'
-      ? `LLM routing (${call.model})`
-      : call.call_type === 'execution'
-        ? `LLM execution (${call.model})`
-        : `LLM interpretation (${call.model})`,
-    icon: '\u{26A1}',
+    label: LLM_CALL_TYPE_LABELS[call.call_type] ?? `LLM call (${call.call_type})`,
+    icon: '⚡',
     time: formatTime(call.created_at),
     sortKey: call.created_at,
     sortOrder: 0,
+    idx,
   }));
 
-  // Build approval event
+  const toolEvents = (toolCalls || []).filter(tc => tc.status !== 'pending_approval').map((tc, idx) => ({
+    type: 'tool' as const,
+    tc,
+    label: `${tc.action} (${tc.connector_name})`,
+    icon: '⚙️',
+    time: formatTime(tc.created_at),
+    sortKey: tc.created_at,
+    sortOrder: 0,
+    idx,
+  }));
+
   const approvalEvents: { type: 'approval'; label: string; icon: string; detail: string; time: string; sortKey: string; sortOrder: number }[] = [];
   if (approval) {
     const isApproved = approval.action === 'approved';
     approvalEvents.push({
       type: 'approval' as const,
       label: isApproved ? 'Task approved' : 'Task rejected',
-      icon: isApproved ? '\u{2705}' : '\u{274C}',
+      icon: isApproved ? '✅' : '❌',
       detail: `by ${approval.performed_by}`,
       time: formatTime(approval.performed_at),
       sortKey: approval.performed_at,
@@ -304,7 +337,6 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
     });
   }
 
-  // Build integration run (submission) event
   const submissionEvents: { type: 'submission'; label: string; icon: string; detail: string; time: string; sortKey: string; sortOrder: number }[] = [];
   if (integrationRun) {
     const isSuccess = integrationRun.status === 'success';
@@ -312,16 +344,12 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
       : integrationRun.connector === 'mock_hr' ? 'HR System (mock)'
       : integrationRun.connector;
     let detail = `via ${connectorLabel}`;
-    if (isSuccess && integrationRun.reference) {
-      detail += ` \u2014 ref: ${integrationRun.reference}`;
-    }
-    if (!isSuccess && integrationRun.error) {
-      detail += ` \u2014 ${integrationRun.error}`;
-    }
+    if (isSuccess && integrationRun.reference) detail += ` — ref: ${integrationRun.reference}`;
+    if (!isSuccess && integrationRun.error) detail += ` — ${integrationRun.error}`;
     submissionEvents.push({
       type: 'submission' as const,
       label: isSuccess ? 'Submitted to external system' : 'Submission failed',
-      icon: isSuccess ? '\u{1F680}' : '\u{26A0}\u{FE0F}',
+      icon: isSuccess ? '🚀' : '⚠️',
       detail,
       time: formatTime(integrationRun.submitted_at),
       sortKey: integrationRun.submitted_at,
@@ -329,17 +357,33 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
     });
   }
 
-  // Merge and sort by timestamp (oldest first), using sortOrder to break ties
+  // Thinking steps — SSE events shown to user during processing (no timestamps).
+  // Place them between routing and the first LLM call using interpolated sort keys.
+  const firstLlmTime = llmEvents.length > 0 ? llmEvents[0].sortKey : createdAt;
+  const thinkingEvents = (thinkingSteps || []).map((step, idx) => ({
+    type: 'thinking' as const,
+    label: step,
+    icon: '💭',
+    time: '',
+    sortKey: firstLlmTime,
+    sortOrder: 2 + idx, // after routing (sortOrder 0/1), before LLM calls (sortOrder 0 but later timestamp)
+    idx,
+  }));
+
   type TimelineEvent =
     | (typeof routingEvents)[number]
     | (typeof messageEvents)[number]
     | (typeof llmEvents)[number]
+    | (typeof toolEvents)[number]
+    | (typeof thinkingEvents)[number]
     | (typeof approvalEvents)[number]
     | (typeof submissionEvents)[number];
 
   const allEvents: TimelineEvent[] = [
     ...routingEvents,
+    ...thinkingEvents,
     ...llmEvents,
+    ...toolEvents,
     ...messageEvents,
     ...approvalEvents,
     ...submissionEvents,
@@ -353,62 +397,35 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
   return (
     <div style={{ marginBottom: '1rem' }}>
       <div style={{
-        fontSize: '0.7rem',
-        fontWeight: 600,
-        textTransform: 'uppercase',
-        letterSpacing: '0.06em',
-        color: '#999',
-        marginBottom: '0.6rem',
+        fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
+        letterSpacing: '0.06em', color: '#999', marginBottom: '0.6rem',
       }}>
         Activity
       </div>
       <div style={{ position: 'relative', paddingLeft: '1.5rem' }}>
-        {/* Vertical line */}
         <div style={{
-          position: 'absolute',
-          left: '0.45rem',
-          top: 4,
-          bottom: 4,
-          width: 2,
-          backgroundColor: '#e8e8e8',
-          borderRadius: 1,
+          position: 'absolute', left: '0.45rem', top: 4, bottom: 4,
+          width: 2, backgroundColor: '#e8e8e8', borderRadius: 1,
         }} />
 
         {allEvents.map((evt, i) => {
           if (evt.type === 'llm') {
-            const isExpanded = expandedCalls.has(evt.call.id);
+            const key = `llm-${evt.call.id}`;
+            const isExpanded = expandedItems.has(key);
             return (
-              <div key={`llm-${evt.call.id}`} style={{ marginBottom: '0.5rem', position: 'relative' }}>
-                <div
-                  onClick={() => toggleCall(evt.call.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    cursor: 'pointer',
-                  }}
-                >
+              <div key={key} style={{ marginBottom: '0.5rem', position: 'relative' }}>
+                <div onClick={() => toggle(key)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
                   <div style={{
-                    position: 'absolute',
-                    left: '-1.15rem',
-                    top: 2,
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    backgroundColor: '#c4a882',
+                    position: 'absolute', left: '-1.15rem', top: 2,
+                    width: 8, height: 8, borderRadius: '50%', backgroundColor: '#c4a882',
                   }} />
                   <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: '0.78rem', color: '#333' }}>
-                      {evt.icon} {evt.label}
-                    </span>
+                    <span style={{ fontSize: '0.78rem', color: '#333' }}>{evt.icon} {evt.label}</span>
+                    <span style={{ fontSize: '0.65rem', color: '#aaa', marginLeft: '0.35rem' }}>{evt.call.model}</span>
                     {evt.call.duration_ms != null && (
                       <span style={{
-                        fontSize: '0.6rem',
-                        fontWeight: 600,
-                        padding: '0.1rem 0.35rem',
-                        borderRadius: 8,
-                        backgroundColor: '#fefcbf',
-                        color: '#975a16',
-                        marginLeft: '0.4rem',
+                        fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
+                        borderRadius: 8, backgroundColor: '#fefcbf', color: '#975a16', marginLeft: '0.4rem',
                       }}>
                         {evt.call.duration_ms}ms
                       </span>
@@ -423,103 +440,168 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
             );
           }
 
-          // Approval events
-          if (evt.type === 'approval') {
-            const isApproved = evt.label === 'Task approved';
+          if (evt.type === 'tool') {
+            const key = `tool-${evt.tc.id}`;
+            const isExpanded = expandedItems.has(key);
+            const isFailed = evt.tc.status === 'failed';
             return (
-              <div key={`approval-${i}`} style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                marginBottom: '0.5rem',
-                position: 'relative',
-              }}>
-                <div style={{
-                  position: 'absolute',
-                  left: '-1.15rem',
-                  top: 2,
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  backgroundColor: isApproved ? '#28a745' : '#dc3545',
-                }} />
-                <div style={{ flex: 1 }}>
-                  <span style={{ fontSize: '0.78rem', color: '#333', fontWeight: 600 }}>
-                    {evt.icon} {evt.label}
-                  </span>
-                  <span style={{ fontSize: '0.72rem', color: '#888', marginLeft: '0.4rem' }}>
-                    {evt.detail}
+              <div key={key} style={{ marginBottom: '0.5rem', position: 'relative' }}>
+                <div onClick={() => toggle(key)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
+                  <div style={{
+                    position: 'absolute', left: '-1.15rem', top: 2,
+                    width: 8, height: 8, borderRadius: '50%',
+                    backgroundColor: isFailed ? '#f56565' : '#4d65ff',
+                  }} />
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: '0.78rem', color: isFailed ? '#c53030' : '#333' }}>
+                      {evt.icon} {evt.label}
+                    </span>
+                    {evt.tc.duration_ms != null && (
+                      <span style={{
+                        fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
+                        borderRadius: 8, backgroundColor: '#e8f0fe', color: '#1a56db', marginLeft: '0.4rem',
+                      }}>
+                        {evt.tc.duration_ms}ms
+                      </span>
+                    )}
+                    {isFailed && (
+                      <span style={{
+                        fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
+                        borderRadius: 8, backgroundColor: '#fff5f5', color: '#c53030', marginLeft: '0.4rem',
+                      }}>
+                        FAILED
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>
+                    {evt.time}
                   </span>
                 </div>
-                <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>
-                  {evt.time}
-                </span>
+                {isExpanded && <ToolCallDetail tc={evt.tc} />}
               </div>
             );
           }
 
-          // Submission events
+          if (evt.type === 'approval') {
+            const isApproved = evt.label === 'Task approved';
+            return (
+              <div key={`approval-${i}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.5rem', position: 'relative' }}>
+                <div style={{
+                  position: 'absolute', left: '-1.15rem', top: 2,
+                  width: 8, height: 8, borderRadius: '50%',
+                  backgroundColor: isApproved ? '#28a745' : '#dc3545',
+                }} />
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontSize: '0.78rem', color: '#333', fontWeight: 600 }}>{evt.icon} {evt.label}</span>
+                  <span style={{ fontSize: '0.72rem', color: '#888', marginLeft: '0.4rem' }}>{evt.detail}</span>
+                </div>
+                <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>{evt.time}</span>
+              </div>
+            );
+          }
+
           if (evt.type === 'submission') {
             const isSuccess = evt.label === 'Submitted to external system';
             return (
-              <div key={`submission-${i}`} style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                marginBottom: '0.5rem',
-                position: 'relative',
-              }}>
+              <div key={`submission-${i}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.5rem', position: 'relative' }}>
                 <div style={{
-                  position: 'absolute',
-                  left: '-1.15rem',
-                  top: 2,
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
+                  position: 'absolute', left: '-1.15rem', top: 2,
+                  width: 8, height: 8, borderRadius: '50%',
                   backgroundColor: isSuccess ? '#4d65ff' : '#dc3545',
                 }} />
                 <div style={{ flex: 1 }}>
-                  <span style={{ fontSize: '0.78rem', color: '#333', fontWeight: 600 }}>
-                    {evt.icon} {evt.label}
-                  </span>
-                  <div style={{ fontSize: '0.72rem', color: '#666', marginTop: '0.15rem' }}>
-                    {evt.detail}
-                  </div>
+                  <span style={{ fontSize: '0.78rem', color: '#333', fontWeight: 600 }}>{evt.icon} {evt.label}</span>
+                  <div style={{ fontSize: '0.72rem', color: '#666', marginTop: '0.15rem' }}>{evt.detail}</div>
                 </div>
-                <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>
-                  {evt.time}
-                </span>
+                <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>{evt.time}</span>
+              </div>
+            );
+          }
+
+          if (evt.type === 'thinking') {
+            return (
+              <div key={`thinking-${evt.idx}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.35rem', position: 'relative' }}>
+                <div style={{
+                  position: 'absolute', left: '-1.15rem', top: 2,
+                  width: 8, height: 8, borderRadius: '50%', backgroundColor: '#b0b0b0',
+                }} />
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontSize: '0.72rem', color: '#888' }}>{evt.icon} {evt.label}</span>
+                  <span style={{
+                    fontSize: '0.6rem', fontWeight: 600, marginLeft: '0.4rem',
+                    padding: '0.1rem 0.35rem', borderRadius: 8,
+                    backgroundColor: '#f3f0f8', color: '#6c3483',
+                  }}>
+                    event
+                  </span>
+                </div>
               </div>
             );
           }
 
           // Routing or message events
-          const dotColor = evt.type === 'routing'
-            ? '#ccc'
-            : ('role' in evt && evt.role === 'user' ? '#c4a882' : '#48bb78');
+          if (evt.type === 'message') {
+            const isUser = evt.role === 'user';
+            const dotColor = isUser ? '#c4a882' : '#48bb78';
+            const isExpanded = expandedMessages.has(evt.index);
+            const preview = evt.text.length > 120 ? evt.text.slice(0, 120) + '…' : evt.text;
+            return (
+              <div key={`msg-${i}`} style={{ marginBottom: '0.5rem', position: 'relative' }}>
+                <div
+                  onClick={() => toggleMsg(evt.index)}
+                  style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}
+                >
+                  <div style={{
+                    position: 'absolute', left: '-1.15rem', top: 2,
+                    width: 8, height: 8, borderRadius: '50%', backgroundColor: dotColor,
+                  }} />
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: '0.78rem', color: '#333' }}>{evt.icon} {evt.label}</span>
+                    <span style={{
+                      fontSize: '0.6rem', fontWeight: 600, marginLeft: '0.4rem',
+                      padding: '0.1rem 0.35rem', borderRadius: 8,
+                      backgroundColor: '#f0faf4', color: '#2f855a',
+                    }}>
+                      conversation
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>{evt.time}</span>
+                </div>
+                <div style={{
+                  marginTop: '0.25rem',
+                  marginLeft: '0.1rem',
+                  padding: '0.4rem 0.6rem',
+                  backgroundColor: isUser ? '#faf8f5' : '#f8fff9',
+                  border: `1px solid ${isUser ? '#e8ddd0' : '#c3e6cb'}`,
+                  borderRadius: 6,
+                  fontSize: '0.75rem',
+                  color: '#555',
+                  lineHeight: 1.4,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}>
+                  {isExpanded ? evt.text : preview}
+                  {evt.text.length > 120 && (
+                    <span style={{ color: '#999', marginLeft: '0.25rem', cursor: 'pointer' }}>
+                      {isExpanded ? ' (less)' : ''}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          }
 
+          // Routing events
           return (
-            <div key={`${evt.type}-${i}`} style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              marginBottom: '0.5rem',
-              position: 'relative',
-            }}>
+            <div key={`routing-${i}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.5rem', position: 'relative' }}>
               <div style={{
-                position: 'absolute',
-                left: '-1.15rem',
-                top: 2,
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                backgroundColor: dotColor,
+                position: 'absolute', left: '-1.15rem', top: 2,
+                width: 8, height: 8, borderRadius: '50%', backgroundColor: '#ccc',
               }} />
               <div style={{ flex: 1 }}>
-                <span style={{ fontSize: '0.78rem', color: evt.type === 'routing' ? '#555' : '#333' }}>
-                  {evt.icon} {evt.label}
-                </span>
+                <span style={{ fontSize: '0.78rem', color: '#555' }}>{evt.icon} {evt.label}</span>
               </div>
-              <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>
-                {evt.time}
-              </span>
+              <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>{evt.time}</span>
             </div>
           );
         })}

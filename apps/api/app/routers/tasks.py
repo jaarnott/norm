@@ -98,6 +98,7 @@ def _tool_use_task_to_dict(task: Task) -> dict:
         "conversation": conversation,
         "tool_calls": tool_calls,
         "llm_calls": llm_calls,
+        "thinking_steps": task.thinking_steps or [],
     }
 
 

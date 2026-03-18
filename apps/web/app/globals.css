@@ -5,6 +5,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #faf8f5; }
 .split-drag-handle:hover .split-drag-pill { opacity: 1 !important; }
 @keyframes thinking-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 .thinking-dot { animation: thinking-pulse 1.2s ease-in-out infinite; color: #6c3483; }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.streaming-cursor { display: inline-block; animation: blink 1s step-end infinite; }
 
 /* Markdown message styles */
 .markdown-message p { margin: 0.4em 0; }

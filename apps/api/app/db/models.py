@@ -89,6 +89,7 @@ class Task(Base):
     clarification_question = Column(Text)
     agent_loop_state = Column(JSON, nullable=True)
     pending_tool_call_ids = Column(JSON, nullable=True)
+    thinking_steps = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 

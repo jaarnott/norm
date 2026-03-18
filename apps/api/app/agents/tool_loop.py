@@ -31,7 +31,7 @@ def _emit_event(event: dict):
     """Emit an event to the client if a callback is set."""
     cb = getattr(_thread_local, 'event_callback', None)
     if cb:
-        logger.info("Emitting SSE event: type=%s", event.get("type"))
+        logger.debug("Emitting SSE event: type=%s", event.get("type"))
         cb(event)
     else:
         logger.debug("No event callback set, skipping event: type=%s", event.get("type"))
@@ -134,6 +134,7 @@ def _execute_loop(
     display_blocks: list[dict] = []
 
     for iteration in range(start_iteration, MAX_ITERATIONS + 1):
+        thinking_steps.append("Analyzing…")
         _emit_event({"type": "thinking", "text": "Analyzing…"})
 
         response, llm_call_id = call_llm_with_tools(
@@ -151,6 +152,7 @@ def _execute_loop(
             text = _extract_text(response)
             db.add(Message(task_id=task.id, role="assistant", content=text, display_blocks=display_blocks or None))
             task.status = "completed" if task.status == "in_progress" else task.status
+            task.thinking_steps = thinking_steps or None
             db.commit()
             return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
 
@@ -183,6 +185,9 @@ def _execute_loop(
                     db.add(tc)
                     db.flush()
 
+                    readable = action.replace("_", " ")
+                    thinking_steps.append(f"Fetching {readable} from {connector}…")
+                    _emit_event({"type": "thinking", "text": f"Fetching {readable} from {connector}…"})
                     result = _execute_tool_call(tc, db)
                     tool_results.append({
                         "type": "tool_result",
@@ -233,6 +238,8 @@ def _execute_loop(
                         db.add(tc)
                         db.flush()
 
+                        thinking_steps.append(f"Preparing {action.replace('_', ' ')} on {connector}…")
+                        _emit_event({"type": "thinking", "text": f"Preparing {action.replace('_', ' ')} on {connector}…"})
                         doc = _upsert_working_document(
                             db, task.id, connector, wd_config,
                             block.input or {}, block.input,
@@ -313,6 +320,7 @@ def _execute_loop(
                 approval_text = "I'd like to perform the following actions:\n\n" + "\n".join(f"- {d}" for d in desc_parts) + "\n\nPlease approve or reject."
 
                 db.add(Message(task_id=task.id, role="assistant", content=approval_text, display_blocks=display_blocks or None))
+                task.thinking_steps = thinking_steps or None
                 db.commit()
                 return _build_response(task, db, approval_text, thinking_steps=thinking_steps, display_blocks=display_blocks)
 
@@ -325,12 +333,14 @@ def _execute_loop(
             # Unexpected stop reason — treat as end_turn
             text = _extract_text(response)
             db.add(Message(task_id=task.id, role="assistant", content=text, display_blocks=display_blocks or None))
+            task.thinking_steps = thinking_steps or None
             db.commit()
             return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
 
     # Max iterations reached
     text = "I've gathered what I can. Let me know if you need anything else or want me to continue."
     db.add(Message(task_id=task.id, role="assistant", content=text, display_blocks=display_blocks or None))
+    task.thinking_steps = thinking_steps or None
     db.commit()
     return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
 
@@ -545,7 +555,18 @@ def _build_display_block(tool_def: dict, result_payload: dict | None) -> dict | 
 
 
 def _serialize_block(block) -> dict:
-    """Serialize an Anthropic content block for JSON storage."""
+    """Serialize an Anthropic content block for re-use in message history.
+
+    Only include fields that the API accepts — model_dump() on streaming
+    response blocks can include internal extras (e.g. parsed_output) that
+    cause 400 errors when the block is sent back as assistant message content.
+    """
+    block_type = getattr(block, "type", None)
+    if block_type == "text":
+        return {"type": "text", "text": block.text}
+    if block_type == "tool_use":
+        return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    # Fallback: use model_dump but strip any unknown extras
     if hasattr(block, "model_dump"):
         return block.model_dump()
     return {"type": "text", "text": str(block)}
@@ -570,7 +591,6 @@ def _build_response(task: Task, db: Session, text: str, thinking_steps: list[str
         for m in sorted(task.messages, key=lambda x: x.created_at)
     ]
 
-    # Lightweight tool call summaries (no result_payload / rendered_request)
     tool_calls = [
         {
             "id": tc.id,
@@ -581,6 +601,7 @@ def _build_response(task: Task, db: Session, text: str, thinking_steps: list[str
             "method": tc.method,
             "input_params": tc.input_params,
             "status": tc.status,
+            "result_payload": tc.result_payload,
             "error_message": tc.error_message,
             "duration_ms": tc.duration_ms,
             "created_at": tc.created_at.isoformat() if tc.created_at else None,
@@ -588,15 +609,19 @@ def _build_response(task: Task, db: Session, text: str, thinking_steps: list[str
         for tc in sorted(task.tool_calls, key=lambda x: x.created_at)
     ]
 
-    # Lightweight LLM call summaries (no prompts / raw responses)
     llm_calls = [
         {
             "id": lc.id,
             "call_type": lc.call_type,
             "model": lc.model,
+            "system_prompt": lc.system_prompt,
+            "user_prompt": lc.user_prompt,
+            "raw_response": lc.raw_response,
+            "parsed_response": lc.parsed_response,
             "status": lc.status,
             "error_message": lc.error_message,
             "duration_ms": lc.duration_ms,
+            "tools_provided": lc.tools_provided,
             "created_at": lc.created_at.isoformat() if lc.created_at else None,
         }
         for lc in sorted(task.llm_calls, key=lambda x: x.created_at)

@@ -96,7 +96,7 @@ class BaseDomainAgent(ABC):
 
         Creates or loads a task, runs the tool loop, and returns the result.
         """
-        from app.agents.tool_loop import run_tool_loop
+        from app.agents.tool_loop import run_tool_loop, _emit_event
 
         system_prompt, anthropic_tools = self.get_tool_definitions(db)
         ctx = self.build_context(db, user_id)
@@ -123,6 +123,10 @@ class BaseDomainAgent(ABC):
             db.flush()
             db.add(Message(task_id=task.id, role="user", content=message))
             db.flush()
+
+        # Emit the real task ID immediately so the frontend can recover if
+        # the SSE connection drops during a long LLM call.
+        _emit_event({"type": "task_created", "task_id": task.id})
 
         return run_tool_loop(message, task, db, system_prompt, anthropic_tools, context=ctx)
 
