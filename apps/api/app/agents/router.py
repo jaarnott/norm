@@ -75,7 +75,9 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
             lines = [l for l in lines if not l.strip().startswith("```")]
             clean = "\n".join(lines).strip()
 
-        parsed = json.loads(clean)
+        # Extract just the first JSON object if the model returned extra text
+        decoder = json.JSONDecoder()
+        parsed, _ = decoder.raw_decode(clean)
 
         # Persist LLM call record
         if db is not None:

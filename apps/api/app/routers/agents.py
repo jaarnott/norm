@@ -81,11 +81,10 @@ def _agent_to_dict(
             "enabled": b["enabled"],
         })
 
-    # Build available_connectors: specs matching this agent's category that aren't bound
-    agent_category = slug  # agent slug maps to spec category
+    # Build available_connectors: any spec not already bound to this agent
     available_connectors = []
     for spec in specs_by_name.values():
-        if spec.connector_name not in bound_connector_names and spec.category == agent_category:
+        if spec.connector_name not in bound_connector_names:
             available_connectors.append({
                 "connector_name": spec.connector_name,
                 "display_name": spec.display_name,

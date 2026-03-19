@@ -91,7 +91,7 @@ def resume_tool_loop(
             tool_results_content.append({
                 "type": "tool_result",
                 "tool_use_id": tc.id,
-                "content": json.dumps(result),
+                "content": _slim_tool_result(result, tc.id),
             })
         elif tc.status == "rejected":
             tool_results_content.append({
@@ -134,9 +134,6 @@ def _execute_loop(
     display_blocks: list[dict] = []
 
     for iteration in range(start_iteration, MAX_ITERATIONS + 1):
-        thinking_steps.append("Analyzing…")
-        _emit_event({"type": "thinking", "text": "Analyzing…"})
-
         response, llm_call_id = call_llm_with_tools(
             system_prompt=system_prompt,
             messages=messages,
@@ -157,12 +154,35 @@ def _execute_loop(
             return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
 
         if response.stop_reason == "tool_use":
+            # The LLM is calling a tool. If it streamed text without the
+            # [Tool] prefix, the frontend may have routed it to conversation.
+            # Emit stream_cancel so the frontend clears any accidental
+            # streaming message.
+            _emit_event({"type": "stream_cancel"})
+
             # Process tool calls
             tool_results = []
             pending_writes: list[ToolCall] = []
 
             for block in response.content:
                 if block.type != "tool_use":
+                    continue
+
+                # Handle synthetic search tool
+                if block.name == "norm__search_tool_result":
+                    search_result = _search_tool_result(
+                        block.input.get("tool_call_id", ""),
+                        block.input.get("query", ""),
+                        block.input.get("fields"),
+                        db,
+                    )
+                    thinking_steps.append(f"Searching previous result for '{block.input.get('query', '')}'…")
+                    _emit_event({"type": "thinking", "text": f"Searching previous result for '{block.input.get('query', '')}'…"})
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": _truncate_tool_result(json.dumps(search_result)),
+                    })
                     continue
 
                 connector, action = _parse_tool_name(block.name)
@@ -172,6 +192,7 @@ def _execute_loop(
                 if _is_read_only(method):
                     # Auto-execute read-only tool
                     tc = ToolCall(
+                        id=block.id,
                         task_id=task.id,
                         llm_call_id=llm_call_id,
                         iteration=iteration,
@@ -189,14 +210,17 @@ def _execute_loop(
                     thinking_steps.append(f"Fetching {readable} from {connector}…")
                     _emit_event({"type": "thinking", "text": f"Fetching {readable} from {connector}…"})
                     result = _execute_tool_call(tc, db)
+
+                    # Look up tool def for summary_fields
+                    tool_def = _find_tool_def(connector, action, db)
+                    summary_fields = tool_def.get("summary_fields") if tool_def else None
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps(result),
+                        "content": _slim_tool_result(result, block.id, summary_fields=summary_fields),
                     })
 
                     # Build display block if tool has a display_component
-                    tool_def = _find_tool_def(connector, action, db)
                     if tool_def:
                         wd_config = tool_def.get("working_document")
                         if wd_config and tc.result_payload:
@@ -295,11 +319,13 @@ def _execute_loop(
                             }),
                         })
 
-            # Capture intermediate LLM text (its reasoning before tool calls)
+            # Capture intermediate LLM text (its reasoning before tool calls).
+            # Don't emit as a thinking event — the text was already streamed
+            # as token events. Prefix with [reasoning] so the Activity tab can
+            # distinguish it from short status thinking steps.
             intermediate_text = _extract_text(response)
             if intermediate_text and intermediate_text != "Done.":
-                thinking_steps.append(intermediate_text)
-                _emit_event({"type": "thinking", "text": intermediate_text})
+                thinking_steps.append(f"[reasoning] {intermediate_text}")
 
             if pending_writes:
                 # Serialize the assistant response content for state storage
@@ -463,6 +489,97 @@ def _parse_tool_name(name: str) -> tuple[str, str]:
     if len(parts) == 2:
         return parts[0], parts[1]
     return "unknown", name
+
+
+MAX_TOOL_RESULT_CHARS = 30_000  # ~7-8k tokens — keeps context budget in check
+
+
+def _truncate_tool_result(content: str) -> str:
+    """Simple character-level truncation — safety net for already-processed results."""
+    if len(content) <= MAX_TOOL_RESULT_CHARS:
+        return content
+    return content[:MAX_TOOL_RESULT_CHARS] + "\n\n[... truncated — result too large]"
+
+
+def _slim_tool_result(
+    raw_result: dict,
+    tool_call_id: str,
+    summary_fields: list[str] | None = None,
+    max_chars: int = MAX_TOOL_RESULT_CHARS,
+) -> str:
+    """Slim a large tool result for the LLM context.
+
+    If summary_fields is set, extracts only those fields from each item.
+    Otherwise, tells the LLM to use the search tool.
+    """
+    serialized = json.dumps(raw_result)
+    if len(serialized) <= max_chars:
+        return serialized
+
+    data = raw_result.get("data")
+
+    # Only handle array-of-objects (most common large result pattern)
+    if not isinstance(data, list) or len(data) == 0 or not isinstance(data[0], dict):
+        return serialized[:max_chars] + "\n\n[... truncated — result too large]"
+
+    if summary_fields:
+        # Strategy 1: Slim to configured summary_fields
+        slim_items = [{k: item.get(k) for k in summary_fields if k in item} for item in data]
+        summary = {
+            "_slimmed": True,
+            "_total_items": len(data),
+            "_fields_available": list(data[0].keys()),
+            "_showing_fields": summary_fields,
+            "_tool_call_id": tool_call_id,
+            "success": raw_result.get("success"),
+            "data": slim_items,
+        }
+        result = json.dumps(summary)
+        if len(result) <= max_chars:
+            return result
+        # Still too large even after slimming — fall through to strategy 2
+
+    # Strategy 2: Don't show data, tell Claude to search
+    return json.dumps({
+        "_too_large": True,
+        "_total_items": len(data),
+        "_fields_available": list(data[0].keys()),
+        "_tool_call_id": tool_call_id,
+        "success": raw_result.get("success"),
+        "message": (
+            f"Result contains {len(data)} items and is too large to display. "
+            f"Use norm__search_tool_result with tool_call_id '{tool_call_id}' "
+            f"and a search keyword to find specific items."
+        ),
+    })
+
+
+def _search_tool_result(tool_call_id: str, query: str, fields: str | None, db: Session) -> dict:
+    """Search through a stored tool call's result payload by keyword."""
+    tc = db.query(ToolCall).filter(ToolCall.id == tool_call_id).first()
+    if not tc or not tc.result_payload:
+        return {"error": "Tool call not found or has no stored result"}
+
+    data = tc.result_payload
+    if isinstance(data, dict):
+        data = data.get("data", data)
+
+    if not isinstance(data, list):
+        if query.lower() in json.dumps(data).lower():
+            return {"matches": [data], "total_matches": 1}
+        return {"matches": [], "total_matches": 0}
+
+    query_lower = query.lower()
+    matches = []
+    for item in data:
+        if query_lower in json.dumps(item).lower():
+            if fields:
+                field_list = [f.strip() for f in fields.split(",")]
+                matches.append({k: item.get(k) for k in field_list if k in item})
+            else:
+                matches.append(item)
+
+    return {"matches": matches, "total_matches": len(matches)}
 
 
 def _is_read_only(method: str) -> bool:

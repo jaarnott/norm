@@ -21,6 +21,7 @@ export interface ConnectorSpecTool {
   required_fields: string[];
   field_mapping: Record<string, string>;
   field_descriptions: Record<string, string>;
+  field_schema?: Record<string, unknown> | null;
   request_body_template: string | null;
   success_status_codes: number[];
   response_ref_path: string | null;
@@ -29,6 +30,7 @@ export interface ConnectorSpecTool {
   display_component?: string | null;
   display_props?: Record<string, unknown> | null;
   working_document?: { doc_type: string; sync_mode: string; ref_fields: string[] } | null;
+  summary_fields?: string[] | null;
 }
 
 export interface OAuthConfig {

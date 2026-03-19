@@ -5,7 +5,6 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agents.base import BaseDomainAgent
-from app.agents.procurement.prompt import PROCUREMENT_SYSTEM_PROMPT
 from app.agents.procurement.context import build_procurement_context
 from app.db.models import Task, Message, LlmCall
 from app.services.product_resolver import resolve_product
@@ -22,7 +21,7 @@ class ProcurementAgent(BaseDomainAgent):
         return "procurement"
 
     def _default_prompt(self) -> str:
-        return PROCUREMENT_SYSTEM_PROMPT
+        return ""
 
     def build_context(self, db: Session, user_id: str | None = None) -> dict:
         return build_procurement_context(db, user_id)

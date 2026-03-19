@@ -128,6 +128,9 @@ export default function Home() {
     // realTaskId is the confirmed backend ID — used for recovery re-fetches.
     let realTaskId: string | null = taskIdForRequest;
     let streamErrored = false;
+    let tokenBuffer = '';
+    let streamMode: 'pending' | 'tool' | 'conversation' = 'pending';
+    const TOOL_PREFIX = '[Tool] ';
 
     try {
       await apiStream(
@@ -147,25 +150,79 @@ export default function Home() {
                 thinking_steps: [`I'll get the ${event.agent_label || event.domain} agent to look at this one…`],
               } : t
             ));
+          } else if (event.type === 'stream_cancel') {
+            // LLM called a tool but didn't use [Tool] prefix — clear any
+            // streaming message that was accidentally shown in conversation.
+            streamMode = 'pending';
+            tokenBuffer = '';
+            setTasks(prev => prev.map(t => {
+              if (t.id !== currentId) return t;
+              const conv = t.conversation || [];
+              return { ...t, conversation: conv.filter(m => m.role !== 'streaming') };
+            }));
           } else if (event.type === 'thinking') {
+            // New LLM iteration starting — reset token buffer for next stream
+            streamMode = 'pending';
+            tokenBuffer = '';
             setTasks(prev => prev.map(t => {
               if (t.id !== currentId) return t;
               return {
                 ...t,
                 thinking_steps: [...(t.thinking_steps || []), event.text || ''],
-                conversation: (t.conversation || []).filter(m => m.role !== 'streaming'),
               };
             }));
           } else if (event.type === 'token') {
-            setTasks(prev => prev.map(t => {
-              if (t.id !== currentId) return t;
-              const conv = t.conversation || [];
-              const last = conv[conv.length - 1];
-              if (last?.role === 'streaming') {
-                return { ...t, conversation: [...conv.slice(0, -1), { ...last, text: last.text + (event.text || '') }] };
+            tokenBuffer += event.text || '';
+
+            if (streamMode === 'pending') {
+              if (tokenBuffer.startsWith(TOOL_PREFIX)) {
+                // Detected [Tool] prefix — route to thinking steps
+                streamMode = 'tool';
+                const explanation = tokenBuffer.slice(TOOL_PREFIX.length);
+                setTasks(prev => prev.map(t => {
+                  if (t.id !== currentId) return t;
+                  return {
+                    ...t,
+                    thinking_steps: [...(t.thinking_steps || []).filter(s => !s.startsWith('🔧 ')), '🔧 ' + explanation],
+                    conversation: (t.conversation || []).filter(m => m.role !== 'streaming'),
+                  };
+                }));
+              } else if (tokenBuffer.length >= TOOL_PREFIX.length) {
+                // Enough chars to know it's NOT a tool prefix — it's the final answer
+                streamMode = 'conversation';
+                setTasks(prev => prev.map(t => {
+                  if (t.id !== currentId) return t;
+                  return {
+                    ...t,
+                    thinking_steps: [],
+                    conversation: [...(t.conversation || []).filter(m => m.role !== 'streaming'),
+                      { role: 'streaming' as const, text: tokenBuffer }],
+                  };
+                }));
               }
-              return { ...t, thinking_steps: [], conversation: [...conv, { role: 'streaming' as const, text: event.text || '' }] };
-            }));
+              // else: still accumulating, wait for more tokens
+            } else if (streamMode === 'tool') {
+              // More tokens for tool explanation — update the thinking step
+              const explanation = tokenBuffer.slice(TOOL_PREFIX.length);
+              setTasks(prev => prev.map(t => {
+                if (t.id !== currentId) return t;
+                return {
+                  ...t,
+                  thinking_steps: [...(t.thinking_steps || []).filter(s => !s.startsWith('🔧 ')), '🔧 ' + explanation],
+                };
+              }));
+            } else {
+              // conversation mode — append to streaming message
+              setTasks(prev => prev.map(t => {
+                if (t.id !== currentId) return t;
+                const conv = t.conversation || [];
+                const last = conv[conv.length - 1];
+                if (last?.role === 'streaming') {
+                  return { ...t, conversation: [...conv.slice(0, -1), { ...last, text: last.text + (event.text || '') }] };
+                }
+                return { ...t, conversation: [...conv, { role: 'streaming' as const, text: event.text || '' }] };
+              }));
+            }
           } else if (event.type === 'complete') {
             const data = event.data as Task;
             setTasks(prev => {

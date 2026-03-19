@@ -23,12 +23,14 @@ class ToolSchema(BaseModel):
     required_fields: list[str] = []
     field_mapping: dict = {}
     field_descriptions: dict = {}
+    field_schema: dict | None = None
     request_body_template: str | None = None
     success_status_codes: list[int] = [200, 201]
     response_ref_path: str | None = None
     timeout_seconds: int = 30
     display_component: str | None = None
     display_props: dict | None = None
+    summary_fields: list[str] | None = None
 
 
 class ConnectorSpecCreate(BaseModel):
@@ -273,16 +275,25 @@ async def test_spec(
     if not config_row:
         raise HTTPException(400, f"No credentials configured for {name}")
 
-    result, rendered = execute_spec(
-        spec, operation, body.extracted_fields, config_row.config, db,
-    )
-    return {
-        "success": result.success,
-        "reference": result.reference,
-        "response_payload": result.response_payload,
-        "error": result.error_message,
-        "rendered_request": rendered.to_audit_dict(),
-    }
+    try:
+        result, rendered = execute_spec(
+            spec, operation, body.extracted_fields, config_row.config, db,
+        )
+        return {
+            "success": result.success,
+            "reference": result.reference,
+            "response_payload": result.response_payload,
+            "error": result.error_message,
+            "rendered_request": rendered.to_audit_dict(),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "reference": None,
+            "response_payload": {},
+            "error": str(exc),
+            "rendered_request": None,
+        }
 
 
 @router.post("/generate")

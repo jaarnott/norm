@@ -96,7 +96,12 @@ async def upsert_connector(name: str, body: ConnectorConfigBody, db: Session = D
 
     row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
     if row:
-        row.config = body.config
+        # Merge: keep existing values for redacted fields
+        merged = dict(row.config)
+        for k, v in body.config.items():
+            if v != "••••••••":
+                merged[k] = v
+        row.config = merged
         row.enabled = "true" if body.enabled else "false"
     else:
         row = ConnectorConfig(
@@ -146,11 +151,23 @@ class TestBody(BaseModel):
 async def test_connector(name: str, body: TestBody, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
     if name == "bamboohr":
         import httpx
-        subdomain = body.config.get("subdomain", "")
-        api_key = body.config.get("api_key", "")
+        # Merge saved credentials with form values (skip redacted)
+        config_row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+        credentials = dict(config_row.config) if config_row else {}
+        for k, v in body.config.items():
+            if v and v != "••••••••":
+                credentials[k] = v
+        subdomain = credentials.get("subdomain", "")
+        api_key = credentials.get("api_key", "")
         if not subdomain or not api_key:
             raise HTTPException(400, "subdomain and api_key are required")
         url = f"https://{subdomain}.bamboohr.com/api/gateway.php/{subdomain}/v1/employees/directory"
+        rendered_request = {
+            "method": "GET",
+            "url": url,
+            "headers": {"Accept": "application/json", "Authorization": "[REDACTED]"},
+            "body": None,
+        }
         try:
             resp = httpx.get(
                 url,
@@ -159,17 +176,28 @@ async def test_connector(name: str, body: TestBody, db: Session = Depends(get_db
                 timeout=15.0,
             )
         except httpx.TimeoutException:
-            return {"success": False, "error": "Connection timed out"}
+            return {"success": False, "error": "Connection timed out", "rendered_request": rendered_request}
         except httpx.HTTPError as exc:
-            return {"success": False, "error": f"Network error: {exc}"}
+            return {"success": False, "error": f"Network error: {exc}", "rendered_request": rendered_request}
+
+        try:
+            response_payload = resp.json()
+        except Exception:
+            response_payload = {"body": resp.text[:500]}
 
         if resp.status_code == 200:
-            return {"success": True, "message": "Connected successfully"}
-        return {"success": False, "error": f"API returned status {resp.status_code}"}
+            return {"success": True, "message": "Connected successfully", "rendered_request": rendered_request, "response": response_payload}
+        return {"success": False, "error": f"API returned status {resp.status_code}", "rendered_request": rendered_request, "response": response_payload}
 
     if name == "anthropic":
         import anthropic
-        api_key = body.config.get("api_key", "")
+        # Merge saved credentials with form values (skip redacted)
+        config_row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+        credentials = dict(config_row.config) if config_row else {}
+        for k, v in body.config.items():
+            if v and v != "••••••••":
+                credentials[k] = v
+        api_key = credentials.get("api_key", "")
         if not api_key:
             raise HTTPException(400, "api_key is required")
         try:

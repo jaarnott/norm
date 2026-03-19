@@ -5,7 +5,6 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agents.base import BaseDomainAgent
-from app.agents.hr.prompt import HR_SYSTEM_PROMPT
 from app.agents.hr.context import build_hr_context
 from app.db.models import Task, Message, LlmCall
 from app.services.venue_resolver import resolve_venue
@@ -21,7 +20,7 @@ class HrAgent(BaseDomainAgent):
         return "hr"
 
     def _default_prompt(self) -> str:
-        return HR_SYSTEM_PROMPT
+        return ""
 
     def build_context(self, db: Session, user_id: str | None = None) -> dict:
         return build_hr_context(db, user_id)

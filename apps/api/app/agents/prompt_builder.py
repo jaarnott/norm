@@ -74,6 +74,7 @@ def _collect_tools(domain: str, db: Session) -> list[dict]:
                     "required_fields": tool.get("required_fields", []),
                     "field_mapping": tool.get("field_mapping", {}),
                     "field_descriptions": tool.get("field_descriptions", {}),
+                    "field_schema": tool.get("field_schema", {}),
                     "method": tool.get("method", "POST"),
                     "description": tool.get("description", ""),
                 }
@@ -182,6 +183,20 @@ def build_tool_definitions(domain: str, db: Session) -> tuple[str, list[dict]]:
     if not tools:
         return "", []
 
+    # Only include domain-specific instructions if the user has explicitly
+    # customized the prompt in the Settings UI.  The hardcoded defaults are
+    # interpretation prompts ("return JSON only") that conflict with tool-use.
+    from app.db.models import AgentConfig
+    config_row = db.query(AgentConfig).filter(AgentConfig.agent_slug == domain).first()
+    domain_instructions = config_row.system_prompt if config_row and config_row.system_prompt is not None else None
+
+    domain_section = ""
+    if domain_instructions and domain_instructions.strip():
+        domain_section = f"""
+## Domain-specific instructions
+{domain_instructions}
+"""
+
     system_prompt = f"""\
 You are the {domain} agent for Norm, a hospitality operations platform.
 You help users by using the available tools to query data and perform actions.
@@ -202,7 +217,9 @@ Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use th
 - Prefer action over clarification. For read operations, make reasonable assumptions and proceed. Only ask for clarification when essential info is truly missing for a write operation.
 - Be concise and helpful.
 - IMPORTANT: When calling tools, use the EXACT format specified in the field description. If it says "ISO 8601 format with timezone (e.g., 2026-03-23T07:00:00+13:00)", use that exact format including the timezone offset. Do NOT use other date formats. The example value in the description shows the correct format — follow it precisely.
-
+- IMPORTANT: When you are about to call a tool, you MUST start your text response with the prefix "[Tool] " followed by a brief explanation of what you are looking up or doing and why. Example: "[Tool] Looking up staff orders for last week to find Arthur's sales data." Do NOT use the [Tool] prefix when giving your final answer to the user.
+- Tool results may be slimmed (showing only key fields) or too large to display. Look for `_slimmed: true` or `_too_large: true` in results. Use `norm__search_tool_result` to search the full data by keyword or get complete details for specific items. Never assume an item doesn't exist just because you can't see it — always search first.
+{domain_section}
 ## Formatting
 - Write a concise natural language summary of results. Structured data may be displayed separately.
 - If presenting tabular data in text, use markdown tables.
@@ -223,7 +240,16 @@ Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use th
         # Build properties from required_fields
         properties: dict = {}
         field_descs = tool.get("field_descriptions") or {}
+        field_schemas = tool.get("field_schema") or {}
         for field in tool["required_fields"]:
+            # Use explicit schema if provided (supports nested objects/arrays)
+            if field in field_schemas:
+                prop = {**field_schemas[field]}
+                if "description" not in prop:
+                    prop["description"] = field_descs.get(field, field)
+                properties[field] = prop
+                continue
+
             api_name = tool["field_mapping"].get(field, field)
             desc_parts = []
             hint = field_descs.get(field, "")
@@ -231,7 +257,7 @@ Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use th
                 desc_parts.append(hint)
             if api_name != field:
                 desc_parts.append(f"Maps to API field: {api_name}")
-            prop: dict = {
+            prop = {
                 "type": "string",
                 "description": ". ".join(desc_parts) if desc_parts else field,
             }
@@ -256,6 +282,35 @@ Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use th
                 "additionalProperties": False,
             },
         })
+
+    # Add the built-in search tool for large results
+    anthropic_tools.append({
+        "name": "norm__search_tool_result",
+        "description": (
+            "[GET] Search through a previous tool call's full result by keyword. "
+            "Use when a result was too large or slimmed (_slimmed or _too_large) "
+            "and you need to find specific items or get full details."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tool_call_id": {
+                    "type": "string",
+                    "description": "The _tool_call_id from the slimmed/large result",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search keyword (case-insensitive match across all field values)",
+                },
+                "fields": {
+                    "type": "string",
+                    "description": "Optional: comma-separated field names to return. Omit for all fields.",
+                },
+            },
+            "required": ["tool_call_id", "query"],
+            "additionalProperties": False,
+        },
+    })
 
     logger.info(
         "Built %d Anthropic tool definitions for domain=%s",

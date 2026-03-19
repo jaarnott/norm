@@ -2,10 +2,7 @@
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Venue, Product
-
-AVAILABLE_DATA_SOURCES = ["sales", "inventory"]
-METRIC_OPTIONS = ["revenue", "quantity", "cost", "margin", "stock_level"]
+from app.db.models import Task, Venue
 
 
 def build_reports_context(db: Session, user_id: str | None = None) -> dict:
@@ -13,17 +10,7 @@ def build_reports_context(db: Session, user_id: str | None = None) -> dict:
     venues = db.query(Venue).all()
     venue_names = [v.name for v in venues]
 
-    products = db.query(Product).all()
-    product_candidates = [p.name for p in products]
-
-    ctx: dict = {
-        "venue_names": venue_names,
-        "product_candidates": product_candidates,
-        "available_data_sources": AVAILABLE_DATA_SOURCES,
-        "metric_options": METRIC_OPTIONS,
-    }
-
-    return ctx
+    return {"venue_names": venue_names}
 
 
 def _report_task_to_dict(task: Task) -> dict:

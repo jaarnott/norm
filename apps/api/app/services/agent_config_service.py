@@ -4,31 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.db.models import AgentConfig, AgentConnectorBinding
 
-# Lazy-loaded defaults to avoid circular imports at module level
-_DEFAULTS: dict[str, str] | None = None
-
-
-def _load_defaults() -> dict[str, str]:
-    global _DEFAULTS
-    if _DEFAULTS is None:
-        from app.agents.procurement.prompt import PROCUREMENT_SYSTEM_PROMPT
-        from app.agents.hr.prompt import HR_SYSTEM_PROMPT
-        from app.agents.reports.prompt import REPORTS_SYSTEM_PROMPT
-        from app.agents.router import ROUTER_PROMPT
-
-        _DEFAULTS = {
-            "procurement": PROCUREMENT_SYSTEM_PROMPT,
-            "hr": HR_SYSTEM_PROMPT,
-            "reports": REPORTS_SYSTEM_PROMPT,
-            "router": ROUTER_PROMPT,
-        }
-    return _DEFAULTS
-
-
 def get_default_prompt(agent_slug: str) -> str:
-    """Return the hardcoded default prompt for an agent slug."""
-    defaults = _load_defaults()
-    return defaults.get(agent_slug, "")
+    """Return empty string — prompts are managed in the DB via Settings UI."""
+    return ""
 
 
 def get_system_prompt(agent_slug: str, db: Session) -> str:

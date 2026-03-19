@@ -59,8 +59,6 @@ const CODE_STYLE: React.CSSProperties = {
   lineHeight: 1.4,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
-  maxHeight: 300,
-  overflowY: 'auto',
 };
 
 const SECTION_LABEL_STYLE: React.CSSProperties = {
@@ -360,15 +358,19 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
   // Thinking steps — SSE events shown to user during processing (no timestamps).
   // Place them between routing and the first LLM call using interpolated sort keys.
   const firstLlmTime = llmEvents.length > 0 ? llmEvents[0].sortKey : createdAt;
-  const thinkingEvents = (thinkingSteps || []).map((step, idx) => ({
-    type: 'thinking' as const,
-    label: step,
-    icon: '💭',
-    time: '',
-    sortKey: firstLlmTime,
-    sortOrder: 2 + idx, // after routing (sortOrder 0/1), before LLM calls (sortOrder 0 but later timestamp)
-    idx,
-  }));
+  const thinkingEvents = (thinkingSteps || []).map((step, idx) => {
+    const isReasoning = step.startsWith('[reasoning] ');
+    return {
+      type: 'thinking' as const,
+      label: isReasoning ? step.slice('[reasoning] '.length) : step,
+      icon: isReasoning ? '🗨️' : '💭',
+      isReasoning,
+      time: '',
+      sortKey: firstLlmTime,
+      sortOrder: 2 + idx, // after routing (sortOrder 0/1), before LLM calls (sortOrder 0 but later timestamp)
+      idx,
+    };
+  });
 
   type TimelineEvent =
     | (typeof routingEvents)[number]
@@ -530,9 +532,10 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
                   <span style={{
                     fontSize: '0.6rem', fontWeight: 600, marginLeft: '0.4rem',
                     padding: '0.1rem 0.35rem', borderRadius: 8,
-                    backgroundColor: '#f3f0f8', color: '#6c3483',
+                    backgroundColor: evt.isReasoning ? '#eef6ff' : '#f3f0f8',
+                    color: evt.isReasoning ? '#2563eb' : '#6c3483',
                   }}>
-                    event
+                    {evt.isReasoning ? 'reasoning' : 'event'}
                   </span>
                 </div>
               </div>

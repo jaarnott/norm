@@ -138,20 +138,22 @@ function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlock
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
       {messages.map((m, i) => {
         const isUser = m.role === 'user';
-        const hasTable = !isUser && /\|.+\|/.test(m.text);
         const hasDisplayBlocks = !isUser && m.display_blocks && m.display_blocks.length > 0;
-        const fullWidth = hasTable || hasDisplayBlocks;
+        const hasTable = !isUser && /\|.+\|/.test(m.text);
+        const wideContent = hasDisplayBlocks || hasTable;
         return (
           <div
             key={i}
             style={{
+              maxWidth: hasDisplayBlocks ? 950 : 768,
+              margin: '0 auto',
+              width: '100%',
               display: 'flex',
               justifyContent: isUser ? 'flex-end' : 'flex-start',
             }}
           >
             <div style={{
-              width: fullWidth ? '100%' : undefined,
-              maxWidth: fullWidth ? '100%' : '80%',
+              maxWidth: isUser ? '80%' : wideContent ? '100%' : '90%',
               padding: '0.75rem 1rem',
               borderRadius: isUser ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
               backgroundColor: isUser ? '#f5f0ea' : 'transparent',
@@ -177,9 +179,6 @@ function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlock
               {isUser ? m.text : (
                 <div className="markdown-message">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
-                  {m.role === 'streaming' && (
-                    <span className="streaming-cursor">▋</span>
-                  )}
                 </div>
               )}
             </div>
@@ -772,7 +771,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
             {tabsRow}
             <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
               {activeTab === 'conversation' && (
-                <div style={{ maxWidth: 768, margin: '0 auto' }}>
+                <div style={{ maxWidth: 950, margin: '0 auto' }}>
                   <ConversationView
                     messages={messages}
                     onWidgetAction={onWidgetAction ? (action) => onWidgetAction(task.id, action) : undefined}
@@ -799,7 +798,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
           {/* Non-split: tab content + input */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
             {activeTab === 'conversation' && (
-              <div style={{ maxWidth: 768, margin: '0 auto' }}>
+              <div style={{ maxWidth: 950, margin: '0 auto' }}>
                 <ConversationView messages={messages}
                   onWidgetAction={onWidgetAction ? (action) => onWidgetAction(task.id, action) : undefined}
                   taskId={task.id}

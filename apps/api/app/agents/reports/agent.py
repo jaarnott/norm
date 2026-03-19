@@ -5,7 +5,6 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agents.base import BaseDomainAgent
-from app.agents.reports.prompt import REPORTS_SYSTEM_PROMPT
 from app.agents.reports.context import build_reports_context, _report_task_to_dict
 from app.agents.reports.planner import create_report_plan
 from app.agents.reports import tools as report_tools
@@ -21,7 +20,7 @@ class ReportsAgent(BaseDomainAgent):
         return "reports"
 
     def _default_prompt(self) -> str:
-        return REPORTS_SYSTEM_PROMPT
+        return ""
 
     def build_context(self, db: Session, user_id: str | None = None) -> dict:
         return build_reports_context(db, user_id)

@@ -20,6 +20,7 @@ const EMPTY_TOOL: ConnectorSpecTool = {
   required_fields: [],
   field_mapping: {},
   field_descriptions: {},
+  field_schema: null,
   request_body_template: null,
   success_status_codes: [200, 201],
   response_ref_path: null,
@@ -27,6 +28,7 @@ const EMPTY_TOOL: ConnectorSpecTool = {
   display_component: null,
   display_props: null,
   working_document: null,
+  summary_fields: null,
 };
 
 const EMPTY_SPEC: ConnectorSpecFull = {
@@ -333,6 +335,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
       const data = await res.json();
       if (!res.ok) {
         setTryError(`${mode === 'render' ? 'Render' : 'Test'} failed (${res.status}): ${data.detail || JSON.stringify(data)}`);
+        // Still show whatever data we got (e.g. rendered_request on partial failures)
+        if (mode === 'test') setTryTestResult(data);
       } else if (mode === 'render') {
         setTryDryRunResult(data.rendered_request || data);
       } else {
@@ -766,8 +770,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                 style={inputStyle}
               >
                 <option value="">Select a tool...</option>
-                {form.tools.map(t => (
-                  <option key={t.action} value={t.action}>
+                {form.tools.map((t, i) => (
+                  <option key={`${t.action}-${i}`} value={t.action}>
                     {t.action} ({t.method} {t.path_template})
                   </option>
                 ))}
@@ -872,44 +876,59 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   </div>
                 )}
 
-                {tryTestResult && (
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      marginBottom: '0.4rem',
-                    }}>
-                      <span style={{
-                        fontSize: '0.72rem',
-                        fontWeight: 600,
-                        padding: '2px 8px',
-                        borderRadius: 10,
-                        backgroundColor: tryTestResult.success ? '#d4edda' : '#f8d7da',
-                        color: tryTestResult.success ? '#155724' : '#721c24',
-                      }}>
-                        {tryTestResult.success ? 'SUCCESS' : 'FAILED'}
-                      </span>
-                      {'error' in tryTestResult && Boolean(tryTestResult.error) && (
-                        <span style={{ fontSize: '0.78rem', color: '#e53e3e' }}>
-                          {String(tryTestResult.error)}
+                {tryTestResult && (() => {
+                  const rendered = tryTestResult.rendered_request as Record<string, unknown> | undefined;
+                  const payload = tryTestResult.response_payload;
+                  const preStyle: React.CSSProperties = {
+                    padding: '0.75rem', backgroundColor: '#1a202c', color: '#e2e8f0',
+                    borderRadius: 6, fontSize: '0.72rem', overflow: 'auto', lineHeight: 1.5,
+                    margin: 0, maxHeight: 300,
+                  };
+                  const labelStyle: React.CSSProperties = {
+                    fontSize: '0.65rem', fontWeight: 600, color: '#666', marginBottom: 4,
+                    textTransform: 'uppercase', letterSpacing: '0.03em',
+                  };
+                  return (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.5rem' }}>
+                        <span style={{
+                          fontSize: '0.72rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                          backgroundColor: tryTestResult.success ? '#d4edda' : '#f8d7da',
+                          color: tryTestResult.success ? '#155724' : '#721c24',
+                        }}>
+                          {tryTestResult.success ? 'SUCCESS' : 'FAILED'}
                         </span>
+                        {'error' in tryTestResult && Boolean(tryTestResult.error) && (
+                          <span style={{ fontSize: '0.78rem', color: '#e53e3e' }}>{String(tryTestResult.error)}</span>
+                        )}
+                      </div>
+                      {rendered && rendered.url ? (
+                        <div style={{ marginBottom: '0.5rem' }}>
+                          <div style={labelStyle}>Request</div>
+                          <pre style={preStyle}>
+                            {`${rendered.method} ${rendered.url}\n`}
+                            {rendered.headers && Object.keys(rendered.headers as Record<string, string>).length > 0 &&
+                              `${Object.entries(rendered.headers as Record<string, string>).map(([k, v]) => `${k}: ${v}`).join('\n')}\n`}
+                            {rendered.body ? `\n${typeof rendered.body === 'string' ? rendered.body : JSON.stringify(rendered.body, null, 2)}` : ''}
+                          </pre>
+                        </div>
+                      ) : (
+                        <div style={{ marginBottom: '0.5rem' }}>
+                          <div style={labelStyle}>Request</div>
+                          <div style={{ fontSize: '0.78rem', color: '#888', fontStyle: 'italic' }}>
+                            No request was sent — check that required fields are filled in above.
+                          </div>
+                        </div>
                       )}
+                      <div style={{ marginBottom: '0.5rem' }}>
+                        <div style={labelStyle}>Response</div>
+                        <pre style={preStyle}>
+                          {payload ? JSON.stringify(payload, null, 2) : '(empty)'}
+                        </pre>
+                      </div>
                     </div>
-                    <pre style={{
-                      padding: '0.75rem',
-                      backgroundColor: '#1a202c',
-                      color: '#e2e8f0',
-                      borderRadius: 6,
-                      fontSize: '0.78rem',
-                      overflow: 'auto',
-                      lineHeight: 1.5,
-                      margin: 0,
-                    }}>
-                      {JSON.stringify(tryTestResult, null, 2)}
-                    </pre>
-                  </div>
-                )}
+                  );
+                })()}
               </>
             )}
           </div>
@@ -1218,6 +1237,19 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     />
                   </div>
                   <div style={{ marginTop: '0.5rem' }}>
+                    <label style={labelStyle}>Field Schema (JSON)</label>
+                    <div style={{ fontSize: '0.7rem', color: '#888', marginBottom: 4 }}>
+                      Define JSON Schema for complex fields (e.g., arrays with required properties). Overrides the default string type.
+                    </div>
+                    <JsonTextarea
+                      value={op.field_schema}
+                      onChange={v => updateTool(idx, 'field_schema', v)}
+                      autoResize
+                      placeholder='{"lines": {"type": "array", "items": {"type": "object", "properties": {...}, "required": [...]}}}'
+                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem' }}
+                    />
+                  </div>
+                  <div style={{ marginTop: '0.5rem' }}>
                     <label style={labelStyle}>Request Body Template (JSON)</label>
                     <AutoResizeTextarea
                       value={op.request_body_template || ''}
@@ -1254,6 +1286,21 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       placeholder='{"doc_type": "roster", "sync_mode": "auto", "ref_fields": ["search_date"]}'
                       style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
                     />
+                  </div>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <label style={labelStyle}>Summary Fields</label>
+                    <input
+                      value={(op.summary_fields || []).join(', ')}
+                      onChange={e => {
+                        const val = e.target.value.trim();
+                        updateTool(idx, 'summary_fields', val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : null);
+                      }}
+                      placeholder="name, id, sku, price"
+                      style={inputStyle}
+                    />
+                    <div style={{ fontSize: '0.7rem', color: '#999', marginTop: 2 }}>
+                      Comma-separated field names to show when result is too large. Leave empty to use search-only mode.
+                    </div>
                   </div>
                 </div>
               )}
