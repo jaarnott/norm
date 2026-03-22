@@ -1,5 +1,13 @@
 // Shared types and helpers for roster components
 
+export interface ShiftBreak {
+  id?: string;
+  breakStart: string;
+  breakEnd: string;
+  paid: boolean;
+  deletedAt?: string | null;
+}
+
 export interface Shift {
   id?: string;
   rosterId?: string;
@@ -10,7 +18,7 @@ export interface Shift {
   roleName?: string;
   clockinTime?: string;
   clockoutTime?: string;
-  breaks?: unknown[];
+  breaks?: ShiftBreak[];
   datestampDeleted?: string | null;
   [key: string]: unknown;
 }
@@ -18,6 +26,8 @@ export interface Shift {
 export interface StaffRow {
   id: string;
   name: string;
+  firstName: string;
+  lastName: string;
   role: string;
   shiftsByDay: Map<string, Shift[]>;
 }
@@ -34,6 +44,17 @@ export interface RosterMeta {
   endDate: Date | null;
   totalHours: number;
   rosterId: string;
+}
+
+export interface DragData {
+  shift: Shift;
+  sourceStaffId: string;
+}
+
+export interface DropData {
+  staffId: string;
+  staffFirstName: string;
+  staffLastName: string;
 }
 
 export const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -136,7 +157,7 @@ export function buildStaffRows(shifts: Shift[], days: Date[]): StaffRow[] {
     if (shift.datestampDeleted) continue;
     const sid = shift.staffMemberId || 'unknown';
     if (!staffMap.has(sid)) {
-      staffMap.set(sid, { id: sid, name: staffName(shift), role: shift.roleName || '', shiftsByDay: new Map() });
+      staffMap.set(sid, { id: sid, name: staffName(shift), firstName: shift.staffMemberFirstName || '', lastName: shift.staffMemberLastName || '', role: shift.roleName || '', shiftsByDay: new Map() });
     }
     const row = staffMap.get(sid)!;
     if (shift.clockinTime) {
@@ -150,6 +171,22 @@ export function buildStaffRows(shifts: Shift[], days: Date[]): StaffRow[] {
   }
 
   return Array.from(staffMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function snapToGrid(timeMs: number, intervalMinutes: number): number {
+  const ms = intervalMinutes * 60 * 1000;
+  return Math.round(timeMs / ms) * ms;
+}
+
+export function offsetToTime(offset: number, selectedDate: Date, hourWidth: number, dayStartHour: number): string {
+  const hours = offset / hourWidth + dayStartHour;
+  const totalMinutes = Math.round(hours * 60);
+  const d = new Date(selectedDate);
+  d.setHours(0, 0, 0, 0);
+  d.setMinutes(totalMinutes);
+  // Preserve timezone offset from original date
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00+13:00`;
 }
 
 export const formInputStyle: React.CSSProperties = {

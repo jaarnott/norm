@@ -32,7 +32,7 @@ export function setStoredUser(user: { id: string; email: string; full_name: stri
 export async function apiStream(
   url: string,
   body: Record<string, unknown>,
-  onEvent: (event: { type: string; text?: string; message?: string; data?: unknown; domain?: string; task_id?: string; title?: string; agent_label?: string }) => void,
+  onEvent: (event: { type: string; text?: string; message?: string; data?: unknown; domain?: string; task_id?: string; title?: string; agent_label?: string; used?: number; quota?: number }) => void,
 ): Promise<void> {
   const token = getToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };

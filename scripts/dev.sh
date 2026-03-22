@@ -22,6 +22,8 @@ echo "Installing frontend dependencies …"
 (cd "$WEB_DIR" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
 
 # ── 4. Docker services (Postgres) ─────────────────────────────────
+# Clean up stale containers from previous Codespace sessions
+docker compose -f "$ROOT/docker-compose.yml" rm -f 2>/dev/null || true
 docker compose -f "$ROOT/docker-compose.yml" up -d
 
 echo "Waiting for Postgres …"
@@ -41,6 +43,12 @@ if [ -n "$CODESPACE_NAME" ]; then
 fi
 
 # ── 7. Start API ──────────────────────────────────────────────────
+# Load .env file if it exists (exports vars like LLM_INTERPRETER_MODEL)
+if [ -f "$API_DIR/.env" ]; then
+  set -a
+  source "$API_DIR/.env"
+  set +a
+fi
 (cd "$API_DIR" && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000) &
 API_PID=$!
 

@@ -4,17 +4,12 @@ from sqlalchemy.orm import Session
 
 from app.db.models import AgentConfig, AgentConnectorBinding
 
-def get_default_prompt(agent_slug: str) -> str:
-    """Return empty string — prompts are managed in the DB via Settings UI."""
-    return ""
-
-
 def get_system_prompt(agent_slug: str, db: Session) -> str:
-    """DB lookup with fallback to hardcoded default."""
+    """Return the system prompt stored in the DB for this agent."""
     row = db.query(AgentConfig).filter(AgentConfig.agent_slug == agent_slug).first()
     if row and row.system_prompt is not None:
         return row.system_prompt
-    return get_default_prompt(agent_slug)
+    return ""
 
 
 def update_agent_config(agent_slug: str, db: Session, system_prompt: str | None = None, description: str | None = None, display_name: str | None = None) -> AgentConfig:
@@ -40,7 +35,7 @@ def update_agent_config(agent_slug: str, db: Session, system_prompt: str | None 
 
 
 def reset_prompt(agent_slug: str, db: Session) -> AgentConfig | None:
-    """Set system_prompt = None (revert to hardcoded default)."""
+    """Clear the custom system prompt for this agent."""
     row = db.query(AgentConfig).filter(AgentConfig.agent_slug == agent_slug).first()
     if row:
         row.system_prompt = None

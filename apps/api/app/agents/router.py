@@ -12,24 +12,6 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-ROUTER_PROMPT = """\
-You are a message router for Norm, a hospitality operations platform.
-Given a user message and the list of available domains, classify which domain
-should handle this message, and generate a short title for the task.
-
-Available domains:
-{domains}
-
-Title guidelines:
-- 3-6 words, no articles (a/an/the)
-- Describe the user's goal, not the domain (e.g. "Weekly roster request" not "HR query")
-- Use sentence case (capitalize first word only)
-- No trailing punctuation
-
-Return ONLY valid JSON:
-{{"domain": "<domain-slug or unknown>", "confidence": 0.0-1.0, "title": "<short task title>"}}
-"""
-
 
 def classify(message: str, domains: list[str], db: Session | None = None) -> dict:
     """Classify a message into a domain.
@@ -45,13 +27,18 @@ def classify(message: str, domains: list[str], db: Session | None = None) -> dic
 def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | None = None) -> dict:
     import anthropic
 
-    domain_desc = "\n".join(f"- {d}" for d in domains)
-    if db:
-        from app.services.agent_config_service import get_system_prompt as get_db_prompt
-        prompt_template = get_db_prompt("router", db)
-    else:
-        prompt_template = ROUTER_PROMPT
-    system = prompt_template.format(domains=domain_desc)
+    if not db:
+        raise RuntimeError("Router requires a DB session to load its system prompt")
+
+    from app.services.agent_config_service import get_system_prompt
+    prompt_template = get_system_prompt("router", db)
+    if not prompt_template:
+        raise RuntimeError("Router system prompt is not configured. Set it in Settings > Router.")
+
+    # Use .replace() instead of .format() — the prompt contains literal JSON
+    # braces that would break Python's string formatting.
+    domain_list = "\n".join(f"- {d}" for d in domains)
+    system = prompt_template.replace("{domains}", domain_list)
     model = os.environ.get("ROUTER_MODEL", "claude-haiku-4-5-20251001")
 
     client = anthropic.Anthropic(api_key=api_key)
@@ -79,6 +66,10 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
         decoder = json.JSONDecoder()
         parsed, _ = decoder.raw_decode(clean)
 
+        # Extract token usage
+        _input_tokens = response.usage.input_tokens if response.usage else None
+        _output_tokens = response.usage.output_tokens if response.usage else None
+
         # Persist LLM call record
         if db is not None:
             from app.db.models import LlmCall
@@ -92,6 +83,8 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
                 parsed_response=parsed,
                 status="success",
                 duration_ms=duration_ms,
+                input_tokens=_input_tokens,
+                output_tokens=_output_tokens,
             )
             db.add(record)
             db.flush()

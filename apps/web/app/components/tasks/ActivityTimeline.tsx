@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { ConversationMessage, LlmCall, ToolCallRecord } from '../../types';
 
 function classifyMessage(msg: ConversationMessage, index: number): {
@@ -104,6 +104,11 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
         </span>
         {call.duration_ms != null && (
           <span style={{ color: '#999', marginLeft: 'auto' }}>{call.duration_ms}ms</span>
+        )}
+        {(call.input_tokens != null || call.output_tokens != null) && (
+          <span style={{ color: '#bbb', fontSize: '0.68rem', marginLeft: '0.5rem' }}>
+            {call.input_tokens ?? 0}in / {call.output_tokens ?? 0}out tokens
+          </span>
         )}
       </div>
 
@@ -267,6 +272,26 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
 
+  const summary = useMemo(() => {
+    const calls = llmCalls || [];
+    const tools = (toolCalls || []).filter(tc => tc.status !== 'pending_approval');
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let llmDuration = 0;
+    let toolDuration = 0;
+    for (const c of calls) {
+      inputTokens += c.input_tokens ?? 0;
+      outputTokens += c.output_tokens ?? 0;
+      llmDuration += c.duration_ms ?? 0;
+    }
+    for (const t of tools) {
+      toolDuration += t.duration_ms ?? 0;
+    }
+    const totalTokens = inputTokens + outputTokens;
+    const totalDuration = ((llmDuration + toolDuration) / 1000).toFixed(1);
+    return { inputTokens, outputTokens, totalTokens, llmCount: calls.length, toolCount: tools.length, totalDuration };
+  }, [llmCalls, toolCalls]);
+
   if (!messages || messages.length === 0) return null;
 
   const toggle = (id: string) => {
@@ -338,9 +363,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
   const submissionEvents: { type: 'submission'; label: string; icon: string; detail: string; time: string; sortKey: string; sortOrder: number }[] = [];
   if (integrationRun) {
     const isSuccess = integrationRun.status === 'success';
-    const connectorLabel = integrationRun.connector === 'mock_supplier' ? 'Bidfood (mock)'
-      : integrationRun.connector === 'mock_hr' ? 'HR System (mock)'
-      : integrationRun.connector;
+    const connectorLabel = integrationRun.connector;
     let detail = `via ${connectorLabel}`;
     if (isSuccess && integrationRun.reference) detail += ` — ref: ${integrationRun.reference}`;
     if (!isSuccess && integrationRun.error) detail += ` — ${integrationRun.error}`;
@@ -404,6 +427,21 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
       }}>
         Activity
       </div>
+      {summary.totalTokens > 0 && (
+        <div style={{
+          fontSize: '0.7rem', color: '#888', marginBottom: '0.6rem',
+          padding: '0.4rem 0.6rem', backgroundColor: '#f8fafc', borderRadius: 6,
+          border: '1px solid #e8e8e8', display: 'flex', gap: '0.6rem', flexWrap: 'wrap',
+        }}>
+          <span><strong>{summary.totalTokens.toLocaleString()}</strong> tokens <span style={{ color: '#aaa' }}>({summary.inputTokens.toLocaleString()} in / {summary.outputTokens.toLocaleString()} out)</span></span>
+          <span style={{ color: '#ccc' }}>&middot;</span>
+          <span>{summary.llmCount} LLM calls</span>
+          <span style={{ color: '#ccc' }}>&middot;</span>
+          <span>{summary.toolCount} tool calls</span>
+          <span style={{ color: '#ccc' }}>&middot;</span>
+          <span>{summary.totalDuration}s</span>
+        </div>
+      )}
       <div style={{ position: 'relative', paddingLeft: '1.5rem' }}>
         <div style={{
           position: 'absolute', left: '0.45rem', top: 4, bottom: 4,
@@ -430,6 +468,14 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
                         borderRadius: 8, backgroundColor: '#fefcbf', color: '#975a16', marginLeft: '0.4rem',
                       }}>
                         {evt.call.duration_ms}ms
+                      </span>
+                    )}
+                    {evt.call.input_tokens != null && (
+                      <span style={{
+                        fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
+                        borderRadius: 8, backgroundColor: '#f0f0f0', color: '#666', marginLeft: '0.3rem',
+                      }}>
+                        {((evt.call.input_tokens ?? 0) + (evt.call.output_tokens ?? 0)).toLocaleString()} tokens
                       </span>
                     )}
                   </div>

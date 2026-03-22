@@ -5,7 +5,7 @@ export interface ConnectorSpecSummary {
   connector_name: string;
   display_name: string;
   category: string | null;
-  execution_mode: 'template' | 'agent';
+  execution_mode: 'template' | 'agent' | 'internal';
   auth_type: string;
   version: number;
   enabled: boolean;
@@ -31,6 +31,95 @@ export interface ConnectorSpecTool {
   display_props?: Record<string, unknown> | null;
   working_document?: { doc_type: string; sync_mode: string; ref_fields: string[] } | null;
   summary_fields?: string[] | null;
+  response_transform?: { enabled: boolean; fields: Record<string, string>; flatten?: string[]; filters?: { field: string; operator: string; value: string }[] } | null;
+  consolidator_config?: Record<string, unknown> | null;
+}
+
+export interface BillingInfo {
+  subscription: {
+    token_plan: 'basic' | 'standard' | 'max' | null;
+    token_quota: number;
+    status: 'active' | 'past_due' | 'canceled' | 'trialing' | null;
+    billing_cycle_start: string | null;
+    payment_method_last4: string | null;
+    payment_method_brand: string | null;
+  } | null;
+  usage: {
+    allowed: boolean;
+    used: number;
+    quota: number;
+    remaining: number;
+  };
+  agents: {
+    hr: boolean;
+    procurement: boolean;
+    reports: boolean;
+  };
+  venue_count: number;
+  monthly_cost_cents: number;
+  cost_breakdown: {
+    plan: number;
+    agents: number;
+    venues: number;
+  };
+}
+
+export interface StripeInvoice {
+  id: string;
+  amount_due: number;
+  amount_paid: number;
+  currency: string;
+  status: string;
+  created: number;
+  invoice_pdf: string | null;
+  hosted_invoice_url: string | null;
+}
+
+export type ChartType = 'bar' | 'stacked_bar' | 'line' | 'pie' | 'scatter' | 'bubble' | 'table';
+
+export interface ChartSpec {
+  chart_type: ChartType;
+  title: string;
+  x_axis: { key: string; label: string };
+  y_axis?: { key: string; label: string };
+  series: { key: string; label: string; color: string }[];
+  orientation?: 'vertical' | 'horizontal';
+}
+
+export interface ChartScript {
+  connector: string;
+  action: string;
+  params: Record<string, unknown>;
+}
+
+export interface ReportGridItem {
+  chart_id: string;
+  col: number;      // 1-based, 1-12
+  row: number;      // 1-based, auto-expanding
+  colSpan: number;  // 1-12
+  rowSpan: number;  // 1+
+}
+
+export interface SavedReport {
+  id: string;
+  title: string;
+  description: string | null;
+  layout: ReportGridItem[];
+  status: string;
+  charts: SavedReportChart[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedReportChart {
+  id: string;
+  title: string;
+  chart_type: ChartType;
+  chart_spec: ChartSpec;
+  data: Record<string, unknown>[];
+  script: ChartScript;
+  position: number;
+  created_at: string;
 }
 
 export interface OAuthConfig {
@@ -89,6 +178,8 @@ export interface LlmCall {
   status: 'success' | 'error';
   error_message: string | null;
   duration_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
   tools_provided: Record<string, unknown>[] | null;
   created_at: string;
 }
@@ -197,8 +288,67 @@ export interface AgentConfig {
   display_name: string;
   description: string;
   system_prompt: string;
-  is_custom_prompt: boolean;
+  has_prompt: boolean;
   enabled: boolean;
   bindings: AgentBinding[];
   available_connectors: AvailableConnector[];
+}
+
+export interface AutomatedTask {
+  id: string;
+  title: string;
+  description: string | null;
+  agent_slug: string;
+  prompt: string;
+  schedule_type: 'manual' | 'hourly' | 'daily' | 'weekly' | 'monthly';
+  schedule_config: Record<string, unknown>;
+  status: 'active' | 'paused' | 'draft';
+  created_by: string | null;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface AutomatedTaskRun {
+  id: string;
+  automated_task_id: string;
+  status: 'running' | 'success' | 'error';
+  mode: 'live' | 'test';
+  result_summary: string | null;
+  tool_calls_count: number;
+  error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  billing_email: string | null;
+  plan: string;
+  is_active: boolean;
+  venue_count: number;
+  member_count: number;
+  created_at: string;
+  venues?: VenueDetail[];
+  members?: OrgMember[];
+}
+
+export interface VenueDetail {
+  id: string;
+  name: string;
+  location: string | null;
+  organization_id: string | null;
+  connector_count?: number;
+}
+
+export interface OrgMember {
+  id: string;
+  user_id: string;
+  email: string;
+  full_name: string;
+  role: string;
 }

@@ -5,9 +5,8 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.db.models import Task, Message, HrSetup, Approval, IntegrationRun
-from app.connectors.base import BaseConnector
-from app.connectors.registry import get_connector, resolve_connector
-from app.services.integration_service import execute_submission, execute_submission_v2
+from app.connectors.registry import resolve_connector
+from app.services.integration_service import execute_submission_v2
 
 
 def create_employee_setup(
@@ -210,12 +209,8 @@ def submit_task(db: Session, task_id: str) -> dict | None:
         return None
 
     action = (task.extracted_fields or {}).get("_action", "create_employee")
-    resolved = resolve_connector("hr", action, db)
-    if isinstance(resolved, BaseConnector):
-        run = execute_submission(db, task, resolved)
-    else:
-        spec, creds, operation = resolved
-        run = execute_submission_v2(db, task, spec, creds, operation)
+    spec, creds, operation = resolve_connector("hr", action, db)
+    run = execute_submission_v2(db, task, spec, creds, operation)
 
     if run.status == "success":
         task.status = "submitted"

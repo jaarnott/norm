@@ -1,5 +1,5 @@
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; overflow: hidden; background: #faf8f5; }
+html, body { margin: 0; height: 100%; background: #faf8f5; }
 
 .compact-card:hover .compact-remove { opacity: 1 !important; }
 .split-drag-handle:hover .split-drag-pill { opacity: 1 !important; }

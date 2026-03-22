@@ -8,14 +8,13 @@ from app.db.engine import get_db
 from app.db.models import Task, Approval, ToolCall, User
 from app.auth.dependencies import get_current_user
 from app.services.order_service import (
-    get_order, approve_order, reject_order, submit_order, list_orders,
+    get_order, approve_order, reject_order, submit_order,
 )
 from app.services.hr_service import (
     get_task as get_hr_task,
     approve_task as approve_hr_task,
     reject_task as reject_hr_task,
     submit_task as submit_hr_task,
-    list_tasks as list_hr_tasks,
 )
 from app.agents.reports.context import _report_task_to_dict
 
@@ -78,6 +77,8 @@ def _tool_use_task_to_dict(task: Task) -> dict:
             "status": lc.status,
             "error_message": lc.error_message,
             "duration_ms": lc.duration_ms,
+            "input_tokens": lc.input_tokens,
+            "output_tokens": lc.output_tokens,
             "tools_provided": lc.tools_provided,
             "created_at": lc.created_at.isoformat() if lc.created_at else None,
         }
@@ -102,24 +103,60 @@ def _tool_use_task_to_dict(task: Task) -> dict:
     }
 
 
-def _list_report_tasks(db: Session, user_id: str | None = None) -> list[dict]:
-    q = db.query(Task).filter(Task.domain == "reports")
-    if user_id:
-        q = q.filter(Task.user_id == user_id)
-    tasks = q.order_by(Task.created_at.desc()).all()
-    return [_report_task_to_dict(t) for t in tasks]
-
-
 @router.get("/tasks")
 async def get_all_tasks(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    uid = user.id
-    # Domain-specific listers already include tool_use tasks for their domain
-    all_tasks = list_orders(db, uid) + list_hr_tasks(db, uid) + _list_report_tasks(db, uid)
-    all_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
-    return {"tasks": all_tasks}
+    """Return lightweight task summaries for the sidebar list.
+
+    Only includes fields needed by TaskCard (id, domain, status, title, etc.).
+    Full conversation/tool_calls/llm_calls are loaded on demand via GET /tasks/{id}.
+    """
+    tasks = (
+        db.query(Task)
+        .filter(Task.user_id == user.id)
+        .order_by(Task.created_at.desc())
+        .all()
+    )
+    return {"tasks": [_task_summary(t) for t in tasks]}
+
+
+def _task_summary(task: Task) -> dict:
+    """Lightweight serialisation — no relationships loaded."""
+    extracted = task.extracted_fields or {}
+    venue = extracted.get("venue")
+    product = extracted.get("product")
+
+    summary: dict = {
+        "id": task.id,
+        "domain": task.domain,
+        "intent": task.intent,
+        "title": task.title,
+        "message": task.raw_prompt or "",
+        "status": task.status,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+        "missing_fields": task.missing_fields or [],
+        "clarification_question": task.clarification_question,
+        "thinking_steps": task.thinking_steps or [],
+    }
+
+    # Domain-specific card fields
+    if task.domain == "procurement":
+        summary["venue"] = {"id": venue["id"], "name": venue["name"]} if venue else None
+        summary["product"] = {"id": product["id"], "name": product["name"], "unit": product.get("unit", "case"), "category": product.get("category")} if product else None
+        summary["supplier"] = product.get("supplier") if product else None
+        summary["quantity"] = extracted.get("quantity")
+    elif task.domain == "hr":
+        summary["employee_name"] = extracted.get("employee_name")
+        summary["venue"] = {"id": venue["id"], "name": venue["name"]} if venue else None
+        summary["role"] = extracted.get("role")
+        summary["start_date"] = extracted.get("start_date")
+    elif task.domain == "reports":
+        summary["report_type"] = extracted.get("report_type")
+
+    return summary
 
 
 @router.delete("/tasks/{task_id}")

@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
-import type { Shift, ShiftFormData, RosterMeta } from './roster/shared';
-import { extractShifts, extractRosterMeta, getWeekDays, dateKey, buildStaffRows, DAY_NAMES } from './roster/shared';
+import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
+import { extractShifts, extractRosterMeta, getWeekDays, dateKey, buildStaffRows, DAY_NAMES, formatTimeShort, calcHours, roleColor } from './roster/shared';
 import { apiFetch } from '../../lib/api';
 import WeekGrid from './roster/WeekGrid';
 import DayTimeline from './roster/DayTimeline';
@@ -12,11 +13,15 @@ import type { StaffOption, RoleOption } from './roster/ShiftModal';
 
 type ViewMode = 'week' | 'day';
 
+interface VenueOption { id: string; name: string }
+
 export default function RosterEditor({ data, props, onAction, taskId }: DisplayBlockProps) {
   // Detect working document mode
   const workingDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
 
   const [docData, setDocData] = useState<Record<string, unknown> | null>(workingDocId ? null : data);
+  const [venues, setVenues] = useState<VenueOption[]>([]);
+  const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
   const [docVersion, setDocVersion] = useState<number>(1);
   const [syncStatus, setSyncStatus] = useState<string>('synced');
   const [shifts, setShifts] = useState<Shift[]>(() => workingDocId ? [] : extractShifts(data));
@@ -29,10 +34,15 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
   const [addingNew, setAddingNew] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Build working document URL — taskless or task-scoped
+  const docUrl = workingDocId
+    ? (taskId ? `/api/tasks/${taskId}/working-documents/${workingDocId}` : `/api/working-documents/${workingDocId}`)
+    : null;
+
   // Fetch working document data
   useEffect(() => {
-    if (!workingDocId || !taskId) return;
-    apiFetch(`/api/tasks/${taskId}/working-documents/${workingDocId}`)
+    if (!docUrl) return;
+    apiFetch(docUrl)
       .then(res => res.ok ? res.json() : null)
       .then(doc => {
         if (doc) {
@@ -44,7 +54,54 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
         }
       })
       .catch(() => {});
-  }, [workingDocId, taskId]);
+  }, [docUrl]);
+
+  // Fetch venues for venue selector
+  useEffect(() => {
+    apiFetch('/api/venues')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.venues && d.venues.length > 0) {
+          setVenues(d.venues);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Reload roster for a different venue
+  const handleVenueChange = useCallback(async (venueId: string) => {
+    setSelectedVenue(venueId);
+    // Get current week range for the new venue
+    const now = new Date();
+    const day = now.getDay();
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 0);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}+13:00`;
+
+    try {
+      const res = await apiFetch('/api/working-documents/from-connector', {
+        method: 'POST',
+        body: JSON.stringify({
+          connector_name: 'loadedhub',
+          action: 'get_roster',
+          params: { start_datetime: fmt(monday), end_datetime: fmt(sunday), venue_id: venueId },
+          doc_type: 'roster',
+          venue_id: venueId,
+        }),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        setDocData(result.data);
+        setShifts(extractShifts(result.data));
+        setMeta(extractRosterMeta(result.data));
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   // Fallback: update from props data (non-working-document mode)
   useEffect(() => {
@@ -113,33 +170,33 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
   // --- Action handlers ---
 
   const patchDoc = useCallback(async (ops: Record<string, unknown>[]) => {
-    if (!workingDocId || !taskId) return;
+    if (!docUrl) return;
     setSyncStatus('syncing');
     try {
-      const res = await apiFetch(`/api/tasks/${taskId}/working-documents/${workingDocId}`, {
+      const res = await apiFetch(docUrl, {
         method: 'PATCH',
         body: JSON.stringify({ ops, version: docVersion }),
       });
       if (res.ok) {
         const updated = await res.json();
+        console.log('[patchDoc] success, version:', updated.version, 'sync:', updated.sync_status);
         setDocData(updated.data);
         setDocVersion(updated.version);
         setSyncStatus(updated.sync_status);
         setShifts(extractShifts(updated.data));
         setMeta(extractRosterMeta(updated.data));
       } else {
+        const errText = await res.text().catch(() => '');
+        console.error('[patchDoc] failed:', res.status, errText);
         setSyncStatus('error');
       }
-    } catch {
-      setSyncStatus('error');
-    }
-  }, [workingDocId, taskId, docVersion]);
+    } catch (e) { console.error('[patchDoc] error:', e); setSyncStatus('error'); }
+  }, [docUrl, docVersion]);
 
   const handleSave = async (formData: ShiftFormData) => {
     setSaving(true);
     try {
       if (workingDocId && taskId) {
-        // Working document mode — patch locally, sync in background
         if (editingShift) {
           await patchDoc([{
             op: 'update_shift',
@@ -164,7 +221,6 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
           }]);
         }
       } else if (onAction) {
-        // Legacy widget-action mode
         if (editingShift) {
           await onAction({
             connector_name: connectorName, action: 'update_shift',
@@ -209,6 +265,158 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
     } finally { setSaving(false); }
   };
 
+  // --- Drag and drop (dnd-kit) ---
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+  );
+
+  const [activeShift, setActiveShift] = useState<Shift | null>(null);
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const dragData = event.active.data.current as DragData | undefined;
+    if (dragData?.shift) setActiveShift(dragData.shift);
+  }, []);
+
+  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    setActiveShift(null);
+    const { active, over } = event;
+    if (!over) { console.log('[DnD] no drop target'); return; }
+
+    const dragData = active.data.current as DragData | undefined;
+    if (!dragData) return;
+
+    // Parse droppable ID: "staffId_dateKey" (WeekGrid) or "staffId_lane" (DayTimeline)
+    const targetId = over.id as string;
+    const sepIdx = targetId.indexOf('_');
+    if (sepIdx < 0) return;
+    const targetStaffId = targetId.substring(0, sepIdx);
+    const targetSuffix = targetId.substring(sepIdx + 1); // dateKey or "lane"
+    const targetDateKey = targetSuffix !== 'lane' ? targetSuffix : null;
+
+    // Determine if staff or day changed
+    const shift = dragData.shift;
+    const staffChanged = targetStaffId !== dragData.sourceStaffId;
+
+    // Check if the day changed by comparing target dateKey to the shift's current day
+    let dayChanged = false;
+    let newClockIn = shift.clockinTime || '';
+    let newClockOut = shift.clockoutTime || '';
+    if (targetDateKey && shift.clockinTime) {
+      const shiftDate = shift.clockinTime.substring(0, 10); // "YYYY-MM-DD"
+      if (targetDateKey !== shiftDate) {
+        dayChanged = true;
+        // Preserve time-of-day, change the date
+        newClockIn = targetDateKey + shift.clockinTime.substring(10);
+        if (shift.clockoutTime) {
+          // Calculate the duration offset (clockout may be next day for overnight shifts)
+          const origIn = new Date(shift.clockinTime).getTime();
+          const origOut = new Date(shift.clockoutTime).getTime();
+          const durationMs = origOut - origIn;
+          const newInDate = new Date(newClockIn);
+          const newOutDate = new Date(newInDate.getTime() + durationMs);
+          // Format back to ISO with timezone offset
+          const tzSuffix = shift.clockoutTime.match(/[+-]\d{2}:\d{2}$/)?.[0] || '';
+          const pad = (n: number) => String(n).padStart(2, '0');
+          newClockOut = `${newOutDate.getFullYear()}-${pad(newOutDate.getMonth() + 1)}-${pad(newOutDate.getDate())}T${pad(newOutDate.getHours())}:${pad(newOutDate.getMinutes())}:${pad(newOutDate.getSeconds())}${tzSuffix}`;
+        }
+      }
+    }
+
+    if (!staffChanged && !dayChanged) { console.log('[DnD] same staff+day, ignoring'); return; }
+
+    // Look up target staff name from staffRows
+    const targetRow = staffRows.find(r => r.id === targetStaffId);
+    const firstName = targetRow?.firstName ?? '';
+    const lastName = targetRow?.lastName ?? '';
+
+    console.log('[DnD] drop:', { shiftId: shift.id, from: dragData.sourceStaffId, to: targetStaffId, dayChanged, targetDateKey, workingDocId, taskId });
+
+    // Optimistic local update + re-sort by clockinTime
+    setShifts(prev => prev.map(s =>
+      s.id === shift.id
+        ? {
+            ...s,
+            staffMemberId: targetStaffId,
+            staffMemberFirstName: firstName,
+            staffMemberLastName: lastName,
+            ...(dayChanged ? { clockinTime: newClockIn, clockoutTime: newClockOut } : {}),
+          }
+        : s
+    ).sort((a, b) => (a.clockinTime || '').localeCompare(b.clockinTime || '')));
+
+    const patchFields: Record<string, string> = {
+      staffMemberId: targetStaffId,
+      staffMemberFirstName: firstName,
+      staffMemberLastName: lastName,
+    };
+    if (dayChanged) {
+      patchFields.clockinTime = newClockIn;
+      patchFields.clockoutTime = newClockOut;
+    }
+
+    if (workingDocId && taskId) {
+      await patchDoc([{
+        op: 'update_shift',
+        shift_id: shift.id,
+        fields: patchFields,
+      }]);
+    } else if (onAction) {
+      await onAction({
+        connector_name: connectorName, action: 'update_shift',
+        params: {
+          shift_id: shift.id || '', roster_id: shift.rosterId || meta.rosterId,
+          staff_member_id: targetStaffId, role_id: shift.roleId || '',
+          clockin_time: newClockIn, clockout_time: newClockOut,
+        },
+      });
+    }
+  }, [staffRows, workingDocId, taskId, patchDoc, onAction, connectorName, meta.rosterId]);
+
+  const handleResizeShift = useCallback(async (shiftId: string, clockinTime: string, clockoutTime: string) => {
+    setShifts(prev => prev.map(s =>
+      s.id === shiftId ? { ...s, clockinTime, clockoutTime } : s
+    ).sort((a, b) => (a.clockinTime || '').localeCompare(b.clockinTime || '')));
+
+    if (workingDocId && taskId) {
+      await patchDoc([{ op: 'update_shift', shift_id: shiftId, fields: { clockinTime, clockoutTime } }]);
+    } else if (onAction) {
+      const shift = shifts.find(s => s.id === shiftId);
+      await onAction({
+        connector_name: connectorName, action: 'update_shift',
+        params: {
+          shift_id: shiftId, roster_id: shift?.rosterId || meta.rosterId,
+          staff_member_id: shift?.staffMemberId || '', role_id: shift?.roleId || '',
+          clockin_time: clockinTime, clockout_time: clockoutTime,
+        },
+      });
+    }
+  }, [shifts, workingDocId, taskId, patchDoc, onAction, connectorName, meta.rosterId]);
+
+  const handleCreateShift = useCallback(async (staffId: string, clockinTime: string, clockoutTime: string) => {
+    const row = staffRows.find(r => r.id === staffId);
+    const fields: Record<string, unknown> = {
+      staffMemberId: staffId,
+      staffMemberFirstName: row?.firstName || '',
+      staffMemberLastName: row?.lastName || '',
+      clockinTime,
+      clockoutTime,
+      roleId: '',
+      roleName: '',
+    };
+
+    if (workingDocId && taskId) {
+      await patchDoc([{ op: 'add_shift', fields }]);
+    } else if (onAction) {
+      await onAction({
+        connector_name: connectorName, action: 'create_rostered_shift',
+        params: {
+          staff_member_id: staffId, role_id: '', role_name: '',
+          clockin_time: clockinTime, clockout_time: clockoutTime,
+        },
+      });
+    }
+  }, [staffRows, workingDocId, taskId, patchDoc, onAction, connectorName]);
+
   if (activeShifts.length === 0 && !addingNew) return null;
 
   // --- Toggle button style ---
@@ -217,7 +425,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
       onClick={() => setViewMode(mode)}
       style={{
         padding: '3px 10px', fontSize: '0.72rem', fontWeight: viewMode === mode ? 600 : 400,
-        border: '1px solid #ddd', borderRadius: 0,
+        border: '1px solid #ddd',
         backgroundColor: viewMode === mode ? '#333' : '#fff',
         color: viewMode === mode ? '#fff' : '#666',
         cursor: 'pointer', fontFamily: 'inherit',
@@ -231,6 +439,21 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#333' }}>Roster</span>
+        {venues.length > 1 && (
+          <select
+            value={selectedVenue || ''}
+            onChange={e => handleVenueChange(e.target.value)}
+            style={{
+              padding: '3px 8px', fontSize: '0.75rem', border: '1px solid #ddd',
+              borderRadius: 6, fontFamily: 'inherit', color: '#555', backgroundColor: '#fff',
+            }}
+          >
+            {!selectedVenue && <option value="">Select venue</option>}
+            {venues.map(v => (
+              <option key={v.id} value={v.id}>{v.name}</option>
+            ))}
+          </select>
+        )}
 
         {viewMode === 'week' && dateRange && (
           <span style={{ fontSize: '0.82rem', color: '#888' }}>{dateRange}</span>
@@ -275,27 +498,58 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
         </div>
       </div>
 
-      {/* Views */}
-      {viewMode === 'week' && (
-        <WeekGrid
-          staffRows={staffRows}
-          days={days}
-          editingShiftId={editingShift?.id || null}
-          onSelectShift={handleSelectShift}
-          onSelectDay={handleSelectDay}
-          interactive={!!onAction}
-        />
-      )}
+      {/* Views — wrapped in DndContext */}
+      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+        {viewMode === 'week' && (
+          <WeekGrid
+            staffRows={staffRows}
+            days={days}
+            editingShiftId={editingShift?.id || null}
+            onSelectShift={handleSelectShift}
+            onSelectDay={handleSelectDay}
+            interactive={!!onAction}
+          />
+        )}
 
-      {viewMode === 'day' && (
-        <DayTimeline
-          shifts={shifts}
-          selectedDate={effectiveDate}
-          editingShiftId={editingShift?.id || null}
-          onSelectShift={handleSelectShift}
-          interactive={!!onAction}
-        />
-      )}
+        {viewMode === 'day' && (
+          <DayTimeline
+            shifts={shifts}
+            selectedDate={effectiveDate}
+            editingShiftId={editingShift?.id || null}
+            onSelectShift={handleSelectShift}
+            onResizeShift={handleResizeShift}
+            onCreateShift={handleCreateShift}
+            interactive={!!onAction}
+          />
+        )}
+
+        <DragOverlay dropAnimation={null}>
+          {activeShift && (() => {
+            const hrs = calcHours(activeShift.clockinTime, activeShift.clockoutTime);
+            const color = roleColor(activeShift.roleId || '');
+            return (
+              <div style={{
+                display: 'flex', alignItems: 'stretch', gap: 0,
+                borderRadius: 4, overflow: 'hidden',
+                border: '1px solid #2563eb',
+                backgroundColor: '#fff',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                fontSize: '0.78rem',
+                width: 'max-content',
+                opacity: 0.9,
+              }}>
+                <div style={{ width: 3, backgroundColor: color, flexShrink: 0 }} />
+                <div style={{ padding: '3px 8px' }}>
+                  <div style={{ fontWeight: 500, color: '#333', whiteSpace: 'nowrap' }}>
+                    {formatTimeShort(activeShift.clockinTime)}–{formatTimeShort(activeShift.clockoutTime)}
+                  </div>
+                  {hrs > 0 && <div style={{ fontSize: '0.68rem', color: '#888' }}>{hrs.toFixed(1)}h</div>}
+                </div>
+              </div>
+            );
+          })()}
+        </DragOverlay>
+      </DndContext>
 
       {/* Shift modal */}
       <ShiftModal

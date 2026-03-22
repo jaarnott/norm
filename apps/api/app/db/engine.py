@@ -7,7 +7,7 @@ DATABASE_URL = os.environ.get(
     "postgresql://norm:norm@localhost:5432/norm",
 )
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_size=5, max_overflow=15)
 SessionLocal = sessionmaker(bind=engine)
 
 

@@ -8,16 +8,9 @@ from app.auth.dependencies import get_current_user, require_role
 
 router = APIRouter()
 
-AVAILABLE_CONNECTORS = [
-    {
-        "name": "bamboohr",
-        "label": "BambooHR",
-        "domain": "hr",
-        "fields": [
-            {"key": "subdomain", "label": "Subdomain", "secret": False},
-            {"key": "api_key", "label": "API Key", "secret": True},
-        ],
-    },
+# Platform-level connectors that are not spec-driven (e.g. the LLM API key).
+# Domain connectors (BambooHR, Deputy, etc.) are managed as ConnectorSpecs in the DB.
+PLATFORM_CONNECTORS = [
     {
         "name": "anthropic",
         "label": "Anthropic (Claude)",
@@ -30,7 +23,8 @@ AVAILABLE_CONNECTORS = [
 
 
 def _redact_config(config: dict, connector_name: str, credential_fields: list | None = None) -> dict:
-    meta = next((c for c in AVAILABLE_CONNECTORS if c["name"] == connector_name), None)
+    # Check platform connectors first
+    meta = next((c for c in PLATFORM_CONNECTORS if c["name"] == connector_name), None)
     fields = meta["fields"] if meta else (credential_fields or [])
     if not fields:
         return config
@@ -39,10 +33,18 @@ def _redact_config(config: dict, connector_name: str, credential_fields: list | 
 
 
 @router.get("/connectors")
-async def list_connectors(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    saved = {r.connector_name: r for r in db.query(ConnectorConfig).all()}
+async def list_connectors(venue_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    # Filter configs by venue_id (None = platform/global configs)
+    config_query = db.query(ConnectorConfig)
+    if venue_id:
+        config_query = config_query.filter(ConnectorConfig.venue_id == venue_id)
+    else:
+        config_query = config_query.filter(ConnectorConfig.venue_id.is_(None))
+    saved = {r.connector_name: r for r in config_query.all()}
     result = []
-    for meta in AVAILABLE_CONNECTORS:
+
+    # Platform connectors (Anthropic)
+    for meta in PLATFORM_CONNECTORS:
         row = saved.get(meta["name"])
         result.append({
             **meta,
@@ -51,12 +53,8 @@ async def list_connectors(db: Session = Depends(get_db), user: User = Depends(ge
             "config": _redact_config(row.config, meta["name"]) if row else {},
         })
 
-    # Include connector specs from the database (graceful if table not yet migrated)
-    try:
-        specs = db.query(ConnectorSpec).all()
-    except Exception:
-        db.rollback()
-        specs = []
+    # Spec-driven connectors from the DB
+    specs = db.query(ConnectorSpec).all()
     seen = {c["name"] for c in result}
     for spec in specs:
         if spec.connector_name not in seen:
@@ -83,18 +81,26 @@ async def list_connectors(db: Session = Depends(get_db), user: User = Depends(ge
 class ConnectorConfigBody(BaseModel):
     config: dict
     enabled: bool = True
+    venue_id: str | None = None
 
 
 @router.put("/connectors/{name}")
 async def upsert_connector(name: str, body: ConnectorConfigBody, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
-    meta = next((c for c in AVAILABLE_CONNECTORS if c["name"] == name), None)
+    meta = next((c for c in PLATFORM_CONNECTORS if c["name"] == name), None)
     if not meta:
         # Check if it's a spec-driven connector
         spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
         if not spec:
             raise HTTPException(404, f"Unknown connector: {name}")
 
-    row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+    # Venue-aware lookup
+    query = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name)
+    if body.venue_id:
+        query = query.filter(ConnectorConfig.venue_id == body.venue_id)
+    else:
+        query = query.filter(ConnectorConfig.venue_id.is_(None))
+    row = query.first()
+
     if row:
         # Merge: keep existing values for redacted fields
         merged = dict(row.config)
@@ -106,6 +112,7 @@ async def upsert_connector(name: str, body: ConnectorConfigBody, db: Session = D
     else:
         row = ConnectorConfig(
             connector_name=name,
+            venue_id=body.venue_id,
             config=body.config,
             enabled="true" if body.enabled else "false",
         )
@@ -149,46 +156,6 @@ class TestBody(BaseModel):
 
 @router.post("/connectors/{name}/test")
 async def test_connector(name: str, body: TestBody, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
-    if name == "bamboohr":
-        import httpx
-        # Merge saved credentials with form values (skip redacted)
-        config_row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
-        credentials = dict(config_row.config) if config_row else {}
-        for k, v in body.config.items():
-            if v and v != "••••••••":
-                credentials[k] = v
-        subdomain = credentials.get("subdomain", "")
-        api_key = credentials.get("api_key", "")
-        if not subdomain or not api_key:
-            raise HTTPException(400, "subdomain and api_key are required")
-        url = f"https://{subdomain}.bamboohr.com/api/gateway.php/{subdomain}/v1/employees/directory"
-        rendered_request = {
-            "method": "GET",
-            "url": url,
-            "headers": {"Accept": "application/json", "Authorization": "[REDACTED]"},
-            "body": None,
-        }
-        try:
-            resp = httpx.get(
-                url,
-                auth=(api_key, "x"),
-                headers={"Accept": "application/json"},
-                timeout=15.0,
-            )
-        except httpx.TimeoutException:
-            return {"success": False, "error": "Connection timed out", "rendered_request": rendered_request}
-        except httpx.HTTPError as exc:
-            return {"success": False, "error": f"Network error: {exc}", "rendered_request": rendered_request}
-
-        try:
-            response_payload = resp.json()
-        except Exception:
-            response_payload = {"body": resp.text[:500]}
-
-        if resp.status_code == 200:
-            return {"success": True, "message": "Connected successfully", "rendered_request": rendered_request, "response": response_payload}
-        return {"success": False, "error": f"API returned status {resp.status_code}", "rendered_request": rendered_request, "response": response_payload}
-
     if name == "anthropic":
         import anthropic
         # Merge saved credentials with form values (skip redacted)
@@ -242,3 +209,97 @@ async def test_connector(name: str, body: TestBody, db: Session = Depends(get_db
         return {"success": False, "error": result.error_message or "API returned an error", "rendered_request": rendered.to_audit_dict(), "response": result.response_payload}
     except Exception as exc:
         return {"success": False, "error": f"Connection test failed: {exc}"}
+
+
+class ExecuteBody(BaseModel):
+    params: dict = {}
+
+
+@router.post("/connectors/{name}/execute/{action}")
+async def execute_connector_action(
+    name: str,
+    action: str,
+    body: ExecuteBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Execute a connector tool directly (no LLM, no task)."""
+    # Check internal tool handlers first — these don't need a ConnectorSpec row
+    from app.agents.internal_tools import get_handler
+    handler = get_handler(name, action)
+    if handler:
+        result = handler(body.params, db, None)
+        db.commit()
+        return result
+
+    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    if not spec:
+        raise HTTPException(404, f"Connector not found: {name}")
+
+    tool_def = None
+    for t in spec.tools or []:
+        if t.get("action") == action:
+            tool_def = t
+            break
+    if not tool_def:
+        raise HTTPException(404, f"Tool not found: {action}")
+
+    if tool_def.get("method", "POST").upper() != "GET":
+        raise HTTPException(400, "Only read-only (GET) tools can be executed directly")
+
+    # External tools — need credentials
+    config_row = db.query(ConnectorConfig).filter(
+        ConnectorConfig.connector_name == name,
+        ConnectorConfig.enabled == "true",
+    ).first()
+    if not config_row:
+        raise HTTPException(400, f"No credentials configured for {name}")
+
+    from app.connectors.spec_executor import execute_spec
+    try:
+        result, rendered = execute_spec(spec, tool_def, body.params, config_row.config, db)
+        return {
+            "success": result.success,
+            "data": result.response_payload,
+            "error": result.error_message,
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"Execution failed: {exc}")
+
+
+@router.get("/connectors/bamboohr/files/{file_id}")
+async def download_bamboohr_file(
+    file_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Proxy a file download from BambooHR (keeps API key server-side)."""
+    import httpx
+    from fastapi.responses import Response
+
+    config_row = db.query(ConnectorConfig).filter(
+        ConnectorConfig.connector_name == "bamboohr",
+        ConnectorConfig.enabled == "true",
+    ).first()
+    if not config_row:
+        raise HTTPException(400, "BambooHR connector not configured")
+
+    subdomain = config_row.config.get("subdomain", "")
+    api_key = config_row.config.get("api_key", "")
+    url = f"https://{subdomain}.bamboohr.com/api/gateway.php/{subdomain}/v1/files/{file_id}"
+
+    try:
+        resp = httpx.get(url, auth=(api_key, "x"), timeout=30.0)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Failed to fetch file from BambooHR: {exc}")
+
+    if resp.status_code != 200:
+        raise HTTPException(resp.status_code, f"BambooHR returned {resp.status_code}")
+
+    content_type = resp.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
+    cd = resp.headers.get("content-disposition", "")
+    headers = {}
+    if cd:
+        headers["Content-Disposition"] = cd
+
+    return Response(content=resp.content, media_type=content_type, headers=headers)

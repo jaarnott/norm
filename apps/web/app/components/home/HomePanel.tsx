@@ -52,7 +52,7 @@ export default function HomePanel({ input, onInputChange, onSend, loading }: Hom
           value={input}
           onChange={handleInput}
           onKeyDown={handleKeyDown}
-          placeholder="e.g. Order 3 cases of Jim Beam for La Zeppa"
+          placeholder="e.g. Order stock, check a roster, or generate a sales report"
           rows={1}
           style={{
             flex: 1,

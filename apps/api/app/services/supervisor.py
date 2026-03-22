@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 def handle_message(message: str, db: Session, user_id: str | None = None, task_id: str | None = None) -> dict:
     """Process a user message through routing then agent delegation."""
+    # Quota gate — block before any LLM call if tokens exhausted
+    from app.services.billing_service import check_quota_for_user
+    check_quota_for_user(db, user_id)
 
     # Track whether we're continuing a meta/unknown task
     prior_task = None

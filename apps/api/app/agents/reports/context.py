@@ -2,15 +2,15 @@
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Venue
+from app.db.models import Task
+from app.services.venue_service import get_user_venues
 
 
 def build_reports_context(db: Session, user_id: str | None = None) -> dict:
     """Return context dict for the reports agent."""
-    venues = db.query(Venue).all()
-    venue_names = [v.name for v in venues]
+    venues = get_user_venues(db, user_id)
 
-    return {"venue_names": venue_names}
+    return {"venues": [{"id": v.id, "name": v.name} for v in venues]}
 
 
 def _report_task_to_dict(task: Task) -> dict:

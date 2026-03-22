@@ -154,7 +154,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
         const parsed = extractOrder(updated.data);
         setLines(parsed.lines);
       }
-    } catch { /* ignore */ }
+    } catch (e) { console.error(e); }
   }, [workingDocId, taskId, docVersion]);
 
   const handleQtyChange = useCallback((idx: number, qty: number) => {
@@ -189,7 +189,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
     if (workingDocId) {
       patchDoc([{ op: 'add_line', fields: { stock_code: line.stock_code, product: line.product, supplier: line.supplier, quantity: line.quantity, unit: line.unit, unit_price: line.unit_price } }]);
     } else if (onAction && connectorName) {
-      onAction({ connector_name: connectorName, action: 'add_line', params: line });
+      onAction({ connector_name: connectorName, action: 'add_line', params: line as unknown as Record<string, unknown> });
     }
   }, [newStockCode, newProduct, newSupplier, newQty, newUnit, newPrice, workingDocId, patchDoc, onAction, connectorName]);
 

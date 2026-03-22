@@ -6,9 +6,8 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.db.models import Task, Message, Order, OrderLine, Approval, IntegrationRun
-from app.connectors.base import BaseConnector
-from app.connectors.registry import get_connector, resolve_connector
-from app.services.integration_service import execute_submission, execute_submission_v2
+from app.connectors.registry import resolve_connector
+from app.services.integration_service import execute_submission_v2
 
 
 def create_draft_order(
@@ -203,12 +202,8 @@ def submit_order(db: Session, task_id: str) -> dict | None:
         return None
 
     action = (task.extracted_fields or {}).get("_action", "create_order")
-    resolved = resolve_connector("procurement", action, db)
-    if isinstance(resolved, BaseConnector):
-        run = execute_submission(db, task, resolved)
-    else:
-        spec, creds, operation = resolved
-        run = execute_submission_v2(db, task, spec, creds, operation)
+    spec, creds, operation = resolve_connector("procurement", action, db)
+    run = execute_submission_v2(db, task, spec, creds, operation)
 
     if run.status == "success":
         task.status = "submitted"

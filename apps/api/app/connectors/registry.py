@@ -1,89 +1,49 @@
 import logging
-import os
 
 from sqlalchemy.orm import Session
 
 from app.connectors.base import BaseConnector
-from app.connectors.mock_supplier import MockSupplierConnector
-from app.connectors.mock_hr import MockHrConnector
 
 logger = logging.getLogger(__name__)
 
-_DOMAIN_CONNECTOR_MAP: dict[str, str] = {
-    "procurement": "procurement",
-    "hr": "bamboohr",
-}
 
+def get_connector(domain: str, db: Session) -> BaseConnector:
+    """Build a BaseConnector instance from DB config.
 
-def _build_from_db(connector_name: str, db: Session) -> BaseConnector | None:
+    Used only for legacy code paths that need a BaseConnector.
+    Prefer resolve_connector() for spec-driven resolution.
+    """
     from app.db.models import ConnectorConfig
 
+    # Look up the connector config for this domain
     row = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == connector_name,
+        ConnectorConfig.connector_name == domain,
         ConnectorConfig.enabled == "true",
     ).first()
-    if not row:
-        return None
 
-    if connector_name == "bamboohr":
+    if row and domain == "bamboohr":
         from app.connectors.bamboohr import BambooHrConnector
         return BambooHrConnector(config=row.config)
 
-    return None
-
-
-def _build_from_env(domain: str) -> BaseConnector | None:
-    if domain == "hr" and os.environ.get("BAMBOOHR_SUBDOMAIN") and os.environ.get("BAMBOOHR_API_KEY"):
-        from app.connectors.bamboohr import BambooHrConnector
-        return BambooHrConnector()
-    return None
-
-
-_MOCK_CONNECTORS: dict[str, BaseConnector] = {
-    "procurement": MockSupplierConnector(),
-    "hr": MockHrConnector(),
-}
-
-
-def get_connector(domain: str, db: Session | None = None) -> BaseConnector:
-    # 1. Try DB config
-    if db is not None:
-        connector_name = _DOMAIN_CONNECTOR_MAP.get(domain)
-        if connector_name:
-            c = _build_from_db(connector_name, db)
-            if c:
-                return c
-
-    # 2. Try env vars
-    c = _build_from_env(domain)
-    if c:
-        return c
-
-    # 3. Fall back to mock
-    mock = _MOCK_CONNECTORS.get(domain)
-    if mock:
-        return mock
-
-    raise ValueError(f"No connector registered for domain: {domain}")
+    raise ValueError(f"No connector configured for domain: {domain}")
 
 
 # ---------------------------------------------------------------------------
 # Spec-driven connector resolution
 # ---------------------------------------------------------------------------
 
-def resolve_connector(domain: str, action: str, db: Session) -> tuple | BaseConnector:
+def resolve_connector(domain: str, action: str, db: Session) -> tuple:
     """Resolve a connector spec for a domain + action.
 
     Iterates ALL enabled bindings for this domain so that multiple
     connector specs can coexist (e.g. HR = BambooHR + Deputy).
 
-    Returns either:
-    - (ConnectorSpec, credentials_dict, operation_dict) if a spec is found
-    - BaseConnector instance as a legacy fallback
+    Returns (ConnectorSpec, credentials_dict, operation_dict).
+    Raises ValueError if no matching spec/action is found.
     """
     from app.db.models import ConnectorSpec, ConnectorConfig, AgentConnectorBinding
 
-    # 1. Get ALL enabled bindings for this domain
+    # Get ALL enabled bindings for this domain
     bindings = (
         db.query(AgentConnectorBinding)
         .filter(
@@ -93,7 +53,7 @@ def resolve_connector(domain: str, action: str, db: Session) -> tuple | BaseConn
         .all()
     )
 
-    # 2. For each binding, load the ConnectorSpec and check if it has this action
+    # For each binding, load the ConnectorSpec and check if it has this action
     for binding in bindings:
         spec = (
             db.query(ConnectorSpec)
@@ -125,45 +85,7 @@ def resolve_connector(domain: str, action: str, db: Session) -> tuple | BaseConn
                 )
                 return spec, credentials, op
 
-    # 3. Fallback: try _DOMAIN_CONNECTOR_MAP for spec lookup
-    fallback_name = _DOMAIN_CONNECTOR_MAP.get(domain)
-    if fallback_name:
-        spec = (
-            db.query(ConnectorSpec)
-            .filter(
-                ConnectorSpec.connector_name == fallback_name,
-                ConnectorSpec.enabled == True,  # noqa: E712
-            )
-            .first()
-        )
-        if spec:
-            config_row = (
-                db.query(ConnectorConfig)
-                .filter(
-                    ConnectorConfig.connector_name == fallback_name,
-                    ConnectorConfig.enabled == "true",
-                )
-                .first()
-            )
-            credentials = config_row.config if config_row else {}
-
-            # Find matching operation or use first
-            operation = None
-            for op in spec.tools or []:
-                if op.get("action") == action:
-                    operation = op
-                    break
-            if operation is None and spec.tools:
-                operation = spec.tools[0]
-
-            if operation is not None:
-                logger.info(
-                    "Resolved spec connector via fallback map: %s (mode=%s, action=%s)",
-                    fallback_name,
-                    spec.execution_mode,
-                    action,
-                )
-                return spec, credentials, operation
-
-    # 4. Fallback to legacy BaseConnector
-    return get_connector(domain, db)
+    raise ValueError(
+        f"No connector spec found for domain={domain}, action={action}. "
+        f"Check that a connector spec with this action is bound and enabled."
+    )

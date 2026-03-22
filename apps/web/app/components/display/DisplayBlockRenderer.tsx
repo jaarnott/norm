@@ -6,6 +6,13 @@ import RosterTable from './RosterTable';
 import PurchaseOrder from './PurchaseOrder';
 import RosterEditor from './RosterEditor';
 import PurchaseOrderEditor from './PurchaseOrderEditor';
+import CriteriaEditor from './CriteriaEditor';
+import HiringBoard from './HiringBoard';
+import AutomatedTaskPreview from './AutomatedTaskPreview';
+import AutomatedTaskBoard from './AutomatedTaskBoard';
+import Chart from './Chart';
+import ReportBuilder from './ReportBuilder';
+import SavedReportsBoard from './SavedReportsBoard';
 
 export interface DisplayBlockProps {
   data: Record<string, unknown>;
@@ -15,7 +22,7 @@ export interface DisplayBlockProps {
 }
 
 /** Components that render full-width above the conversation instead of inline in chat bubbles */
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder']);
 
 const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   generic_table: GenericTable,
@@ -23,6 +30,13 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   purchase_order: PurchaseOrder,
   purchase_order_editor: PurchaseOrderEditor,
   roster_editor: RosterEditor,
+  criteria_editor: CriteriaEditor,
+  hiring_board: HiringBoard,
+  automated_task_preview: AutomatedTaskPreview,
+  automated_task_board: AutomatedTaskBoard,
+  chart: Chart,
+  report_builder: ReportBuilder,
+  saved_reports_board: SavedReportsBoard,
 };
 
 interface DisplayBlockRendererProps {

@@ -52,29 +52,22 @@ class BaseDomainAgent(ABC):
         """Build domain-specific context for interpretation."""
         ...
 
-    def _default_prompt(self) -> str:
-        """Return the hardcoded default prompt for this domain. Override in subclasses."""
-        return ""
-
-    def get_system_prompt(self, db: Session | None = None) -> str:
+    def get_system_prompt(self, db: Session) -> str:
         """Return the domain-specific system prompt for interpretation.
 
         Priority:
         1. Dynamic prompt built from connector specs (if any are bound)
-        2. DB-stored custom prompt (via agent_config_service)
-        3. Hardcoded default from _default_prompt()
+        2. DB-stored prompt (via Settings UI)
         """
-        if db:
-            from app.agents.prompt_builder import build_dynamic_prompt
+        from app.agents.prompt_builder import build_dynamic_prompt
 
-            dynamic = build_dynamic_prompt(self.domain, db)
-            if dynamic:
-                return dynamic
+        dynamic = build_dynamic_prompt(self.domain, db)
+        if dynamic:
+            return dynamic
 
-            from app.services.agent_config_service import get_system_prompt as get_db_prompt
+        from app.services.agent_config_service import get_system_prompt as get_db_prompt
 
-            return get_db_prompt(self.domain, db)
-        return self._default_prompt()
+        return get_db_prompt(self.domain, db)
 
     def get_tool_definitions(self, db: Session) -> tuple[str, list[dict]]:
         """Return (system_prompt, anthropic_tools) for the agentic tool loop.

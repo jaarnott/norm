@@ -381,8 +381,8 @@ export default function ConnectorSpecsPanel() {
           </div>
 
           {/* OAuth Config (if present) */}
-          {(spec as Record<string, unknown>).oauth_config && (() => {
-            const oauth = (spec as Record<string, unknown>).oauth_config as Record<string, string>;
+          {!!(spec as unknown as Record<string, unknown>).oauth_config && (() => {
+            const oauth = (spec as unknown as Record<string, unknown>).oauth_config as Record<string, string>;
             return (
               <div style={{
                 fontSize: '0.78rem',

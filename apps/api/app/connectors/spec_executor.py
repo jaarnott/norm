@@ -63,7 +63,7 @@ _jinja_env = _build_jinja_env()
 # Auth application
 # ---------------------------------------------------------------------------
 
-def _apply_auth(headers: dict, auth_type: str, auth_config: dict, credentials: dict, *, spec=None, db: Session | None = None) -> tuple[dict, tuple | None]:
+def _apply_auth(headers: dict, auth_type: str, auth_config: dict, credentials: dict, *, spec=None, db: Session | None = None, venue_id: str | None = None) -> tuple[dict, tuple | None]:
     """Apply authentication to request headers. Returns (headers, httpx_auth_tuple_or_None)."""
     httpx_auth = None
 
@@ -80,17 +80,15 @@ def _apply_auth(headers: dict, auth_type: str, auth_config: dict, credentials: d
     elif auth_type == "basic":
         username_field = auth_config.get("username_field", "username")
         password_field = auth_config.get("password_field", "password")
-        # password can be a literal string in auth_config (e.g. "x" for BambooHR)
         password = auth_config.get("password") or credentials.get(password_field, "")
         httpx_auth = (credentials.get(username_field, ""), password)
 
     elif auth_type == "oauth2":
-        # Try to get a valid token via the OAuth service (with auto-refresh)
         token = ""
         if spec and db and spec.oauth_config:
             try:
                 from app.services.oauth_service import get_valid_access_token
-                token = get_valid_access_token(spec, db)
+                token = get_valid_access_token(spec, db, venue_id=venue_id)
             except Exception as exc:
                 logger.warning("OAuth token retrieval failed, falling back to credentials: %s", exc)
                 token = credentials.get(auth_config.get("token_field", "access_token"), "")
@@ -111,6 +109,7 @@ def render_request(
     extracted_fields: dict,
     credentials: dict,
     db: Session | None = None,
+    venue_id: str | None = None,
 ) -> RenderedRequest:
     """Render a deterministic HTTP request from a connector spec + operation template."""
     template_ctx = {
@@ -122,6 +121,12 @@ def render_request(
     base_url = _jinja_env.from_string(spec.base_url_template or "").render(**template_ctx)
     path = _jinja_env.from_string(operation.get("path_template", "")).render(**template_ctx)
     url = base_url.rstrip("/") + path
+
+    # URL-encode '+' in query parameter values (e.g., +13:00 → %2B13:00)
+    # The '+' sign means space in URL query strings, so it must be percent-encoded.
+    if '?' in url:
+        base_part, qs = url.split('?', 1)
+        url = base_part + '?' + qs.replace('+', '%2B')
 
     if ":///" in url:
         raise ValueError(
@@ -135,8 +140,8 @@ def render_request(
     for k, v in raw_headers.items():
         headers[k] = _jinja_env.from_string(str(v)).render(**template_ctx).strip()
 
-    # Apply auth
-    headers, _ = _apply_auth(headers, spec.auth_type, spec.auth_config, credentials, spec=spec, db=db)
+    # Apply auth (venue_id for per-venue OAuth tokens)
+    headers, _ = _apply_auth(headers, spec.auth_type, spec.auth_config, credentials, spec=spec, db=db, venue_id=venue_id)
 
     # Render request body
     body = None
@@ -382,6 +387,7 @@ def execute_spec(
     credentials: dict,
     db: Session,
     task_id: str | None = None,
+    venue_id: str | None = None,
 ) -> tuple[ConnectorResult, RenderedRequest]:
     """Execute a connector spec operation. Returns (result, rendered_request)."""
     # Normalize field values to fix common LLM formatting mistakes
@@ -401,7 +407,7 @@ def execute_spec(
     if spec.execution_mode == "agent":
         rendered = execute_via_agent(spec, operation, extracted_fields, credentials, db, task_id)
     else:
-        rendered = render_request(spec, operation, extracted_fields, credentials, db=db)
+        rendered = render_request(spec, operation, extracted_fields, credentials, db=db, venue_id=venue_id)
 
     result = execute_http(
         rendered,

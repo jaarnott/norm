@@ -34,6 +34,7 @@ def _get_redirect_uri(request: Request) -> str:
 async def oauth_authorize(
     connector: str,
     request: Request,
+    venue_id: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(require_role("admin")),
 ):
@@ -50,7 +51,7 @@ async def oauth_authorize(
 
     redirect_uri = _get_redirect_uri(request)
     try:
-        authorize_url = build_authorize_url(spec, redirect_uri, db)
+        authorize_url = build_authorize_url(spec, redirect_uri, db, venue_id=venue_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"authorize_url": authorize_url}

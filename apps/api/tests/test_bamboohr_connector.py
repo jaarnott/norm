@@ -1,4 +1,4 @@
-"""Tests for BambooHR connector and registry fallback."""
+"""Tests for BambooHR connector."""
 
 import os
 from unittest.mock import patch, MagicMock
@@ -130,19 +130,3 @@ class TestSubmit:
         assert "network error" in result.error_message.lower()
 
 
-class TestRegistry:
-    """Test connector registry fallback behavior."""
-
-    @patch.dict(os.environ, BAMBOO_ENV)
-    def test_build_hr_connector_with_env(self):
-        from app.connectors.bamboohr import BambooHrConnector
-        from app.connectors.registry import get_connector
-        connector = get_connector("hr")
-        assert isinstance(connector, BambooHrConnector)
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_build_hr_connector_without_env(self):
-        from app.connectors.mock_hr import MockHrConnector
-        from app.connectors.registry import get_connector
-        connector = get_connector("hr")
-        assert isinstance(connector, MockHrConnector)

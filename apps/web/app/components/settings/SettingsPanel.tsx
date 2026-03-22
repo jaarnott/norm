@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
-import type { AgentConfig, AgentBinding } from '../../types';
+import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
+import BillingTab from './BillingTab';
 
 interface ConnectorField {
   key: string;
@@ -21,13 +22,725 @@ interface ConnectorMeta {
   enabled: boolean;
   config: Record<string, string>;
   oauth_connected?: boolean;
+  spec_driven?: boolean;
 }
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
-type SettingsTab = 'connectors' | 'agents' | 'specs';
+// --- Venues Tab ---
+
+interface VenueConnector {
+  name: string;
+  label: string;
+  auth_type: string;
+  configured: boolean;
+  enabled: boolean;
+  oauth_connected?: boolean;
+  spec_driven?: boolean;
+  fields?: { key: string; label: string; secret: boolean }[];
+  config?: Record<string, string>;
+}
+
+function VenueCard({ venue, onDelete }: { venue: VenueDetail; onDelete: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const [connectors, setConnectors] = useState<VenueConnector[]>([]);
+  const [connectorForms, setConnectorForms] = useState<Record<string, Record<string, string>>>({});
+  const [savingConnector, setSavingConnector] = useState<string | null>(null);
+  const [loadingConnectors, setLoadingConnectors] = useState(false);
+  const [editingConnector, setEditingConnector] = useState<string | null>(null);
+
+  const loadConnectors = useCallback(async () => {
+    setLoadingConnectors(true);
+    try {
+      const res = await apiFetch(`/api/connectors?venue_id=${venue.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        const filtered = (data.connectors || []).filter((c: VenueConnector) => c.spec_driven && c.auth_type !== 'none');
+        setConnectors(filtered);
+        const forms: Record<string, Record<string, string>> = {};
+        for (const c of filtered) {
+          forms[c.name] = { ...(c.config || {}) };
+        }
+        setConnectorForms(forms);
+      }
+    } catch { /* ignore */ }
+    setLoadingConnectors(false);
+  }, [venue.id]);
+
+  const handleToggle = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && connectors.length === 0) {
+      await loadConnectors();
+    }
+  };
+
+  const handleSaveConnector = async (connectorName: string) => {
+    setSavingConnector(connectorName);
+    try {
+      await apiFetch(`/api/connectors/${connectorName}`, {
+        method: 'PUT',
+        body: JSON.stringify({ config: connectorForms[connectorName] || {}, venue_id: venue.id }),
+      });
+      setEditingConnector(null);
+      await loadConnectors();
+    } catch { /* ignore */ }
+    setSavingConnector(null);
+  };
+
+  const handleOAuthConnect = async (connectorName: string) => {
+    try {
+      const res = await apiFetch(`/api/oauth/authorize/${connectorName}?venue_id=${venue.id}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const popup = window.open(data.authorize_url, `oauth_${connectorName}_${venue.id}`, 'width=600,height=700');
+      if (popup) {
+        const timer = setInterval(() => {
+          if (popup.closed) {
+            clearInterval(timer);
+            loadConnectors();
+          }
+        }, 500);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const handleOAuthDisconnect = async (connectorName: string) => {
+    await apiFetch(`/api/oauth/disconnect/${connectorName}?venue_id=${venue.id}`, { method: 'POST' });
+    loadConnectors();
+  };
+
+  return (
+    <div>
+      <div
+        onClick={handleToggle}
+        style={{
+          padding: '0.75rem 1rem', border: '1px solid #e5e7eb',
+          borderRadius: expanded ? '8px 8px 0 0' : 8,
+          backgroundColor: '#fff', display: 'flex', alignItems: 'center', gap: '0.75rem',
+          cursor: 'pointer',
+        }}
+      >
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, color: '#111', fontSize: '0.9rem' }}>{venue.name}</div>
+          {venue.location && <div style={{ fontSize: '0.75rem', color: '#999' }}>{venue.location}</div>}
+        </div>
+        <div style={{ fontSize: '0.72rem', color: '#999' }}>
+          {venue.connector_count || 0} connector{(venue.connector_count || 0) !== 1 ? 's' : ''}
+        </div>
+        <span style={{
+          fontSize: '0.6rem', color: '#bbb',
+          transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+          transition: 'transform 0.15s',
+        }}>&#9654;</span>
+      </div>
+
+      {expanded && (
+        <div style={{
+          padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderTop: 'none',
+          borderRadius: '0 0 8px 8px', backgroundColor: '#fafafa',
+        }}>
+          {loadingConnectors ? (
+            <div style={{ fontSize: '0.75rem', color: '#999' }}>Loading connectors...</div>
+          ) : connectors.length === 0 ? (
+            <div style={{ fontSize: '0.75rem', color: '#999' }}>No connectors available. Add connector specs first.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              {connectors.map(c => {
+                const isEditing = editingConnector === c.name;
+                const form = connectorForms[c.name] || {};
+                const fields = c.fields || [];
+                return (
+                  <div key={c.name} style={{
+                    backgroundColor: '#fff', border: '1px solid #f3f4f6', borderRadius: 6,
+                    overflow: 'hidden',
+                  }}>
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: '0.5rem',
+                      padding: '0.5rem 0.6rem',
+                    }}>
+                      <span style={{ fontSize: '0.82rem', fontWeight: 500, color: '#333', flex: 1 }}>{c.label}</span>
+                      {c.auth_type === 'oauth2' ? (
+                        c.oauth_connected ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <span style={{
+                              fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 8,
+                              backgroundColor: '#d1fae5', color: '#065f46',
+                            }}>Connected</span>
+                            <button onClick={(e) => { e.stopPropagation(); handleOAuthDisconnect(c.name); }} style={{
+                              padding: '2px 8px', fontSize: '0.68rem', border: '1px solid #ddd',
+                              borderRadius: 4, backgroundColor: '#fff', color: '#666',
+                              cursor: 'pointer', fontFamily: 'inherit',
+                            }}>Disconnect</button>
+                          </div>
+                        ) : (
+                          <button onClick={(e) => { e.stopPropagation(); handleOAuthConnect(c.name); }} style={{
+                            padding: '3px 10px', fontSize: '0.72rem', fontWeight: 600,
+                            border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff',
+                            cursor: 'pointer', fontFamily: 'inherit',
+                          }}>Connect</button>
+                        )
+                      ) : (
+                        <button onClick={(e) => { e.stopPropagation(); setEditingConnector(isEditing ? null : c.name); }} style={{
+                          padding: '2px 8px', fontSize: '0.68rem', border: '1px solid #ddd',
+                          borderRadius: 4, backgroundColor: '#fff',
+                          color: c.configured ? '#065f46' : '#666',
+                          cursor: 'pointer', fontFamily: 'inherit',
+                        }}>{c.configured ? 'Edit' : 'Configure'}</button>
+                      )}
+                    </div>
+
+                    {/* Credential form */}
+                    {isEditing && fields.length > 0 && (
+                      <div style={{
+                        padding: '0.5rem 0.6rem', borderTop: '1px solid #f3f4f6',
+                        display: 'flex', flexDirection: 'column', gap: '0.4rem',
+                      }}>
+                        {fields.map(f => (
+                          <div key={f.key}>
+                            <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>{f.label}</label>
+                            <input
+                              type={f.secret ? 'password' : 'text'}
+                              value={form[f.key] || ''}
+                              onChange={e => setConnectorForms(prev => ({
+                                ...prev,
+                                [c.name]: { ...(prev[c.name] || {}), [f.key]: e.target.value },
+                              }))}
+                              placeholder={f.secret && c.configured ? '••••••••' : f.label}
+                              style={{
+                                width: '100%', padding: '4px 8px', border: '1px solid #ddd',
+                                borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit',
+                              }}
+                            />
+                          </div>
+                        ))}
+                        <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.25rem' }}>
+                          <button onClick={(e) => { e.stopPropagation(); handleSaveConnector(c.name); }}
+                            disabled={savingConnector === c.name}
+                            style={{
+                              padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600,
+                              backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 4,
+                              cursor: 'pointer', fontFamily: 'inherit',
+                            }}>{savingConnector === c.name ? 'Saving...' : 'Save'}</button>
+                          <button onClick={(e) => { e.stopPropagation(); setEditingConnector(null); }} style={{
+                            padding: '4px 12px', fontSize: '0.72rem',
+                            backgroundColor: '#fff', color: '#666', border: '1px solid #ddd', borderRadius: 4,
+                            cursor: 'pointer', fontFamily: 'inherit',
+                          }}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Delete venue */}
+          <div style={{ borderTop: '1px solid #e5e7eb', marginTop: '0.75rem', paddingTop: '0.5rem' }}>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{
+              padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
+              border: '1px solid #fecaca', borderRadius: 6, backgroundColor: '#fff', color: '#dc2626',
+              cursor: 'pointer', fontFamily: 'inherit',
+            }}>Delete venue</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VenuesTab() {
+  const [org, setOrg] = useState<Organization | null>(null);
+  const [venues, setVenues] = useState<VenueDetail[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newName, setNewName] = useState('');
+  const [newLocation, setNewLocation] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const orgRes = await apiFetch('/api/organizations');
+      const orgData = await orgRes.json();
+      const orgs = orgData.organizations || [];
+      if (orgs.length > 0) {
+        const detailRes = await apiFetch(`/api/organizations/${orgs[0].id}`);
+        const detail = await detailRes.json();
+        setOrg(detail);
+        setVenues(detail.venues || []);
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleAdd = async () => {
+    if (!newName.trim() || !org) return;
+    await apiFetch(`/api/organizations/${org.id}/venues`, {
+      method: 'POST',
+      body: JSON.stringify({ name: newName, location: newLocation || null }),
+    });
+    setNewName('');
+    setNewLocation('');
+    setAdding(false);
+    loadData();
+  };
+
+  const handleDelete = async (venueId: string) => {
+    await apiFetch(`/api/venues/${venueId}`, { method: 'DELETE' });
+    loadData();
+  };
+
+  if (loading) return <div style={{ color: '#999' }}>Loading...</div>;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Venues {org && <span style={{ fontWeight: 400, textTransform: 'none' }}>— {org.name}</span>}
+        </h3>
+        <button onClick={() => setAdding(!adding)} style={{
+          padding: '4px 12px', fontSize: '0.75rem', fontWeight: 600,
+          border: '1px solid #ddd', borderRadius: 6, backgroundColor: '#fff',
+          cursor: 'pointer', fontFamily: 'inherit', color: '#333',
+        }}>+ Add Venue</button>
+      </div>
+
+      {adding && (
+        <div style={{
+          padding: '0.75rem', border: '1px solid #dbeafe', borderRadius: 8,
+          backgroundColor: '#f8fafc', marginBottom: '1rem',
+          display: 'flex', gap: '0.5rem', alignItems: 'flex-end',
+        }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Name</label>
+            <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Venue name"
+              style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Location</label>
+            <input value={newLocation} onChange={e => setNewLocation(e.target.value)} placeholder="Address (optional)"
+              style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
+          </div>
+          <button onClick={handleAdd} style={{
+            padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
+            backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>Add</button>
+          <button onClick={() => setAdding(false)} style={{
+            padding: '5px 12px', fontSize: '0.75rem',
+            backgroundColor: 'transparent', color: '#666', border: '1px solid #ddd', borderRadius: 6,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>Cancel</button>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        {venues.map(v => (
+          <VenueCard key={v.id} venue={v} onDelete={() => handleDelete(v.id)} />
+        ))}
+        {venues.length === 0 && (
+          <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.82rem' }}>
+            No venues yet. Click "Add Venue" to create one.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- Members Tab ---
+
+interface UsageByUser { input_tokens: number; output_tokens: number; llm_call_count: number }
+interface DailyUsageEntry { input_tokens: number; output_tokens: number; llm_call_count: number }
+
+function MembersTab() {
+  const [org, setOrg] = useState<Organization | null>(null);
+  const [members, setMembers] = useState<OrgMember[]>([]);
+  const [venues, setVenues] = useState<VenueDetail[]>([]);
+  const [memberVenues, setMemberVenues] = useState<Record<string, string[]>>({});
+  const [usage, setUsage] = useState<Record<string, UsageByUser>>({});
+  const [usageTotals, setUsageTotals] = useState<{ input: number; output: number; calls: number }>({ input: 0, output: 0, calls: 0 });
+  const [loading, setLoading] = useState(true);
+  const [addEmail, setAddEmail] = useState('');
+  const [addRole, setAddRole] = useState('member');
+  const [addError, setAddError] = useState('');
+  const [expandedMember, setExpandedMember] = useState<string | null>(null);
+  const [memberDailyUsage, setMemberDailyUsage] = useState<Record<string, Record<string, DailyUsageEntry>>>({});
+  const [showDailyUsage, setShowDailyUsage] = useState(false);
+  const [dailyUsage, setDailyUsage] = useState<Record<string, DailyUsageEntry>>({});
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const orgRes = await apiFetch('/api/organizations');
+      const orgData = await orgRes.json();
+      const orgs = orgData.organizations || [];
+      if (orgs.length > 0) {
+        const detailRes = await apiFetch(`/api/organizations/${orgs[0].id}`);
+        const detail = await detailRes.json();
+        setOrg(detail);
+        setMembers(detail.members || []);
+        setVenues(detail.venues || []);
+        // Load venue access for each member
+        const venueMap: Record<string, string[]> = {};
+        for (const m of detail.members || []) {
+          const vRes = await apiFetch(`/api/users/${m.user_id}/venues`);
+          if (vRes.ok) {
+            const vData = await vRes.json();
+            venueMap[m.user_id] = (vData.venues || []).map((v: VenueDetail) => v.id);
+          }
+        }
+        setMemberVenues(venueMap);
+
+        // Load token usage for current month
+        const usageRes = await apiFetch(`/api/organizations/${orgs[0].id}/usage`);
+        if (usageRes.ok) {
+          const usageData = await usageRes.json();
+          setUsage(usageData.by_user || {});
+          setUsageTotals({
+            input: usageData.total_input_tokens || 0,
+            output: usageData.total_output_tokens || 0,
+            calls: usageData.total_llm_calls || 0,
+          });
+        }
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleAdd = async () => {
+    if (!addEmail.trim() || !org) return;
+    setAddError('');
+    try {
+      // Look up user by email
+      const lookupRes = await apiFetch(`/api/users/by-email?email=${encodeURIComponent(addEmail)}`);
+      if (!lookupRes.ok) {
+        setAddError('User not found. They must register first.');
+        return;
+      }
+      const userData = await lookupRes.json();
+      // Add to org
+      const addRes = await apiFetch(`/api/organizations/${org.id}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: userData.id, role: addRole }),
+      });
+      if (!addRes.ok) {
+        setAddError('Failed to add member');
+        return;
+      }
+      setAddEmail('');
+      loadData();
+    } catch { setAddError('Network error'); }
+  };
+
+  const handleRemove = async (userId: string) => {
+    if (!org) return;
+    await apiFetch(`/api/organizations/${org.id}/members/${userId}`, { method: 'DELETE' });
+    loadData();
+  };
+
+  const handleToggleVenue = async (userId: string, venueId: string, checked: boolean) => {
+    const current = memberVenues[userId] || [];
+    const updated = checked ? [...current, venueId] : current.filter(id => id !== venueId);
+    await apiFetch(`/api/users/${userId}/venues`, {
+      method: 'PUT',
+      body: JSON.stringify({ venue_ids: updated }),
+    });
+    setMemberVenues(prev => ({ ...prev, [userId]: updated }));
+  };
+
+  if (loading) return <div style={{ color: '#999' }}>Loading...</div>;
+
+  return (
+    <div>
+      <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        Members {org && <span style={{ fontWeight: 400, textTransform: 'none' }}>— {org.name}</span>}
+      </h3>
+
+      {/* Usage summary */}
+      {usageTotals.calls > 0 && (
+        <div style={{ marginBottom: '1rem' }}>
+          <div style={{
+            display: 'flex', gap: '2rem',
+            padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderRadius: showDailyUsage ? '8px 8px 0 0' : 8,
+            backgroundColor: '#fafafa',
+          }}>
+            <div
+              onClick={async () => {
+                const next = !showDailyUsage;
+                setShowDailyUsage(next);
+                if (next && org && Object.keys(dailyUsage).length === 0) {
+                  const res = await apiFetch(`/api/organizations/${org.id}/usage/daily`);
+                  if (res.ok) {
+                    const d = await res.json();
+                    setDailyUsage(d.days || {});
+                  }
+                }
+              }}
+              style={{ cursor: 'pointer' }}
+            >
+              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.03em', display: 'flex', alignItems: 'center', gap: 4 }}>
+                This Month
+                <span style={{ fontSize: '0.55rem', transform: showDailyUsage ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>&#9654;</span>
+              </div>
+              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111' }}>
+                {((usageTotals.input + usageTotals.output) / 1000).toFixed(1)}K
+                <span style={{ fontSize: '0.72rem', fontWeight: 400, color: '#999', marginLeft: 4 }}>tokens</span>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Input</div>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{(usageTotals.input / 1000).toFixed(1)}K</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Output</div>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{(usageTotals.output / 1000).toFixed(1)}K</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>LLM Calls</div>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{usageTotals.calls}</div>
+            </div>
+          </div>
+
+          {/* Daily usage chart */}
+          {showDailyUsage && (
+            <div style={{
+              padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderTop: 'none',
+              borderRadius: '0 0 8px 8px', backgroundColor: '#fff',
+            }}>
+              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+                Daily Usage
+              </div>
+              {Object.keys(dailyUsage).length === 0 ? (
+                <div style={{ fontSize: '0.75rem', color: '#999' }}>No daily data yet</div>
+              ) : (() => {
+                const entries = Object.entries(dailyUsage).sort(([a], [b]) => a.localeCompare(b));
+                const maxTokens = Math.max(...entries.map(([, d]) => (d.input_tokens || 0) + (d.output_tokens || 0)), 1);
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {entries.map(([date, d]) => {
+                      const total = (d.input_tokens || 0) + (d.output_tokens || 0);
+                      const inputPct = (d.input_tokens || 0) / maxTokens * 100;
+                      const outputPct = (d.output_tokens || 0) / maxTokens * 100;
+                      const dayLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' });
+                      return (
+                        <div key={date} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontSize: '0.68rem', color: '#999', width: 80, textAlign: 'right', flexShrink: 0 }}>{dayLabel}</span>
+                          <div style={{ flex: 1, height: 16, backgroundColor: '#f3f4f6', borderRadius: 3, overflow: 'hidden', display: 'flex' }}>
+                            <div style={{ width: `${inputPct}%`, backgroundColor: '#93c5fd', height: '100%' }} title={`Input: ${(d.input_tokens || 0).toLocaleString()}`} />
+                            <div style={{ width: `${outputPct}%`, backgroundColor: '#6366f1', height: '100%' }} title={`Output: ${(d.output_tokens || 0).toLocaleString()}`} />
+                          </div>
+                          <span style={{ fontSize: '0.65rem', color: '#999', width: 50, flexShrink: 0 }}>
+                            {total >= 1000 ? `${(total / 1000).toFixed(1)}K` : total}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <div style={{ display: 'flex', gap: '1rem', marginTop: '0.25rem', fontSize: '0.6rem', color: '#bbb' }}>
+                      <span><span style={{ display: 'inline-block', width: 8, height: 8, backgroundColor: '#93c5fd', borderRadius: 2, marginRight: 3 }} />Input</span>
+                      <span><span style={{ display: 'inline-block', width: 8, height: 8, backgroundColor: '#6366f1', borderRadius: 2, marginRight: 3 }} />Output</span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Add member */}
+      <div style={{
+        display: 'flex', gap: '0.5rem', alignItems: 'flex-end', marginBottom: '1rem',
+        padding: '0.75rem', border: '1px solid #e5e7eb', borderRadius: 8, backgroundColor: '#fafafa',
+      }}>
+        <div style={{ flex: 1 }}>
+          <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Email</label>
+          <input value={addEmail} onChange={e => { setAddEmail(e.target.value); setAddError(''); }}
+            placeholder="user@example.com" onKeyDown={e => e.key === 'Enter' && handleAdd()}
+            style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
+        </div>
+        <div>
+          <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Role</label>
+          <select value={addRole} onChange={e => setAddRole(e.target.value)}
+            style={{ padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }}>
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+            <option value="owner">Owner</option>
+          </select>
+        </div>
+        <button onClick={handleAdd} style={{
+          padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
+          backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
+          cursor: 'pointer', fontFamily: 'inherit',
+        }}>Add</button>
+      </div>
+      {addError && <div style={{ color: '#dc2626', fontSize: '0.78rem', marginBottom: '0.5rem' }}>{addError}</div>}
+
+      {/* Member list */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+        {members.map(m => {
+          const isExpanded = expandedMember === m.user_id;
+          const userVenues = memberVenues[m.user_id] || [];
+          return (
+            <div key={m.id}>
+              <div
+                onClick={async () => {
+                  const next = isExpanded ? null : m.user_id;
+                  setExpandedMember(next);
+                  if (next && org && !memberDailyUsage[m.user_id]) {
+                    const res = await apiFetch(`/api/organizations/${org.id}/usage/daily?user_id=${m.user_id}`);
+                    if (res.ok) {
+                      const d = await res.json();
+                      setMemberDailyUsage(prev => ({ ...prev, [m.user_id]: d.days || {} }));
+                    }
+                  }
+                }}
+                style={{
+                  padding: '0.6rem 1rem', border: '1px solid #e5e7eb',
+                  borderRadius: isExpanded ? '8px 8px 0 0' : 8,
+                  backgroundColor: '#fff', display: 'flex', alignItems: 'center', gap: '0.75rem',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, color: '#111', fontSize: '0.85rem' }}>{m.full_name}</div>
+                  <div style={{ fontSize: '0.72rem', color: '#999' }}>{m.email}</div>
+                </div>
+                {(() => {
+                  const u = usage[m.user_id];
+                  if (!u) return null;
+                  const total = (u.input_tokens || 0) + (u.output_tokens || 0);
+                  return (
+                    <span style={{ fontSize: '0.68rem', color: '#999' }}>
+                      {total >= 1000000 ? `${(total / 1000000).toFixed(1)}M` : total >= 1000 ? `${(total / 1000).toFixed(1)}K` : total} tokens
+                    </span>
+                  );
+                })()}
+                <span style={{
+                  fontSize: '0.65rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                  backgroundColor: m.role === 'owner' ? '#dbeafe' : m.role === 'admin' ? '#fef3c7' : '#f3f4f6',
+                  color: m.role === 'owner' ? '#1e40af' : m.role === 'admin' ? '#92400e' : '#6b7280',
+                }}>{m.role}</span>
+                <span style={{
+                  fontSize: '0.6rem', color: '#bbb',
+                  transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.15s',
+                }}>&#9654;</span>
+              </div>
+              {isExpanded && (
+                <div style={{
+                  padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderTop: 'none',
+                  borderRadius: '0 0 8px 8px', backgroundColor: '#fafafa',
+                }}>
+                  {/* Usage summary */}
+                  {(() => {
+                    const u = usage[m.user_id];
+                    if (!u) return <div style={{ fontSize: '0.75rem', color: '#999', marginBottom: '0.5rem' }}>No usage this month</div>;
+                    return (
+                      <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '0.75rem', fontSize: '0.75rem' }}>
+                        <div>
+                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Input</div>
+                          <div style={{ fontWeight: 600, color: '#111' }}>{((u.input_tokens || 0) / 1000).toFixed(1)}K</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Output</div>
+                          <div style={{ fontWeight: 600, color: '#111' }}>{((u.output_tokens || 0) / 1000).toFixed(1)}K</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Calls</div>
+                          <div style={{ fontWeight: 600, color: '#111' }}>{u.llm_call_count || 0}</div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Daily usage chart */}
+                  {(() => {
+                    const days = memberDailyUsage[m.user_id] || {};
+                    const entries = Object.entries(days).sort(([a], [b]) => a.localeCompare(b));
+                    if (entries.length === 0) return null;
+                    const maxTokens = Math.max(...entries.map(([, d]) => (d.input_tokens || 0) + (d.output_tokens || 0)), 1);
+                    return (
+                      <div style={{ marginBottom: '0.75rem' }}>
+                        <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Daily Usage</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          {entries.map(([date, d]) => {
+                            const total = (d.input_tokens || 0) + (d.output_tokens || 0);
+                            const inputPct = (d.input_tokens || 0) / maxTokens * 100;
+                            const outputPct = (d.output_tokens || 0) / maxTokens * 100;
+                            const dayLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric' });
+                            return (
+                              <div key={date} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                <span style={{ fontSize: '0.65rem', color: '#999', width: 50, textAlign: 'right', flexShrink: 0 }}>{dayLabel}</span>
+                                <div style={{ flex: 1, height: 12, backgroundColor: '#f3f4f6', borderRadius: 2, overflow: 'hidden', display: 'flex' }}>
+                                  <div style={{ width: `${inputPct}%`, backgroundColor: '#93c5fd', height: '100%' }} />
+                                  <div style={{ width: `${outputPct}%`, backgroundColor: '#6366f1', height: '100%' }} />
+                                </div>
+                                <span style={{ fontSize: '0.6rem', color: '#bbb', width: 40, flexShrink: 0 }}>
+                                  {total >= 1000 ? `${(total / 1000).toFixed(1)}K` : total}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Venues */}
+                  <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Venue Access</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                    {venues.map(v => (
+                      <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.78rem', color: '#555', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={userVenues.includes(v.id)}
+                          onChange={e => { e.stopPropagation(); handleToggleVenue(m.user_id, v.id, e.target.checked); }}
+                          style={{ accentColor: '#2563eb' }} />
+                        {v.name}
+                      </label>
+                    ))}
+                    {venues.length === 0 && <span style={{ color: '#999', fontSize: '0.75rem' }}>No venues created yet</span>}
+                  </div>
+
+                  {/* Delete */}
+                  <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '0.5rem' }}>
+                    <button onClick={(e) => { e.stopPropagation(); handleRemove(m.user_id); }} style={{
+                      padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
+                      border: '1px solid #fecaca', borderRadius: 6, backgroundColor: '#fff', color: '#dc2626',
+                      cursor: 'pointer', fontFamily: 'inherit',
+                    }}>Remove from organization</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {members.length === 0 && (
+          <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.82rem' }}>
+            No members yet.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing';
 
 export default function SettingsPanel() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('connectors');
+  const [orgId, setOrgId] = useState<string | null>(null);
+
+  // Fetch org ID for billing tab
+  useEffect(() => {
+    apiFetch('/api/organizations').then(r => r.json()).then(d => {
+      const orgs = d.organizations || [];
+      if (orgs.length > 0) setOrgId(orgs[0].id);
+    }).catch(() => {});
+  }, []);
 
   // --- Connector state ---
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
@@ -44,18 +757,19 @@ export default function SettingsPanel() {
 
   const fetchConnectors = useCallback(async () => {
     try {
+      // Only fetch platform/global connectors (venue_id=NULL)
       const res = await apiFetch('/api/connectors');
       if (!res.ok) return;
       const data = await res.json();
-      setConnectors(data.connectors);
+      // Filter to only show non-spec-driven (platform) connectors
+      const platformOnly = (data.connectors || []).filter((c: ConnectorMeta) => !c.spec_driven);
+      setConnectors(platformOnly);
       const initialForms: Record<string, Record<string, string>> = {};
-      for (const c of data.connectors) {
+      for (const c of platformOnly) {
         initialForms[c.name] = { ...c.config };
       }
       setForms(initialForms);
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   }, []);
 
   const fetchAgents = useCallback(async () => {
@@ -72,9 +786,7 @@ export default function SettingsPanel() {
         };
       }
       setAgentForms(initialForms);
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   }, []);
 
   useEffect(() => { fetchConnectors(); }, [fetchConnectors]);
@@ -108,7 +820,8 @@ export default function SettingsPanel() {
         setTestMessage(prev => ({ ...prev, [name]: data.error || 'Test failed' }));
       }
       setTestDetail(prev => ({ ...prev, [name]: detail }));
-    } catch {
+    } catch (e) {
+      console.error(e);
       setTestStatus(prev => ({ ...prev, [name]: 'error' }));
       setTestMessage(prev => ({ ...prev, [name]: 'Network error' }));
     }
@@ -125,9 +838,7 @@ export default function SettingsPanel() {
       if (res.ok) {
         await fetchConnectors();
       }
-    } catch {
-      // ignore
-    } finally {
+    } catch (e) { console.error(e); } finally {
       setSaving(prev => ({ ...prev, [name]: false }));
     }
   };
@@ -138,9 +849,7 @@ export default function SettingsPanel() {
       if (res.ok) {
         await fetchConnectors();
       }
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   };
 
   const handleDelete = async (name: string) => {
@@ -149,9 +858,7 @@ export default function SettingsPanel() {
       await fetchConnectors();
       setTestStatus(prev => ({ ...prev, [name]: 'idle' }));
       setTestMessage(prev => ({ ...prev, [name]: '' }));
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   };
 
   const handleOAuthConnect = async (name: string) => {
@@ -162,9 +869,7 @@ export default function SettingsPanel() {
         try {
           const errJson = await res.json();
           errMsg = errJson.detail || JSON.stringify(errJson);
-        } catch {
-          errMsg = await res.text();
-        }
+        } catch (e) { console.error(e); errMsg = await res.text(); }
         setTestStatus(prev => ({ ...prev, [name]: 'error' }));
         setTestMessage(prev => ({ ...prev, [name]: `OAuth error: ${errMsg}` }));
         return;
@@ -192,7 +897,8 @@ export default function SettingsPanel() {
         window.removeEventListener('message', handler);
         if (popup && popup.closed) fetchConnectors();
       }, 300000);
-    } catch {
+    } catch (e) {
+      console.error(e);
       setTestStatus(prev => ({ ...prev, [name]: 'error' }));
       setTestMessage(prev => ({ ...prev, [name]: 'Failed to start OAuth flow' }));
     }
@@ -204,9 +910,7 @@ export default function SettingsPanel() {
       await fetchConnectors();
       setTestStatus(prev => ({ ...prev, [name]: 'idle' }));
       setTestMessage(prev => ({ ...prev, [name]: '' }));
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   };
 
   // --- Agent handlers ---
@@ -232,9 +936,7 @@ export default function SettingsPanel() {
       if (res.ok) {
         await fetchAgents();
       }
-    } catch {
-      // ignore
-    } finally {
+    } catch (e) { console.error(e); } finally {
       setAgentSaving(prev => ({ ...prev, [slug]: false }));
     }
   };
@@ -245,9 +947,7 @@ export default function SettingsPanel() {
       if (res.ok) {
         await fetchAgents();
       }
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   };
 
   const handleToggleCapability = async (slug: string, binding: AgentBinding, capIndex: number) => {
@@ -261,18 +961,14 @@ export default function SettingsPanel() {
         body: JSON.stringify({ capabilities: updated, enabled: binding.enabled }),
       });
       await fetchAgents();
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   };
 
   const handleDeleteBinding = async (slug: string, connectorName: string) => {
     try {
       await apiFetch(`/api/agents/${slug}/bindings/${connectorName}`, { method: 'DELETE' });
       await fetchAgents();
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   };
 
   const handleAddConnector = async (slug: string, connectorName: string) => {
@@ -283,9 +979,7 @@ export default function SettingsPanel() {
         body: JSON.stringify({ capabilities: [], enabled: true }),
       });
       await fetchAgents();
-    } catch {
-      // ignore
-    }
+    } catch (e) { console.error(e); }
   };
 
   const statusColor = (s: TestStatus) => {
@@ -324,17 +1018,26 @@ export default function SettingsPanel() {
 
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee' }}>
+        <button onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
+        <button onClick={() => setActiveTab('members')} style={tabStyle('members')}>Members</button>
+        <button onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
         <button onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>
         <button onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>
         <button onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '1.5rem' }}>
+        {/* ============ VENUES TAB ============ */}
+        {activeTab === 'venues' && <VenuesTab />}
+
+        {/* ============ MEMBERS TAB ============ */}
+        {activeTab === 'members' && <MembersTab />}
+
         {/* ============ CONNECTORS TAB ============ */}
         {activeTab === 'connectors' && (
           <>
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Connectors
+              Platform Connectors
             </h3>
             <div style={{
               display: 'flex', alignItems: 'center', gap: '0.5rem',
@@ -690,16 +1393,18 @@ export default function SettingsPanel() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{agent.display_name}</span>
                     <span style={{ fontSize: '0.75rem', color: '#999' }}>{agent.slug}</span>
-                    <span style={{
-                      fontSize: '0.7rem',
-                      backgroundColor: agent.is_custom_prompt ? '#fef3c7' : '#e6fffa',
-                      color: agent.is_custom_prompt ? '#92400e' : '#234e52',
-                      padding: '2px 8px',
-                      borderRadius: 10,
-                      fontWeight: 500,
-                    }}>
-                      {agent.is_custom_prompt ? 'Custom' : 'Default'}
-                    </span>
+                    {!agent.has_prompt && (
+                      <span style={{
+                        fontSize: '0.7rem',
+                        backgroundColor: '#fee2e2',
+                        color: '#991b1b',
+                        padding: '2px 8px',
+                        borderRadius: 10,
+                        fontWeight: 500,
+                      }}>
+                        No prompt
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -851,7 +1556,7 @@ export default function SettingsPanel() {
                   >
                     {agentSaving[agent.slug] ? 'Saving...' : 'Save'}
                   </button>
-                  {agent.is_custom_prompt && (
+                  {agent.has_prompt && (
                     <button
                       onClick={() => handleAgentReset(agent.slug)}
                       style={{
@@ -865,7 +1570,7 @@ export default function SettingsPanel() {
                         fontFamily: 'inherit',
                       }}
                     >
-                      Reset to Default
+                      Clear Prompt
                     </button>
                   )}
                 </div>
@@ -873,6 +1578,9 @@ export default function SettingsPanel() {
             ))}
           </>
         )}
+
+        {/* ============ BILLING TAB ============ */}
+        {activeTab === 'billing' && orgId && <BillingTab orgId={orgId} />}
       </div>
     </div>
   );

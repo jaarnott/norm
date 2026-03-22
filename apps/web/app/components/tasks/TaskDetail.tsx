@@ -7,6 +7,8 @@ import remarkGfm from 'remark-gfm';
 import type { Task, ProcurementTask, HrTask, ConversationMessage, ToolCallRecord, DisplayBlock, WidgetAction } from '../../types';
 import ActivityTimeline from './ActivityTimeline';
 import DisplayBlockRenderer, { FULL_WIDTH_COMPONENTS } from '../display/DisplayBlockRenderer';
+import SplitDragHandle from '../layout/SplitDragHandle';
+import { useSplitPane } from '../../hooks/useSplitPane';
 import { colors } from '../../lib/theme';
 
 const DOMAIN_ICONS: Record<string, LucideIcon> = {
@@ -113,7 +115,7 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
 
 // -- Chat conversation view --
 
-function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlocks }: {
+export function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlocks }: {
   messages: ConversationMessage[];
   onWidgetAction?: (action: WidgetAction) => Promise<Record<string, unknown> | void>;
   taskId?: string;
@@ -177,9 +179,13 @@ function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlock
                 );
               })()}
               {isUser ? m.text : (
-                <div className="markdown-message">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
-                </div>
+                m.role === 'streaming' ? (
+                  <span style={{ whiteSpace: 'pre-wrap' }}>{m.text}</span>
+                ) : (
+                  <div className="markdown-message">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                  </div>
+                )
               )}
             </div>
           </div>
@@ -499,7 +505,7 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
                 {task.integration_run.status === 'success' ? 'Submitted successfully' : 'Submission failed'}
               </div>
               {task.integration_run.reference && <DetailRow label="Reference" value={task.integration_run.reference} />}
-              <DetailRow label="Connector" value={task.integration_run.connector === 'mock_supplier' ? 'Bidfood' : task.integration_run.connector === 'mock_hr' ? 'HR System' : task.integration_run.connector} />
+              <DetailRow label="Connector" value={task.integration_run.connector} />
               {task.integration_run.submitted_at && <DetailRow label="Submitted" value={new Date(task.integration_run.submitted_at).toLocaleString()} />}
               {task.integration_run.error && <DetailRow label="Error" value={task.integration_run.error} />}
               {task.approval && (<><DetailRow label="Approved by" value={task.approval.performed_by} /><DetailRow label="Approved at" value={new Date(task.approval.performed_at).toLocaleString()} /></>)}
@@ -546,10 +552,8 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
   const isHr = task.domain === 'hr';
   const isTerminal = task.status === 'submitted' || task.status === 'rejected';
 
-  // --- Resizable split pane state ---
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [topPaneHeight, setTopPaneHeight] = useState<number | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
+  // --- Resizable split pane ---
+  const { containerRef, topPaneHeight, isDragging, handleDragStart, handleSplitDoubleClick, setTopPaneHeight } = useSplitPane('[data-split-header]');
 
   // Extract the latest full-width display block
   const messages = task.conversation || [];
@@ -562,48 +566,6 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
     }
   }
   const hasSplitLayout = !!latestFullWidthBlock;
-
-  // Drag handler for resize
-  const handleDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  }, []);
-
-  const handleSplitDoubleClick = useCallback(() => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const headerEl = containerRef.current.firstElementChild as HTMLElement | null;
-    const headerH = headerEl?.offsetHeight || 0;
-    const available = rect.height - headerH;
-    if (topPaneHeight && topPaneHeight > available * 0.8) {
-      setTopPaneHeight(null); // reset to 50%
-    } else {
-      setTopPaneHeight(available); // full height component
-    }
-  }, [topPaneHeight]);
-
-  useEffect(() => {
-    if (!isDragging) return;
-    const handleMove = (e: MouseEvent) => {
-      if (!containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      // Subtract header height (~80px approx) to get offset within the split area
-      const headerEl = containerRef.current.firstElementChild as HTMLElement | null;
-      const headerHeight = headerEl?.offsetHeight || 0;
-      const available = rect.height - headerHeight;
-      const offsetY = e.clientY - rect.top - headerHeight;
-      const clamped = Math.max(0, Math.min(offsetY, available));
-      setTopPaneHeight(clamped);
-    };
-    const handleUp = () => setIsDragging(false);
-    document.addEventListener('mousemove', handleMove);
-    document.addEventListener('mouseup', handleUp);
-    return () => {
-      document.removeEventListener('mousemove', handleMove);
-      document.removeEventListener('mouseup', handleUp);
-    };
-  }, [isDragging]);
-
 
   // --- Shared UI pieces ---
 
@@ -679,7 +641,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
       userSelect: isDragging ? 'none' : undefined,
     }}>
       {/* Header */}
-      <div style={{
+      <div data-split-header style={{
         padding: '1rem 1.5rem 0',
         borderBottom: hasSplitLayout ? 'none' : '1px solid #eee',
       }}>
@@ -712,11 +674,11 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
         <>
           {/* Top pane: full-width component */}
           <div style={{
-            height: topPaneHeight ?? '50%',
+            height: topPaneHeight ?? '60%',
             flexShrink: 0,
-            overflowY: 'scroll',
+            overflowY: 'auto',
           }}>
-            <div style={{ padding: '0.75rem 0.5rem 0.75rem 1.5rem' }}>
+            <div style={{ padding: '0.75rem 0.5rem 0.75rem 1.5rem', minHeight: '100%' }}>
               <DisplayBlockRenderer
                 block={latestFullWidthBlock!}
                 onAction={onWidgetAction ? (action) => onWidgetAction(task.id, action) : undefined}
@@ -726,39 +688,13 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
           </div>
 
           {/* Drag handle */}
-          {(() => {
-            const paneCollapsed = topPaneHeight !== null && (topPaneHeight < 20 || (containerRef.current && topPaneHeight > (containerRef.current.getBoundingClientRect().height - (containerRef.current.firstElementChild as HTMLElement)?.offsetHeight - 20)));
-            return (
-              <div
-                className="split-drag-handle"
-                onMouseDown={handleDragStart}
-                onDoubleClick={handleSplitDoubleClick}
-                style={{
-                  height: paneCollapsed ? 10 : 1,
-                  flexShrink: 0,
-                  cursor: 'row-resize',
-                  backgroundColor: paneCollapsed ? '#f0f0f0' : '#e2e8f0',
-                  position: 'relative',
-                  transition: isDragging ? 'none' : 'height 0.15s',
-                }}
-              >
-                {/* Invisible wider hit area */}
-                <div style={{
-                  position: 'absolute', left: 0, right: 0, top: -6, bottom: -6,
-                  cursor: 'row-resize',
-                }} />
-                {/* Pill indicator */}
-                <div className="split-drag-pill" style={{
-                  position: 'absolute', left: '50%', top: '50%',
-                  transform: 'translate(-50%, -50%)',
-                  width: 32, height: 3, borderRadius: 2,
-                  backgroundColor: isDragging ? '#999' : '#ccc',
-                  opacity: paneCollapsed || isDragging ? 1 : 0,
-                  transition: 'opacity 0.15s',
-                }} />
-              </div>
-            );
-          })()}
+          <SplitDragHandle
+            isDragging={isDragging}
+            topPaneHeight={topPaneHeight}
+            containerRef={containerRef}
+            onMouseDown={handleDragStart}
+            onDoubleClick={handleSplitDoubleClick}
+          />
 
           {/* Bottom pane: tabs + content + input */}
           <div style={{
@@ -778,7 +714,9 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
                     taskId={task.id}
                     hideFullWidthBlocks
                   />
-            <ConversationExtras task={task} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+            <div style={{ maxWidth: 768, margin: '0 auto' }}>
+              <ConversationExtras task={task} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+            </div>
                 </div>
               )}
               {activeTab === 'details' && <DetailsView task={task} onAction={onAction} />}
@@ -803,7 +741,9 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
                   onWidgetAction={onWidgetAction ? (action) => onWidgetAction(task.id, action) : undefined}
                   taskId={task.id}
                 />
-                <ConversationExtras task={task} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+                <div style={{ maxWidth: 768, margin: '0 auto' }}>
+              <ConversationExtras task={task} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+            </div>
               </div>
             )}
             {activeTab === 'details' && <DetailsView task={task} onAction={onAction} />}

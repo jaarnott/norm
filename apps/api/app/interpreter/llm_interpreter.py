@@ -82,6 +82,9 @@ def call_llm(
         duration_ms = int((time.time() - t0) * 1000)
         parsed = _parse_response(raw)
 
+        _input_tokens = response.usage.input_tokens if response.usage else None
+        _output_tokens = response.usage.output_tokens if response.usage else None
+
         # Persist LLM call record
         if db is not None:
             llm_call_id = _persist_llm_call(
@@ -90,6 +93,7 @@ def call_llm(
                 user_prompt=user_prompt, raw_response=raw,
                 parsed_response=parsed, status="success",
                 duration_ms=duration_ms,
+                input_tokens=_input_tokens, output_tokens=_output_tokens,
             )
 
         return parsed, llm_call_id
@@ -111,6 +115,7 @@ def _persist_llm_call(
     db: Session, *, task_id, call_type, model, system_prompt,
     user_prompt, raw_response, parsed_response, status,
     error_message=None, duration_ms=None, tools_provided=None,
+    input_tokens=None, output_tokens=None, user_id=None,
 ) -> str:
     from app.db.models import LlmCall
     record = LlmCall(
@@ -124,10 +129,27 @@ def _persist_llm_call(
         status=status,
         error_message=error_message,
         duration_ms=duration_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         tools_provided=tools_provided,
     )
     db.add(record)
     db.flush()
+
+    # Aggregate daily usage for billing
+    if input_tokens or output_tokens:
+        try:
+            from app.services.usage_service import record_usage
+            # Resolve user_id from task if not provided
+            if not user_id and task_id:
+                from app.db.models import Task
+                task = db.query(Task).filter(Task.id == task_id).first()
+                if task:
+                    user_id = task.user_id
+            record_usage(db, user_id, input_tokens, output_tokens)
+        except Exception:
+            pass  # Don't fail the LLM call if usage tracking fails
+
     return record.id
 
 
@@ -156,12 +178,6 @@ def call_llm_with_tools(
 
     resolved_model = model or os.environ.get("LLM_INTERPRETER_MODEL", "claude-sonnet-4-20250514")
 
-    today = datetime.date.today().isoformat()
-    dated_messages = [*messages]
-    last = dated_messages[-1]
-    if isinstance(last.get("content"), str):
-        dated_messages[-1] = {**last, "content": f"[{today}] {last['content']}"}
-
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None
     t0 = time.time()
@@ -172,7 +188,7 @@ def call_llm_with_tools(
             model=resolved_model,
             max_tokens=max_tokens,
             system=system_prompt,
-            messages=dated_messages,
+            messages=messages,
             tools=tools,
         ) as stream:
             for chunk in stream.text_stream:
@@ -184,6 +200,10 @@ def call_llm_with_tools(
         raw_text = json.dumps([block.model_dump() for block in response.content])
         user_prompt_summary = json.dumps(messages[-1]["content"][:500] if isinstance(messages[-1]["content"], str) else "[tool_results]")
 
+        # Extract token usage from response
+        _input_tokens = response.usage.input_tokens if response.usage else None
+        _output_tokens = response.usage.output_tokens if response.usage else None
+
         if db is not None:
             llm_call_id = _persist_llm_call(
                 db, task_id=task_id, call_type=call_type,
@@ -192,6 +212,7 @@ def call_llm_with_tools(
                 parsed_response=_build_parsed_response(response),
                 status="success", duration_ms=duration_ms,
                 tools_provided=tools if tools else None,
+                input_tokens=_input_tokens, output_tokens=_output_tokens,
             )
 
         return response, llm_call_id

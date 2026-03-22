@@ -32,14 +32,65 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
 
     tasks = relationship("Task", back_populates="user")
+    memberships = relationship("OrganizationMembership", back_populates="user")
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, nullable=False)
+    billing_email = Column(String, nullable=True)
+    plan = Column(String, nullable=False, default="starter")  # starter|pro|enterprise
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    hr_agent_enabled = Column(Boolean, nullable=False, default=False)
+    procurement_agent_enabled = Column(Boolean, nullable=False, default=False)
+    reports_agent_enabled = Column(Boolean, nullable=False, default=True)
+
+    venues = relationship("Venue", back_populates="organization")
+    memberships = relationship("OrganizationMembership", back_populates="organization")
+
+
+class OrganizationMembership(Base):
+    __tablename__ = "organization_memberships"
+    __table_args__ = (UniqueConstraint("user_id", "organization_id", name="uq_user_org"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
+    role = Column(String, nullable=False, default="member")  # owner|admin|member
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+    user = relationship("User", back_populates="memberships")
+    organization = relationship("Organization", back_populates="memberships")
+
+
+class UserVenueAccess(Base):
+    __tablename__ = "user_venue_access"
+    __table_args__ = (UniqueConstraint("user_id", "venue_id", name="uq_user_venue"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=False)
+    granted_at = Column(DateTime(timezone=True), default=_now)
+
+    user = relationship("User")
+    venue = relationship("Venue")
 
 
 class Venue(Base):
     __tablename__ = "venues"
 
     id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=True)
     name = Column(String, nullable=False)
     location = Column(String)
+
+    organization = relationship("Organization", back_populates="venues")
 
 
 class Supplier(Base):
@@ -79,6 +130,7 @@ class Task(Base):
     id = Column(String, primary_key=True, default=_uuid)
     session_id = Column(String, index=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
     intent = Column(String)
     domain = Column(String)
     status = Column(String, nullable=False, default="awaiting_user_input")
@@ -194,6 +246,8 @@ class LlmCall(Base):
     status = Column(String, nullable=False, default="success")  # "success" | "error"
     error_message = Column(Text)
     duration_ms = Column(Integer)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
     tools_provided = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
@@ -229,23 +283,28 @@ class OAuthState(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     connector_name = Column(String, nullable=False)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
     state = Column(String, unique=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
 
 class ConnectorConfig(Base):
     __tablename__ = "connector_configs"
+    __table_args__ = (UniqueConstraint("connector_name", "venue_id", name="uq_connector_venue"),)
 
     id = Column(String, primary_key=True, default=_uuid)
-    connector_name = Column(String, unique=True, nullable=False)
+    connector_name = Column(String, nullable=False)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)  # NULL for platform connectors (e.g., Anthropic)
     config = Column(JSON, nullable=False, default=dict)
     enabled = Column(String, nullable=False, default="true")
     access_token = Column(Text, nullable=True)
     refresh_token = Column(Text, nullable=True)
     token_expires_at = Column(DateTime(timezone=True), nullable=True)
-    oauth_metadata = Column(JSON, nullable=True)   # extra fields from token response (e.g. venue_id)
+    oauth_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    venue = relationship("Venue")
 
 
 class AgentConfig(Base):
@@ -282,6 +341,7 @@ class ToolCall(Base):
     id = Column(String, primary_key=True, default=_uuid)
     task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
     llm_call_id = Column(String, ForeignKey("llm_calls.id", ondelete="SET NULL"), nullable=True)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
     iteration = Column(Integer, nullable=False)
     tool_name = Column(String, nullable=False)          # e.g. "bidfood__check_stock"
     connector_name = Column(String, nullable=False)
@@ -302,7 +362,8 @@ class WorkingDocument(Base):
     __tablename__ = "working_documents"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=False, index=True)
+    task_id = Column(String, ForeignKey("tasks.id"), nullable=True, index=True)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
     doc_type = Column(String, nullable=False)          # "roster", "order", etc.
     connector_name = Column(String, nullable=False)
     sync_mode = Column(String, nullable=False, default="auto")  # "auto" | "submit"
@@ -334,3 +395,200 @@ class HrSetup(Base):
 
     task = relationship("Task", back_populates="hr_setup")
     venue = relationship("Venue")
+
+
+class HiringCriteria(Base):
+    __tablename__ = "hiring_criteria"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    scope = Column(String, nullable=False)              # "company" | "position"
+    position_name = Column(String, nullable=True)       # null for company-level
+    criteria = Column(JSON, nullable=False, default=list)  # [{id, text, required, category}]
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    title = Column(String, nullable=False)
+    department = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="open")  # "draft" | "open" | "closed"
+    description = Column(Text, nullable=True)
+    criteria_id = Column(String, ForeignKey("hiring_criteria.id"), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    criteria = relationship("HiringCriteria")
+    applications = relationship("Application", back_populates="job", cascade="all, delete-orphan")
+
+
+class Candidate(Base):
+    __tablename__ = "candidates"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    source = Column(String, nullable=True)  # "referral" | "seek" | "walk-in" | etc
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    applications = relationship("Application", back_populates="candidate", cascade="all, delete-orphan")
+
+
+class Application(Base):
+    __tablename__ = "applications"
+    __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=False)
+    candidate_id = Column(String, ForeignKey("candidates.id"), nullable=False)
+    status = Column(String, nullable=False, default="applied")  # applied|screening|interview|offer|hired|rejected
+    score = Column(Integer, nullable=True)
+    notes = Column(Text, nullable=True)
+    applied_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    job = relationship("Job", back_populates="applications")
+    candidate = relationship("Candidate", back_populates="applications")
+
+
+class AutomatedTask(Base):
+    __tablename__ = "automated_tasks"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    agent_slug = Column(String, nullable=False)
+    prompt = Column(Text, nullable=False)
+    schedule_type = Column(String, nullable=False, default="manual")  # manual|hourly|daily|weekly|monthly
+    schedule_config = Column(JSON, nullable=False, default=dict)  # {hour, minute, day_of_week, day_of_month}
+    status = Column(String, nullable=False, default="draft")  # active|paused|draft
+    created_by = Column(String, ForeignKey("users.id"), nullable=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    next_run_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    runs = relationship("AutomatedTaskRun", back_populates="automated_task", cascade="all, delete-orphan", order_by="AutomatedTaskRun.started_at.desc()")
+    creator = relationship("User")
+
+
+class AutomatedTaskRun(Base):
+    __tablename__ = "automated_task_runs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    automated_task_id = Column(String, ForeignKey("automated_tasks.id"), nullable=False)
+    status = Column(String, nullable=False, default="running")  # running|success|error
+    mode = Column(String, nullable=False, default="live")  # live|test
+    result_summary = Column(Text, nullable=True)
+    tool_calls_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), default=_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    automated_task = relationship("AutomatedTask", back_populates="runs")
+
+
+class TokenUsage(Base):
+    __tablename__ = "token_usage"
+    __table_args__ = (UniqueConstraint("organization_id", "user_id", "date", name="uq_org_user_date"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    date = Column(String, nullable=False)  # YYYY-MM-DD
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    llm_call_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, unique=True)
+    stripe_customer_id = Column(String, nullable=True, unique=True)
+    stripe_subscription_id = Column(String, nullable=True, unique=True)
+    token_plan = Column(String, nullable=False, default="basic")  # basic|standard|max
+    token_quota = Column(Integer, nullable=False, default=1_000_000)
+    billing_cycle_start = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String, nullable=False, default="trialing")  # active|past_due|canceled|trialing
+    payment_method_last4 = Column(String, nullable=True)
+    payment_method_brand = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    organization = relationship("Organization", backref="subscription")
+
+
+class TokenTopUp(Base):
+    __tablename__ = "token_top_ups"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
+    tokens = Column(Integer, nullable=False)
+    amount_cents = Column(Integer, nullable=False)
+    stripe_payment_intent_id = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="pending")  # pending|completed|failed
+    purchased_by = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+    organization = relationship("Organization")
+
+
+class BillingEvent(Base):
+    __tablename__ = "billing_events"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
+    event_type = Column(String, nullable=False)  # subscription_created|payment_succeeded|payment_failed|plan_changed|topup_purchased|quota_exceeded
+    stripe_event_id = Column(String, nullable=True, unique=True)
+    details = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+
+class Report(Base):
+    __tablename__ = "reports"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    title = Column(String, nullable=False, default="Untitled Report")
+    description = Column(Text, nullable=True)
+    layout = Column(JSON, nullable=False, default=list)  # [{chart_id, x, y, w, h}]
+    status = Column(String, nullable=False, default="draft")  # draft|saved
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    charts = relationship("ReportChart", back_populates="report", cascade="all, delete-orphan", order_by="ReportChart.position")
+    user = relationship("User")
+
+
+class ReportChart(Base):
+    __tablename__ = "report_charts"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    report_id = Column(String, ForeignKey("reports.id"), nullable=False)
+    title = Column(String, nullable=False)
+    chart_type = Column(String, nullable=False, default="bar")  # bar|stacked_bar|line|pie|scatter|bubble|table
+    chart_spec = Column(JSON, nullable=False, default=dict)  # {x_axis, y_axis, series, orientation}
+    data = Column(JSON, nullable=False, default=list)  # row data
+    script = Column(JSON, nullable=False, default=dict)  # {connector, action, params} replayable recipe
+    position = Column(Integer, nullable=False, default=0)
+    source_task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    report = relationship("Report", back_populates="charts")

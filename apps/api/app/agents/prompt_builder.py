@@ -1,6 +1,6 @@
 """Build agent system prompts dynamically from active connector specs."""
 
-import json
+import datetime
 import logging
 import re
 
@@ -41,17 +41,18 @@ def _collect_tools(domain: str, db: Session) -> list[dict]:
         if not spec:
             continue
 
-        # Gate on having an active connection (enabled ConnectorConfig)
-        config_row = (
-            db.query(ConnectorConfig)
-            .filter(
-                ConnectorConfig.connector_name == binding.connector_name,
-                ConnectorConfig.enabled == "true",
+        # Gate on having an active connection — except internal specs which need no credentials
+        if spec.execution_mode != "internal":
+            has_config = (
+                db.query(ConnectorConfig)
+                .filter(
+                    ConnectorConfig.connector_name == binding.connector_name,
+                    ConnectorConfig.enabled == "true",
+                )
+                .count() > 0
             )
-            .first()
-        )
-        if not config_row:
-            continue
+            if not has_config:
+                continue
 
         # Build an enabled-action set from binding capabilities
         enabled_actions: set[str] | None = None
@@ -72,6 +73,7 @@ def _collect_tools(domain: str, db: Session) -> list[dict]:
                     "action": action,
                     "connector": spec.connector_name,
                     "required_fields": tool.get("required_fields", []),
+                    "optional_fields": tool.get("optional_fields", []),
                     "field_mapping": tool.get("field_mapping", {}),
                     "field_descriptions": tool.get("field_descriptions", {}),
                     "field_schema": tool.get("field_schema", {}),
@@ -84,91 +86,18 @@ def _collect_tools(domain: str, db: Session) -> list[dict]:
 
 
 def build_dynamic_prompt(domain: str, db: Session) -> str | None:
-    """Build a system prompt that includes all available tools from bound connector specs.
+    """Return the DB-stored system prompt if connector specs are bound.
 
     Returns None if no connector specs are bound, signalling the caller to
-    fall back to the hardcoded / DB-stored prompt.
+    use the DB-stored prompt directly via agent_config_service.
     """
     tools = _collect_tools(domain, db)
     if not tools:
         return None
 
-    # Build tools block
-    tools_lines: list[str] = []
-    for tool in tools:
-        mapping_hint = ""
-        if tool["field_mapping"]:
-            mapping_hint = f"\n  Field mapping hints: {json.dumps(tool['field_mapping'])}"
-        desc_hint = ""
-        if tool.get("field_descriptions"):
-            desc_hint = f"\n  Field formats: {json.dumps(tool['field_descriptions'])}"
-        tools_lines.append(
-            f"- action: {tool['action']}\n"
-            f"  connector: {tool['connector']}\n"
-            f"  method: {tool['method']}\n"
-            f"  required_fields: {json.dumps(tool['required_fields'])}\n"
-            f"  description: {tool.get('description') or tool['action'].replace('_', ' ')}"
-            + mapping_hint
-            + desc_hint
-        )
-
-    tools_block = "\n".join(tools_lines)
-
-    prompt = f"""\
-You are the {domain} interpretation layer for Norm, a hospitality operations platform.
-Your ONLY job is to understand user messages and return structured JSON.
-You do NOT execute actions, write to databases, or call external systems.
-
-## Available tools
-
-{tools_block}
-
-## Response schema
-
-You must return valid JSON matching this exact schema:
-{{
-  "domain": "{domain}",
-  "intent": "{domain}.<action>",
-  "action": "<one of the available actions above>",
-  "connector": "<connector name for the chosen action>",
-  "confidence": 0.0-1.0,
-  "is_followup": true | false,
-  "extracted_fields": {{
-    // fields extracted from the user message
-  }},
-  "candidate_matches": {{
-    // fuzzy match candidates, e.g. venue_raw, venue_candidate
-  }},
-  "missing_fields": ["field1", "field2"],
-  "clarification_needed": true | false,
-  "clarification_question": "string or null",
-  "summary": "brief summary"
-}}
-
-## Date awareness
-
-Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use this date to resolve relative time references like "today", "this week", "yesterday", "last month", etc.
-
-## Rules
-
-1. Select the best matching **action** based on the user's intent. Set the "action" and "connector" fields accordingly.
-2. Match venue names fuzzily. "zeppa" = "La Zeppa".
-3. Match other entity names fuzzily where applicable (products, employees, etc.).
-4. The "required_fields" listed for each action are the fields you should try to extract.
-5. If there is an open task and the message looks like a reply, set is_followup=true.
-6. If is_followup=true, only include fields that the NEW message provides or changes.
-7. Write natural, concise clarification questions when fields are missing.
-8. Set confidence based on how certain you are about the interpretation.
-9. Set "intent" to "{domain}.<action>" using the chosen action name.
-"""
-
-    logger.info(
-        "Built dynamic prompt for domain=%s with %d tools from %d bindings",
-        domain,
-        len(tools),
-        len(bindings := []),  # just for the log count
-    )
-    return prompt
+    # Tools are bound — return the DB prompt (the admin manages it in Settings)
+    from app.services.agent_config_service import get_system_prompt
+    return get_system_prompt(domain, db) or None
 
 
 def build_tool_definitions(domain: str, db: Session) -> tuple[str, list[dict]]:
@@ -183,49 +112,97 @@ def build_tool_definitions(domain: str, db: Session) -> tuple[str, list[dict]]:
     if not tools:
         return "", []
 
-    # Only include domain-specific instructions if the user has explicitly
-    # customized the prompt in the Settings UI.  The hardcoded defaults are
-    # interpretation prompts ("return JSON only") that conflict with tool-use.
-    from app.db.models import AgentConfig
-    config_row = db.query(AgentConfig).filter(AgentConfig.agent_slug == domain).first()
-    domain_instructions = config_row.system_prompt if config_row and config_row.system_prompt is not None else None
+    # System prompt comes directly from the DB — the admin manages the full
+    # prompt in the Settings UI. Supports {{today}} placeholder.
+    from app.services.agent_config_service import get_system_prompt
+    system_prompt = get_system_prompt(domain, db)
+    if not system_prompt:
+        system_prompt = f"You are the {domain} agent for Norm, a hospitality operations platform."
+    system_prompt = system_prompt.replace('{{today}}', datetime.date.today().isoformat())
 
-    domain_section = ""
-    if domain_instructions and domain_instructions.strip():
-        domain_section = f"""
-## Domain-specific instructions
-{domain_instructions}
+    # Add automated tasks guidance if those tools are available
+    has_automated_tasks = any(t.get("action") == "create_automated_task" for t in tools)
+    if has_automated_tasks:
+        system_prompt += """
+
+## Automated Tasks
+You can create automated tasks that run on a schedule or on demand. When a user asks you to do something regularly (e.g., "check candidates every day", "send me a weekly sales report"), use the `create_automated_task` tool to set it up.
+
+- Use `create_automated_task` when the user wants something done regularly or automatically
+- Set `agent_slug` to your domain (e.g., "hr", "procurement", "reports")
+- Write a clear, self-contained `prompt` — it will be sent to the agent on each run without any conversation context
+- Choose the right `schedule_type`: "daily", "weekly", "monthly", or "manual" (trigger only)
+- Set `schedule_config` with appropriate time fields: `{hour, minute}` for daily, `{day_of_week, hour, minute}` for weekly
+- The task is created as a draft — the user can test it and then activate it
 """
 
-    system_prompt = f"""\
-You are the {domain} agent for Norm, a hospitality operations platform.
-You help users by using the available tools to query data and perform actions.
+    # Add chart visualization guidance if render_chart tool is available
+    has_render_chart = any(t.get("action") == "render_chart" for t in tools)
+    if has_render_chart:
+        system_prompt += """
 
-## Date awareness
-Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use this date to resolve relative time references like "today", "this week", "yesterday", "last month", etc. When calling tools that require date parameters, calculate the correct dates from this prefix.
+## Chart Visualization
+When presenting data from a tool call, use the `render_chart` tool to create a visual chart.
+- Set `source_tool_call_id` to the tool_use ID of the GET tool call whose data you want to visualize. This is the `id` field from the tool_use block in the conversation. The chart pulls data directly from that tool call's stored result — do NOT pass the data yourself.
+- Use `select_fields` to pick only the fields needed for the chart (e.g., `["startTime", "invoices"]`). This keeps the chart clean by excluding irrelevant fields.
+- Use `field_labels` to give fields readable display names (e.g., `{"startTime": "Date", "invoices": "Sales ($)"}`). Dates are auto-formatted on the frontend but labels make axes and legends clearer.
+- Choose the most appropriate chart_type:
+  - "bar" for comparing categories or time periods
+  - "line" for trends over time
+  - "pie" for parts of a whole (< 8 categories)
+  - "stacked_bar" for multiple series comparison
+  - "scatter" for correlation between two numeric variables
+  - "table" when exact numbers matter more than visual patterns
+- Set `x_axis_key` to the field name for the x-axis (e.g., "startTime")
+- Set `series` to an array of objects with `key` and `label` for each data series
+- Always provide a clear, descriptive `title`
+- Only use render_chart for data that came from a single tool call. For computed or synthesized results, use a markdown table instead.
 
-## Rules
-- Use tools to gather information needed to answer the user's question.
-- You may call multiple tools in sequence to build a complete picture.
-- For queries that span multiple periods (e.g. "last 4 Sundays", "each day last week"), make separate tool calls for each period, then combine and summarise the results.
-- For read-only tools (GET), proceed immediately — they execute automatically.
-- For write tools (POST/PUT/DELETE), describe what you plan to do and call the tool — the user will be asked to approve before it executes.
-- Always explain what you found or did in clear, natural language.
-- If you need more information from the user, ask a clear question.
-- Match entity names fuzzily: "zeppa" = "La Zeppa", "jb" = "Jim Beam".
-- If there is only ONE venue in the context, use it automatically — do NOT ask the user to choose.
-- Prefer action over clarification. For read operations, make reasonable assumptions and proceed. Only ask for clarification when essential info is truly missing for a write operation.
-- Be concise and helpful.
-- IMPORTANT: When calling tools, use the EXACT format specified in the field description. If it says "ISO 8601 format with timezone (e.g., 2026-03-23T07:00:00+13:00)", use that exact format including the timezone offset. Do NOT use other date formats. The example value in the description shows the correct format — follow it precisely.
-- IMPORTANT: When you are about to call a tool, you MUST start your text response with the prefix "[Tool] " followed by a brief explanation of what you are looking up or doing and why. Example: "[Tool] Looking up staff orders for last week to find Arthur's sales data." Do NOT use the [Tool] prefix when giving your final answer to the user.
-- Tool results may be slimmed (showing only key fields) or too large to display. Look for `_slimmed: true` or `_too_large: true` in results. Use `norm__search_tool_result` to search the full data by keyword or get complete details for specific items. Never assume an item doesn't exist just because you can't see it — always search first.
-{domain_section}
-## Formatting
-- Write a concise natural language summary of results. Structured data may be displayed separately.
-- If presenting tabular data in text, use markdown tables.
-- For confirmations, use **bold** labels: **Reference**: ORD-12345.
-- Keep summaries brief — highlight counts, key facts, and anything unusual.
-- When summarising data across multiple periods, present a comparison table showing each period side by side.
+## Large Results & Search
+When a tool result is too large to display, you'll see `_too_large` with a `_sample_item` showing available fields.
+Use `norm__search_tool_result` with the `tool_call_id` and a short search `query` to find matching items.
+Keep your search query to just the core keyword — for example, if the user asks for "corona beer boxes", search for "corona".
+The search uses fuzzy matching so it handles misspellings and partial matches. It returns up to 20 results ranked by relevance.
+"""
+
+    # Add venue guidance when multiple venues exist
+    from app.services.venue_service import get_user_venues
+    from app.db.models import ConnectorConfig
+    user_venues = get_user_venues(db)
+    if len(user_venues) > 1:
+        # Build per-venue connector availability
+        venue_lines = []
+        for v in user_venues:
+            configs = db.query(ConnectorConfig).filter(
+                ConnectorConfig.venue_id == v.id,
+                ConnectorConfig.enabled == "true",
+            ).all()
+            connector_names = [c.connector_name for c in configs]
+            if connector_names:
+                venue_lines.append(f"- {v.name} (connected to: {', '.join(connector_names)})")
+            else:
+                venue_lines.append(f"- {v.name} (no connectors configured)")
+        venue_detail = "\n".join(venue_lines)
+
+        system_prompt += f"""
+
+## Venue Context
+The user has access to multiple venues:
+{venue_detail}
+
+When querying data, include the venue name in the "venue" parameter of each tool call.
+- If the user specifies a venue, use that venue name exactly
+- If the user doesn't specify and there are multiple venues, ask which one they mean
+- Only call tools for venues that have the relevant connector configured
+- If the user asks about a venue with no connectors, tell them it needs to be set up in Settings > Venues
+- For cross-venue queries, only include venues that have the relevant connector
+"""
+
+    # Always add parallel tool-use guidance
+    system_prompt += """
+
+## Tool Use
+When you need to retrieve multiple independent pieces of data (e.g., sales data for several months, stock levels for several suppliers), call ALL the tools in a single response rather than one at a time. This executes them in parallel and is much faster. Only call tools sequentially when a later call depends on the result of an earlier one.
 """
 
     anthropic_tools: list[dict] = []
@@ -237,11 +214,12 @@ Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use th
             continue
         seen_names.add(tool_name)
 
-        # Build properties from required_fields
+        # Build properties from required_fields + optional_fields
         properties: dict = {}
         field_descs = tool.get("field_descriptions") or {}
         field_schemas = tool.get("field_schema") or {}
-        for field in tool["required_fields"]:
+        all_fields = list(tool["required_fields"]) + list(tool.get("optional_fields") or [])
+        for field in all_fields:
             # Use explicit schema if provided (supports nested objects/arrays)
             if field in field_schemas:
                 prop = {**field_schemas[field]}
@@ -261,12 +239,25 @@ Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use th
                 "type": "string",
                 "description": ". ".join(desc_parts) if desc_parts else field,
             }
-            # Extract example from hint "(e.g., ...)" and add as schema example
-            if hint:
-                ex_match = re.search(r'\(e\.g\.?,?\s*(.+?)\)\s*$', hint)
-                if ex_match:
-                    prop["examples"] = [ex_match.group(1).strip()]
             properties[field] = prop
+
+        # Inject venue parameter for external connectors when multiple venues exist
+        is_external = tool["connector"] != "norm" and not tool["connector"].startswith("norm_")
+        if is_external and len(user_venues) > 1:
+            configured_venues = [
+                v.name for v in user_venues
+                if db.query(ConnectorConfig).filter(
+                    ConnectorConfig.connector_name == tool["connector"],
+                    ConnectorConfig.venue_id == v.id,
+                    ConnectorConfig.enabled == "true",
+                ).count() > 0
+            ]
+            if configured_venues:
+                properties["venue"] = {
+                    "type": "string",
+                    "description": f"Venue name. Available for: {', '.join(configured_venues)}.",
+                    "enum": configured_venues,
+                }
 
         method = tool["method"].upper()
         desc = tool.get("description") or tool["action"].replace("_", " ")
@@ -282,35 +273,6 @@ Each user message is prefixed with today's date in `[YYYY-MM-DD]` format. Use th
                 "additionalProperties": False,
             },
         })
-
-    # Add the built-in search tool for large results
-    anthropic_tools.append({
-        "name": "norm__search_tool_result",
-        "description": (
-            "[GET] Search through a previous tool call's full result by keyword. "
-            "Use when a result was too large or slimmed (_slimmed or _too_large) "
-            "and you need to find specific items or get full details."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "tool_call_id": {
-                    "type": "string",
-                    "description": "The _tool_call_id from the slimmed/large result",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Search keyword (case-insensitive match across all field values)",
-                },
-                "fields": {
-                    "type": "string",
-                    "description": "Optional: comma-separated field names to return. Omit for all fields.",
-                },
-            },
-            "required": ["tool_call_id", "query"],
-            "additionalProperties": False,
-        },
-    })
 
     logger.info(
         "Built %d Anthropic tool definitions for domain=%s",

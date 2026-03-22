@@ -17,6 +17,7 @@ router = APIRouter()
 class MessageRequest(BaseModel):
     message: str
     task_id: str | None = None
+    venue_id: str | None = None
 
 
 @router.post("/messages")
@@ -69,7 +70,11 @@ async def post_message_stream(
                 result = handle_message(req.message, db, user_id=user.id, task_id=req.task_id)
                 on_event({"type": "complete", "data": result})
             except Exception as exc:
-                on_event({"type": "error", "message": str(exc)})
+                from app.services.billing_service import QuotaExceededError
+                if isinstance(exc, QuotaExceededError):
+                    on_event({"type": "quota_exceeded", "used": exc.used, "quota": exc.quota, "message": "You've used all your tokens for this billing period."})
+                else:
+                    on_event({"type": "error", "message": str(exc)})
             finally:
                 db.close()
 

@@ -3,6 +3,7 @@
 import type { Task } from '../../types';
 import TaskCard from './TaskCard';
 import { SquarePen, Search, PanelLeftClose } from 'lucide-react';
+import { FUNCTIONAL_PAGES } from '../pages/pageRegistry';
 
 type FilterKey = 'all' | 'awaiting_approval' | 'awaiting_user_input' | 'completed';
 
@@ -29,9 +30,10 @@ interface TaskListProps {
   onFilterChange: (filter: FilterKey) => void;
   onNewChat: () => void;
   onCollapsePanel?: () => void;
+  onSelectPage?: (pageId: string) => void;
 }
 
-export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel }: TaskListProps) {
+export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage }: TaskListProps) {
   // Filter by agent
   const agentFiltered = activeAgent === 'home' ? tasks : tasks.filter(t => t.domain === activeAgent);
   // Apply status filter
@@ -141,6 +143,35 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
         >
           <Search size={20} strokeWidth={1.75} /> Search
         </button>
+        {FUNCTIONAL_PAGES.filter(p => p.agent === activeAgent).map((page, idx) => {
+          const Icon = page.icon;
+          return (
+            <button
+              key={page.id}
+              onClick={() => onSelectPage?.(page.id)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.45rem 0',
+                marginTop: idx === 0 ? '0.5rem' : 0,
+                marginBottom: 0,
+                fontSize: '0.95rem',
+                fontWeight: 600,
+                color: '#1a1a1a',
+                backgroundColor: 'transparent',
+                border: 'none',
+                borderRadius: 8,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                textAlign: 'left',
+              }}
+            >
+              <Icon size={20} strokeWidth={1.75} /> {page.label}
+            </button>
+          );
+        })}
         </div>
         <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333', marginBottom: '0.5rem' }}>
           {activeAgent === 'home' ? 'Recent threads' : `${activeAgent.charAt(0).toUpperCase() + activeAgent.slice(1)} Tasks`}
@@ -179,9 +210,7 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
             fontSize: '0.85rem',
             lineHeight: 1.6,
           }}>
-            No tasks yet. Try:<br />
-            &quot;Order 3 cases of Jim Beam for La Zeppa&quot;<br />
-            &quot;Set up Sarah Jones as a bartender at Mr Murdoch&apos;s&quot;
+            No tasks yet. Try asking me to order stock, check a roster, or generate a report.
           </div>
         ) : (
           filtered.map(task => (

@@ -39,7 +39,8 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
 
       const data = await res.json();
       onSuccess(data.access_token, data.user);
-    } catch {
+    } catch (e) {
+      console.error(e);
       setError('Network error. Is the backend running?');
     } finally {
       setLoading(false);

@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from app.agents.base import BaseDomainAgent
 from app.agents.reports.context import build_reports_context, _report_task_to_dict
 from app.agents.reports.planner import create_report_plan
-from app.agents.reports import tools as report_tools
 from app.db.models import Task, Message, LlmCall
 
 logger = logging.getLogger(__name__)
@@ -18,9 +17,6 @@ class ReportsAgent(BaseDomainAgent):
     @property
     def domain(self) -> str:
         return "reports"
-
-    def _default_prompt(self) -> str:
-        return ""
 
     def build_context(self, db: Session, user_id: str | None = None) -> dict:
         return build_reports_context(db, user_id)
@@ -37,7 +33,7 @@ class ReportsAgent(BaseDomainAgent):
         if anthropic_tools:
             return self.handle_message_with_tools(message, db, user_id, task_id)
 
-        # Fallback to classic interpretation
+        # Classic interpretation path (no tools bound)
         ctx = self.build_context(db, user_id)
 
         # If task_id provided, load it as open task for follow-up
@@ -167,23 +163,11 @@ class ReportsAgent(BaseDomainAgent):
         return _report_task_to_dict(task)
 
     def _execute_plan(self, plan: list[dict], extracted: dict) -> dict:
-        """Execute a report plan using mock tools."""
-        venue = extracted.get("venue_name")
-        product = extracted.get("product_name")
-        time_range = extracted.get("time_range")
-        group_by = extracted.get("group_by", "day")
-        metrics = extracted.get("metrics", ["revenue"])
-
-        data: list[dict] = []
-        for step in plan:
-            action = step["action"]
-            if action == "query_sales_data":
-                data.extend(report_tools.query_sales_data(time_range, venue, product))
-            elif action == "query_inventory_data":
-                data.extend(report_tools.query_inventory(venue, product))
-
-        aggregated = report_tools.aggregate_by_period(data, group_by, metrics)
-        return report_tools.format_report(aggregated, extracted.get("report_type", "summary"), metrics, group_by)
+        """Execute a report plan. Requires connector specs to be bound."""
+        raise NotImplementedError(
+            "Classic report execution is no longer supported. "
+            "Bind connector specs to the reports agent and use the tool loop."
+        )
 
     def _format_summary(self, result: dict) -> str:
         """Format a report result into a human-readable summary."""

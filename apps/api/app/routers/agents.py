@@ -9,7 +9,6 @@ from app.db.models import AgentConfig, AgentConnectorBinding, ConnectorSpec, Use
 from app.auth.dependencies import get_current_user, require_role
 from app.services.agent_config_service import (
     get_system_prompt,
-    get_default_prompt,
     update_agent_config,
     reset_prompt,
     get_connector_bindings,
@@ -60,9 +59,7 @@ def _agent_to_dict(
     include_prompt: bool = True,
 ) -> dict:
     specs_by_name = specs_by_name or {}
-    default_prompt = get_default_prompt(slug)
-    prompt = (config.system_prompt if config and config.system_prompt is not None else default_prompt)
-    is_custom = config is not None and config.system_prompt is not None
+    prompt = config.system_prompt if config and config.system_prompt is not None else ""
 
     enriched_bindings = []
     bound_connector_names = set()
@@ -94,7 +91,7 @@ def _agent_to_dict(
         "slug": slug,
         "display_name": config.display_name if config else slug.replace("_", " ").title(),
         "description": config.description if config else None,
-        "is_custom_prompt": is_custom,
+        "has_prompt": bool(prompt),
         "enabled": config.enabled if config else True,
         "bindings": enriched_bindings,
         "available_connectors": available_connectors,

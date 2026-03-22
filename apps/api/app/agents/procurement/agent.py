@@ -20,9 +20,6 @@ class ProcurementAgent(BaseDomainAgent):
     def domain(self) -> str:
         return "procurement"
 
-    def _default_prompt(self) -> str:
-        return ""
-
     def build_context(self, db: Session, user_id: str | None = None) -> dict:
         return build_procurement_context(db, user_id)
 
@@ -38,7 +35,7 @@ class ProcurementAgent(BaseDomainAgent):
         if anthropic_tools:
             return self.handle_message_with_tools(message, db, user_id, task_id)
 
-        # Fallback to classic single-shot interpretation
+        # Classic single-shot interpretation (no tools bound)
         ctx = self.build_context(db, user_id)
 
         # If task_id provided, load it as open task for follow-up
