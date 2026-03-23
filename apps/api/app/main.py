@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth, working_documents, automated_tasks, organizations, billing, billing_webhooks, reports_crud
+from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth, working_documents, automated_tasks, organizations, billing, billing_webhooks, reports_crud, admin
 
 app = FastAPI(
     title="Norm API",
@@ -36,6 +36,7 @@ app.include_router(organizations.router, prefix="/api")
 app.include_router(billing.router, prefix="/api")
 app.include_router(billing_webhooks.router, prefix="/api")
 app.include_router(reports_crud.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 
 
 @app.on_event("startup")

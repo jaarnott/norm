@@ -8,9 +8,9 @@ WEB_DIR="$ROOT/apps/web"
 echo "Starting Norm development servers..."
 
 # ── 1. Check .env ──────────────────────────────────────────────────
-if [ ! -f "$API_DIR/.env" ]; then
-  echo "Creating apps/api/.env from .env.example …"
-  cp "$API_DIR/.env.example" "$API_DIR/.env"
+if [ ! -f "$ROOT/.env" ]; then
+  echo "Creating .env from .env.example …"
+  cp "$ROOT/.env.example" "$ROOT/.env"
 fi
 
 # ── 2. Python venv & deps ─────────────────────────────────────────
@@ -23,8 +23,8 @@ echo "Installing frontend dependencies …"
 
 # ── 4. Docker services (Postgres) ─────────────────────────────────
 # Clean up stale containers from previous Codespace sessions
-docker compose -f "$ROOT/docker-compose.yml" rm -f 2>/dev/null || true
-docker compose -f "$ROOT/docker-compose.yml" up -d
+docker compose -f "$ROOT/docker-compose.yml" rm -f postgres 2>/dev/null || true
+docker compose -f "$ROOT/docker-compose.yml" up -d postgres
 
 echo "Waiting for Postgres …"
 until docker compose -f "$ROOT/docker-compose.yml" exec -T postgres pg_isready -U norm -q 2>/dev/null; do
@@ -44,9 +44,9 @@ fi
 
 # ── 7. Start API ──────────────────────────────────────────────────
 # Load .env file if it exists (exports vars like LLM_INTERPRETER_MODEL)
-if [ -f "$API_DIR/.env" ]; then
+if [ -f "$ROOT/.env" ]; then
   set -a
-  source "$API_DIR/.env"
+  source "$ROOT/.env"
   set +a
 fi
 (cd "$API_DIR" && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000) &

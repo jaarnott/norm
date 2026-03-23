@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  api-lint-test:
+    name: API Lint & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: norm
+          POSTGRES_PASSWORD: norm
+          POSTGRES_DB: norm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U norm"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://norm:norm@localhost:5432/norm
+      ENVIRONMENT: testing
+      JWT_SECRET: ci-test-secret-not-for-production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: uv sync
+
+      - name: Lint (ruff check)
+        working-directory: apps/api
+        run: uv run ruff check app/
+
+      - name: Format check (ruff format)
+        working-directory: apps/api
+        run: uv run ruff format --check app/
+
+      - name: Run migrations
+        working-directory: apps/api
+        run: uv run alembic upgrade head
+
+      - name: Run tests
+        working-directory: apps/api
+        run: uv run pytest tests/ -v
+
+  web-lint-typecheck:
+    name: Web Lint & Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        working-directory: apps/web
+        run: pnpm lint
+
+      - name: Type check
+        working-directory: apps/web
+        run: pnpm exec tsc --noEmit
+
+      - name: Build
+        working-directory: apps/web
+        run: pnpm build
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -f apps/api/Dockerfile apps/api
+
+      - name: Build Web image
+        run: docker build -f apps/web/Dockerfile .

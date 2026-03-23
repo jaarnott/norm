@@ -1,0 +1,94 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - testing
+          - staging
+          - production
+      image_tag:
+        description: "Image tag (git SHA) to deploy"
+        required: true
+        type: string
+
+# Only allow one deploy at a time
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'pipeline' }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Build once, promote everywhere ──────────────────────────────
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      image_tag: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO (Phase 3): Authenticate with GCP Artifact Registry
+      # - uses: google-github-actions/auth@v2
+      #   with:
+      #     credentials_json: ${{ secrets.GCP_SA_KEY }}
+      # - uses: google-github-actions/setup-gcloud@v2
+      # - run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev
+
+      - name: Build API image
+        run: |
+          docker build -f apps/api/Dockerfile apps/api \
+            -t norm-api:${{ github.sha }} \
+            -t norm-api:latest
+
+      - name: Build Web image
+        run: |
+          docker build -f apps/web/Dockerfile . \
+            -t norm-web:${{ github.sha }} \
+            -t norm-web:latest
+
+      # TODO (Phase 3): Push to Artifact Registry
+      # - run: |
+      #     docker tag norm-api:${{ github.sha }} $REGISTRY/norm-api:${{ github.sha }}
+      #     docker tag norm-web:${{ github.sha }} $REGISTRY/norm-web:${{ github.sha }}
+      #     docker push $REGISTRY/norm-api:${{ github.sha }}
+      #     docker push $REGISTRY/norm-web:${{ github.sha }}
+
+  # ── Deploy to testing (auto) ────────────────────────────────────
+  deploy-testing:
+    name: Deploy to Testing
+    needs: build-and-push
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: testing
+      image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    secrets: inherit
+
+  # ── Deploy to staging (auto after testing passes) ───────────────
+  deploy-staging:
+    name: Deploy to Staging
+    needs: deploy-testing
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: staging
+      image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    secrets: inherit
+
+  # ── Deploy to production (manual trigger from admin panel) ──────
+  deploy-production:
+    name: Deploy to Production
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: production
+      image_tag: ${{ github.event.inputs.image_tag }}
+    secrets: inherit

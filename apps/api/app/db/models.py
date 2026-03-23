@@ -593,3 +593,19 @@ class ReportChart(Base):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     report = relationship("Report", back_populates="charts")
+
+
+# ── DevOps ──────────────────────────────────────────────────────────
+class Deployment(Base):
+    __tablename__ = "deployments"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    environment = Column(String, nullable=False)  # testing|staging|production
+    image_tag = Column(String, nullable=False)
+    git_sha = Column(String, nullable=False)
+    commit_message = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="pending")  # pending|running|success|failed
+    started_at = Column(DateTime(timezone=True), default=_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    logs_url = Column(String, nullable=True)
+    triggered_by = Column(String, nullable=True)  # ci|manual|webhook
