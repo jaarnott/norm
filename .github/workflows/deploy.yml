@@ -30,6 +30,7 @@ jobs:
   build-and-push:
     name: Build & Push Images
     runs-on: ubuntu-latest
+    environment: testing
     if: >
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success'
