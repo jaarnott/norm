@@ -1,9 +1,22 @@
 import os
 
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.logging_config import setup_logging
+
+# ── Observability init (before app creation) ─────────────────────────
+setup_logging()
+
+if settings.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.ENVIRONMENT,
+        traces_sample_rate=0.1 if settings.ENVIRONMENT == "production" else 0.5,
+    )
+
 from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth, working_documents, automated_tasks, organizations, billing, billing_webhooks, reports_crud, admin
 
 app = FastAPI(
@@ -11,6 +24,12 @@ app = FastAPI(
     description="Hospitality AI Orchestration Platform",
     version="0.1.0",
 )
+
+from app.middleware.request_tracing import RequestTracingMiddleware
+from app.middleware.metrics import MetricsMiddleware
+
+app.add_middleware(RequestTracingMiddleware)
+app.add_middleware(MetricsMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

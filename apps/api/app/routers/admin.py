@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
-from app.db.models import Deployment, User
+from app.db.models import Deployment, E2ETest, E2ETestRun, User
 
 router = APIRouter(tags=["admin"])
 
@@ -171,3 +171,331 @@ def promote(
     # )
 
     return {"ok": True, "deployment_id": dep.id}
+
+
+# ── E2E Test Schemas ──────────────────────────────────────────────
+
+class GenerateTestRequest(BaseModel):
+    description: str
+
+
+class SaveTestRequest(BaseModel):
+    name: str
+    description: str
+    playwright_script: str
+    steps: list = []
+
+
+class UpdateTestRequest(BaseModel):
+    name: str | None = None
+    playwright_script: str | None = None
+    steps: list | None = None
+
+
+class RunTestsRequest(BaseModel):
+    environment: str = "testing"
+    test_ids: list[str] | None = None  # None means all
+
+
+class TestRunWebhookPayload(BaseModel):
+    test_id: str | None = None
+    environment: str
+    status: str
+    duration_ms: int | None = None
+    error_message: str | None = None
+    screenshots: list = []
+    video_url: str | None = None
+    git_sha: str | None = None
+
+
+# ── E2E Test Endpoints ────────────────────────────────────────────
+
+@router.post("/admin/tests/generate")
+async def generate_test(
+    body: GenerateTestRequest,
+    user: User = Depends(get_current_user),
+):
+    """Generate a Playwright test from a natural language description."""
+    _require_admin(user)
+    from app.services.test_generator import generate_test as _generate
+    result = await _generate(body.description)
+    return result
+
+
+@router.post("/admin/tests")
+def save_test(
+    body: SaveTestRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Save a generated test to the suite."""
+    _require_admin(user)
+    test = E2ETest(
+        name=body.name,
+        description=body.description,
+        playwright_script=body.playwright_script,
+        steps_json=body.steps,
+        created_by=user.id,
+    )
+    db.add(test)
+    db.commit()
+    db.refresh(test)
+    return {
+        "id": test.id,
+        "name": test.name,
+        "description": test.description,
+        "playwright_script": test.playwright_script,
+        "steps": test.steps_json,
+        "created_at": test.created_at.isoformat() if test.created_at else None,
+    }
+
+
+@router.get("/admin/tests")
+def list_tests(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all E2E tests with last run status."""
+    _require_admin(user)
+    rows = db.query(E2ETest).order_by(E2ETest.created_at.desc()).all()
+    return {
+        "tests": [
+            {
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+                "playwright_script": t.playwright_script,
+                "steps": t.steps_json,
+                "last_run_status": t.last_run_status,
+                "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            }
+            for t in rows
+        ]
+    }
+
+
+@router.get("/admin/tests/{test_id}")
+def get_test(
+    test_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get a single E2E test detail."""
+    _require_admin(user)
+    test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
+    if not test:
+        raise HTTPException(404, "Test not found")
+    return {
+        "id": test.id,
+        "name": test.name,
+        "description": test.description,
+        "playwright_script": test.playwright_script,
+        "steps": test.steps_json,
+        "last_run_status": test.last_run_status,
+        "last_run_at": test.last_run_at.isoformat() if test.last_run_at else None,
+        "created_at": test.created_at.isoformat() if test.created_at else None,
+        "updated_at": test.updated_at.isoformat() if test.updated_at else None,
+    }
+
+
+@router.put("/admin/tests/{test_id}")
+def update_test(
+    test_id: str,
+    body: UpdateTestRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update an existing E2E test."""
+    _require_admin(user)
+    test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
+    if not test:
+        raise HTTPException(404, "Test not found")
+    if body.name is not None:
+        test.name = body.name
+    if body.playwright_script is not None:
+        test.playwright_script = body.playwright_script
+    if body.steps is not None:
+        test.steps_json = body.steps
+    db.commit()
+    db.refresh(test)
+    return {
+        "id": test.id,
+        "name": test.name,
+        "description": test.description,
+        "playwright_script": test.playwright_script,
+        "steps": test.steps_json,
+        "updated_at": test.updated_at.isoformat() if test.updated_at else None,
+    }
+
+
+@router.delete("/admin/tests/{test_id}")
+def delete_test(
+    test_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete an E2E test."""
+    _require_admin(user)
+    test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
+    if not test:
+        raise HTTPException(404, "Test not found")
+    db.delete(test)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/admin/tests/run")
+def run_tests(
+    body: RunTestsRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create pending test run records. Actual execution happens externally (CI/CD)."""
+    _require_admin(user)
+    if body.test_ids:
+        tests = db.query(E2ETest).filter(E2ETest.id.in_(body.test_ids)).all()
+    else:
+        tests = db.query(E2ETest).all()
+
+    if not tests:
+        raise HTTPException(404, "No tests found")
+
+    runs = []
+    for t in tests:
+        run = E2ETestRun(
+            test_id=t.id,
+            environment=body.environment,
+            status="pending",
+            triggered_by="manual",
+        )
+        db.add(run)
+        runs.append(run)
+
+    db.commit()
+    return {
+        "ok": True,
+        "runs": [
+            {"id": r.id, "test_id": r.test_id, "status": r.status}
+            for r in runs
+        ],
+    }
+
+
+@router.get("/admin/test-runs")
+def list_test_runs(
+    environment: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List test runs, optionally filtered by environment."""
+    _require_admin(user)
+    q = db.query(E2ETestRun).order_by(E2ETestRun.started_at.desc())
+    if environment:
+        q = q.filter(E2ETestRun.environment == environment)
+    total = q.count()
+    rows = q.offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "runs": [
+            {
+                "id": r.id,
+                "test_id": r.test_id,
+                "environment": r.environment,
+                "status": r.status,
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                "duration_ms": r.duration_ms,
+                "error_message": r.error_message,
+                "screenshots": r.screenshots_json,
+                "video_url": r.video_url,
+                "triggered_by": r.triggered_by,
+                "git_sha": r.git_sha,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/admin/test-runs/{run_id}")
+def get_test_run(
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get a single test run detail."""
+    _require_admin(user)
+    run = db.query(E2ETestRun).filter(E2ETestRun.id == run_id).first()
+    if not run:
+        raise HTTPException(404, "Test run not found")
+    return {
+        "id": run.id,
+        "test_id": run.test_id,
+        "environment": run.environment,
+        "status": run.status,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "duration_ms": run.duration_ms,
+        "error_message": run.error_message,
+        "screenshots": run.screenshots_json,
+        "video_url": run.video_url,
+        "triggered_by": run.triggered_by,
+        "git_sha": run.git_sha,
+    }
+
+
+@router.post("/admin/test-runs/webhook")
+def test_run_webhook(
+    payload: TestRunWebhookPayload,
+    db: Session = Depends(get_db),
+):
+    """Receive test run results from CI/CD.
+
+    No auth required — will be secured via webhook secret.
+    """
+    # Find pending run for this test+environment, or create one
+    q = db.query(E2ETestRun).filter(
+        E2ETestRun.environment == payload.environment,
+        E2ETestRun.status.in_(["pending", "running"]),
+    )
+    if payload.test_id:
+        q = q.filter(E2ETestRun.test_id == payload.test_id)
+    run = q.order_by(E2ETestRun.started_at.desc()).first()
+
+    if run:
+        run.status = payload.status
+        run.duration_ms = payload.duration_ms
+        run.error_message = payload.error_message
+        run.screenshots_json = payload.screenshots
+        run.video_url = payload.video_url
+        run.git_sha = payload.git_sha
+        if payload.status in ("passed", "failed", "error"):
+            run.completed_at = datetime.now(timezone.utc)
+    else:
+        run = E2ETestRun(
+            test_id=payload.test_id,
+            environment=payload.environment,
+            status=payload.status,
+            duration_ms=payload.duration_ms,
+            error_message=payload.error_message,
+            screenshots_json=payload.screenshots,
+            video_url=payload.video_url,
+            git_sha=payload.git_sha,
+            triggered_by="ci",
+        )
+        if payload.status in ("passed", "failed", "error"):
+            run.completed_at = datetime.now(timezone.utc)
+        db.add(run)
+
+    # Update the test's last_run fields
+    if payload.test_id:
+        test = db.query(E2ETest).filter(E2ETest.id == payload.test_id).first()
+        if test:
+            test.last_run_status = payload.status
+            test.last_run_at = datetime.now(timezone.utc)
+
+    db.commit()
+    return {"ok": True}

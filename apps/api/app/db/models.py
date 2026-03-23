@@ -609,3 +609,35 @@ class Deployment(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
     logs_url = Column(String, nullable=True)
     triggered_by = Column(String, nullable=True)  # ci|manual|webhook
+
+
+class E2ETest(Base):
+    __tablename__ = "e2e_tests"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=False)  # The natural language input
+    playwright_script = Column(Text, nullable=False)
+    steps_json = Column(JSON, default=list)  # [{step: 1, description: "...", selector: "..."}]
+    created_by = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+    last_run_status = Column(String, nullable=True)  # passed | failed | error | null
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class E2ETestRun(Base):
+    __tablename__ = "e2e_test_runs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    test_id = Column(String, ForeignKey("e2e_tests.id"), nullable=True)  # null for suite runs
+    environment = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending")  # pending | running | passed | failed | error
+    started_at = Column(DateTime(timezone=True), default=_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    screenshots_json = Column(JSON, default=list)
+    video_url = Column(String, nullable=True)
+    triggered_by = Column(String, nullable=True)  # ci | manual
+    git_sha = Column(String, nullable=True)

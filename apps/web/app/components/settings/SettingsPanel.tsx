@@ -5,11 +5,17 @@ import { apiFetch } from '../../lib/api';
 import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
 import BillingTab from './BillingTab';
+import DeploymentsPanel from './DeploymentsPanel';
+import TestsPanel from './TestsPanel';
+import { getStoredUser } from '../../lib/api';
 
 interface ConnectorField {
   key: string;
   label: string;
   secret: boolean;
+  type?: string;
+  options?: { id: string; label: string }[];
+  default?: string;
 }
 
 interface ConnectorMeta {
@@ -736,11 +742,13 @@ function MembersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing';
+type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing' | 'deployments' | 'tests';
 
 export default function SettingsPanel() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('connectors');
   const [orgId, setOrgId] = useState<string | null>(null);
+  const storedUser = getStoredUser();
+  const isAdmin = storedUser?.role === 'admin';
 
   // Fetch org ID for billing tab
   useEffect(() => {
@@ -774,7 +782,14 @@ export default function SettingsPanel() {
       setConnectors(platformOnly);
       const initialForms: Record<string, Record<string, string>> = {};
       for (const c of platformOnly) {
-        initialForms[c.name] = { ...c.config };
+        const form: Record<string, string> = { ...c.config };
+        // Populate defaults for select fields when not already saved
+        for (const f of c.fields) {
+          if (f.type === 'select' && f.default && !form[f.key]) {
+            form[f.key] = f.default;
+          }
+        }
+        initialForms[c.name] = form;
       }
       setForms(initialForms);
     } catch (e) { console.error(e); }
@@ -1032,6 +1047,8 @@ export default function SettingsPanel() {
         <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>
         <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>
         <button data-testid="settings-tab-specs" onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>
+        {isAdmin && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
+        {isAdmin && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '1.5rem' }}>
@@ -1187,22 +1204,45 @@ export default function SettingsPanel() {
                           <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
                             {f.label}
                           </label>
-                          <input
-                            type={f.secret ? 'password' : 'text'}
-                            value={forms[c.name]?.[f.key] || ''}
-                            onChange={e => updateField(c.name, f.key, e.target.value)}
-                            placeholder={f.secret ? '••••••••' : `Enter ${f.label.toLowerCase()}`}
-                            style={{
-                              width: '100%',
-                              padding: '8px 10px',
-                              border: '1px solid #ddd',
-                              borderRadius: 6,
-                              fontSize: '0.85rem',
-                              fontFamily: 'inherit',
-                              boxSizing: 'border-box',
-                              outline: 'none',
-                            }}
-                          />
+                          {f.type === 'select' && f.options ? (
+                            <select
+                              value={forms[c.name]?.[f.key] || f.default || ''}
+                              onChange={e => updateField(c.name, f.key, e.target.value)}
+                              style={{
+                                width: '100%',
+                                padding: '8px 10px',
+                                border: '1px solid #ddd',
+                                borderRadius: 6,
+                                fontSize: '0.85rem',
+                                fontFamily: 'inherit',
+                                boxSizing: 'border-box',
+                                outline: 'none',
+                                backgroundColor: '#fff',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {f.options.map(opt => (
+                                <option key={opt.id} value={opt.id}>{opt.label}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type={f.secret ? 'password' : 'text'}
+                              value={forms[c.name]?.[f.key] || ''}
+                              onChange={e => updateField(c.name, f.key, e.target.value)}
+                              placeholder={f.secret ? '••••••••' : `Enter ${f.label.toLowerCase()}`}
+                              style={{
+                                width: '100%',
+                                padding: '8px 10px',
+                                border: '1px solid #ddd',
+                                borderRadius: 6,
+                                fontSize: '0.85rem',
+                                fontFamily: 'inherit',
+                                boxSizing: 'border-box',
+                                outline: 'none',
+                              }}
+                            />
+                          )}
                         </div>
                       ))}
                     </>
@@ -1589,6 +1629,12 @@ export default function SettingsPanel() {
 
         {/* ============ BILLING TAB ============ */}
         {activeTab === 'billing' && orgId && <BillingTab orgId={orgId} />}
+
+        {/* ============ DEPLOYMENTS TAB ============ */}
+        {activeTab === 'deployments' && <DeploymentsPanel />}
+
+        {/* ============ TESTS TAB ============ */}
+        {activeTab === 'tests' && <TestsPanel />}
       </div>
     </div>
   );
