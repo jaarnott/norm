@@ -35,13 +35,28 @@ variable "web_memory" {
   type    = string
   default = "512Mi"
 }
-variable "vpc_connector_id" { type = string }
+variable "vpc_connector_id" {
+  type    = string
+  default = ""
+}
+variable "subnet_id" {
+  type    = string
+  default = ""
+}
+variable "network_id" {
+  type    = string
+  default = ""
+}
 variable "database_url" {
   type      = string
   sensitive = true
 }
 variable "secret_ids" {
   type = map(string)
+}
+variable "cloud_sql_connection_name" {
+  type    = string
+  default = ""
 }
 
 # ---------- API Service ----------
@@ -58,8 +73,18 @@ resource "google_cloud_run_v2_service" "api" {
     }
 
     vpc_access {
-      connector = var.vpc_connector_id
-      egress    = "PRIVATE_RANGES_ONLY"
+      network_interfaces {
+        network    = var.network_id
+        subnetwork = var.subnet_id
+      }
+      egress = "PRIVATE_RANGES_ONLY"
+    }
+
+    volumes {
+      name = "cloudsql"
+      cloud_sql_instance {
+        instances = [var.cloud_sql_connection_name]
+      }
     }
 
     containers {
@@ -70,6 +95,21 @@ resource "google_cloud_run_v2_service" "api" {
           cpu    = var.api_cpu
           memory = var.api_memory
         }
+      }
+
+      volume_mounts {
+        name       = "cloudsql"
+        mount_path = "/cloudsql"
+      }
+
+      env {
+        name  = "ENVIRONMENT"
+        value = var.environment
+      }
+
+      env {
+        name  = "CORS_ALLOWED_ORIGINS"
+        value = "https://${var.environment == "production" ? "" : "${var.environment}."}bettercallnorm.com"
       }
 
       env {

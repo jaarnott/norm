@@ -15,8 +15,8 @@ COPY pyproject.toml uv.lock* ./
 
 # Install dependencies into a virtual environment
 RUN uv venv /opt/venv && \
-    VIRTUAL_ENV=/opt/venv uv sync --no-dev --frozen 2>/dev/null || \
-    VIRTUAL_ENV=/opt/venv uv sync --no-dev
+    . /opt/venv/bin/activate && \
+    uv pip install -r pyproject.toml
 
 # Copy application code
 COPY . .

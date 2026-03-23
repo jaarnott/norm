@@ -1,5 +1,5 @@
 environment = "production"
-project_id  = "norm-production"
+project_id  = "norm-production-491101"
 region      = "australia-southeast1"
 domain      = "bettercallnorm.com"
 

@@ -1,6 +1,6 @@
 terraform {
   backend "gcs" {
-    bucket = "norm-terraform-state"
+    bucket = "norm-tfstate-491101"
     prefix = "production"
   }
 }

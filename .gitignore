@@ -40,3 +40,9 @@ Thumbs.db
 *.log
 coverage/
 .turbo/
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfplan
+infra/terraform/*.tfstate
+infra/terraform/.terraform.lock.hcl

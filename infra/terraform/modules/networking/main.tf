@@ -16,14 +16,6 @@ resource "google_compute_subnetwork" "subnet" {
   project       = var.project_id
 }
 
-resource "google_vpc_access_connector" "connector" {
-  name          = "norm-${var.environment}-vpc"
-  region        = var.region
-  project       = var.project_id
-  ip_cidr_range = "10.8.0.0/28"
-  network       = google_compute_network.vpc.name
-}
-
 # Allow Cloud SQL private access
 resource "google_compute_global_address" "private_ip" {
   name          = "norm-${var.environment}-private-ip"
@@ -41,5 +33,4 @@ resource "google_service_networking_connection" "private_vpc" {
 }
 
 output "network_id" { value = google_compute_network.vpc.id }
-output "subnet_id" { value = google_compute_subnetwork.subnet.id }
-output "vpc_connector_id" { value = google_vpc_access_connector.connector.id }
+output "subnet_id" { value = google_compute_subnetwork.subnet.name }

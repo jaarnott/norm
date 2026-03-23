@@ -25,7 +25,7 @@ HTTPS LB (bettercallnorm.com)
 ## Prerequisites
 
 1. Three GCP projects: `norm-testing`, `norm-staging`, `norm-production`
-2. A GCS bucket for Terraform state: `norm-terraform-state`
+2. A GCS bucket for Terraform state: `norm-tfstate-491101`
 3. `gcloud` CLI authenticated with owner access to all three projects
 4. DNS for `bettercallnorm.com` pointed to GCP (update NS records after first apply)
 
@@ -33,9 +33,9 @@ HTTPS LB (bettercallnorm.com)
 
 ```bash
 # 1. Create the Terraform state bucket (one-time, in any project)
-gcloud storage buckets create gs://norm-terraform-state \
+gcloud storage buckets create gs://norm-tfstate-491101 \
   --project=norm-production \
-  --location=australia-southeast1
+    --location=australia-southeast1
 
 # 2. Deploy testing environment
 cd environments/testing

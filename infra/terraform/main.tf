@@ -8,7 +8,10 @@ terraform {
     }
   }
 
-  # Backend configured per-environment in environments/*/backend.tf
+  backend "gcs" {
+    # Configured via -backend-config flags or environments/*/backend.tf
+    # Usage: terraform init -backend-config="bucket=norm-tfstate-491101" -backend-config="prefix=testing"
+  }
 }
 
 provider "google" {
@@ -51,7 +54,7 @@ module "database" {
   disk_size        = var.db_disk_size
   network_id       = module.networking.network_id
 
-  depends_on = [google_project_service.apis]
+  depends_on = [google_project_service.apis, module.networking]
 }
 
 module "secrets" {
@@ -90,9 +93,11 @@ module "cloud_run" {
   web_cpu    = var.cloudrun_web_cpu
   web_memory = var.cloudrun_web_memory
 
-  vpc_connector_id = module.networking.vpc_connector_id
-  database_url     = module.database.connection_url
-  secret_ids       = module.secrets.secret_ids
+  network_id = module.networking.network_id
+  subnet_id  = module.networking.subnet_id
+  database_url              = module.database.connection_url
+  cloud_sql_connection_name = module.database.connection_name
+  secret_ids                = module.secrets.secret_ids
 
   depends_on = [google_project_service.apis]
 }
