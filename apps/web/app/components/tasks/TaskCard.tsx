@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Package, UserRound, BarChart3, HelpCircle, type LucideIcon } from 'lucide-react';
-import type { Task } from '../../types';
+import type { Task, ProcurementTask, HrTask } from '../../types';
 import { colors } from '../../lib/theme';
 
 const DOMAIN_ICONS: Record<string, LucideIcon> = {
@@ -30,7 +30,7 @@ function getTaskTitle(task: Task): string {
 
 function getTaskSummary(task: Task): string {
   if (task.domain === 'procurement') {
-    const t = task as any;
+    const t = task as ProcurementTask;
     const parts: string[] = [];
     if (t.quantity) parts.push(`${t.quantity} case${t.quantity !== 1 ? 's' : ''}`);
     if (t.product?.name) parts.push(t.product.name);
@@ -38,7 +38,7 @@ function getTaskSummary(task: Task): string {
     return parts.join(' ') || task.message || 'Procurement request';
   }
   if (task.domain === 'hr') {
-    const t = task as any;
+    const t = task as HrTask;
     const parts: string[] = [];
     if (t.employee_name) parts.push(t.employee_name);
     if (t.role) parts.push(`\u2014 ${t.role}`);
@@ -61,7 +61,7 @@ function timeAgo(dateStr: string): string {
 }
 
 function getDomainColor(domain: string): string {
-  return (colors as Record<string, any>)[domain] || colors.unknown;
+  return (colors as Record<string, string>)[domain] || colors.unknown;
 }
 
 interface TaskCardProps {

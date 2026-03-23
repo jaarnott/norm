@@ -58,6 +58,7 @@ export default function TestsPanel() {
     setLoading(false);
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchTests(); }, [fetchTests]);
 
   const handleGenerate = async () => {

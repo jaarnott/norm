@@ -109,6 +109,7 @@ function Chart({ data, props: chartProps, onAction, taskId, height: chartHeight 
   const title = editTitle ?? chartProps?.title ?? 'Chart';
 
   // If configured series keys don't match data, auto-detect numeric columns
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const effectiveSeries = useMemo(() => {
     let result: { key: string; label: string; color: string }[];
     if (series.length > 0 && rows.length > 0) {

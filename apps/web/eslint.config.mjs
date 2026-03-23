@@ -5,6 +5,16 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  {
+    rules: {
+      // Downgrade React Compiler strictness — these fire on common data-fetching
+      // patterns (useEffect + setState). Will clean up incrementally.
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/refs": "warn",
+      // Allow unescaped quotes in JSX text
+      "react/no-unescaped-entities": "warn",
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, memo } from 'react';
+import { useState, useRef, useEffect, memo } from 'react';
 import { Package, UserRound, BarChart3, HelpCircle, type LucideIcon } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -18,7 +18,7 @@ const DOMAIN_ICONS: Record<string, LucideIcon> = {
 };
 
 function getDomainColor(domain: string): string {
-  return (colors as Record<string, any>)[domain] || colors.unknown;
+  return (colors as Record<string, string>)[domain] || colors.unknown;
 }
 
 const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
@@ -584,16 +584,24 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
   const isTerminal = task.status === 'submitted' || task.status === 'rejected';
 
   // --- Resizable split pane ---
-  const { containerRef, topPaneHeight, isDragging, handleDragStart, handleSplitDoubleClick, setTopPaneHeight } = useSplitPane('[data-split-header]');
+  const { containerRef, topPaneHeight, isDragging, handleDragStart, handleSplitDoubleClick } = useSplitPane('[data-split-header]');
 
-  // Extract the latest full-width display block
+  // Extract the latest full-width display block.
+  // Only show split layout if no newer message has non-full-width display blocks
+  // (e.g., automated_task_preview should cancel the split screen from an earlier report_builder)
   const messages = task.conversation || [];
   let latestFullWidthBlock: DisplayBlock | null = null;
+  let foundNewerInlineBlock = false;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.display_blocks) {
+    if (m.display_blocks && m.display_blocks.length > 0) {
       const fw = m.display_blocks.find(b => FULL_WIDTH_COMPONENTS.has(b.component));
-      if (fw) { latestFullWidthBlock = fw; break; }
+      if (fw && !foundNewerInlineBlock) {
+        latestFullWidthBlock = fw;
+        break;
+      }
+      // This message has display blocks but none are full-width — mark as newer inline
+      if (!fw) foundNewerInlineBlock = true;
     }
   }
   const hasSplitLayout = !!latestFullWidthBlock;
