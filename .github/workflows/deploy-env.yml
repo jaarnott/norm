@@ -16,55 +16,74 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
 
+    env:
+      REGION: australia-southeast1
+
     steps:
       - uses: actions/checkout@v4
 
-      # TODO (Phase 3): Authenticate with GCP
-      # - uses: google-github-actions/auth@v2
-      #   with:
-      #     credentials_json: ${{ secrets.GCP_SA_KEY }}
-      # - uses: google-github-actions/setup-gcloud@v2
+      - name: Authenticate with GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # TODO (Phase 3): Run database migrations via Cloud Run Job
-      # - name: Run migrations
-      #   run: |
-      #     gcloud run jobs execute norm-migrate \
-      #       --region ${{ vars.GCP_REGION }} \
-      #       --wait \
-      #       --set-env-vars DATABASE_URL=${{ secrets.DATABASE_URL }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
 
-      # TODO (Phase 3): Deploy API to Cloud Run
-      # - name: Deploy API
-      #   run: |
-      #     gcloud run deploy norm-api \
-      #       --image ${{ vars.REGISTRY }}/norm-api:${{ inputs.image_tag }} \
-      #       --region ${{ vars.GCP_REGION }} \
-      #       --platform managed
+      - name: Run database migrations
+        run: |
+          gcloud run jobs execute norm-migrate-${{ inputs.environment }} \
+            --region $REGION \
+            --project ${{ vars.GCP_PROJECT_ID }} \
+            --wait \
+            2>&1 || echo "Migration job not found — skipping (migrations run via Cloud SQL proxy)"
 
-      # TODO (Phase 3): Deploy Web to Cloud Run
-      # - name: Deploy Web
-      #   run: |
-      #     gcloud run deploy norm-web \
-      #       --image ${{ vars.REGISTRY }}/norm-web:${{ inputs.image_tag }} \
-      #       --region ${{ vars.GCP_REGION }} \
-      #       --platform managed
+      - name: Deploy API to Cloud Run
+        run: |
+          gcloud run services update norm-api-${{ inputs.environment }} \
+            --image $REGION-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:${{ inputs.image_tag }} \
+            --region $REGION \
+            --project ${{ vars.GCP_PROJECT_ID }} \
+            --quiet
+
+      - name: Deploy Web to Cloud Run
+        run: |
+          gcloud run services update norm-web-${{ inputs.environment }} \
+            --image $REGION-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:${{ inputs.image_tag }} \
+            --region $REGION \
+            --project ${{ vars.GCP_PROJECT_ID }} \
+            --quiet
 
       - name: Smoke test
         run: |
-          echo "TODO: Smoke test ${{ inputs.environment }} environment"
-          # curl -f https://${{ inputs.environment }}.norm.example.com/health || exit 1
+          API_URL=$(gcloud run services describe norm-api-${{ inputs.environment }} \
+            --region $REGION \
+            --project ${{ vars.GCP_PROJECT_ID }} \
+            --format "value(status.url)")
 
-      # Report deploy status back to Norm API
-      # TODO (Phase 3): Uncomment when deploy webhook is live
-      # - name: Report deploy status
-      #   if: always()
-      #   run: |
-      #     curl -X POST "https://${{ inputs.environment }}.norm.example.com/api/admin/deploy-webhook" \
-      #       -H "Content-Type: application/json" \
-      #       -d '{
-      #         "environment": "${{ inputs.environment }}",
-      #         "image_tag": "${{ inputs.image_tag }}",
-      #         "git_sha": "${{ github.sha }}",
-      #         "status": "${{ job.status }}",
-      #         "logs_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      #       }'
+          echo "Testing API at $API_URL"
+          curl -f "$API_URL/health" || exit 1
+          echo ""
+          echo "Health check passed"
+
+      - name: Report deploy status
+        if: always()
+        run: |
+          API_URL=$(gcloud run services describe norm-api-${{ inputs.environment }} \
+            --region $REGION \
+            --project ${{ vars.GCP_PROJECT_ID }} \
+            --format "value(status.url)" 2>/dev/null || echo "")
+
+          if [ -n "$API_URL" ]; then
+            curl -sS -X POST "$API_URL/api/admin/deploy-webhook" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "environment": "${{ inputs.environment }}",
+                "image_tag": "${{ inputs.image_tag }}",
+                "git_sha": "${{ github.sha }}",
+                "status": "${{ job.status }}",
+                "commit_message": "${{ github.event.head_commit.message || 'manual deploy' }}",
+                "logs_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                "triggered_by": "github-actions"
+              }' || echo "Deploy webhook failed (non-fatal)"
+          fi

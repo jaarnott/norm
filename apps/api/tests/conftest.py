@@ -16,10 +16,19 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
-from app.db.models import Base, User
+from app.db.models import (
+    Base, User, Organization, OrganizationMembership, Venue,
+    UserVenueAccess, Task, Order, OrderLine, Supplier, Product,
+    ConnectorConfig, ConnectorSpec, AutomatedTask, Report, ReportChart,
+    WorkingDocument, Subscription, TokenUsage,
+)
 from app.db.engine import get_db
 from app.auth.security import hash_password, create_access_token
-from app.routers import auth, admin
+from app.routers import (
+    auth, admin, tasks, venues, organizations, connectors,
+    billing, automated_tasks, reports_crud, working_documents,
+    orders, agents,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +37,16 @@ from app.routers import auth, admin
 _test_app = FastAPI()
 _test_app.include_router(auth.router, prefix="/api")
 _test_app.include_router(admin.router, prefix="/api")
+_test_app.include_router(tasks.router, prefix="/api")
+_test_app.include_router(venues.router, prefix="/api")
+_test_app.include_router(organizations.router, prefix="/api")
+_test_app.include_router(connectors.router, prefix="/api")
+_test_app.include_router(billing.router, prefix="/api")
+_test_app.include_router(automated_tasks.router, prefix="/api")
+_test_app.include_router(reports_crud.router, prefix="/api")
+_test_app.include_router(working_documents.router, prefix="/api")
+_test_app.include_router(orders.router, prefix="/api")
+_test_app.include_router(agents.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------
@@ -125,3 +144,128 @@ def admin_headers(admin_token):
 def manager_headers(manager_token):
     """Authorization headers for manager."""
     return {"Authorization": f"Bearer {manager_token}"}
+
+
+# ---------------------------------------------------------------------------
+# Organization, venue, and data helpers
+# ---------------------------------------------------------------------------
+
+def _make_organization(db_session, *, name="Test Org", slug=None, plan="starter"):
+    """Insert an organization directly into the database."""
+    org = Organization(
+        id=str(uuid.uuid4()),
+        name=name,
+        slug=slug or f"test-org-{uuid.uuid4().hex[:8]}",
+        plan=plan,
+    )
+    db_session.add(org)
+    db_session.flush()
+    return org
+
+
+def _make_membership(db_session, user, org, role="member"):
+    """Insert an org membership."""
+    mem = OrganizationMembership(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        organization_id=org.id,
+        role=role,
+    )
+    db_session.add(mem)
+    db_session.flush()
+    return mem
+
+
+def _make_venue(db_session, *, name="Test Venue", organization_id=None, location="Auckland"):
+    """Insert a venue directly into the database."""
+    venue = Venue(
+        id=str(uuid.uuid4()),
+        name=name,
+        location=location,
+        organization_id=organization_id,
+    )
+    db_session.add(venue)
+    db_session.flush()
+    return venue
+
+
+def _make_venue_access(db_session, user, venue):
+    """Grant a user access to a venue."""
+    access = UserVenueAccess(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        venue_id=venue.id,
+    )
+    db_session.add(access)
+    db_session.flush()
+    return access
+
+
+def _make_task(db_session, user, *, domain="procurement", status="awaiting_user_input",
+               intent="place_order", raw_prompt="Order something", venue_id=None):
+    """Insert a task directly into the database."""
+    task = Task(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        domain=domain,
+        status=status,
+        intent=intent,
+        raw_prompt=raw_prompt,
+        venue_id=venue_id,
+        extracted_fields={},
+        missing_fields=[],
+    )
+    db_session.add(task)
+    db_session.flush()
+    return task
+
+
+def _make_supplier(db_session, name="Test Supplier"):
+    """Insert a supplier."""
+    s = Supplier(id=str(uuid.uuid4()), name=name)
+    db_session.add(s)
+    db_session.flush()
+    return s
+
+
+def _make_product(db_session, supplier, name="Test Product"):
+    """Insert a product."""
+    p = Product(
+        id=str(uuid.uuid4()),
+        supplier_id=supplier.id,
+        name=name,
+        unit="case",
+    )
+    db_session.add(p)
+    db_session.flush()
+    return p
+
+
+@pytest.fixture()
+def organization(db_session):
+    """Create a test organization."""
+    return _make_organization(db_session)
+
+
+@pytest.fixture()
+def venue(db_session, organization):
+    """Create a test venue linked to the org."""
+    return _make_venue(db_session, organization_id=organization.id)
+
+
+@pytest.fixture()
+def admin_org_membership(db_session, admin_user, organization):
+    """Make admin an owner of the test organization."""
+    return _make_membership(db_session, admin_user, organization, role="owner")
+
+
+@pytest.fixture()
+def manager_org_membership(db_session, manager_user, organization):
+    """Make manager a member of the test organization."""
+    return _make_membership(db_session, manager_user, organization, role="member")
+
+
+@pytest.fixture()
+def admin_venue_access(db_session, admin_user, venue):
+    """Grant admin access to the test venue."""
+    return _make_venue_access(db_session, admin_user, venue)

@@ -35,31 +35,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # TODO (Phase 3): Authenticate with GCP Artifact Registry
-      # - uses: google-github-actions/auth@v2
-      #   with:
-      #     credentials_json: ${{ secrets.GCP_SA_KEY }}
-      # - uses: google-github-actions/setup-gcloud@v2
-      # - run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev
+      - name: Authenticate with GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Build API image
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker australia-southeast1-docker.pkg.dev --quiet
+
+      - name: Build & push API image
         run: |
           docker build -f apps/api/Dockerfile apps/api \
-            -t norm-api:${{ github.sha }} \
-            -t norm-api:latest
+            -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:${{ github.sha }} \
+            -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:latest
+          docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:${{ github.sha }}
+          docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:latest
 
-      - name: Build Web image
+      - name: Build & push Web image
         run: |
           docker build -f apps/web/Dockerfile . \
-            -t norm-web:${{ github.sha }} \
-            -t norm-web:latest
-
-      # TODO (Phase 3): Push to Artifact Registry
-      # - run: |
-      #     docker tag norm-api:${{ github.sha }} $REGISTRY/norm-api:${{ github.sha }}
-      #     docker tag norm-web:${{ github.sha }} $REGISTRY/norm-web:${{ github.sha }}
-      #     docker push $REGISTRY/norm-api:${{ github.sha }}
-      #     docker push $REGISTRY/norm-web:${{ github.sha }}
+            -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:${{ github.sha }} \
+            -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:latest
+          docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:${{ github.sha }}
+          docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:latest
 
   # ── Deploy to testing (auto) ────────────────────────────────────
   deploy-testing:

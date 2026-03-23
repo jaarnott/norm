@@ -16,7 +16,7 @@ class TestDefaultConfig:
         assert s.ENVIRONMENT == "local"
         assert s.JWT_SECRET == "dev-secret-change-in-production"
         assert s.CORS_ALLOWED_ORIGINS == "*"
-        assert s.LLM_INTERPRETER_MODEL == "claude-sonnet-4-20250514"
+        assert s.LLM_INTERPRETER_MODEL == "claude-opus-4-20250514"
         assert s.BILLING_ENFORCEMENT is False
 
     def test_is_local_true_by_default(self):
