@@ -1,7 +1,9 @@
 name: Deploy
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -28,12 +30,16 @@ jobs:
   build-and-push:
     name: Build & Push Images
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
     outputs:
-      image_tag: ${{ github.sha }}
+      image_tag: ${{ github.event.workflow_run.head_sha }}
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Authenticate with GCP
         uses: google-github-actions/auth@v2
@@ -49,24 +55,26 @@ jobs:
       - name: Build & push API image
         run: |
           docker build -f apps/api/Dockerfile apps/api \
-            -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:${{ github.sha }} \
+            -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:${{ github.event.workflow_run.head_sha }} \
             -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:latest
-          docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:${{ github.sha }}
+          docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:${{ github.event.workflow_run.head_sha }}
           docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:latest
 
       - name: Build & push Web image
         run: |
           docker build -f apps/web/Dockerfile . \
-            -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:${{ github.sha }} \
+            -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:${{ github.event.workflow_run.head_sha }} \
             -t australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:latest
-          docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:${{ github.sha }}
+          docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:${{ github.event.workflow_run.head_sha }}
           docker push australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:latest
 
   # ── Deploy to testing (auto) ────────────────────────────────────
   deploy-testing:
     name: Deploy to Testing
     needs: build-and-push
-    if: github.event_name == 'push'
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
     uses: ./.github/workflows/deploy-env.yml
     with:
       environment: testing
@@ -77,7 +85,9 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     needs: deploy-testing
-    if: github.event_name == 'push'
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
     uses: ./.github/workflows/deploy-env.yml
     with:
       environment: staging
