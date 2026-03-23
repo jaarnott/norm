@@ -182,6 +182,61 @@ def promote(
     return {"ok": True, "deployment_id": dep.id}
 
 
+@router.post("/admin/rollback")
+def rollback(
+    body: PromoteRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Roll back an environment to a previous known-good deployment.
+
+    Finds the last successful deployment for the target environment
+    and re-deploys that image tag.
+    """
+    _require_admin(user)
+
+    # Find the last successful deploy for this environment (excluding the current one)
+    last_good = (
+        db.query(Deployment)
+        .filter(
+            Deployment.environment == body.target_environment,
+            Deployment.status == "success",
+            Deployment.image_tag != body.image_tag,
+        )
+        .order_by(Deployment.started_at.desc())
+        .first()
+    )
+
+    if not last_good:
+        raise HTTPException(
+            404, "No previous successful deployment found to roll back to"
+        )
+
+    # Create a pending rollback deployment
+    dep = Deployment(
+        environment=body.target_environment,
+        image_tag=last_good.image_tag,
+        git_sha=last_good.git_sha,
+        commit_message=f"Rollback to {last_good.git_sha[:7]} (triggered by {user.email})",
+        status="pending",
+        triggered_by=user.email,
+    )
+    db.add(dep)
+    db.commit()
+
+    return {
+        "ok": True,
+        "deployment_id": dep.id,
+        "rolling_back_to": {
+            "image_tag": last_good.image_tag,
+            "git_sha": last_good.git_sha,
+            "deployed_at": last_good.started_at.isoformat()
+            if last_good.started_at
+            else None,
+        },
+    }
+
+
 # ── E2E Test Schemas ──────────────────────────────────────────────
 
 

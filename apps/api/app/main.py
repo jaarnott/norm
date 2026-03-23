@@ -43,7 +43,12 @@ app = FastAPI(
 
 from app.middleware.request_tracing import RequestTracingMiddleware  # noqa: E402
 from app.middleware.metrics import MetricsMiddleware  # noqa: E402
+from app.middleware.rate_limit import limiter  # noqa: E402
+from slowapi import _rate_limit_exceeded_handler  # noqa: E402
+from slowapi.errors import RateLimitExceeded  # noqa: E402
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(MetricsMiddleware)
 

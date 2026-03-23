@@ -58,7 +58,14 @@ def call_llm(
     This is the shared entry-point that domain agents use with their
     own prompts.  Raises on missing API key or parse failure.
     """
+    from app.services.circuit_breaker import anthropic_breaker
     from app.services.secrets import get_api_key
+
+    if not anthropic_breaker.allow_request():
+        raise ValueError(
+            "Anthropic API is temporarily unavailable (circuit breaker open). "
+            "Please try again in a minute."
+        )
 
     api_key = get_api_key("anthropic", "api_key", db)
     if not api_key:
@@ -110,9 +117,11 @@ def call_llm(
                 output_tokens=_output_tokens,
             )
 
+        anthropic_breaker.record_success()
         return parsed, llm_call_id
 
     except Exception as exc:
+        anthropic_breaker.record_failure()
         duration_ms = int((time.time() - t0) * 1000)
         if db is not None:
             _persist_llm_call(

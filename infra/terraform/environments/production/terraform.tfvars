@@ -7,7 +7,9 @@ domain      = "bettercallnorm.com"
 db_tier             = "db-custom-4-15360"
 db_ha_enabled       = true
 db_backup_retention = 30
-db_disk_size        = 200
+db_disk_size            = 200
+db_read_replica_enabled = true
+db_cross_region_backup  = "australia-southeast2"
 
 # Cloud Run — always warm
 cloudrun_api_min    = 1

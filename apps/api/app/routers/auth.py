@@ -1,6 +1,6 @@
 """Authentication endpoints: register, login, me."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
@@ -8,6 +8,7 @@ from app.db.models import User
 from app.auth.security import hash_password, verify_password, create_access_token
 from app.auth.schemas import RegisterRequest, LoginRequest, TokenResponse, UserResponse
 from app.auth.dependencies import get_current_user
+from app.middleware.rate_limit import limiter
 
 router = APIRouter()
 
@@ -23,7 +24,10 @@ def _make_token_response(user: User) -> dict:
 
 
 @router.post("/auth/register")
-async def register(req: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def register(
+    request: Request, req: RegisterRequest, db: Session = Depends(get_db)
+):
     existing = db.query(User).filter(User.email == req.email).first()
     if existing:
         raise HTTPException(
@@ -47,7 +51,8 @@ async def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/auth/login")
-async def login(req: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+async def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
     if not user or not verify_password(req.password, user.hashed_password):
         raise HTTPException(

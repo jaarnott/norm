@@ -45,6 +45,18 @@ variable "db_disk_size" {
   default     = 10
 }
 
+variable "db_read_replica_enabled" {
+  description = "Enable a read replica"
+  type        = bool
+  default     = false
+}
+
+variable "db_cross_region_backup" {
+  description = "Cross-region backup location (e.g. australia-southeast2). Empty to disable."
+  type        = string
+  default     = ""
+}
+
 # ── Cloud Run ───────────────────────────────────────────────────
 variable "cloudrun_api_min" {
   description = "Minimum API instances"

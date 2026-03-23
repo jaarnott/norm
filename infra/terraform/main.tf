@@ -51,8 +51,10 @@ module "database" {
   tier             = var.db_tier
   ha_enabled       = var.db_ha_enabled
   backup_retention = var.db_backup_retention
-  disk_size        = var.db_disk_size
-  network_id       = module.networking.network_id
+  disk_size             = var.db_disk_size
+  read_replica_enabled  = var.db_read_replica_enabled
+  cross_region_backup   = var.db_cross_region_backup
+  network_id            = module.networking.network_id
 
   depends_on = [google_project_service.apis, module.networking]
 }

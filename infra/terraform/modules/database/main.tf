@@ -27,6 +27,15 @@ variable "disk_size" {
   default = 10
 }
 variable "network_id" { type = string }
+variable "read_replica_enabled" {
+  type    = bool
+  default = false
+}
+variable "cross_region_backup" {
+  type    = string
+  default = ""
+  description = "If set, enables cross-region backup to this location (e.g. australia-southeast2)"
+}
 
 resource "random_password" "db_password" {
   length  = 32
@@ -58,6 +67,7 @@ resource "google_sql_database_instance" "main" {
       backup_retention_settings {
         retained_backups = var.backup_retention
       }
+      location = var.cross_region_backup != "" ? var.cross_region_backup : null
     }
 
     maintenance_window {
@@ -83,6 +93,33 @@ resource "google_sql_user" "norm" {
   project  = var.project_id
 }
 
+# ── Read replica (production only) ────────────────────────────────
+resource "google_sql_database_instance" "read_replica" {
+  count                = var.read_replica_enabled ? 1 : 0
+  name                 = "norm-${var.environment}-replica"
+  master_instance_name = google_sql_database_instance.main.name
+  database_version     = "POSTGRES_16"
+  region               = var.region
+  project              = var.project_id
+
+  replica_configuration {
+    failover_target = false
+  }
+
+  settings {
+    tier            = var.tier
+    disk_autoresize = true
+    disk_type       = "PD_SSD"
+
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = var.network_id
+    }
+  }
+
+  deletion_protection = false
+}
+
 output "instance_name" { value = google_sql_database_instance.main.name }
 output "connection_name" { value = google_sql_database_instance.main.connection_name }
 output "connection_url" {
@@ -92,4 +129,7 @@ output "connection_url" {
 output "db_password" {
   value     = random_password.db_password.result
   sensitive = true
+}
+output "read_replica_connection_name" {
+  value = var.read_replica_enabled ? google_sql_database_instance.read_replica[0].connection_name : ""
 }
