@@ -736,14 +736,41 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
         return {"success": False, "data": {}, "error": "No steps defined in consolidator config"}
 
     # Build template context for variable resolution
+    # Resolve timezone from venue if available
+    tz_offset = "%2B00:00"  # Default UTC
+    try:
+        venue_name = input_params.get("venue") or input_params.get("venue_name")
+        if venue_name:
+            from app.services.venue_service import resolve_venue_id
+            venue_id = resolve_venue_id(venue_name, db)
+            if venue_id:
+                from app.db.models import Venue
+                venue = db.query(Venue).filter(Venue.id == venue_id).first()
+                if venue and venue.timezone:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo(venue.timezone)
+                    offset = datetime.datetime.now(tz).strftime('%z')
+                    tz_offset = f"%2B{offset[1:3]}:{offset[3:]}" if offset[0] == '+' else f"-{offset[1:3]}:{offset[3:]}"
+        elif not venue_name:
+            # No venue specified — try to find any venue with a timezone
+            from app.db.models import Venue as _V
+            any_venue = db.query(_V).filter(_V.timezone.isnot(None)).first()
+            if any_venue and any_venue.timezone:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(any_venue.timezone)
+                offset = datetime.datetime.now(tz).strftime('%z')
+                tz_offset = f"%2B{offset[1:3]}:{offset[3:]}" if offset[0] == '+' else f"-{offset[1:3]}:{offset[3:]}"
+    except Exception:
+        pass  # Fall back to UTC
+
     today = datetime.date.today()
     four_weeks_ago = today - datetime.timedelta(weeks=4)
     one_week_ago = today - datetime.timedelta(weeks=1)
 
     template_ctx = {
-        "today_iso": f"{today.isoformat()}T00:00:00%2B13:00",
-        "four_weeks_ago_iso": f"{four_weeks_ago.isoformat()}T00:00:00%2B13:00",
-        "one_week_ago_iso": f"{one_week_ago.isoformat()}T00:00:00%2B13:00",
+        "today_iso": f"{today.isoformat()}T00:00:00{tz_offset}",
+        "four_weeks_ago_iso": f"{four_weeks_ago.isoformat()}T00:00:00{tz_offset}",
+        "one_week_ago_iso": f"{one_week_ago.isoformat()}T00:00:00{tz_offset}",
         "today": today.isoformat(),
         "four_weeks_ago": four_weeks_ago.isoformat(),
         "one_week_ago": one_week_ago.isoformat(),
@@ -867,9 +894,19 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
         try:
             result, rendered = execute_spec(spec, tool_def, step_params, credentials, db, task_id, venue_id=venue_id)
             duration_ms = int((time.time() - t0) * 1000)
+
+            # Apply the tool's response_transform to the step result
+            step_payload = result.response_payload
+            step_transform = tool_def.get("response_transform")
+            if step_transform and step_transform.get("enabled"):
+                from app.connectors.response_transform import apply_response_transform
+                wrapped = {"data": step_payload} if isinstance(step_payload, list) else (step_payload if isinstance(step_payload, dict) else {"data": step_payload})
+                transformed = apply_response_transform(wrapped, step_transform)
+                step_payload = transformed.get("data", transformed) if isinstance(transformed, dict) else transformed
+
             step_results[step_id] = {
                 "success": result.success,
-                "data": result.response_payload,
+                "data": step_payload,
                 "error": result.error_message,
             }
             meta_entry: dict = {

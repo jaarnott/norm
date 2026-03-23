@@ -29,6 +29,7 @@ def get_api_key(connector_name: str, key: str, db: Session | None = None) -> str
 
     env_var = _ENV_VAR_MAP.get((connector_name, key))
     if env_var:
-        return os.environ.get(env_var)
+        from app.config import settings
+        return getattr(settings, env_var, None) or os.environ.get(env_var)
 
     return None

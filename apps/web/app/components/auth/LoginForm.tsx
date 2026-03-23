@@ -79,6 +79,7 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
                 Full Name
               </label>
               <input
+                data-testid="login-name"
                 type="text"
                 value={fullName}
                 onChange={e => setFullName(e.target.value)}
@@ -102,6 +103,7 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
               Email
             </label>
             <input
+              data-testid="login-email"
               type="email"
               value={email}
               onChange={e => setEmail(e.target.value)}
@@ -124,6 +126,7 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
               Password
             </label>
             <input
+              data-testid="login-password"
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
@@ -155,6 +158,7 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
           )}
 
           <button
+            data-testid="login-submit"
             type="submit"
             disabled={loading}
             style={{
@@ -177,6 +181,7 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
 
         <div style={{ textAlign: 'center', marginTop: '1.25rem' }}>
           <button
+            data-testid="login-toggle-mode"
             onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }}
             style={{
               background: 'none',

@@ -89,6 +89,7 @@ class Venue(Base):
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=True)
     name = Column(String, nullable=False)
     location = Column(String)
+    timezone = Column(String, nullable=True)  # IANA timezone e.g. "Pacific/Auckland"
 
     organization = relationship("Organization", back_populates="venues")
 

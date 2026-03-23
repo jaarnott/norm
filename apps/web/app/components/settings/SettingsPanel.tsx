@@ -123,6 +123,7 @@ function VenueCard({ venue, onDelete }: { venue: VenueDetail; onDelete: () => vo
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600, color: '#111', fontSize: '0.9rem' }}>{venue.name}</div>
           {venue.location && <div style={{ fontSize: '0.75rem', color: '#999' }}>{venue.location}</div>}
+          {venue.timezone && <div style={{ fontSize: '0.7rem', color: '#aaa' }}>{venue.timezone}</div>}
         </div>
         <div style={{ fontSize: '0.72rem', color: '#999' }}>
           {venue.connector_count || 0} connector{(venue.connector_count || 0) !== 1 ? 's' : ''}
@@ -255,6 +256,7 @@ function VenuesTab() {
   const [loading, setLoading] = useState(true);
   const [newName, setNewName] = useState('');
   const [newLocation, setNewLocation] = useState('');
+  const [newTimezone, setNewTimezone] = useState('');
   const [adding, setAdding] = useState(false);
 
   const loadData = useCallback(async () => {
@@ -279,10 +281,11 @@ function VenuesTab() {
     if (!newName.trim() || !org) return;
     await apiFetch(`/api/organizations/${org.id}/venues`, {
       method: 'POST',
-      body: JSON.stringify({ name: newName, location: newLocation || null }),
+      body: JSON.stringify({ name: newName, location: newLocation || null, timezone: newTimezone || null }),
     });
     setNewName('');
     setNewLocation('');
+    setNewTimezone('');
     setAdding(false);
     loadData();
   };
@@ -321,6 +324,11 @@ function VenuesTab() {
           <div style={{ flex: 1 }}>
             <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Location</label>
             <input value={newLocation} onChange={e => setNewLocation(e.target.value)} placeholder="Address (optional)"
+              style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Timezone</label>
+            <input value={newTimezone} onChange={e => setNewTimezone(e.target.value)} placeholder="e.g. Pacific/Auckland"
               style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
           </div>
           <button onClick={handleAdd} style={{
@@ -1018,12 +1026,12 @@ export default function SettingsPanel() {
 
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee' }}>
-        <button onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
-        <button onClick={() => setActiveTab('members')} style={tabStyle('members')}>Members</button>
-        <button onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
-        <button onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>
-        <button onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>
-        <button onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>
+        <button data-testid="settings-tab-venues" onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
+        <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Members</button>
+        <button data-testid="settings-tab-billing" onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
+        <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>
+        <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>
+        <button data-testid="settings-tab-specs" onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '1.5rem' }}>

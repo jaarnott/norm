@@ -129,14 +129,14 @@ export default function AutomatedTaskBoard({ data }: DisplayBlockProps) {
   }
 
   return (
-    <div style={{ padding: '0.5rem' }}>
+    <div data-testid="auto-task-board" style={{ padding: '0.5rem' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         {tasks.map(task => {
           const ss = STATUS_STYLES[task.status] || STATUS_STYLES.draft;
           const isSelected = selectedId === task.id;
           const isRunning = runningId === task.id;
           return (
-            <div key={task.id}>
+            <div key={task.id} data-testid={`auto-task-card-${task.id}`}>
               <div style={{
                 border: '1px solid #e5e7eb', borderRadius: 10,
                 backgroundColor: '#fff', padding: '0.75rem 1rem',

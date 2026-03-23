@@ -487,7 +487,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
         )}
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <div>{toggleBtn('week', 'Week')}{toggleBtn('day', 'Day')}</div>
+          <div data-testid="roster-view-toggle">{toggleBtn('week', 'Week')}{toggleBtn('day', 'Day')}</div>
           {onAction && (
             <button onClick={() => { setAddingNew(true); setEditingShift(null); }} disabled={saving} style={{
               padding: '4px 12px', fontSize: '0.75rem', fontWeight: 500,
@@ -501,6 +501,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
       {/* Views — wrapped in DndContext */}
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         {viewMode === 'week' && (
+          <div data-testid="roster-week-view">
           <WeekGrid
             staffRows={staffRows}
             days={days}
@@ -509,6 +510,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
             onSelectDay={handleSelectDay}
             interactive={!!onAction}
           />
+          </div>
         )}
 
         {viewMode === 'day' && (

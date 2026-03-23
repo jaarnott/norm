@@ -27,7 +27,7 @@ async def post_message(
     user: User = Depends(get_current_user),
 ):
     try:
-        return handle_message(req.message, db, user_id=user.id, task_id=req.task_id)
+        return handle_message(req.message, db, user_id=user.id, task_id=req.task_id, venue_id=req.venue_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
@@ -67,7 +67,7 @@ async def post_message_stream(
             set_event_callback(on_event)
             db = SessionLocal()
             try:
-                result = handle_message(req.message, db, user_id=user.id, task_id=req.task_id)
+                result = handle_message(req.message, db, user_id=user.id, task_id=req.task_id, venue_id=req.venue_id)
                 on_event({"type": "complete", "data": result})
             except Exception as exc:
                 from app.services.billing_service import QuotaExceededError

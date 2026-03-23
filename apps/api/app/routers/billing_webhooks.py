@@ -21,7 +21,8 @@ async def stripe_webhook(request: Request):
 
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
-    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    from app.config import settings
+    webhook_secret = settings.STRIPE_WEBHOOK_SECRET
 
     if not webhook_secret:
         raise HTTPException(500, "STRIPE_WEBHOOK_SECRET not configured")

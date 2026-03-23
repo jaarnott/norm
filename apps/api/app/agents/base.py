@@ -26,6 +26,9 @@ class BaseDomainAgent(ABC):
         db: Session,
         user_id: str | None = None,
         task_id: str | None = None,
+        venue_id: str | None = None,
+        venue_name: str | None = None,
+        venue_timezone: str | None = None,
     ) -> dict:
         """Process a new user message for this domain.
 
@@ -69,14 +72,14 @@ class BaseDomainAgent(ABC):
 
         return get_db_prompt(self.domain, db)
 
-    def get_tool_definitions(self, db: Session) -> tuple[str, list[dict]]:
+    def get_tool_definitions(self, db: Session, active_venue_name: str | None = None, venue_timezone: str | None = None) -> tuple[str, list[dict]]:
         """Return (system_prompt, anthropic_tools) for the agentic tool loop.
 
         Returns ("", []) if no tools are bound, meaning the agent should
         fall back to the classic interpretation path.
         """
         from app.agents.prompt_builder import build_tool_definitions
-        return build_tool_definitions(self.domain, db)
+        return build_tool_definitions(self.domain, db, active_venue_name=active_venue_name, venue_timezone=venue_timezone)
 
     def handle_message_with_tools(
         self,
@@ -84,6 +87,9 @@ class BaseDomainAgent(ABC):
         db: Session,
         user_id: str | None = None,
         task_id: str | None = None,
+        venue_id: str | None = None,
+        venue_name: str | None = None,
+        venue_timezone: str | None = None,
     ) -> dict:
         """Process a message using the agentic tool loop.
 
@@ -91,7 +97,7 @@ class BaseDomainAgent(ABC):
         """
         from app.agents.tool_loop import run_tool_loop, _emit_event
 
-        system_prompt, anthropic_tools = self.get_tool_definitions(db)
+        system_prompt, anthropic_tools = self.get_tool_definitions(db, active_venue_name=venue_name, venue_timezone=venue_timezone)
         ctx = self.build_context(db, user_id)
 
         # Load or create task
@@ -99,12 +105,16 @@ class BaseDomainAgent(ABC):
             task = db.query(Task).filter(Task.id == task_id).first()
             if not task:
                 raise ValueError(f"Task not found: {task_id}")
+            # Use task's venue if none provided
+            if not venue_id and task.venue_id:
+                venue_id = task.venue_id
             # Add the user message
             db.add(Message(task_id=task.id, role="user", content=message))
             db.flush()
         else:
             task = Task(
                 user_id=user_id,
+                venue_id=venue_id,
                 domain=self.domain,
                 intent=f"{self.domain}.tool_use",
                 status="in_progress",

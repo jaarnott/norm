@@ -62,7 +62,7 @@ export default function ReportBuilder({ data }: Props) {
     const items: ReportGridItem[] = [];
     let nextRow = 1;
     for (const item of raw) {
-      const r = item as Record<string, unknown>;
+      const r = item as unknown as Record<string, unknown>;
       if ('columns' in r && Array.isArray(r.columns)) {
         // Row-based format
         let colOffset = 1;
@@ -87,29 +87,26 @@ export default function ReportBuilder({ data }: Props) {
     }));
   })();
 
-  const updateLayout = async (newLayout: ReportGridItem[]) => {
-    if (!reportId || !report) return;
+  // Local-only layout updates — no API call until user hits Save
+  const updateLayout = (newLayout: ReportGridItem[]) => {
+    if (!report) return;
     setReport({ ...report, layout: newLayout });
-    await apiFetch(`/api/reports/${reportId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ layout: newLayout }),
-    });
   };
 
-  const updateReport = async (patch: Record<string, unknown>) => {
-    if (!reportId) return;
+  // Persist everything to the API (called on Save)
+  const saveReport = async () => {
+    if (!reportId || !report) return;
     const res = await apiFetch(`/api/reports/${reportId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
+      body: JSON.stringify({ title: titleDraft || report.title, layout: report.layout, status: 'saved' }),
     });
     if (res.ok) setReport(await res.json());
   };
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [dragPreview, setDragPreview] = useState<{ chartId: string; col: number; row: number; colSpan: number; rowSpan: number } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
 
   const deleteChart = async (chartId: string) => {
     if (!reportId) return;
@@ -139,54 +136,50 @@ export default function ReportBuilder({ data }: Props) {
     const item = layout.find(i => i.chart_id === chartId);
     if (!item || !gridRef.current) return;
     e.preventDefault();
-    const gridRect = gridRef.current.getBoundingClientRect();
-    const colWidth = gridRect.width / GRID_COLS;
+    const colWidth = gridRef.current.getBoundingClientRect().width / GRID_COLS;
     const startX = e.clientX;
     const startY = e.clientY;
     const startCol = item.col;
     const startRow = item.row;
+    const pos = { col: startCol, row: startRow };
+
+    // Show ghost via DOM
+    const ghost = ghostRef.current;
+    if (ghost) {
+      ghost.style.display = 'block';
+      ghost.style.gridColumn = `${startCol} / span ${item.colSpan}`;
+      ghost.style.gridRow = `${startRow} / span ${item.rowSpan}`;
+    }
+    document.body.style.cursor = 'grabbing';
 
     const onMove = (ev: MouseEvent) => {
-      const deltaX = ev.clientX - startX;
-      const deltaY = ev.clientY - startY;
-      const deltaCols = Math.round(deltaX / colWidth);
-      const deltaRows = Math.round(deltaY / ROW_HEIGHT);
-      const newCol = Math.max(1, Math.min(GRID_COLS + 1 - item.colSpan, startCol + deltaCols));
-      const newRow = Math.max(1, startRow + deltaRows);
-      setDragPreview({ chartId, col: newCol, row: newRow, colSpan: item.colSpan, rowSpan: item.rowSpan });
+      const dx = Math.round((ev.clientX - startX) / colWidth);
+      const dy = Math.round((ev.clientY - startY) / ROW_HEIGHT);
+      pos.col = Math.max(1, Math.min(GRID_COLS + 1 - item.colSpan, startCol + dx));
+      pos.row = Math.max(1, startRow + dy);
+      if (ghost) {
+        ghost.style.gridColumn = `${pos.col} / span ${item.colSpan}`;
+        ghost.style.gridRow = `${pos.row} / span ${item.rowSpan}`;
+      }
     };
-    const onUp = (ev: MouseEvent) => {
+    const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      if (dragPreview) {
-        updateGridItem(chartId, { col: dragPreview.col, row: dragPreview.row });
+      document.body.style.cursor = '';
+      if (ghost) ghost.style.display = 'none';
+      if (pos.col !== startCol || pos.row !== startRow) {
+        updateGridItem(chartId, { col: pos.col, row: pos.row });
       }
-      setDragPreview(null);
-    };
-    // Use a ref to get the latest dragPreview in onUp
-    const onUpWithRef = (ev: MouseEvent) => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUpWithRef);
-      const deltaX = ev.clientX - startX;
-      const deltaY = ev.clientY - startY;
-      const deltaCols = Math.round(deltaX / colWidth);
-      const deltaRows = Math.round(deltaY / ROW_HEIGHT);
-      const newCol = Math.max(1, Math.min(GRID_COLS + 1 - item.colSpan, startCol + deltaCols));
-      const newRow = Math.max(1, startRow + deltaRows);
-      if (newCol !== startCol || newRow !== startRow) {
-        updateGridItem(chartId, { col: newCol, row: newRow });
-      }
-      setDragPreview(null);
     };
     document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUpWithRef);
+    document.addEventListener('mouseup', onUp);
   };
 
   if (loading) return <div style={{ padding: '1rem', color: '#888' }}>Loading report...</div>;
   if (!report) return <div style={{ padding: '1rem', color: '#888' }}>Report not found.</div>;
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div data-testid="report-builder" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Header */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -197,8 +190,8 @@ export default function ReportBuilder({ data }: Props) {
             <input
               value={titleDraft}
               onChange={e => setTitleDraft(e.target.value)}
-              onBlur={() => { setEditingTitle(false); updateReport({ title: titleDraft }); }}
-              onKeyDown={e => { if (e.key === 'Enter') { setEditingTitle(false); updateReport({ title: titleDraft }); } }}
+              onBlur={() => setEditingTitle(false)}
+              onKeyDown={e => { if (e.key === 'Enter') setEditingTitle(false); }}
               autoFocus
               style={{ fontSize: '0.95rem', fontWeight: 700, border: '1px solid #ccc', borderRadius: 4, padding: '2px 6px', fontFamily: 'inherit' }}
             />
@@ -222,7 +215,7 @@ export default function ReportBuilder({ data }: Props) {
             }}
           >{refreshing ? 'Refreshing...' : 'Refresh All'}</button>
           <button
-            onClick={() => updateReport({ status: 'saved' })}
+            onClick={saveReport}
             style={{
               padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600,
               border: 'none', borderRadius: 5, backgroundColor: '#c4a882',
@@ -260,21 +253,20 @@ export default function ReportBuilder({ data }: Props) {
                   onResize={(patch) => updateGridItem(item.chart_id, patch)}
                   onDelete={() => setConfirmDelete(item.chart_id)}
                   onMoveStart={(e) => handleMoveStart(item.chart_id, e)}
-                  isBeingDragged={dragPreview?.chartId === item.chart_id}
                 />
               );
             })}
-            {/* Drop preview ghost */}
-            {dragPreview && (
-              <div style={{
-                gridColumn: `${dragPreview.col} / span ${dragPreview.colSpan}`,
-                gridRow: `${dragPreview.row} / span ${dragPreview.rowSpan}`,
+            {/* Drop preview ghost — hidden by default, shown via DOM during drag */}
+            <div
+              ref={ghostRef}
+              style={{
+                display: 'none',
                 backgroundColor: 'rgba(196, 168, 130, 0.15)',
                 border: '2px dashed #c4a882',
                 borderRadius: 8,
                 pointerEvents: 'none',
-              }} />
-            )}
+              }}
+            />
           </div>
         )}
 
@@ -324,283 +316,114 @@ export default function ReportBuilder({ data }: Props) {
 // Grid chart cell with resize handles
 // ---------------------------------------------------------------------------
 
+const MemoChart = React.memo(Chart);
+
 function GridChartCell({
-  item, chart, onResize, onDelete, onMoveStart, isBeingDragged,
+  item, chart, onResize, onDelete, onMoveStart,
 }: {
   item: ReportGridItem;
   chart: SavedReportChart;
   onResize: (patch: Partial<ReportGridItem>) => void;
   onDelete: () => void;
   onMoveStart: (e: React.MouseEvent) => void;
-  isBeingDragged?: boolean;
 }) {
   const cellRef = useRef<HTMLDivElement>(null);
-  const [localCol, setLocalCol] = useState(item.col);
-  const [localRow, setLocalRow] = useState(item.row);
-  const [localColSpan, setLocalColSpan] = useState(item.colSpan);
-  const [localRowSpan, setLocalRowSpan] = useState(item.rowSpan);
-  const [isDragging, setIsDragging] = useState(false);
 
-  // Sync local state when item changes from outside
-  if (!isDragging) {
-    if (localCol !== item.col) setLocalCol(item.col);
-    if (localRow !== item.row) setLocalRow(item.row);
-    if (localColSpan !== item.colSpan) setLocalColSpan(item.colSpan);
-    if (localRowSpan !== item.rowSpan) setLocalRowSpan(item.rowSpan);
-  }
-
-  // Right-edge resize (colSpan) — delta-based, commit on mouseup
-  const handleWidthResize = (e: React.MouseEvent) => {
+  // Unified resize handler — pure DOM, zero React renders
+  const handleResize = (edges: { left?: boolean; right?: boolean; top?: boolean; bottom?: boolean }) => (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    const cell = cellRef.current;
+    const grid = cell?.parentElement;
+    if (!cell || !grid) return;
     const startX = e.clientX;
-    const startSpan = item.colSpan;
-    const grid = cellRef.current?.parentElement;
-    if (!grid) return;
+    const startY = e.clientY;
+    const start = { col: item.col, row: item.row, colSpan: item.colSpan, rowSpan: item.rowSpan };
+    const rightEdge = start.col + start.colSpan;
+    const bottomEdge = start.row + start.rowSpan;
     const colWidth = grid.getBoundingClientRect().width / GRID_COLS;
-    setIsDragging(true);
+    const d = { ...start };
+
+    const cursor = (edges.left || edges.right) && (edges.top || edges.bottom)
+      ? ((edges.left && edges.top) || (edges.right && edges.bottom) ? 'nwse-resize' : 'nesw-resize')
+      : (edges.left || edges.right) ? 'col-resize' : 'row-resize';
+    document.body.style.cursor = cursor;
+    cell.style.userSelect = 'none';
 
     const onMove = (ev: MouseEvent) => {
-      const delta = ev.clientX - startX;
-      const deltaCols = Math.round(delta / colWidth);
-      setLocalColSpan(Math.max(1, Math.min(GRID_COLS + 1 - item.col, startSpan + deltaCols)));
+      const dx = Math.round((ev.clientX - startX) / colWidth);
+      const dy = Math.round((ev.clientY - startY) / ROW_HEIGHT);
+      if (edges.right) d.colSpan = Math.max(1, Math.min(GRID_COLS + 1 - start.col, start.colSpan + dx));
+      if (edges.left) { d.col = Math.max(1, Math.min(rightEdge - 1, start.col + dx)); d.colSpan = rightEdge - d.col; }
+      if (edges.bottom) d.rowSpan = Math.max(2, start.rowSpan + dy);
+      if (edges.top) { d.row = Math.max(1, Math.min(bottomEdge - 2, start.row + dy)); d.rowSpan = bottomEdge - d.row; }
+      cell.style.gridColumn = `${d.col} / span ${d.colSpan}`;
+      cell.style.gridRow = `${d.row} / span ${d.rowSpan}`;
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      setIsDragging(false);
-      const grid2 = cellRef.current?.parentElement;
-      if (!grid2) return;
-      const colW = grid2.getBoundingClientRect().width / GRID_COLS;
-      const delta = (window.event as MouseEvent)?.clientX ?? startX;
-      const finalDelta = delta - startX;
-      const finalSpan = Math.max(1, Math.min(GRID_COLS + 1 - item.col, startSpan + Math.round(finalDelta / colW)));
-      onResize({ colSpan: finalSpan });
+      document.body.style.cursor = '';
+      cell.style.userSelect = '';
+      onResize(d);
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   };
-
-  // Left-edge resize — moves col and adjusts colSpan (right edge stays fixed)
-  const handleLeftResize = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
-    const startCol = item.col;
-    const rightEdge = item.col + item.colSpan; // fixed right edge
-    const grid = cellRef.current?.parentElement;
-    if (!grid) return;
-    const colWidth = grid.getBoundingClientRect().width / GRID_COLS;
-    setIsDragging(true);
-
-    const onMove = (ev: MouseEvent) => {
-      const delta = ev.clientX - startX;
-      const deltaCols = Math.round(delta / colWidth);
-      const newCol = Math.max(1, Math.min(rightEdge - 1, startCol + deltaCols));
-      setLocalCol(newCol);
-      setLocalColSpan(rightEdge - newCol);
-    };
-    const onUp = (ev: MouseEvent) => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      setIsDragging(false);
-      const delta = ev.clientX - startX;
-      const deltaCols = Math.round(delta / colWidth);
-      const newCol = Math.max(1, Math.min(rightEdge - 1, startCol + deltaCols));
-      onResize({ col: newCol, colSpan: rightEdge - newCol });
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  };
-
-  // Top-edge resize — moves row and adjusts rowSpan (bottom edge stays fixed)
-  const handleTopResize = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startY = e.clientY;
-    const startRow = item.row;
-    const bottomEdge = item.row + item.rowSpan; // fixed bottom edge
-    setIsDragging(true);
-
-    const onMove = (ev: MouseEvent) => {
-      const delta = ev.clientY - startY;
-      const deltaRows = Math.round(delta / ROW_HEIGHT);
-      const newRow = Math.max(1, Math.min(bottomEdge - 2, startRow + deltaRows));
-      setLocalRow(newRow);
-      setLocalRowSpan(bottomEdge - newRow);
-    };
-    const onUp = (ev: MouseEvent) => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      setIsDragging(false);
-      const delta = ev.clientY - startY;
-      const deltaRows = Math.round(delta / ROW_HEIGHT);
-      const newRow = Math.max(1, Math.min(bottomEdge - 2, startRow + deltaRows));
-      onResize({ row: newRow, rowSpan: bottomEdge - newRow });
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  };
-
-  // Bottom-edge resize (rowSpan) — delta-based, commit on mouseup
-  const handleHeightResize = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startY = e.clientY;
-    const startSpan = item.rowSpan;
-    setIsDragging(true);
-
-    const onMove = (ev: MouseEvent) => {
-      const delta = ev.clientY - startY;
-      const deltaRows = Math.round(delta / ROW_HEIGHT);
-      setLocalRowSpan(Math.max(2, startSpan + deltaRows));
-    };
-    const onUp = (ev: MouseEvent) => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      setIsDragging(false);
-      const delta = ev.clientY - startY;
-      const deltaRows = Math.round(delta / ROW_HEIGHT);
-      const finalSpan = Math.max(2, startSpan + deltaRows);
-      onResize({ rowSpan: finalSpan });
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  };
-
-  // Corner resize — handles both width and height in one drag
-  const handleCornerResize = (
-    colEdge: 'left' | 'right',
-    rowEdge: 'top' | 'bottom',
-  ) => (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const startCol = item.col;
-    const startRow = item.row;
-    const startColSpan = item.colSpan;
-    const startRowSpan = item.rowSpan;
-    const rightEdge = startCol + startColSpan;
-    const bottomEdge = startRow + startRowSpan;
-    const grid = cellRef.current?.parentElement;
-    if (!grid) return;
-    const colWidth = grid.getBoundingClientRect().width / GRID_COLS;
-    setIsDragging(true);
-
-    const onMove = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      const deltaCols = Math.round(dx / colWidth);
-      const deltaRows = Math.round(dy / ROW_HEIGHT);
-
-      if (colEdge === 'right') {
-        setLocalColSpan(Math.max(1, Math.min(GRID_COLS + 1 - startCol, startColSpan + deltaCols)));
-      } else {
-        const newCol = Math.max(1, Math.min(rightEdge - 1, startCol + deltaCols));
-        setLocalCol(newCol);
-        setLocalColSpan(rightEdge - newCol);
-      }
-      if (rowEdge === 'bottom') {
-        setLocalRowSpan(Math.max(2, startRowSpan + deltaRows));
-      } else {
-        const newRow = Math.max(1, Math.min(bottomEdge - 2, startRow + deltaRows));
-        setLocalRow(newRow);
-        setLocalRowSpan(bottomEdge - newRow);
-      }
-    };
-    const onUp = (ev: MouseEvent) => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      setIsDragging(false);
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      const deltaCols = Math.round(dx / colWidth);
-      const deltaRows = Math.round(dy / ROW_HEIGHT);
-      const patch: Partial<ReportGridItem> = {};
-
-      if (colEdge === 'right') {
-        patch.colSpan = Math.max(1, Math.min(GRID_COLS + 1 - startCol, startColSpan + deltaCols));
-      } else {
-        const newCol = Math.max(1, Math.min(rightEdge - 1, startCol + deltaCols));
-        patch.col = newCol;
-        patch.colSpan = rightEdge - newCol;
-      }
-      if (rowEdge === 'bottom') {
-        patch.rowSpan = Math.max(2, startRowSpan + deltaRows);
-      } else {
-        const newRow = Math.max(1, Math.min(bottomEdge - 2, startRow + deltaRows));
-        patch.row = newRow;
-        patch.rowSpan = bottomEdge - newRow;
-      }
-      onResize(patch);
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  };
-
-  const [hovered, setHovered] = useState(false);
-  const showControls = hovered || isDragging || isBeingDragged;
 
   return (
     <div
       ref={cellRef}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => { if (!isDragging) setHovered(false); }}
+      className="grid-chart-cell"
       onMouseDown={(e) => {
         const tag = (e.target as HTMLElement).tagName;
         const isInteractive = tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'LABEL';
         const isResizeHandle = (e.target as HTMLElement).closest('[data-resize-handle]');
-        if (!isInteractive && !isResizeHandle) {
-          onMoveStart(e);
-        }
+        if (!isInteractive && !isResizeHandle) onMoveStart(e);
       }}
       style={{
-        gridColumn: `${isDragging ? localCol : item.col} / span ${isDragging ? localColSpan : item.colSpan}`,
-        gridRow: `${isDragging ? localRow : item.row} / span ${isDragging ? localRowSpan : item.rowSpan}`,
+        gridColumn: `${item.col} / span ${item.colSpan}`,
+        gridRow: `${item.row} / span ${item.rowSpan}`,
         position: 'relative',
-        cursor: isBeingDragged ? 'grabbing' : (hovered ? 'grab' : 'default'),
-        opacity: isBeingDragged ? 0.5 : 1,
-        transition: isBeingDragged ? 'none' : 'opacity 0.15s',
       }}
     >
-      {/* Chart — fills entire cell */}
-      <Chart
-        data={{ rows: chart.data as Record<string, unknown>[], script: chart.script }}
-        props={{ chart_type: chart.chart_type, title: chart.title, ...chart.chart_spec }}
+      <MemoChart
+        data={{ rows: chart.data as Record<string, unknown>[], script: chart.script as unknown as Record<string, unknown> }}
+        props={{ ...chart.chart_spec, chart_type: chart.chart_type, title: chart.title }}
         hideAddToReport
         onRemove={onDelete}
         fillContainer
-        hideBorder={!showControls}
+        hideBorder
+        className="cell-chart-border"
       />
 
-      {/* Resize handles — only visible on hover */}
-      {showControls && (<>
-        <div data-resize-handle onMouseDown={handleWidthResize}
+      {/* Resize handles — always mounted, visibility driven by CSS :hover */}
+      <div className="cell-resize-handles">
+        <div data-resize-handle onMouseDown={handleResize({ right: true })}
           style={{ position: 'absolute', top: 0, right: 0, width: 6, bottom: 0, cursor: 'col-resize', zIndex: 1 }}>
           <div style={{ position: 'absolute', top: '50%', right: 0, transform: 'translateY(-50%)', width: 3, height: 24, backgroundColor: '#ccc', borderRadius: 2 }} />
         </div>
-        <div data-resize-handle onMouseDown={handleLeftResize}
+        <div data-resize-handle onMouseDown={handleResize({ left: true })}
           style={{ position: 'absolute', top: 0, left: 0, width: 6, bottom: 0, cursor: 'col-resize', zIndex: 1 }}>
           <div style={{ position: 'absolute', top: '50%', left: 0, transform: 'translateY(-50%)', width: 3, height: 24, backgroundColor: '#ccc', borderRadius: 2 }} />
         </div>
-        <div data-resize-handle onMouseDown={handleHeightResize}
+        <div data-resize-handle onMouseDown={handleResize({ bottom: true })}
           style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 6, cursor: 'row-resize', zIndex: 1 }}>
           <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: 24, height: 3, backgroundColor: '#ccc', borderRadius: 2 }} />
         </div>
-        <div data-resize-handle onMouseDown={handleTopResize}
+        <div data-resize-handle onMouseDown={handleResize({ top: true })}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 6, cursor: 'row-resize', zIndex: 1 }}>
           <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: 24, height: 3, backgroundColor: '#ccc', borderRadius: 2 }} />
         </div>
-        <div data-resize-handle onMouseDown={handleCornerResize('right', 'bottom')}
+        <div data-resize-handle onMouseDown={handleResize({ right: true, bottom: true })}
           style={{ position: 'absolute', bottom: 0, right: 0, width: 10, height: 10, cursor: 'nwse-resize', zIndex: 2 }} />
-        <div data-resize-handle onMouseDown={handleCornerResize('left', 'top')}
+        <div data-resize-handle onMouseDown={handleResize({ left: true, top: true })}
           style={{ position: 'absolute', top: 0, left: 0, width: 10, height: 10, cursor: 'nwse-resize', zIndex: 2 }} />
-        <div data-resize-handle onMouseDown={handleCornerResize('right', 'top')}
+        <div data-resize-handle onMouseDown={handleResize({ right: true, top: true })}
           style={{ position: 'absolute', top: 0, right: 0, width: 10, height: 10, cursor: 'nesw-resize', zIndex: 2 }} />
-        <div data-resize-handle onMouseDown={handleCornerResize('left', 'bottom')}
+        <div data-resize-handle onMouseDown={handleResize({ left: true, bottom: true })}
           style={{ position: 'absolute', bottom: 0, left: 0, width: 10, height: 10, cursor: 'nesw-resize', zIndex: 2 }} />
-      </>)}
+      </div>
     </div>
   );
 }

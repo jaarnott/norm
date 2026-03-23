@@ -3,6 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import settings
 from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth, working_documents, automated_tasks, organizations, billing, billing_webhooks, reports_crud
 
 app = FastAPI(
@@ -13,7 +14,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -274,10 +275,15 @@ def _ensure_org_subscriptions() -> None:
 
 
 @app.on_event("startup")
-def _validate_api_key() -> None:
+def _validate_config() -> None:
     import logging
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        logging.getLogger(__name__).warning(
+    log = logging.getLogger(__name__)
+
+    # Fail fast if required secrets are missing in deployed environments
+    settings.validate_for_deploy()
+
+    if not settings.ANTHROPIC_API_KEY:
+        log.warning(
             "ANTHROPIC_API_KEY not set in environment. "
             "The key can be configured at runtime via PUT /api/connectors/anthropic."
         )

@@ -8,7 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "pydantic>=2.0.0",
     "sqlalchemy>=2.0.0",
-    "psycopg2-binary>=2.9.0",
+    "psycopg2-binary>=2.9.0",  # TODO: replace with psycopg2 in Dockerfile (needs libpq-dev)
     "alembic>=1.14.0",
     "anthropic>=0.39.0",
     "httpx>=0.27.0",
@@ -19,6 +19,8 @@ dependencies = [
     "jinja2>=3.1.6",
     "apscheduler>=3.10.0",
     "stripe>=9.0.0",
+    "pydantic-settings>=2.13.1",
+    "gunicorn>=22.0.0",
 ]
 
 [project.optional-dependencies]

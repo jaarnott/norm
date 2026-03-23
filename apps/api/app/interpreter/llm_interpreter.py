@@ -13,6 +13,8 @@ import time
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,7 +64,7 @@ def call_llm(
 
     import anthropic
 
-    resolved_model = model or os.environ.get("LLM_INTERPRETER_MODEL", "claude-sonnet-4-20250514")
+    resolved_model = model or settings.LLM_INTERPRETER_MODEL
 
     today = datetime.date.today().isoformat()
     dated_user_prompt = f"[{today}] {user_prompt}"
@@ -176,7 +178,7 @@ def call_llm_with_tools(
 
     import anthropic
 
-    resolved_model = model or os.environ.get("LLM_INTERPRETER_MODEL", "claude-sonnet-4-20250514")
+    resolved_model = model or settings.LLM_INTERPRETER_MODEL
 
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -43,7 +45,7 @@ class QuotaExceededError(Exception):
 # ---------------------------------------------------------------------------
 
 def _is_enforcement_enabled() -> bool:
-    return os.environ.get("BILLING_ENFORCEMENT", "false").lower() == "true"
+    return settings.BILLING_ENFORCEMENT
 
 
 def get_monthly_usage(db: Session, org_id: str, cycle_start: datetime | None = None) -> int:
@@ -192,7 +194,7 @@ def get_billing_info(db: Session, org_id: str) -> dict:
 def _get_stripe():
     """Lazy import and configure stripe."""
     import stripe
-    stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+    stripe.api_key = settings.STRIPE_SECRET_KEY
     return stripe
 
 
@@ -271,24 +273,24 @@ def create_subscription(db: Session, org_id: str, token_plan: str) -> dict:
     items = []
 
     # Token plan
-    price_id = os.environ.get(f"STRIPE_PRICE_{token_plan.upper()}")
+    price_id = settings.get_stripe_price_id(token_plan)
     if price_id:
         items.append({"price": price_id})
 
     # Agents
     if org.hr_agent_enabled:
-        hr_price = os.environ.get("STRIPE_PRICE_HR")
+        hr_price = settings.STRIPE_PRICE_HR
         if hr_price:
             items.append({"price": hr_price})
     if org.procurement_agent_enabled:
-        proc_price = os.environ.get("STRIPE_PRICE_PROCUREMENT")
+        proc_price = settings.STRIPE_PRICE_PROCUREMENT
         if proc_price:
             items.append({"price": proc_price})
 
     # Venues
     venue_count = len(org.venues) if org.venues else 0
     if venue_count > 0:
-        venue_price = os.environ.get("STRIPE_PRICE_VENUE")
+        venue_price = settings.STRIPE_PRICE_VENUE
         if venue_price:
             items.append({"price": venue_price, "quantity": venue_count})
 
@@ -332,15 +334,15 @@ def change_plan(db: Session, org_id: str, new_plan: str) -> dict:
     stripe_sub = stripe.Subscription.retrieve(sub.stripe_subscription_id)
 
     # Find the plan item and update it
-    new_price_id = os.environ.get(f"STRIPE_PRICE_{new_plan.upper()}")
+    new_price_id = settings.get_stripe_price_id(new_plan)
     if not new_price_id:
         raise ValueError(f"No Stripe price configured for plan: {new_plan}")
 
     # Find the current plan item (first item that matches a plan price)
     plan_prices = {
-        os.environ.get(f"STRIPE_PRICE_{p.upper()}")
+        settings.get_stripe_price_id(p)
         for p in PLAN_QUOTAS
-        if os.environ.get(f"STRIPE_PRICE_{p.upper()}")
+        if settings.get_stripe_price_id(p)
     }
     plan_item = None
     for item in stripe_sub["items"]["data"]:
@@ -415,7 +417,7 @@ def sync_venue_count(db: Session, org_id: str) -> None:
         return
 
     venue_count = len(org.venues) if org.venues else 0
-    venue_price = os.environ.get("STRIPE_PRICE_VENUE")
+    venue_price = settings.STRIPE_PRICE_VENUE
     if not venue_price:
         return
 

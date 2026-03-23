@@ -23,7 +23,8 @@ router = APIRouter()
 
 def _get_redirect_uri(request: Request) -> str:
     """Build the OAuth callback URL based on the current request or env config."""
-    configured = os.environ.get("OAUTH_REDIRECT_URI")
+    from app.config import settings
+    configured = settings.OAUTH_REDIRECT_URI or None
     if configured:
         return configured
     # Derive from request

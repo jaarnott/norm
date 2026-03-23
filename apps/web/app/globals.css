@@ -3,6 +3,15 @@ html, body { margin: 0; height: 100%; background: #faf8f5; }
 
 .compact-card:hover .compact-remove { opacity: 1 !important; }
 .split-drag-handle:hover .split-drag-pill { opacity: 1 !important; }
+/* Report grid chart cells — hover-driven handles and border via CSS, no React state */
+.grid-chart-cell { cursor: default; }
+.grid-chart-cell:hover { cursor: grab; }
+.grid-chart-cell .cell-resize-handles { opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+.grid-chart-cell:hover .cell-resize-handles { opacity: 1; pointer-events: auto; }
+.grid-chart-cell .cell-chart-border { border-color: transparent !important; transition: border-color 0.15s; }
+.grid-chart-cell:hover .cell-chart-border { border-color: #e2e8f0 !important; }
+.grid-chart-cell .cell-chart-actions { opacity: 0; transition: opacity 0.15s; }
+.grid-chart-cell:hover .cell-chart-actions { opacity: 1; }
 @keyframes thinking-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 .thinking-dot { animation: thinking-pulse 1.2s ease-in-out infinite; color: #6c3483; }
 /* Markdown message styles */

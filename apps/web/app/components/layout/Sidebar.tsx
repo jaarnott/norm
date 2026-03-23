@@ -60,6 +60,7 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
           return (
             <button
               key={agent.id}
+              data-testid={`sidebar-${agent.id}`}
               onClick={() => onSelect(agent.id)}
               title={agent.label}
               style={{
@@ -87,6 +88,7 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
         {/* Settings (admin only) */}
         {isAdmin && (
           <button
+            data-testid="sidebar-settings"
             onClick={() => onSelect('settings')}
             title="Settings"
             style={{
@@ -132,6 +134,7 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
         {/* Logout */}
         {onLogout && (
           <button
+            data-testid="sidebar-logout"
             onClick={onLogout}
             title="Sign out"
             style={{

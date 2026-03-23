@@ -21,7 +21,6 @@ export default function Home() {
   const [token, setTokenState] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
-  const [input, setInput] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeAgent, setActiveAgent] = useState('home');
@@ -127,13 +126,10 @@ export default function Home() {
     return counts;
   }, [tasks]);
 
-  const sendMessage = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim()) return;
+  const sendMessage = useCallback(async (messageText: string) => {
+    if (!messageText.trim()) return;
 
-    const messageText = input;
     const taskIdForRequest = selectedTaskId;
-    setInput('');
     setLoading(true);
 
     // Create an optimistic task so the conversation view appears immediately
@@ -168,13 +164,43 @@ export default function Home() {
     let tokenBuffer = '';
     let streamMode: 'pending' | 'tool' | 'conversation' = 'pending';
     const TOOL_PREFIX = '[Tool]';
+    let displayedLength = 0;
+    let animFrameId: number | null = null;
+
+    const typewriterLoop = () => {
+      if (displayedLength < tokenBuffer.length) {
+        const backlog = tokenBuffer.length - displayedLength;
+        // Adaptive speed: 1 char when nearly caught up, up to 4 when large backlog
+        const charsPerFrame = Math.max(1, Math.min(4, Math.floor(backlog / 20)));
+        displayedLength = Math.min(displayedLength + charsPerFrame, tokenBuffer.length);
+        const visibleText = tokenBuffer.slice(0, displayedLength);
+        setTasks(prev => prev.map(t => {
+          if (t.id !== currentId) return t;
+          const conv = t.conversation || [];
+          const last = conv[conv.length - 1];
+          if (last?.role === 'streaming') {
+            return { ...t, conversation: [...conv.slice(0, -1), { ...last, text: visibleText }] };
+          }
+          return { ...t, thinking_steps: [], conversation: [...conv.filter(m => m.role !== 'streaming'), { role: 'streaming' as const, text: visibleText }] };
+        }));
+      }
+      animFrameId = requestAnimationFrame(typewriterLoop);
+    };
+
+    const startTypewriter = () => {
+      if (!animFrameId) animFrameId = requestAnimationFrame(typewriterLoop);
+    };
+
+    const stopTypewriter = () => {
+      if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+    };
 
     try {
       await apiStream(
         '/api/messages/stream',
         taskIdForRequest
-          ? { message: messageText, task_id: taskIdForRequest, venue_id: activeVenueId }
-          : { message: messageText, venue_id: activeVenueId },
+          ? { message: messageText, task_id: taskIdForRequest }
+          : { message: messageText },
         (event) => {
           if (event.type === 'task_created') {
             // Store the real task ID for recovery — but don't remap the
@@ -191,16 +217,20 @@ export default function Home() {
             ));
           } else if (event.type === 'stream_cancel') {
             // LLM is calling a tool — clear any streaming conversation text
+            stopTypewriter();
             streamMode = 'pending';
             tokenBuffer = '';
+            displayedLength = 0;
             setTasks(prev => prev.map(t => {
               if (t.id !== currentId) return t;
               return { ...t, conversation: (t.conversation || []).filter(m => m.role !== 'streaming') };
             }));
           } else if (event.type === 'thinking') {
             // Tool reasoning from backend — show as thinking step, reset for next stream
+            stopTypewriter();
             streamMode = 'pending';
             tokenBuffer = '';
+            displayedLength = 0;
             setTasks(prev => prev.map(t => {
               if (t.id !== currentId) return t;
               return {
@@ -227,15 +257,7 @@ export default function Home() {
               } else if (tokenBuffer.length >= TOOL_PREFIX.length) {
                 // Not a tool prefix — this is the final conversation response
                 streamMode = 'conversation';
-                setTasks(prev => prev.map(t => {
-                  if (t.id !== currentId) return t;
-                  return {
-                    ...t,
-                    thinking_steps: [],
-                    conversation: [...(t.conversation || []).filter(m => m.role !== 'streaming'),
-                      { role: 'streaming' as const, text: tokenBuffer }],
-                  };
-                }));
+                startTypewriter();
               }
             } else if (streamMode === 'tool') {
               const explanation = tokenBuffer.slice(TOOL_PREFIX.length).replace(/^\s+/, '');
@@ -247,18 +269,11 @@ export default function Home() {
                 };
               }));
             } else {
-              // conversation mode — update the streaming message with full buffer
-              setTasks(prev => prev.map(t => {
-                if (t.id !== currentId) return t;
-                const conv = t.conversation || [];
-                const last = conv[conv.length - 1];
-                if (last?.role === 'streaming') {
-                  return { ...t, conversation: [...conv.slice(0, -1), { ...last, text: tokenBuffer }] };
-                }
-                return { ...t, conversation: [...conv, { role: 'streaming' as const, text: tokenBuffer }] };
-              }));
+              // conversation mode — typewriter loop handles rendering
+              // tokenBuffer is already updated, loop will pick it up
             }
           } else if (event.type === 'complete') {
+            stopTypewriter();
             const data = event.data as Task;
             setTasks(prev => {
               const idx = prev.findIndex(t => t.id === currentId);
@@ -331,7 +346,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [input, selectedTaskId]);
+  }, [selectedTaskId]);
 
   const handleNewChat = useCallback(() => {
     setSelectedTaskId(null);
@@ -361,6 +376,18 @@ export default function Home() {
   }, []);
 
   const handleWidgetAction = useCallback(async (taskId: string, action: WidgetAction): Promise<Record<string, unknown> | void> => {
+    // Check if a report builder is currently open for this task
+    if (action.action === 'get_active_report') {
+      const task = tasks.find(t => t.id === taskId);
+      if (task?.conversation) {
+        for (const msg of [...task.conversation].reverse()) {
+          const rb = msg.display_blocks?.find((b: { component: string }) => b.component === 'report_builder');
+          if (rb) return { report_id: (rb.data as Record<string, unknown>).report_id };
+        }
+      }
+      return { report_id: null };
+    }
+
     // Handle report builder open client-side (no backend needed)
     if (action.action === 'open_report_builder' && action.params?.report_id) {
       setTasks(prev => prev.map(t => {
@@ -413,7 +440,7 @@ export default function Home() {
     } catch (err) {
       console.error('Widget action failed:', err);
     }
-  }, []);
+  }, [tasks]);
 
   const removeTask = useCallback(async (taskId: string) => {
     try {
@@ -515,8 +542,6 @@ export default function Home() {
             <FunctionalPage
               config={pageConfig}
               task={selectedTask}
-              input={input}
-              onInputChange={setInput}
               onSend={sendMessage}
               loading={loading}
               onWidgetAction={handleWidgetAction}
@@ -528,16 +553,12 @@ export default function Home() {
             task={selectedTask}
             onAction={handleAction}
             onWidgetAction={handleWidgetAction}
-            input={input}
-            onInputChange={setInput}
             onSend={sendMessage}
             loading={loading}
             openTask={openTask || null}
           />
         ) : (
           <HomePanel
-            input={input}
-            onInputChange={setInput}
             onSend={sendMessage}
             loading={loading}
           />

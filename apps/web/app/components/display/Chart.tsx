@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, memo } from 'react';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   ScatterChart, Scatter,
@@ -60,9 +60,10 @@ interface Props {
   onRemove?: () => void;
   fillContainer?: boolean;
   hideBorder?: boolean;
+  className?: string;
 }
 
-export default function Chart({ data, props: chartProps, onAction, taskId, height: chartHeight = 280, hideAddToReport, onRemove, fillContainer, hideBorder }: Props) {
+function Chart({ data, props: chartProps, onAction, taskId, height: chartHeight = 280, hideAddToReport, onRemove, fillContainer, hideBorder, className }: Props) {
   const [chartType, setChartType] = useState<ChartType>(chartProps?.chart_type || 'bar');
   const [addingToReport, setAddingToReport] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
@@ -138,21 +139,22 @@ export default function Chart({ data, props: chartProps, onAction, taskId, heigh
   const handleAddToReport = async () => {
     setAddingToReport(true);
     try {
-      // Check for an existing recent report to add to
+      // Check if a report builder is already open
       let reportId: string | null = null;
-      try {
-        const listRes = await apiFetch('/api/reports');
-        if (listRes.ok) {
-          const listData = await listRes.json();
-          const reports = listData.reports || [];
-          // Use the most recent draft or saved report
-          if (reports.length > 0) {
-            reportId = reports[0].id;
+      if (onAction) {
+        try {
+          const result = await onAction({
+            connector_name: 'norm_reports',
+            action: 'get_active_report',
+            params: {},
+          });
+          if (result && (result as Record<string, unknown>).report_id) {
+            reportId = (result as Record<string, unknown>).report_id as string;
           }
-        }
-      } catch { /* ignore */ }
+        } catch { /* ignore */ }
+      }
 
-      // Create a new report only if none exists
+      // No active report open — create a new one
       if (!reportId) {
         const createRes = await apiFetch('/api/reports', {
           method: 'POST',
@@ -199,7 +201,7 @@ export default function Chart({ data, props: chartProps, onAction, taskId, heigh
   });
 
   return (
-    <div style={{
+    <div className={className} style={{
       border: hideBorder ? '1px solid transparent' : '1px solid #e2e8f0',
       borderRadius: 10, overflow: 'hidden', backgroundColor: '#fff',
       transition: 'border-color 0.15s',
@@ -215,9 +217,9 @@ export default function Chart({ data, props: chartProps, onAction, taskId, heigh
         position: fillContainer ? 'relative' : undefined,
       }}>
         <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333' }}>{title}</span>
-        <div style={{
+        <div className={fillContainer ? 'cell-chart-actions' : undefined} style={{
           display: 'flex', gap: 3, alignItems: 'center',
-          ...(fillContainer ? { position: 'absolute', right: '0.75rem', opacity: hideBorder ? 0 : 1, transition: 'opacity 0.15s' } : {}),
+          ...(fillContainer ? { position: 'absolute', right: '0.75rem' } : {}),
         }}>
           {!hideAddToReport && (
             <button
@@ -470,14 +472,16 @@ function TableView({ rows, series, xKey }: { rows: Record<string, unknown>[]; se
   );
 }
 
+export default memo(Chart);
+
 function BarView({ rows, series, xKey, xLabel, stacked, chartHeight = 280 }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; xLabel: string; stacked?: boolean; chartHeight?: number | string }) {
   return (
-    <ResponsiveContainer width="100%" height={chartHeight}>
+    <ResponsiveContainer width="100%" height={chartHeight as number}>
       <BarChart data={rows}>
         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
         <XAxis dataKey={xKey} tickFormatter={formatValue} tick={{ fontSize: 11 }} />
         <YAxis tickFormatter={v => formatValue(v)} tick={{ fontSize: 11 }} />
-        <Tooltip formatter={(v: number) => formatValue(v)} labelFormatter={formatValue} contentStyle={{ fontSize: '0.78rem' }} />
+        <Tooltip formatter={(v) => formatValue(v as number)} labelFormatter={formatValue} contentStyle={{ fontSize: '0.78rem' }} />
         <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
         {series.map(s => (
           <Bar key={s.key} dataKey={s.key} name={s.label} fill={s.color} stackId={stacked ? 'stack' : undefined} radius={stacked ? 0 : [3, 3, 0, 0]} />
@@ -489,12 +493,12 @@ function BarView({ rows, series, xKey, xLabel, stacked, chartHeight = 280 }: { r
 
 function LineView({ rows, series, xKey, xLabel, chartHeight = 280 }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; xLabel: string; chartHeight?: number | string }) {
   return (
-    <ResponsiveContainer width="100%" height={chartHeight}>
+    <ResponsiveContainer width="100%" height={chartHeight as number}>
       <LineChart data={rows}>
         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
         <XAxis dataKey={xKey} tickFormatter={formatValue} tick={{ fontSize: 11 }} />
         <YAxis tickFormatter={v => formatValue(v)} tick={{ fontSize: 11 }} />
-        <Tooltip formatter={(v: number) => formatValue(v)} labelFormatter={formatValue} contentStyle={{ fontSize: '0.78rem' }} />
+        <Tooltip formatter={(v) => formatValue(v as number)} labelFormatter={formatValue} contentStyle={{ fontSize: '0.78rem' }} />
         <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
         {series.map(s => (
           <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2} dot={{ r: 3 }} />
@@ -514,9 +518,9 @@ function PieView({ rows, series, xKey, chartHeight = 280 }: { rows: Record<strin
   }
   const pieData = Array.from(aggregated, ([name, value]) => ({ name, value }));
   return (
-    <ResponsiveContainer width="100%" height={chartHeight}>
+    <ResponsiveContainer width="100%" height={chartHeight as number}>
       <PieChart>
-        <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="70%" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false}>
+        <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="70%" label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false}>
           {pieData.map((_, i) => <Cell key={i} fill={DEFAULT_COLORS[i % DEFAULT_COLORS.length]} />)}
         </Pie>
         <Tooltip contentStyle={{ fontSize: '0.78rem' }} />
@@ -528,7 +532,7 @@ function PieView({ rows, series, xKey, chartHeight = 280 }: { rows: Record<strin
 function ScatterView({ rows, series, xKey, xLabel, chartHeight = 280 }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; xLabel: string; chartHeight?: number | string }) {
   const yKey = series[0]?.key || '';
   return (
-    <ResponsiveContainer width="100%" height={chartHeight}>
+    <ResponsiveContainer width="100%" height={chartHeight as number}>
       <ScatterChart>
         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
         <XAxis dataKey={xKey} name={xLabel} tick={{ fontSize: 11 }} />

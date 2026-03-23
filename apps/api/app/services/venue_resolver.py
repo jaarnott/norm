@@ -7,10 +7,15 @@ def _normalize(s: str) -> str:
 
 
 def resolve_venue(text: str, db: Session) -> dict | None:
-    """Match free text against known venue names (case/punctuation insensitive)."""
+    """Match free text against known venue names (case/punctuation insensitive).
+
+    Bidirectional: matches "murdochs" to "Mr Murdochs" and
+    "sales at La Zeppa" to "La Zeppa".
+    """
     text_norm = _normalize(text)
     venues = db.query(Venue).all()
     for venue in venues:
-        if _normalize(venue.name) in text_norm:
+        name_norm = _normalize(venue.name)
+        if name_norm in text_norm or text_norm in name_norm:
             return {"id": venue.id, "name": venue.name, "location": venue.location}
     return None

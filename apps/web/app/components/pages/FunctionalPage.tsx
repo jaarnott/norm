@@ -12,15 +12,14 @@ import type { Task, WidgetAction } from '../../types';
 interface FunctionalPageProps {
   config: FunctionalPageConfig;
   task: Task | null;
-  input: string;
-  onInputChange: (value: string) => void;
-  onSend: (e: React.FormEvent) => void;
+  onSend: (message: string) => void;
   loading: boolean;
   onWidgetAction?: (taskId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   activeVenueId?: string | null;
 }
 
-export default function FunctionalPage({ config, task, input, onInputChange, onSend, loading, onWidgetAction, activeVenueId }: FunctionalPageProps) {
+export default function FunctionalPage({ config, task, onSend, loading, onWidgetAction, activeVenueId }: FunctionalPageProps) {
+  const [input, setInput] = useState('');
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [workingDocId, setWorkingDocId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -91,19 +90,14 @@ export default function FunctionalPage({ config, task, input, onInputChange, onS
 
   const inputBar = (
     <div style={{ padding: '12px 24px 24px' }}>
-      <form onSubmit={onSend} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
+      <form onSubmit={e => { e.preventDefault(); if (input.trim()) { onSend(input); setInput(''); } }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
         <textarea
           value={input}
-          onChange={e => {
-            onInputChange(e.target.value);
-            const el = e.target;
-            el.style.height = 'auto';
-            el.style.height = Math.min(el.scrollHeight, 150) + 'px';
-          }}
+          onChange={e => setInput(e.target.value)}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              onSend(e as unknown as React.FormEvent);
+              if (input.trim()) { onSend(input); setInput(''); }
             }
           }}
           placeholder="Message Norm..."
@@ -141,26 +135,35 @@ export default function FunctionalPage({ config, task, input, onInputChange, onS
   // If a report is open, show the Report Builder full-screen
   if (activeReportId) {
     return (
-      <div style={{ height: '100vh', position: 'relative', backgroundColor: '#fff', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
-          <button
-            onClick={() => setActiveReportId(null)}
-            style={{
-              border: 'none', background: 'none', color: '#888', cursor: 'pointer',
-              fontSize: '0.82rem', fontFamily: 'inherit', padding: '4px 0',
-            }}
-          >&larr; Back to Reports</button>
+      <div style={{ height: '100vh', position: 'relative', backgroundColor: '#fff' }}>
+        <div style={{ height: '100%', overflowY: 'auto', paddingBottom: '100px' }}>
+          <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #e2e8f0' }}>
+            <button
+              onClick={() => setActiveReportId(null)}
+              style={{
+                border: 'none', background: 'none', color: '#888', cursor: 'pointer',
+                fontSize: '0.82rem', fontFamily: 'inherit', padding: '4px 0',
+              }}
+            >&larr; Back to Reports</button>
+          </div>
+          <div style={{ height: 'calc(100vh - 150px)' }}>
+            <DisplayBlockRenderer
+              block={{
+                component: 'report_builder',
+                data: { report_id: activeReportId },
+                props: {},
+              }}
+              onAction={handleAction}
+              taskId={task?.id}
+            />
+          </div>
         </div>
-        <div style={{ flex: 1, overflow: 'hidden' }}>
-          <DisplayBlockRenderer
-            block={{
-              component: 'report_builder',
-              data: { report_id: activeReportId },
-              props: {},
-            }}
-            onAction={handleAction}
-            taskId={task?.id}
-          />
+        <div style={{
+          position: 'absolute', bottom: 0, left: 0, right: 0,
+          padding: '20px 0 0',
+          background: 'radial-gradient(ellipse at bottom, rgba(255,255,255,0.95) 60%, transparent 100%)',
+        }}>
+          {inputBar}
         </div>
       </div>
     );

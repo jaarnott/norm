@@ -100,7 +100,7 @@ def build_dynamic_prompt(domain: str, db: Session) -> str | None:
     return get_system_prompt(domain, db) or None
 
 
-def build_tool_definitions(domain: str, db: Session) -> tuple[str, list[dict]]:
+def build_tool_definitions(domain: str, db: Session, active_venue_name: str | None = None, venue_timezone: str | None = None) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
     Returns (system_prompt, anthropic_tools) where anthropic_tools is a list
@@ -184,7 +184,36 @@ The search uses fuzzy matching so it handles misspellings and partial matches. I
                 venue_lines.append(f"- {v.name} (no connectors configured)")
         venue_detail = "\n".join(venue_lines)
 
-        system_prompt += f"""
+        if active_venue_name:
+            tz_info = ""
+            if venue_timezone:
+                try:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo(venue_timezone)
+                    now = datetime.datetime.now(tz)
+                    offset = now.strftime('%z')
+                    offset_fmt = f"{offset[:3]}:{offset[3:]}"
+                    today_in_tz = now.strftime('%Y-%m-%d')
+                    tz_info = f" (timezone: {venue_timezone}, currently UTC{offset_fmt})"
+                    tz_info += f"\nToday's date in this timezone is {today_in_tz}. When making API calls that require dates or datetimes, use the offset {offset_fmt} (URL-encoded as %2B{offset[1:3]}:{offset[3:]} for positive offsets)."
+                except Exception:
+                    tz_info = f" (timezone: {venue_timezone})"
+
+            system_prompt += f"""
+
+## Active Venue
+The user's active venue is **{active_venue_name}**{tz_info}. Use this as the default venue for all tool calls.
+Do NOT ask the user which venue — use {active_venue_name} by default unless the user explicitly asks about a different venue.
+
+Other available venues:
+{venue_detail}
+
+- Always include the venue name in the "venue" parameter of each tool call
+- Only call tools for venues that have the relevant connector configured
+- For cross-venue queries, include only venues that have the relevant connector
+"""
+        else:
+            system_prompt += f"""
 
 ## Venue Context
 The user has access to multiple venues:

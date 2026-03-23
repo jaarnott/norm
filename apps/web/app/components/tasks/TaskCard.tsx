@@ -70,9 +70,10 @@ interface TaskCardProps {
   onClick: () => void;
   onRemove: () => void;
   compact?: boolean;
+  'data-testid'?: string;
 }
 
-export default function TaskCard({ task, isSelected, onClick, onRemove, compact }: TaskCardProps) {
+export default function TaskCard({ task, isSelected, onClick, onRemove, compact, 'data-testid': testId }: TaskCardProps) {
   const [confirming, setConfirming] = useState(false);
   const dc = getDomainColor(task.domain);
   const DomainIcon = DOMAIN_ICONS[task.domain] || HelpCircle;
@@ -139,6 +140,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact 
       <div
         onClick={onClick}
         className="compact-card"
+        data-testid={testId}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -181,6 +183,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact 
   return (
     <div
       onClick={onClick}
+      data-testid={testId}
       style={{
         padding: '0.85rem 1rem',
         borderBottom: '1px solid #f0f0f0',

@@ -39,7 +39,17 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
     # braces that would break Python's string formatting.
     domain_list = "\n".join(f"- {d}" for d in domains)
     system = prompt_template.replace("{domains}", domain_list)
-    model = os.environ.get("ROUTER_MODEL", "claude-haiku-4-5-20251001")
+
+    # Inject venue context so the router can extract venue from the message
+    from app.services.venue_service import get_user_venues
+    venues = get_user_venues(db)
+    if len(venues) > 1:
+        venue_names = [v.name for v in venues]
+        system += f'\n\nAvailable venues: {", ".join(venue_names)}'
+        system += '\nInclude "venue" in your JSON response with the venue name if the user mentions or implies a specific venue. Use null if no venue is mentioned or it is ambiguous.'
+
+    from app.config import settings
+    model = settings.ROUTER_MODEL
 
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None
@@ -94,6 +104,7 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
             "domain": parsed.get("domain", "unknown"),
             "confidence": parsed.get("confidence", 0.5),
             "title": parsed.get("title"),
+            "venue": parsed.get("venue"),
             "llm_call_id": llm_call_id,
         }
 

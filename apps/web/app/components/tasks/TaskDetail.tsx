@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { Package, UserRound, BarChart3, HelpCircle, type LucideIcon } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -115,7 +115,7 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
 
 // -- Chat conversation view --
 
-export function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlocks }: {
+export const ConversationView = memo(function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlocks }: {
   messages: ConversationMessage[];
   onWidgetAction?: (action: WidgetAction) => Promise<Record<string, unknown> | void>;
   taskId?: string;
@@ -179,13 +179,9 @@ export function ConversationView({ messages, onWidgetAction, taskId, hideFullWid
                 );
               })()}
               {isUser ? m.text : (
-                m.role === 'streaming' ? (
-                  <span style={{ whiteSpace: 'pre-wrap' }}>{m.text}</span>
-                ) : (
-                  <div className="markdown-message">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
-                  </div>
-                )
+                <div className="markdown-message">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                </div>
               )}
             </div>
           </div>
@@ -194,7 +190,7 @@ export function ConversationView({ messages, onWidgetAction, taskId, hideFullWid
       <div ref={bottomRef} />
     </div>
   );
-}
+});
 
 // -- Detail components --
 
@@ -205,8 +201,8 @@ const DetailRow = ({ label, value }: { label: string; value: string }) => (
   </div>
 );
 
-const Btn = ({ label, bg, onClick }: { label: string; bg: string; onClick: () => void }) => (
-  <button onClick={onClick} style={{
+const Btn = ({ label, bg, onClick, 'data-testid': testId }: { label: string; bg: string; onClick: () => void; 'data-testid'?: string }) => (
+  <button data-testid={testId} onClick={onClick} style={{
     padding: '0.5rem 1.2rem', fontSize: '0.8rem', fontWeight: 600,
     backgroundColor: bg, color: '#fff', border: 'none', borderRadius: 6,
     cursor: 'pointer',
@@ -308,8 +304,8 @@ function DetailsView({ task, onAction }: { task: Task; onAction: (taskId: string
       <div style={{ display: 'flex', gap: '0.5rem' }}>
         {task.status === 'awaiting_approval' && (
           <>
-            <Btn label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} />
-            <Btn label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} />
+            <Btn data-testid="approve-btn" label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} />
+            <Btn data-testid="reject-btn" label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} />
           </>
         )}
         {task.status === 'approved' && (
@@ -476,8 +472,8 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
             </div>
           )}
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <Btn label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} />
-            <Btn label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} />
+            <Btn data-testid="approve-btn" label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} />
+            <Btn data-testid="reject-btn" label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} />
           </div>
         </div>
       )}
@@ -490,7 +486,7 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
           {isProcurement && (() => { const t = task as ProcurementTask; return (<><DetailRow label="Product" value={t.product?.name || '?'} /><DetailRow label="Quantity" value={`${t.quantity ?? '?'} ${t.product?.unit ?? 'case'}(s)`} /><DetailRow label="Venue" value={t.venue?.name || '?'} />{t.supplier && <DetailRow label="Supplier" value={t.supplier} />}</>); })()}
           {isHr && (() => { const t = task as HrTask; return (<><DetailRow label="Name" value={t.employee_name || '?'} /><DetailRow label="Role" value={t.role || '?'} /><DetailRow label="Venue" value={t.venue?.name || '?'} /><DetailRow label="Start date" value={t.start_date || '?'} /></>); })()}
           <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
-            {task.status === 'awaiting_approval' && (<><Btn label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} /><Btn label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} /></>)}
+            {task.status === 'awaiting_approval' && (<><Btn data-testid="approve-btn" label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} /><Btn data-testid="reject-btn" label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} /></>)}
             {task.status === 'approved' && (<Btn label={isProcurement ? 'Submit to Supplier' : 'Submit Setup'} bg="#4d65ff" onClick={() => onAction(task.id, 'submit')} />)}
           </div>
         </div>
@@ -532,18 +528,53 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
 
 // -- Main component --
 
+const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend: (msg: string) => void; loading: boolean; highlight?: boolean }) {
+  const [value, setValue] = useState('');
+  return (
+    <div style={{ padding: '12px 24px 24px' }}>
+      <form onSubmit={e => { e.preventDefault(); if (value.trim()) { onSend(value); setValue(''); } }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
+        <textarea
+          data-testid="message-input"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              if (value.trim()) { onSend(value); setValue(''); }
+            }
+          }}
+          placeholder="Message Norm..."
+          rows={1}
+          style={{
+            flex: 1, minHeight: 50, maxHeight: 150,
+            padding: '14px 1.5rem', fontSize: '1rem',
+            border: highlight ? '1px solid #c4a882' : '1px solid #ddd',
+            borderRadius: 24, outline: 'none', fontFamily: 'inherit',
+            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'hidden',
+          }}
+        />
+        <button data-testid="send-btn" type="submit" disabled={loading} style={{
+          height: 50, padding: '0 1rem', fontSize: '0.8rem', fontWeight: 600,
+          backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 24,
+          cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+        }}>
+          {loading ? '...' : 'Send'}
+        </button>
+      </form>
+    </div>
+  );
+});
+
 interface TaskDetailProps {
   task: Task;
   onAction: (taskId: string, action: string) => void;
   onWidgetAction?: (taskId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
-  input: string;
-  onInputChange: (value: string) => void;
-  onSend: (e: React.FormEvent) => void;
+  onSend: (message: string) => void;
   loading: boolean;
   openTask: Task | null;
 }
 
-export default function TaskDetail({ task, onAction, onWidgetAction, input, onInputChange, onSend, loading, openTask }: TaskDetailProps) {
+export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loading, openTask }: TaskDetailProps) {
   const [activeTab, setActiveTab] = useState<TabKey>('conversation');
   const dc = getDomainColor(task.domain);
   const DomainIcon = DOMAIN_ICONS[task.domain] || HelpCircle;
@@ -574,6 +605,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
       {TABS.map(tab => (
         <button
           key={tab.key}
+          data-testid={`tab-${tab.key}`}
           onClick={() => setActiveTab(tab.key)}
           style={{
             padding: '0.45rem 1rem',
@@ -594,43 +626,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, input, onIn
     </div>
   );
 
-  const inputBar = (
-    <div style={{ padding: '12px 24px 24px' }}>
-      <form onSubmit={onSend} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
-        <textarea
-          value={input}
-          onChange={e => {
-            onInputChange(e.target.value);
-            const el = e.target;
-            el.style.height = 'auto';
-            el.style.height = Math.min(el.scrollHeight, 150) + 'px';
-          }}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              onSend(e as unknown as React.FormEvent);
-            }
-          }}
-          placeholder="Message Norm..."
-          rows={1}
-          style={{
-            flex: 1, minHeight: 50, maxHeight: 150,
-            padding: '14px 1.5rem', fontSize: '1rem',
-            border: openTask ? '1px solid #c4a882' : '1px solid #ddd',
-            borderRadius: 24, outline: 'none', fontFamily: 'inherit',
-            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'hidden',
-          }}
-        />
-        <button type="submit" disabled={loading} style={{
-          height: 50, padding: '0 1rem', fontSize: '0.8rem', fontWeight: 600,
-          backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 24,
-          cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-        }}>
-          {loading ? '...' : 'Send'}
-        </button>
-      </form>
-    </div>
-  );
+  const inputBar = <InputBar onSend={onSend} loading={loading} highlight={!!openTask} />;
 
   return (
     <div ref={containerRef} style={{

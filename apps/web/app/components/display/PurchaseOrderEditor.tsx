@@ -226,7 +226,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
   };
 
   return (
-    <div style={{
+    <div data-testid="po-editor" style={{
       border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden',
       backgroundColor: '#fff', marginBottom: '0.75rem',
       boxShadow: '0 1px 3px rgba(0,0,0,0.06)',

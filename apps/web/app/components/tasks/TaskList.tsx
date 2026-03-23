@@ -101,6 +101,7 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
         </div>
         <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
         <button
+          data-testid="new-chat-btn"
           onClick={onNewChat}
           style={{
             width: '100%',
@@ -123,6 +124,7 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
           <SquarePen size={20} strokeWidth={1.75} /> New chat
         </button>
         <button
+          data-testid="search-btn"
           style={{
             width: '100%',
             display: 'flex',
@@ -181,6 +183,7 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
           {FILTERS.map(f => (
             <button
               key={f.key}
+              data-testid={`filter-${f.key}`}
               onClick={() => onFilterChange(f.key)}
               style={{
                 fontSize: '0.75rem',
@@ -216,6 +219,7 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
           filtered.map(task => (
             <TaskCard
               key={task.id}
+              data-testid={`task-card-${task.id}`}
               task={task}
               isSelected={selectedId === task.id}
               onClick={() => onSelectTask(task.id)}

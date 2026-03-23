@@ -1,32 +1,26 @@
 'use client';
 
-import { useRef, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 
 interface HomePanelProps {
-  input: string;
-  onInputChange: (value: string) => void;
-  onSend: (e: React.FormEvent) => void;
+  onSend: (message: string) => void;
   loading: boolean;
 }
 
-export default function HomePanel({ input, onInputChange, onSend, loading }: HomePanelProps) {
+export default function HomePanel({ onSend, loading }: HomePanelProps) {
+  const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    onInputChange(e.target.value);
-    const el = e.target;
-    el.style.height = 'auto';
-    const h = Math.min(el.scrollHeight, 150);
-    el.style.height = h + 'px';
-    el.style.overflow = el.scrollHeight > 150 ? 'auto' : 'hidden';
-  }, [onInputChange]);
+    setInput(e.target.value);
+  }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      onSend(e as unknown as React.FormEvent);
+      if (input.trim()) { onSend(input); setInput(''); }
     }
-  }, [onSend]);
+  }, [onSend, input]);
 
   return (
     <div style={{
@@ -46,8 +40,9 @@ export default function HomePanel({ input, onInputChange, onSend, loading }: Hom
         </div>
       </div>
 
-      <form onSubmit={onSend} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
+      <form onSubmit={e => { e.preventDefault(); if (input.trim()) { onSend(input); setInput(''); } }} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
         <textarea
+          data-testid="home-message-input"
           ref={textareaRef}
           value={input}
           onChange={handleInput}
@@ -71,6 +66,7 @@ export default function HomePanel({ input, onInputChange, onSend, loading }: Hom
           }}
         />
         <button
+          data-testid="home-send-btn"
           type="submit"
           disabled={loading}
           style={{

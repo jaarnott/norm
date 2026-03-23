@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.engine import get_db
 from app.db.models import User, OrganizationMembership
 from app.auth.dependencies import get_current_user
@@ -217,7 +218,6 @@ async def list_invoices(
     """List recent invoices from Stripe."""
     _require_org_access(user, org_id, db)
     from app.db.models import Subscription
-    import os
 
     sub = db.query(Subscription).filter(
         Subscription.organization_id == org_id,
@@ -227,7 +227,7 @@ async def list_invoices(
 
     try:
         import stripe
-        stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+        stripe.api_key = settings.STRIPE_SECRET_KEY
         invoices = stripe.Invoice.list(customer=sub.stripe_customer_id, limit=12)
         return {"invoices": [
             {
@@ -259,7 +259,6 @@ async def cancel_subscription(
     """Cancel subscription at end of billing period."""
     _require_org_owner(user, org_id, db)
     from app.db.models import Subscription
-    import os
 
     sub = db.query(Subscription).filter(
         Subscription.organization_id == org_id,
@@ -269,7 +268,7 @@ async def cancel_subscription(
 
     try:
         import stripe
-        stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+        stripe.api_key = settings.STRIPE_SECRET_KEY
         stripe.Subscription.modify(
             sub.stripe_subscription_id,
             cancel_at_period_end=True,

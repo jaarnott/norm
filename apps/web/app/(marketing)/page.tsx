@@ -24,7 +24,7 @@ const PLANS = [
 const CHAT_MESSAGES = [
   { role: 'user', text: 'How much Peroni did we receive last week?' },
   { role: 'assistant', thinking: 'Checking received stock and stock items...' },
-  { role: 'assistant', text: 'Last week at La Zeppa you received:\n\n**Peroni Nastro Azzurro 330ml**\n24 cartons on March 17\n\n**Peroni Red 500ml**\n12 cartons on March 19\n\nTotal: 36 cartons across 2 deliveries.' },
+  { role: 'assistant', text: 'Last week at La Zeppa you received:\n\n**Peroni Nastro Azzurro 330ml**\n24 cartons on March 17\n\n**Peroni Nastro Azzurro 50L Keg**\n3 kegs on March 19\n\nTotal: 36 cartons across 2 deliveries.' },
   { role: 'user', text: 'Great, can you order more? We need 20 cartons of the 330ml.' },
   { role: 'assistant', text: "I've prepared a draft order for 20 cartons of Peroni 330ml from Drinks Direct.", actions: true },
 ];

@@ -224,7 +224,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
   };
 
   return (
-    <div>
+    <div data-testid="billing-tab">
       {error && (
         <div style={{ padding: '0.5rem 0.75rem', backgroundColor: '#fff5f5', border: '1px solid #feb2b2', borderRadius: 6, color: '#c53030', fontSize: '0.8rem', marginBottom: '0.75rem' }}>
           {error}
@@ -262,6 +262,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
             return (
               <div
                 key={plan.id}
+                data-testid="plan-selector"
                 style={{
                   padding: '0.75rem', borderRadius: 8, textAlign: 'center',
                   border: isActive ? '2px solid #2563eb' : '1px solid #e2e8f0',

@@ -34,11 +34,13 @@ class AddMemberBody(BaseModel):
 class CreateVenueBody(BaseModel):
     name: str
     location: str | None = None
+    timezone: str | None = None
 
 
 class UpdateVenueBody(BaseModel):
     name: str | None = None
     location: str | None = None
+    timezone: str | None = None
 
 
 # --- Helpers ---
@@ -233,6 +235,7 @@ async def create_venue(org_id: str, body: CreateVenueBody, db: Session = Depends
     venue = Venue(
         name=body.name,
         location=body.location,
+        timezone=body.timezone,
         organization_id=org_id,
     )
     db.add(venue)
@@ -250,7 +253,7 @@ async def create_venue(org_id: str, body: CreateVenueBody, db: Session = Depends
     except Exception:
         pass  # Don't fail venue creation if billing sync fails
 
-    return {"id": venue.id, "name": venue.name, "location": venue.location, "organization_id": org_id}
+    return {"id": venue.id, "name": venue.name, "location": venue.location, "timezone": venue.timezone, "organization_id": org_id}
 
 
 @router.put("/venues/{venue_id}")
@@ -264,9 +267,11 @@ async def update_venue(venue_id: str, body: UpdateVenueBody, db: Session = Depen
         venue.name = body.name
     if body.location is not None:
         venue.location = body.location
+    if body.timezone is not None:
+        venue.timezone = body.timezone
 
     db.commit()
-    return {"id": venue.id, "name": venue.name, "location": venue.location}
+    return {"id": venue.id, "name": venue.name, "location": venue.location, "timezone": venue.timezone}
 
 
 @router.delete("/venues/{venue_id}")

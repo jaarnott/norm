@@ -341,6 +341,7 @@ export interface VenueDetail {
   id: string;
   name: string;
   location: string | null;
+  timezone: string | null;
   organization_id: string | null;
   connector_count?: number;
 }

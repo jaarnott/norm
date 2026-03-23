@@ -18,7 +18,7 @@ from app.agents.router import classify
 logger = logging.getLogger(__name__)
 
 
-def handle_message(message: str, db: Session, user_id: str | None = None, task_id: str | None = None) -> dict:
+def handle_message(message: str, db: Session, user_id: str | None = None, task_id: str | None = None, venue_id: str | None = None) -> dict:
     """Process a user message through routing then agent delegation."""
     # Quota gate — block before any LLM call if tokens exhausted
     from app.services.billing_service import check_quota_for_user
@@ -26,17 +26,70 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
 
     # Track whether we're continuing a meta/unknown task
     prior_task = None
+    venue_name = None
+    venue_timezone = None
 
     # 1. If a specific task_id is provided, route to that task's domain agent
     if task_id:
         task = db.query(Task).filter(Task.id == task_id).first()
         if task:
+            # Load venue from existing task for follow-ups
+            venue_id = task.venue_id
+            venue_name = None
+            venue_timezone = None
+            if venue_id:
+                from app.db.models import Venue
+                venue_obj = db.query(Venue).filter(Venue.id == venue_id).first()
+                if venue_obj:
+                    venue_name = venue_obj.name
+                    venue_timezone = venue_obj.timezone
             agent = get_agent(task.domain)
             if agent:
-                return agent.handle_message(message, db, user_id, task_id)
+                return agent.handle_message(message, db, user_id, task_id, venue_id=venue_id, venue_name=venue_name, venue_timezone=venue_timezone)
+            # Handle venue clarification follow-ups — resolve venue from reply
+            # and re-route the original message
+            if task.intent == "venue_clarification":
+                from app.services.venue_service import resolve_venue_id
+                from app.db.models import Venue
+                resolved_id = resolve_venue_id(message.strip(), db)
+                if resolved_id:
+                    venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
+                    # Add the user's venue reply to the conversation
+                    db.add(Message(task_id=task.id, role="user", content=message))
+                    db.flush()
+                    # Re-route the original message with the resolved venue
+                    original_message = task.raw_prompt or message
+                    prior_task = task
+                    # Fall through to classification with venue set
+                    venue_id = resolved_id
+                    venue_name = venue_obj.name if venue_obj else message.strip()
+                    venue_timezone = venue_obj.timezone if venue_obj else None
+                    # Override message to the original request
+                    message = original_message
+                else:
+                    # Couldn't resolve — ask again
+                    from app.services.venue_service import get_user_venues
+                    venues = get_user_venues(db)
+                    venue_list = ", ".join(v.name for v in venues)
+                    reply = f"I couldn't find a venue called '{message.strip()}'. Available venues: {venue_list}"
+                    db.add(Message(task_id=task.id, role="user", content=message))
+                    db.add(Message(task_id=task.id, role="assistant", content=reply))
+                    db.commit()
+                    db.refresh(task)
+                    return {
+                        "id": task.id, "domain": "unknown", "intent": "venue_clarification",
+                        "title": task.title, "message": message, "status": "needs_clarification",
+                        "created_at": task.created_at.isoformat(), "updated_at": task.updated_at.isoformat(),
+                        "conversation": [
+                            {"role": m.role, "text": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+                            for m in sorted(task.messages, key=lambda x: x.created_at)
+                        ],
+                        "clarification_question": reply,
+                    }
+
             # For meta/unknown tasks: remember the old task so we can
             # migrate its conversation into whatever task comes next.
-            if task.domain in ("meta", "unknown"):
+            elif task.domain in ("meta", "unknown"):
                 prior_task = task
 
     # 2. Classify the message to a domain (with rich capability descriptions)
@@ -56,6 +109,29 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
 
     routing = classify(message, domain_descs, db=db)
     domain = routing["domain"]
+
+    # Resolve venue (skip if already resolved from venue clarification follow-up)
+    if not venue_id:
+        from app.services.venue_service import get_user_venues, resolve_venue_id
+        from app.db.models import Venue
+        venues = get_user_venues(db)
+
+        if len(venues) == 1:
+            venue_id = venues[0].id
+            venue_name = venues[0].name
+            venue_timezone = venues[0].timezone
+        elif len(venues) > 1:
+            router_venue = routing.get("venue")
+            if router_venue:
+                resolved_id = resolve_venue_id(router_venue, db)
+                if resolved_id:
+                    venue_id = resolved_id
+                    venue_name = router_venue
+                    venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
+                    venue_timezone = venue_obj.timezone if venue_obj else None
+            if not venue_id and domain not in ("meta", "unknown"):
+                venue_list = ", ".join(v.name for v in venues)
+                return _create_venue_clarification(message, venue_list, db, user_id)
 
     # Emit routing event so the frontend knows which agent was selected
     from app.agents.tool_loop import _emit_event
@@ -82,7 +158,7 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
     # 3. Delegate to the domain agent
     agent = get_agent(domain)
     if agent:
-        result = agent.handle_message(message, db, user_id)
+        result = agent.handle_message(message, db, user_id, venue_id=venue_id, venue_name=venue_name, venue_timezone=venue_timezone)
 
         # Set the LLM-generated title on the task
         title = routing.get("title")
@@ -214,6 +290,45 @@ def _build_capabilities_response(message: str, caps: dict, db: Session, user_id:
             {"role": m.role, "text": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
             for m in sorted(task.messages, key=lambda x: x.created_at)
         ],
+    }
+
+
+def _create_venue_clarification(message: str, venue_list: str, db: Session, user_id: str | None = None) -> dict:
+    """Ask the user to specify which venue before proceeding."""
+    question = f"Which venue would you like me to check? Available venues: {venue_list}"
+
+    task = Task(
+        user_id=user_id,
+        intent="venue_clarification",
+        domain="unknown",
+        status="needs_clarification",
+        raw_prompt=message,
+        extracted_fields={},
+        missing_fields=["venue"],
+        clarification_question=question,
+    )
+    db.add(task)
+    db.flush()
+
+    db.add(Message(task_id=task.id, role="user", content=message))
+    db.add(Message(task_id=task.id, role="assistant", content=question))
+    db.commit()
+    db.refresh(task)
+
+    return {
+        "id": task.id,
+        "domain": "unknown",
+        "intent": "venue_clarification",
+        "title": task.title,
+        "message": message,
+        "status": "needs_clarification",
+        "created_at": task.created_at.isoformat(),
+        "updated_at": task.updated_at.isoformat(),
+        "conversation": [
+            {"role": "user", "text": message},
+            {"role": "assistant", "text": question},
+        ],
+        "clarification_question": question,
     }
 
 

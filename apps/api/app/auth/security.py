@@ -1,14 +1,15 @@
 """Password hashing and JWT token management."""
 
-import os
 from datetime import datetime, timezone, timedelta
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 
+from app.config import settings
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-production")
+JWT_SECRET = settings.JWT_SECRET
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 
