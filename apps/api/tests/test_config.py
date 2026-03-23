@@ -10,6 +10,7 @@ class TestDefaultConfig:
 
     def test_defaults_load(self):
         s = Settings(
+            ENVIRONMENT="local",
             DATABASE_URL="postgresql://test:test@localhost/test",
             _env_file=None,
         )
@@ -20,7 +21,7 @@ class TestDefaultConfig:
         assert s.BILLING_ENFORCEMENT is False
 
     def test_is_local_true_by_default(self):
-        s = Settings(_env_file=None)
+        s = Settings(ENVIRONMENT="local", _env_file=None)
         assert s.is_local is True
 
     def test_is_production_false_by_default(self):
