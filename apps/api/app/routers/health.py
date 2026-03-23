@@ -32,7 +32,9 @@ def readiness_check(db: Session = Depends(get_db)):
         "status": "ok" if settings.ANTHROPIC_API_KEY else "missing"
     }
 
-    overall = "ok" if all(c.get("status") == "ok" for c in checks.values()) else "degraded"
+    overall = (
+        "ok" if all(c.get("status") == "ok" for c in checks.values()) else "degraded"
+    )
     status_code = 200 if overall == "ok" else 503
 
     return JSONResponse(

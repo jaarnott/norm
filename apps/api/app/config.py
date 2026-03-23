@@ -76,7 +76,9 @@ class Settings(BaseSettings):
         if self.JWT_SECRET == "dev-secret-change-in-production":
             errors.append("JWT_SECRET must be changed from the dev default")
         if self.CORS_ALLOWED_ORIGINS == "*":
-            errors.append("CORS_ALLOWED_ORIGINS must not be '*' in deployed environments")
+            errors.append(
+                "CORS_ALLOWED_ORIGINS must not be '*' in deployed environments"
+            )
         if errors:
             raise RuntimeError(
                 "Configuration errors for "

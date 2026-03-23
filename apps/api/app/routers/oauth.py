@@ -7,7 +7,6 @@ Provides:
 - POST /oauth/disconnect/{connector} — remove stored OAuth tokens
 """
 
-
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -23,6 +22,7 @@ router = APIRouter()
 def _get_redirect_uri(request: Request) -> str:
     """Build the OAuth callback URL based on the current request or env config."""
     from app.config import settings
+
     configured = settings.OAUTH_REDIRECT_URI or None
     if configured:
         return configured
@@ -39,10 +39,14 @@ async def oauth_authorize(
     user: User = Depends(require_role("admin")),
 ):
     """Start the OAuth flow. Returns the authorization URL to redirect the user to."""
-    spec = db.query(ConnectorSpec).filter(
-        ConnectorSpec.connector_name == connector,
-        ConnectorSpec.auth_type == "oauth2",
-    ).first()
+    spec = (
+        db.query(ConnectorSpec)
+        .filter(
+            ConnectorSpec.connector_name == connector,
+            ConnectorSpec.auth_type == "oauth2",
+        )
+        .first()
+    )
     if not spec:
         raise HTTPException(404, f"No OAuth2 connector spec found: {connector}")
 
@@ -78,9 +82,11 @@ async def oauth_callback(
         raise HTTPException(400, "Invalid or expired OAuth state")
 
     connector_name = oauth_state.connector_name
-    spec = db.query(ConnectorSpec).filter(
-        ConnectorSpec.connector_name == connector_name
-    ).first()
+    spec = (
+        db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == connector_name)
+        .first()
+    )
     if not spec:
         raise HTTPException(400, f"Connector spec not found: {connector_name}")
 
@@ -90,7 +96,9 @@ async def oauth_callback(
         token_data = exchange_code(spec, code, state, redirect_uri, db)
     except ValueError as exc:
         return HTMLResponse(
-            content=_result_page(success=False, connector=connector_name, message=str(exc)),
+            content=_result_page(
+                success=False, connector=connector_name, message=str(exc)
+            ),
             status_code=400,
         )
 
@@ -118,14 +126,17 @@ async def oauth_status(
     user: User = Depends(get_current_user),
 ):
     """Check whether a connector has valid OAuth tokens."""
-    config_row = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == connector
-    ).first()
+    config_row = (
+        db.query(ConnectorConfig)
+        .filter(ConnectorConfig.connector_name == connector)
+        .first()
+    )
 
     if not config_row or not config_row.access_token:
         return {"connected": False}
 
     from datetime import datetime, timezone
+
     expired = False
     if config_row.token_expires_at:
         expired = datetime.now(timezone.utc) >= config_row.token_expires_at
@@ -145,9 +156,11 @@ async def oauth_disconnect(
     user: User = Depends(require_role("admin")),
 ):
     """Remove stored OAuth tokens for a connector."""
-    config_row = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == connector
-    ).first()
+    config_row = (
+        db.query(ConnectorConfig)
+        .filter(ConnectorConfig.connector_name == connector)
+        .first()
+    )
     if not config_row:
         raise HTTPException(404, f"No config for connector: {connector}")
 
@@ -175,7 +188,7 @@ def _result_page(success: bool, connector: str, message: str) -> str:
     <script>
       // Notify the opener window that OAuth is complete
       if (window.opener) {{
-        window.opener.postMessage({{ type: 'oauth-complete', connector: '{connector}', success: {'true' if success else 'false'} }}, '*');
+        window.opener.postMessage({{ type: 'oauth-complete', connector: '{connector}', success: {"true" if success else "false"} }}, '*');
       }}
     </script>
   </div>

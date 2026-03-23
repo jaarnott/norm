@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class ReportsAgent(BaseDomainAgent):
-
     @property
     def domain(self) -> str:
         return "reports"
@@ -32,9 +31,19 @@ class ReportsAgent(BaseDomainAgent):
         venue_timezone: str | None = None,
     ) -> dict:
         # Try the agentic tool loop first (if tools are bound)
-        system_prompt, anthropic_tools = self.get_tool_definitions(db, active_venue_name=venue_name, venue_timezone=venue_timezone)
+        system_prompt, anthropic_tools = self.get_tool_definitions(
+            db, active_venue_name=venue_name, venue_timezone=venue_timezone
+        )
         if anthropic_tools:
-            return self.handle_message_with_tools(message, db, user_id, task_id, venue_id=venue_id, venue_name=venue_name, venue_timezone=venue_timezone)
+            return self.handle_message_with_tools(
+                message,
+                db,
+                user_id,
+                task_id,
+                venue_id=venue_id,
+                venue_name=venue_name,
+                venue_timezone=venue_timezone,
+            )
 
         # Classic interpretation path (no tools bound)
         ctx = self.build_context(db, user_id)
@@ -156,7 +165,11 @@ class ReportsAgent(BaseDomainAgent):
         db.add(Message(task_id=task.id, role="user", content=message))
 
         if missing and clarification_question:
-            db.add(Message(task_id=task.id, role="assistant", content=clarification_question))
+            db.add(
+                Message(
+                    task_id=task.id, role="assistant", content=clarification_question
+                )
+            )
         else:
             summary = self._format_summary(result)
             db.add(Message(task_id=task.id, role="assistant", content=summary))
@@ -180,7 +193,10 @@ class ReportsAgent(BaseDomainAgent):
 
         parts = [f"Here's your {report_type} report ({period_count} periods):"]
         for metric, value in totals.items():
-            parts.append(f"  {metric}: ${value:,.2f}" if "revenue" in metric or "cost" in metric else f"  {metric}: {value:,.0f}")
+            parts.append(
+                f"  {metric}: ${value:,.2f}"
+                if "revenue" in metric or "cost" in metric
+                else f"  {metric}: {value:,.0f}"
+            )
         parts.append("Ready for your review.")
         return "\n".join(parts)
-

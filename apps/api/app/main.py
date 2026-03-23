@@ -1,4 +1,3 @@
-
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +15,25 @@ if settings.SENTRY_DSN:
         traces_sample_rate=0.1 if settings.ENVIRONMENT == "production" else 0.5,
     )
 
-from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth, working_documents, automated_tasks, organizations, billing, billing_webhooks, reports_crud, admin  # noqa: E402
+from app.routers import (  # noqa: E402
+    health,
+    venues,
+    messages,
+    orders,
+    tasks,
+    connectors,
+    connector_specs,
+    auth,
+    agents,
+    oauth,
+    working_documents,
+    automated_tasks,
+    organizations,
+    billing,
+    billing_webhooks,
+    reports_crud,
+    admin,
+)
 
 app = FastAPI(
     title="Norm API",
@@ -60,12 +77,14 @@ app.include_router(admin.router, prefix="/api")
 @app.on_event("startup")
 def _start_scheduler() -> None:
     from app.services.task_scheduler import init_scheduler
+
     init_scheduler()
 
 
 @app.on_event("shutdown")
 def _stop_scheduler() -> None:
     from app.services.task_scheduler import scheduler
+
     scheduler.shutdown(wait=False)
 
 
@@ -84,9 +103,13 @@ def _ensure_norm_search_tool() -> None:
     log = logging.getLogger(__name__)
     db = SessionLocal()
     try:
-        spec = db.query(ConnectorSpec).filter(
-            ConnectorSpec.connector_name == "norm",
-        ).first()
+        spec = (
+            db.query(ConnectorSpec)
+            .filter(
+                ConnectorSpec.connector_name == "norm",
+            )
+            .first()
+        )
         if not spec:
             log.info("norm ConnectorSpec not found — skipping search tool setup")
             return
@@ -95,38 +118,49 @@ def _ensure_norm_search_tool() -> None:
         existing_actions = {t.get("action") for t in (spec.tools or [])}
         if "search_tool_result" not in existing_actions:
             tools = list(spec.tools or [])
-            tools.append({
-                "action": "search_tool_result",
-                "method": "GET",
-                "description": "Search through a previous tool call's full result by keyword. Use when a result was too large or slimmed and you need to find specific items.",
-                "required_fields": ["tool_call_id", "query"],
-                "optional_fields": ["fields"],
-                "field_descriptions": {
-                    "tool_call_id": "The _tool_call_id from the slimmed/large result",
-                    "query": "Search keyword (case-insensitive match across all field values)",
-                    "fields": "Optional: comma-separated field names to return. Omit for all fields.",
-                },
-            })
+            tools.append(
+                {
+                    "action": "search_tool_result",
+                    "method": "GET",
+                    "description": "Search through a previous tool call's full result by keyword. Use when a result was too large or slimmed and you need to find specific items.",
+                    "required_fields": ["tool_call_id", "query"],
+                    "optional_fields": ["fields"],
+                    "field_descriptions": {
+                        "tool_call_id": "The _tool_call_id from the slimmed/large result",
+                        "query": "Search keyword (case-insensitive match across all field values)",
+                        "fields": "Optional: comma-separated field names to return. Omit for all fields.",
+                    },
+                }
+            )
             spec.tools = tools
             flag_modified(spec, "tools")
             log.info("Added search_tool_result to norm ConnectorSpec")
 
         # Ensure existing norm bindings include this capability (enabled by default)
-        bindings = db.query(AgentConnectorBinding).filter(
-            AgentConnectorBinding.connector_name == "norm",
-        ).all()
+        bindings = (
+            db.query(AgentConnectorBinding)
+            .filter(
+                AgentConnectorBinding.connector_name == "norm",
+            )
+            .all()
+        )
         for binding in bindings:
             caps = list(binding.capabilities or [])
             cap_actions = {c["action"] for c in caps}
             if "search_tool_result" not in cap_actions:
-                caps.append({
-                    "action": "search_tool_result",
-                    "label": "Search through a previous tool call's full result by keyword. Use when a result was too large or slimmed and you need to find specific items.",
-                    "enabled": True,
-                })
+                caps.append(
+                    {
+                        "action": "search_tool_result",
+                        "label": "Search through a previous tool call's full result by keyword. Use when a result was too large or slimmed and you need to find specific items.",
+                        "enabled": True,
+                    }
+                )
                 binding.capabilities = caps
                 flag_modified(binding, "capabilities")
-                log.info("Added search_tool_result capability to norm binding for %s", binding.agent_slug)
+                log.info(
+                    "Added search_tool_result capability to norm binding for %s",
+                    binding.agent_slug,
+                )
 
         db.commit()
     except Exception:
@@ -147,9 +181,13 @@ def _ensure_norm_reports_spec() -> None:
     log = logging.getLogger(__name__)
     db = SessionLocal()
     try:
-        spec = db.query(ConnectorSpec).filter(
-            ConnectorSpec.connector_name == "norm_reports",
-        ).first()
+        spec = (
+            db.query(ConnectorSpec)
+            .filter(
+                ConnectorSpec.connector_name == "norm_reports",
+            )
+            .first()
+        )
         if not spec:
             spec = ConnectorSpec(
                 connector_name="norm_reports",
@@ -157,41 +195,60 @@ def _ensure_norm_reports_spec() -> None:
                 category="reports",
                 execution_mode="internal",
                 auth_type="none",
-                tools=[{
-                    "action": "render_chart",
-                    "method": "GET",
-                    "description": "Render data as a visual chart. Use after fetching data to present it visually. Pass the data rows, chart type, axes, and series configuration.",
-                    "required_fields": ["title", "chart_type", "x_axis_key", "series", "source_tool_call_id"],
-                    "optional_fields": ["x_axis_label", "orientation", "select_fields", "field_labels"],
-                    "field_descriptions": {
-                        "title": "Chart title (e.g., Daily Sales - La Zeppa)",
-                        "chart_type": "bar, line, pie, stacked_bar, scatter, bubble, or table",
-                        "source_tool_call_id": "The tool_use ID of the GET tool call whose data to visualize. The chart pulls data from this tool call's stored result.",
-                        "x_axis_key": "Field name from the data for x-axis (e.g., startTime)",
-                        "x_axis_label": "Display label for x-axis (e.g., Date)",
-                        "series": "Array of {key, label} objects for data series to plot",
-                        "orientation": "vertical or horizontal (default: vertical)",
-                        "select_fields": "Array of field names to include from the raw data. Omit to include all fields. (e.g., [\"startTime\", \"invoices\"])",
-                        "field_labels": "Object mapping raw field names to readable display labels. (e.g., {\"startTime\": \"Date\", \"invoices\": \"Sales ($)\"})",
-                    },
-                    "field_schema": {
-                        "series": {
-                            "type": "array",
-                            "items": {"type": "object", "properties": {"key": {"type": "string"}, "label": {"type": "string"}}},
-                            "description": "Data series to plot. Each has a key (field name) and label (display name).",
+                tools=[
+                    {
+                        "action": "render_chart",
+                        "method": "GET",
+                        "description": "Render data as a visual chart. Use after fetching data to present it visually. Pass the data rows, chart type, axes, and series configuration.",
+                        "required_fields": [
+                            "title",
+                            "chart_type",
+                            "x_axis_key",
+                            "series",
+                            "source_tool_call_id",
+                        ],
+                        "optional_fields": [
+                            "x_axis_label",
+                            "orientation",
+                            "select_fields",
+                            "field_labels",
+                        ],
+                        "field_descriptions": {
+                            "title": "Chart title (e.g., Daily Sales - La Zeppa)",
+                            "chart_type": "bar, line, pie, stacked_bar, scatter, bubble, or table",
+                            "source_tool_call_id": "The tool_use ID of the GET tool call whose data to visualize. The chart pulls data from this tool call's stored result.",
+                            "x_axis_key": "Field name from the data for x-axis (e.g., startTime)",
+                            "x_axis_label": "Display label for x-axis (e.g., Date)",
+                            "series": "Array of {key, label} objects for data series to plot",
+                            "orientation": "vertical or horizontal (default: vertical)",
+                            "select_fields": 'Array of field names to include from the raw data. Omit to include all fields. (e.g., ["startTime", "invoices"])',
+                            "field_labels": 'Object mapping raw field names to readable display labels. (e.g., {"startTime": "Date", "invoices": "Sales ($)"})',
                         },
-                        "select_fields": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Array of field names to include from the raw data.",
+                        "field_schema": {
+                            "series": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": {"type": "string"},
+                                        "label": {"type": "string"},
+                                    },
+                                },
+                                "description": "Data series to plot. Each has a key (field name) and label (display name).",
+                            },
+                            "select_fields": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Array of field names to include from the raw data.",
+                            },
+                            "field_labels": {
+                                "type": "object",
+                                "description": "Object mapping raw field names to readable display labels.",
+                            },
                         },
-                        "field_labels": {
-                            "type": "object",
-                            "description": "Object mapping raw field names to readable display labels.",
-                        },
-                    },
-                    "display_component": "chart",
-                }],
+                        "display_component": "chart",
+                    }
+                ],
             )
             db.add(spec)
             log.info("Created norm_reports ConnectorSpec with render_chart tool")
@@ -201,8 +258,19 @@ def _ensure_norm_reports_spec() -> None:
                 "action": "render_chart",
                 "method": "GET",
                 "description": "Render data as a visual chart by referencing a prior tool call.",
-                "required_fields": ["title", "chart_type", "x_axis_key", "series", "source_tool_call_id"],
-                "optional_fields": ["x_axis_label", "orientation", "select_fields", "field_labels"],
+                "required_fields": [
+                    "title",
+                    "chart_type",
+                    "x_axis_key",
+                    "series",
+                    "source_tool_call_id",
+                ],
+                "optional_fields": [
+                    "x_axis_label",
+                    "orientation",
+                    "select_fields",
+                    "field_labels",
+                ],
                 "field_descriptions": {
                     "source_tool_call_id": "The tool_use ID of the GET tool call whose data to visualize.",
                     "title": "Chart title",
@@ -215,7 +283,13 @@ def _ensure_norm_reports_spec() -> None:
                 "field_schema": {
                     "series": {
                         "type": "array",
-                        "items": {"type": "object", "properties": {"key": {"type": "string"}, "label": {"type": "string"}}},
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {"type": "string"},
+                                "label": {"type": "string"},
+                            },
+                        },
                     },
                     "select_fields": {
                         "type": "array",
@@ -235,20 +309,27 @@ def _ensure_norm_reports_spec() -> None:
 
         # Ensure the reports agent has a binding to norm_reports
         from app.db.models import AgentConnectorBinding
-        binding = db.query(AgentConnectorBinding).filter(
-            AgentConnectorBinding.agent_slug == "reports",
-            AgentConnectorBinding.connector_name == "norm_reports",
-        ).first()
+
+        binding = (
+            db.query(AgentConnectorBinding)
+            .filter(
+                AgentConnectorBinding.agent_slug == "reports",
+                AgentConnectorBinding.connector_name == "norm_reports",
+            )
+            .first()
+        )
         if not binding:
             binding = AgentConnectorBinding(
                 agent_slug="reports",
                 connector_name="norm_reports",
                 enabled=True,
-                capabilities=[{
-                    "action": "render_chart",
-                    "label": "Render data as a visual chart",
-                    "enabled": True,
-                }],
+                capabilities=[
+                    {
+                        "action": "render_chart",
+                        "label": "Render data as a visual chart",
+                        "enabled": True,
+                    }
+                ],
             )
             db.add(binding)
             log.info("Bound norm_reports to reports agent with render_chart enabled")
@@ -272,18 +353,25 @@ def _ensure_org_subscriptions() -> None:
     db = SessionLocal()
     try:
         from app.services.billing_service import PLAN_QUOTAS
+
         orgs = db.query(Organization).all()
         for org in orgs:
-            existing = db.query(Subscription).filter(
-                Subscription.organization_id == org.id,
-            ).first()
+            existing = (
+                db.query(Subscription)
+                .filter(
+                    Subscription.organization_id == org.id,
+                )
+                .first()
+            )
             if not existing:
-                db.add(Subscription(
-                    organization_id=org.id,
-                    token_plan="basic",
-                    token_quota=PLAN_QUOTAS["basic"]["tokens"],
-                    status="trialing",
-                ))
+                db.add(
+                    Subscription(
+                        organization_id=org.id,
+                        token_plan="basic",
+                        token_quota=PLAN_QUOTAS["basic"]["tokens"],
+                        status="trialing",
+                    )
+                )
                 log.info("Created trial subscription for org %s", org.slug)
         db.commit()
     except Exception:
@@ -296,6 +384,7 @@ def _ensure_org_subscriptions() -> None:
 @app.on_event("startup")
 def _validate_config() -> None:
     import logging
+
     log = logging.getLogger(__name__)
 
     # Fail fast if required secrets are missing in deployed environments

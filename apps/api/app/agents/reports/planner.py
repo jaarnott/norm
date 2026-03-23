@@ -18,46 +18,54 @@ def create_report_plan(interpretation: dict) -> list[dict]:
 
     # Step 1: resolve entities if venue/product specified
     if venue_name or product_name:
-        steps.append({
-            "step": "resolve_entities",
-            "action": "resolve",
-            "params": {
-                "venue_name": venue_name,
-                "product_name": product_name,
-            },
-        })
+        steps.append(
+            {
+                "step": "resolve_entities",
+                "action": "resolve",
+                "params": {
+                    "venue_name": venue_name,
+                    "product_name": product_name,
+                },
+            }
+        )
 
     # Step 2: fetch data for each source
     for source in data_sources:
-        steps.append({
-            "step": f"fetch_{source}",
-            "action": f"query_{source}_data",
-            "params": {
-                "time_range": time_range,
-                "venue_name": venue_name,
-                "product_name": product_name,
-            },
-        })
+        steps.append(
+            {
+                "step": f"fetch_{source}",
+                "action": f"query_{source}_data",
+                "params": {
+                    "time_range": time_range,
+                    "venue_name": venue_name,
+                    "product_name": product_name,
+                },
+            }
+        )
 
     # Step 3: aggregate
-    steps.append({
-        "step": "aggregate",
-        "action": "aggregate_by_period",
-        "params": {
-            "group_by": group_by,
-            "metrics": metrics,
-        },
-    })
+    steps.append(
+        {
+            "step": "aggregate",
+            "action": "aggregate_by_period",
+            "params": {
+                "group_by": group_by,
+                "metrics": metrics,
+            },
+        }
+    )
 
     # Step 4: format
-    steps.append({
-        "step": "format",
-        "action": "format_report",
-        "params": {
-            "report_type": extracted.get("report_type", "summary"),
-            "metrics": metrics,
-            "group_by": group_by,
-        },
-    })
+    steps.append(
+        {
+            "step": "format",
+            "action": "format_report",
+            "params": {
+                "report_type": extracted.get("report_type", "summary"),
+                "metrics": metrics,
+                "group_by": group_by,
+            },
+        }
+    )
 
     return steps

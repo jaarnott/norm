@@ -16,13 +16,18 @@ def get_connector(domain: str, db: Session) -> BaseConnector:
     from app.db.models import ConnectorConfig
 
     # Look up the connector config for this domain
-    row = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == domain,
-        ConnectorConfig.enabled == "true",
-    ).first()
+    row = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == domain,
+            ConnectorConfig.enabled == "true",
+        )
+        .first()
+    )
 
     if row and domain == "bamboohr":
         from app.connectors.bamboohr import BambooHrConnector
+
         return BambooHrConnector(config=row.config)
 
     raise ValueError(f"No connector configured for domain: {domain}")
@@ -31,6 +36,7 @@ def get_connector(domain: str, db: Session) -> BaseConnector:
 # ---------------------------------------------------------------------------
 # Spec-driven connector resolution
 # ---------------------------------------------------------------------------
+
 
 def resolve_connector(domain: str, action: str, db: Session) -> tuple:
     """Resolve a connector spec for a domain + action.

@@ -47,6 +47,7 @@ class RenderedRequest:
 # Jinja2 environment (shared, sandboxed)
 # ---------------------------------------------------------------------------
 
+
 def _build_jinja_env() -> SandboxedEnvironment:
     env = SandboxedEnvironment(
         autoescape=True,
@@ -62,7 +63,17 @@ _jinja_env = _build_jinja_env()
 # Auth application
 # ---------------------------------------------------------------------------
 
-def _apply_auth(headers: dict, auth_type: str, auth_config: dict, credentials: dict, *, spec=None, db: Session | None = None, venue_id: str | None = None) -> tuple[dict, tuple | None]:
+
+def _apply_auth(
+    headers: dict,
+    auth_type: str,
+    auth_config: dict,
+    credentials: dict,
+    *,
+    spec=None,
+    db: Session | None = None,
+    venue_id: str | None = None,
+) -> tuple[dict, tuple | None]:
     """Apply authentication to request headers. Returns (headers, httpx_auth_tuple_or_None)."""
     httpx_auth = None
 
@@ -87,10 +98,15 @@ def _apply_auth(headers: dict, auth_type: str, auth_config: dict, credentials: d
         if spec and db and spec.oauth_config:
             try:
                 from app.services.oauth_service import get_valid_access_token
+
                 token = get_valid_access_token(spec, db, venue_id=venue_id)
             except Exception as exc:
-                logger.warning("OAuth token retrieval failed, falling back to credentials: %s", exc)
-                token = credentials.get(auth_config.get("token_field", "access_token"), "")
+                logger.warning(
+                    "OAuth token retrieval failed, falling back to credentials: %s", exc
+                )
+                token = credentials.get(
+                    auth_config.get("token_field", "access_token"), ""
+                )
         else:
             token = credentials.get(auth_config.get("token_field", "access_token"), "")
         headers["Authorization"] = f"Bearer {token}"
@@ -101,6 +117,7 @@ def _apply_auth(headers: dict, auth_type: str, auth_config: dict, credentials: d
 # ---------------------------------------------------------------------------
 # Template mode
 # ---------------------------------------------------------------------------
+
 
 def render_request(
     spec,
@@ -117,15 +134,19 @@ def render_request(
     }
 
     # Render base URL + path
-    base_url = _jinja_env.from_string(spec.base_url_template or "").render(**template_ctx)
-    path = _jinja_env.from_string(operation.get("path_template", "")).render(**template_ctx)
+    base_url = _jinja_env.from_string(spec.base_url_template or "").render(
+        **template_ctx
+    )
+    path = _jinja_env.from_string(operation.get("path_template", "")).render(
+        **template_ctx
+    )
     url = base_url.rstrip("/") + path
 
     # URL-encode '+' in query parameter values (e.g., +13:00 → %2B13:00)
     # The '+' sign means space in URL query strings, so it must be percent-encoded.
-    if '?' in url:
-        base_part, qs = url.split('?', 1)
-        url = base_part + '?' + qs.replace('+', '%2B')
+    if "?" in url:
+        base_part, qs = url.split("?", 1)
+        url = base_part + "?" + qs.replace("+", "%2B")
 
     if ":///" in url:
         raise ValueError(
@@ -140,7 +161,15 @@ def render_request(
         headers[k] = _jinja_env.from_string(str(v)).render(**template_ctx).strip()
 
     # Apply auth (venue_id for per-venue OAuth tokens)
-    headers, _ = _apply_auth(headers, spec.auth_type, spec.auth_config, credentials, spec=spec, db=db, venue_id=venue_id)
+    headers, _ = _apply_auth(
+        headers,
+        spec.auth_type,
+        spec.auth_config,
+        credentials,
+        spec=spec,
+        db=db,
+        venue_id=venue_id,
+    )
 
     # Render request body
     body = None
@@ -164,7 +193,14 @@ def render_request(
 # HTTP execution (shared by both modes)
 # ---------------------------------------------------------------------------
 
-def execute_http(rendered: RenderedRequest, operation: dict, credentials: dict | None = None, auth_type: str | None = None, auth_config: dict | None = None) -> ConnectorResult:
+
+def execute_http(
+    rendered: RenderedRequest,
+    operation: dict,
+    credentials: dict | None = None,
+    auth_type: str | None = None,
+    auth_config: dict | None = None,
+) -> ConnectorResult:
     """Execute an HTTP request and return a ConnectorResult."""
     timeout = operation.get("timeout_seconds", 30)
     success_codes = operation.get("success_status_codes", [200, 201])
@@ -174,7 +210,9 @@ def execute_http(rendered: RenderedRequest, operation: dict, credentials: dict |
     httpx_auth = None
     if auth_type == "basic" and credentials and auth_config:
         username_field = auth_config.get("username_field", "username")
-        password = auth_config.get("password") or credentials.get(auth_config.get("password_field", "password"), "")
+        password = auth_config.get("password") or credentials.get(
+            auth_config.get("password_field", "password"), ""
+        )
         httpx_auth = (credentials.get(username_field, ""), password)
 
     try:
@@ -298,25 +336,31 @@ def execute_via_agent(
     ]
 
     if spec.api_documentation:
-        user_prompt_parts.extend([
-            "## API Documentation",
-            spec.api_documentation,
-            "",
-        ])
+        user_prompt_parts.extend(
+            [
+                "## API Documentation",
+                spec.api_documentation,
+                "",
+            ]
+        )
 
     if spec.example_requests:
-        user_prompt_parts.extend([
-            "## Example Requests",
-            json.dumps(spec.example_requests, indent=2),
-            "",
-        ])
+        user_prompt_parts.extend(
+            [
+                "## Example Requests",
+                json.dumps(spec.example_requests, indent=2),
+                "",
+            ]
+        )
 
     if operation.get("field_mapping"):
-        user_prompt_parts.extend([
-            "## Field Mapping Hints",
-            json.dumps(operation["field_mapping"], indent=2),
-            "",
-        ])
+        user_prompt_parts.extend(
+            [
+                "## Field Mapping Hints",
+                json.dumps(operation["field_mapping"], indent=2),
+                "",
+            ]
+        )
 
     user_prompt = "\n".join(user_prompt_parts)
 
@@ -330,7 +374,9 @@ def execute_via_agent(
 
     # Build the full URL
     template_ctx = {"creds": credentials, **extracted_fields}
-    base_url = _jinja_env.from_string(spec.base_url_template or "").render(**template_ctx)
+    base_url = _jinja_env.from_string(spec.base_url_template or "").render(
+        **template_ctx
+    )
     path = parsed.get("path", "")
     url = base_url.rstrip("/") + path
 
@@ -342,7 +388,9 @@ def execute_via_agent(
 
     # Start with headers from LLM, then inject auth
     headers = parsed.get("headers", {})
-    headers, _ = _apply_auth(headers, spec.auth_type, spec.auth_config, credentials, spec=spec, db=db)
+    headers, _ = _apply_auth(
+        headers, spec.auth_type, spec.auth_config, credentials, spec=spec, db=db
+    )
 
     return RenderedRequest(
         method=parsed.get("method", "POST"),
@@ -356,9 +404,11 @@ def execute_via_agent(
 # Unified entry point
 # ---------------------------------------------------------------------------
 
+
 def _normalize_fields(extracted_fields: dict, operation: dict) -> dict:
     """Normalize field values to fix common LLM formatting mistakes."""
     import re
+
     field_descs = operation.get("field_descriptions", {})
     normalized = dict(extracted_fields)
     for key, value in normalized.items():
@@ -368,13 +418,13 @@ def _normalize_fields(extracted_fields: dict, operation: dict) -> dict:
         # Fix datetime fields that need URL-encoded timezone offset (%2B)
         if "%2B" in desc:
             # "2026-03-16T07:00:00 13:00" → space before offset → %2B
-            value = re.sub(r'(\d{2}:\d{2}:\d{2})\s+(\d{1,2}:\d{2})$', r'\1%2B\2', value)
+            value = re.sub(r"(\d{2}:\d{2}:\d{2})\s+(\d{1,2}:\d{2})$", r"\1%2B\2", value)
             # "2026-03-16T07:00:00+13:00" → bare + → %2B
-            value = re.sub(r'(\d{2}:\d{2}:\d{2})\+(\d{1,2}:\d{2})$', r'\1%2B\2', value)
+            value = re.sub(r"(\d{2}:\d{2}:\d{2})\+(\d{1,2}:\d{2})$", r"\1%2B\2", value)
             normalized[key] = value
         elif "8601" in desc or "timezone" in desc.lower():
             # Standard ISO format: space before offset → +
-            value = re.sub(r'(\d{2}:\d{2}:\d{2})\s+(\d{1,2}:\d{2})$', r'\1+\2', value)
+            value = re.sub(r"(\d{2}:\d{2}:\d{2})\s+(\d{1,2}:\d{2})$", r"\1+\2", value)
             normalized[key] = value
     return normalized
 
@@ -394,7 +444,9 @@ def execute_spec(
 
     # Validate required fields
     required = operation.get("required_fields", [])
-    missing = [f for f in required if f not in extracted_fields or not extracted_fields[f]]
+    missing = [
+        f for f in required if f not in extracted_fields or not extracted_fields[f]
+    ]
     if missing:
         return ConnectorResult(
             success=False,
@@ -404,9 +456,13 @@ def execute_spec(
         ), RenderedRequest(method="", url="", headers={}, body=None)
 
     if spec.execution_mode == "agent":
-        rendered = execute_via_agent(spec, operation, extracted_fields, credentials, db, task_id)
+        rendered = execute_via_agent(
+            spec, operation, extracted_fields, credentials, db, task_id
+        )
     else:
-        rendered = render_request(spec, operation, extracted_fields, credentials, db=db, venue_id=venue_id)
+        rendered = render_request(
+            spec, operation, extracted_fields, credentials, db=db, venue_id=venue_id
+        )
 
     result = execute_http(
         rendered,

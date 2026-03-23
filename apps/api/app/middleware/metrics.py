@@ -80,10 +80,19 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def record_llm_call(model: str, call_type: str, status: str, duration_s: float, input_tokens: int = 0, output_tokens: int = 0):
+def record_llm_call(
+    model: str,
+    call_type: str,
+    status: str,
+    duration_s: float,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+):
     """Record LLM call metrics. Called from llm_interpreter.py."""
     LLM_CALL_COUNT.labels(model=model, call_type=call_type, status=status).inc()
-    LLM_CALL_DURATION.labels(model=model, call_type=call_type, status=status).observe(duration_s)
+    LLM_CALL_DURATION.labels(model=model, call_type=call_type, status=status).observe(
+        duration_s
+    )
     if input_tokens:
         LLM_TOKENS.labels(model=model, direction="input").inc(input_tokens)
     if output_tokens:
@@ -93,4 +102,6 @@ def record_llm_call(model: str, call_type: str, status: str, duration_s: float, 
 def record_tool_call(connector: str, action: str, status: str, duration_s: float):
     """Record tool call metrics. Called from tool_loop.py or spec_executor.py."""
     TOOL_CALL_COUNT.labels(connector=connector, action=action, status=status).inc()
-    TOOL_CALL_DURATION.labels(connector=connector, action=action, status=status).observe(duration_s)
+    TOOL_CALL_DURATION.labels(
+        connector=connector, action=action, status=status
+    ).observe(duration_s)

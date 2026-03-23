@@ -15,12 +15,14 @@ router = APIRouter(tags=["admin"])
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
+
 def _require_admin(user: User) -> None:
     if user.role != "admin":
         raise HTTPException(403, "Admin access required")
 
 
 # ── Schemas ─────────────────────────────────────────────────────────
+
 
 class DeployWebhookPayload(BaseModel):
     environment: str
@@ -38,6 +40,7 @@ class PromoteRequest(BaseModel):
 
 
 # ── Endpoints ───────────────────────────────────────────────────────
+
 
 @router.get("/admin/deployments")
 def list_deployments(
@@ -86,16 +89,22 @@ def list_environments(
             .order_by(Deployment.started_at.desc())
             .first()
         )
-        envs.append({
-            "name": env_name,
-            "latest_deploy": {
-                "image_tag": latest.image_tag,
-                "git_sha": latest.git_sha,
-                "status": latest.status,
-                "started_at": latest.started_at.isoformat() if latest.started_at else None,
-                "commit_message": latest.commit_message,
-            } if latest else None,
-        })
+        envs.append(
+            {
+                "name": env_name,
+                "latest_deploy": {
+                    "image_tag": latest.image_tag,
+                    "git_sha": latest.git_sha,
+                    "status": latest.status,
+                    "started_at": latest.started_at.isoformat()
+                    if latest.started_at
+                    else None,
+                    "commit_message": latest.commit_message,
+                }
+                if latest
+                else None,
+            }
+        )
     return {"environments": envs}
 
 
@@ -175,6 +184,7 @@ def promote(
 
 # ── E2E Test Schemas ──────────────────────────────────────────────
 
+
 class GenerateTestRequest(BaseModel):
     description: str
 
@@ -210,6 +220,7 @@ class TestRunWebhookPayload(BaseModel):
 
 # ── E2E Test Endpoints ────────────────────────────────────────────
 
+
 @router.post("/admin/tests/generate")
 async def generate_test(
     body: GenerateTestRequest,
@@ -218,6 +229,7 @@ async def generate_test(
     """Generate a Playwright test from a natural language description."""
     _require_admin(user)
     from app.services.test_generator import generate_test as _generate
+
     result = await _generate(body.description)
     return result
 
@@ -376,10 +388,7 @@ def run_tests(
     db.commit()
     return {
         "ok": True,
-        "runs": [
-            {"id": r.id, "test_id": r.test_id, "status": r.status}
-            for r in runs
-        ],
+        "runs": [{"id": r.id, "test_id": r.test_id, "status": r.status} for r in runs],
     }
 
 

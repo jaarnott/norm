@@ -61,7 +61,7 @@ function timeAgo(dateStr: string): string {
 }
 
 function getDomainColor(domain: string): string {
-  return (colors as Record<string, string>)[domain] || colors.unknown;
+  return (colors as unknown as Record<string, string>)[domain] || colors.unknown;
 }
 
 interface TaskCardProps {

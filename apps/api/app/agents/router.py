@@ -23,16 +23,21 @@ def classify(message: str, domains: list[str], db: Session | None = None) -> dic
     return _llm_classify(message, domains, api_key, db)
 
 
-def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | None = None) -> dict:
+def _llm_classify(
+    message: str, domains: list[str], api_key: str, db: Session | None = None
+) -> dict:
     import anthropic
 
     if not db:
         raise RuntimeError("Router requires a DB session to load its system prompt")
 
     from app.services.agent_config_service import get_system_prompt
+
     prompt_template = get_system_prompt("router", db)
     if not prompt_template:
-        raise RuntimeError("Router system prompt is not configured. Set it in Settings > Router.")
+        raise RuntimeError(
+            "Router system prompt is not configured. Set it in Settings > Router."
+        )
 
     # Use .replace() instead of .format() — the prompt contains literal JSON
     # braces that would break Python's string formatting.
@@ -41,14 +46,16 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
 
     # Inject venue context so the router can extract venue from the message
     from app.services.venue_service import get_user_venues
+
     venues = get_user_venues(db)
     if len(venues) > 1:
         venue_names = [v.name for v in venues]
-        system += f'\n\nAvailable venues: {", ".join(venue_names)}'
+        system += f"\n\nAvailable venues: {', '.join(venue_names)}"
         system += '\nInclude "venue" in your JSON response with the venue name if the user mentions or implies a specific venue. Use null if no venue is mentioned or it is ambiguous.'
 
     from app.config import settings
     from app.services.secrets import get_api_key as _get_config
+
     model = _get_config("anthropic", "router_model", db) or settings.ROUTER_MODEL
 
     client = anthropic.Anthropic(api_key=api_key)
@@ -83,6 +90,7 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
         # Persist LLM call record
         if db is not None:
             from app.db.models import LlmCall
+
             record = LlmCall(
                 task_id=None,
                 call_type="routing",
@@ -112,6 +120,7 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
         duration_ms = int((time.time() - t0) * 1000)
         if db is not None:
             from app.db.models import LlmCall
+
             record = LlmCall(
                 task_id=None,
                 call_type="routing",

@@ -86,7 +86,9 @@ async def list_tasks(
 
 
 @router.get("/automated-tasks/{task_id}")
-async def get_task(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def get_task(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "Automated task not found")
@@ -94,7 +96,11 @@ async def get_task(task_id: str, db: Session = Depends(get_db), user: User = Dep
 
 
 @router.post("/automated-tasks")
-async def create_task(body: CreateBody, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def create_task(
+    body: CreateBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     task = AutomatedTask(
         title=body.title,
         description=body.description,
@@ -111,12 +117,24 @@ async def create_task(body: CreateBody, db: Session = Depends(get_db), user: Use
 
 
 @router.put("/automated-tasks/{task_id}")
-async def update_task(task_id: str, body: UpdateBody, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def update_task(
+    task_id: str,
+    body: UpdateBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "Automated task not found")
 
-    for field in ("title", "description", "prompt", "schedule_type", "schedule_config", "status"):
+    for field in (
+        "title",
+        "description",
+        "prompt",
+        "schedule_type",
+        "schedule_config",
+        "status",
+    ):
         val = getattr(body, field, None)
         if val is not None:
             setattr(task, field, val)
@@ -124,6 +142,7 @@ async def update_task(task_id: str, body: UpdateBody, db: Session = Depends(get_
     db.commit()
 
     from app.services.task_scheduler import schedule_task, unschedule_task
+
     if task.status == "active":
         schedule_task(task)
     else:
@@ -133,23 +152,32 @@ async def update_task(task_id: str, body: UpdateBody, db: Session = Depends(get_
 
 
 @router.post("/automated-tasks/{task_id}/run")
-async def run_task(task_id: str, body: RunBody, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def run_task(
+    task_id: str,
+    body: RunBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "Automated task not found")
 
     from app.services.task_scheduler import execute_task_now
+
     try:
         result = execute_task_now(task_id, mode=body.mode, db=db)
         return result
     except Exception as exc:
         import logging
+
         logging.getLogger(__name__).exception("Automated task run failed")
         return {"success": False, "error": str(exc)}
 
 
 @router.post("/automated-tasks/{task_id}/pause")
-async def pause_task(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def pause_task(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "Automated task not found")
@@ -157,12 +185,15 @@ async def pause_task(task_id: str, db: Session = Depends(get_db), user: User = D
     db.commit()
 
     from app.services.task_scheduler import unschedule_task
+
     unschedule_task(task.id)
     return _task_to_dict(task)
 
 
 @router.post("/automated-tasks/{task_id}/resume")
-async def resume_task(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def resume_task(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "Automated task not found")
@@ -170,17 +201,21 @@ async def resume_task(task_id: str, db: Session = Depends(get_db), user: User = 
     db.commit()
 
     from app.services.task_scheduler import schedule_task
+
     schedule_task(task)
     return _task_to_dict(task)
 
 
 @router.delete("/automated-tasks/{task_id}")
-async def delete_task(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def delete_task(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "Automated task not found")
 
     from app.services.task_scheduler import unschedule_task
+
     unschedule_task(task.id)
 
     db.delete(task)
@@ -189,7 +224,9 @@ async def delete_task(task_id: str, db: Session = Depends(get_db), user: User = 
 
 
 @router.get("/automated-tasks/{task_id}/runs")
-async def list_runs(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def list_runs(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     runs = (
         db.query(AutomatedTaskRun)
         .filter(AutomatedTaskRun.automated_task_id == task_id)

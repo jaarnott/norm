@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import AgentConfig, AgentConnectorBinding
 
+
 def get_system_prompt(agent_slug: str, db: Session) -> str:
     """Return the system prompt stored in the DB for this agent."""
     row = db.query(AgentConfig).filter(AgentConfig.agent_slug == agent_slug).first()
@@ -12,7 +13,13 @@ def get_system_prompt(agent_slug: str, db: Session) -> str:
     return ""
 
 
-def update_agent_config(agent_slug: str, db: Session, system_prompt: str | None = None, description: str | None = None, display_name: str | None = None) -> AgentConfig:
+def update_agent_config(
+    agent_slug: str,
+    db: Session,
+    system_prompt: str | None = None,
+    description: str | None = None,
+    display_name: str | None = None,
+) -> AgentConfig:
     """Upsert an AgentConfig row."""
     row = db.query(AgentConfig).filter(AgentConfig.agent_slug == agent_slug).first()
     if row:
@@ -45,9 +52,11 @@ def reset_prompt(agent_slug: str, db: Session) -> AgentConfig | None:
 
 def get_connector_bindings(agent_slug: str, db: Session) -> list[dict]:
     """Return connector bindings for an agent."""
-    rows = db.query(AgentConnectorBinding).filter(
-        AgentConnectorBinding.agent_slug == agent_slug
-    ).all()
+    rows = (
+        db.query(AgentConnectorBinding)
+        .filter(AgentConnectorBinding.agent_slug == agent_slug)
+        .all()
+    )
     return [
         {
             "connector_name": r.connector_name,
@@ -58,12 +67,22 @@ def get_connector_bindings(agent_slug: str, db: Session) -> list[dict]:
     ]
 
 
-def upsert_connector_binding(agent_slug: str, connector_name: str, capabilities: list[dict], enabled: bool, db: Session) -> AgentConnectorBinding:
+def upsert_connector_binding(
+    agent_slug: str,
+    connector_name: str,
+    capabilities: list[dict],
+    enabled: bool,
+    db: Session,
+) -> AgentConnectorBinding:
     """Upsert a connector binding."""
-    row = db.query(AgentConnectorBinding).filter(
-        AgentConnectorBinding.agent_slug == agent_slug,
-        AgentConnectorBinding.connector_name == connector_name,
-    ).first()
+    row = (
+        db.query(AgentConnectorBinding)
+        .filter(
+            AgentConnectorBinding.agent_slug == agent_slug,
+            AgentConnectorBinding.connector_name == connector_name,
+        )
+        .first()
+    )
     if row:
         row.capabilities = capabilities
         row.enabled = enabled
@@ -81,10 +100,14 @@ def upsert_connector_binding(agent_slug: str, connector_name: str, capabilities:
 
 def delete_connector_binding(agent_slug: str, connector_name: str, db: Session) -> bool:
     """Remove a connector binding. Returns True if deleted."""
-    row = db.query(AgentConnectorBinding).filter(
-        AgentConnectorBinding.agent_slug == agent_slug,
-        AgentConnectorBinding.connector_name == connector_name,
-    ).first()
+    row = (
+        db.query(AgentConnectorBinding)
+        .filter(
+            AgentConnectorBinding.agent_slug == agent_slug,
+            AgentConnectorBinding.connector_name == connector_name,
+        )
+        .first()
+    )
     if not row:
         return False
     db.delete(row)
@@ -95,9 +118,13 @@ def delete_connector_binding(agent_slug: str, connector_name: str, db: Session) 
 def get_all_capabilities_summary(db: Session) -> dict:
     """Returns {slug: {description, capabilities: [...]}} for all agents."""
     configs = {r.agent_slug: r for r in db.query(AgentConfig).all()}
-    bindings = db.query(AgentConnectorBinding).filter(
-        AgentConnectorBinding.enabled == True  # noqa: E712
-    ).all()
+    bindings = (
+        db.query(AgentConnectorBinding)
+        .filter(
+            AgentConnectorBinding.enabled == True  # noqa: E712
+        )
+        .all()
+    )
 
     # Group bindings by agent_slug
     bindings_by_slug: dict[str, list] = {}
@@ -109,13 +136,15 @@ def get_all_capabilities_summary(db: Session) -> dict:
         cfg = configs.get(slug)
         caps = []
         for b in bindings_by_slug.get(slug, []):
-            for cap in (b.capabilities or []):
+            for cap in b.capabilities or []:
                 if cap.get("enabled", True):
-                    caps.append({
-                        "action": cap.get("action", ""),
-                        "label": cap.get("label", cap.get("action", "")),
-                        "connector": b.connector_name,
-                    })
+                    caps.append(
+                        {
+                            "action": cap.get("action", ""),
+                            "label": cap.get("label", cap.get("action", "")),
+                            "connector": b.connector_name,
+                        }
+                    )
         result[slug] = {
             "description": cfg.description if cfg else slug,
             "display_name": cfg.display_name if cfg else slug.title(),

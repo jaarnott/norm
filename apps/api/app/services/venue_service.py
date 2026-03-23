@@ -25,5 +25,6 @@ def resolve_venue_id(venue_name: str | None, db: Session) -> str | None:
         return None
 
     from app.services.venue_resolver import resolve_venue
+
     venue = resolve_venue(venue_name, db)
     return venue["id"] if venue else None

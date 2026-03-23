@@ -21,6 +21,7 @@ router = APIRouter()
 # GET endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get("/tasks/{task_id}/working-documents")
 async def list_documents(
     task_id: str,
@@ -46,6 +47,7 @@ async def get_document(
 # PATCH — apply local edits
 # ---------------------------------------------------------------------------
 
+
 class PatchRequest(BaseModel):
     ops: list[dict]
     version: int
@@ -63,7 +65,10 @@ async def patch_document(
 
     # Optimistic concurrency check
     if doc.version != body.version:
-        raise HTTPException(status_code=409, detail=f"Version conflict: expected {doc.version}, got {body.version}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Version conflict: expected {doc.version}, got {body.version}",
+        )
 
     # Apply ops to the data
     data = doc.data
@@ -100,6 +105,7 @@ async def patch_document(
 # POST — submit (for submit-sync mode)
 # ---------------------------------------------------------------------------
 
+
 @router.post("/tasks/{task_id}/working-documents/{doc_id}/submit")
 async def submit_document(
     task_id: str,
@@ -113,6 +119,7 @@ async def submit_document(
         return {"status": "no_changes", "message": "No pending changes to submit."}
 
     from app.services.document_sync import sync_document
+
     sync_document(doc.id, db)
     db.refresh(doc)
     return {
@@ -125,6 +132,7 @@ async def submit_document(
 # ---------------------------------------------------------------------------
 # POST — retry failed sync
 # ---------------------------------------------------------------------------
+
 
 @router.post("/tasks/{task_id}/working-documents/{doc_id}/retry")
 async def retry_sync(
@@ -150,6 +158,7 @@ async def retry_sync(
 # Taskless working documents (for functional pages)
 # ---------------------------------------------------------------------------
 
+
 class FromConnectorRequest(BaseModel):
     connector_name: str
     action: str
@@ -170,6 +179,7 @@ async def create_from_connector(
     """
     # Execute the connector tool to fetch data
     from app.agents.internal_tools import get_handler
+
     handler = get_handler(body.connector_name, body.action)
 
     if handler:
@@ -180,9 +190,11 @@ async def create_from_connector(
         from app.db.models import ConnectorSpec, ConnectorConfig
         from app.connectors.spec_executor import execute_spec
 
-        spec = db.query(ConnectorSpec).filter(
-            ConnectorSpec.connector_name == body.connector_name
-        ).first()
+        spec = (
+            db.query(ConnectorSpec)
+            .filter(ConnectorSpec.connector_name == body.connector_name)
+            .first()
+        )
         if not spec:
             raise HTTPException(404, f"Connector not found: {body.connector_name}")
 
@@ -194,14 +206,22 @@ async def create_from_connector(
         if not tool_def:
             raise HTTPException(404, f"Tool not found: {body.action}")
 
-        config_row = db.query(ConnectorConfig).filter(
-            ConnectorConfig.connector_name == body.connector_name,
-            ConnectorConfig.enabled == "true",
-        ).first()
+        config_row = (
+            db.query(ConnectorConfig)
+            .filter(
+                ConnectorConfig.connector_name == body.connector_name,
+                ConnectorConfig.enabled == "true",
+            )
+            .first()
+        )
         if not config_row:
-            raise HTTPException(400, f"No credentials configured for {body.connector_name}")
+            raise HTTPException(
+                400, f"No credentials configured for {body.connector_name}"
+            )
 
-        conn_result, _rendered = execute_spec(spec, tool_def, body.params, config_row.config, db)
+        conn_result, _rendered = execute_spec(
+            spec, tool_def, body.params, config_row.config, db
+        )
         if not conn_result.success:
             raise HTTPException(502, f"Connector error: {conn_result.error_message}")
         data = conn_result.response_payload
@@ -250,7 +270,10 @@ async def patch_standalone_document(
         raise HTTPException(status_code=404, detail="Working document not found")
 
     if doc.version != body.version:
-        raise HTTPException(status_code=409, detail=f"Version conflict: expected {doc.version}, got {body.version}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Version conflict: expected {doc.version}, got {body.version}",
+        )
 
     data = doc.data
     for op in body.ops:
@@ -284,11 +307,16 @@ async def patch_standalone_document(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _find_doc(db: Session, task_id: str, doc_id: str) -> WorkingDocument:
-    doc = db.query(WorkingDocument).filter(
-        WorkingDocument.id == doc_id,
-        WorkingDocument.task_id == task_id,
-    ).first()
+    doc = (
+        db.query(WorkingDocument)
+        .filter(
+            WorkingDocument.id == doc_id,
+            WorkingDocument.task_id == task_id,
+        )
+        .first()
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Working document not found")
     return doc
@@ -381,6 +409,7 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
             fields = op.get("fields", {})
             if not fields.get("id"):
                 import uuid as _uuid
+
                 fields["id"] = str(_uuid.uuid4())[:8]
             criteria_list.append(fields)
             data["criteria"] = criteria_list
@@ -404,9 +433,15 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
         shifts = data.get("rosteredShifts", [])
 
     if shifts is None:
-        logger.warning("_apply_op: could not locate shifts array in data (type=%s, keys=%s)",
-                       type(data).__name__,
-                       list(data.keys()) if isinstance(data, dict) else f"list[{len(data)}]" if isinstance(data, list) else "?")
+        logger.warning(
+            "_apply_op: could not locate shifts array in data (type=%s, keys=%s)",
+            type(data).__name__,
+            list(data.keys())
+            if isinstance(data, dict)
+            else f"list[{len(data)}]"
+            if isinstance(data, list)
+            else "?",
+        )
         return data
 
     if op_type == "update_shift":
@@ -417,11 +452,19 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
             if s.get("id") == shift_id:
                 s.update(fields)
                 found = True
-                logger.info("update_shift: updated shift %s with %s", shift_id, list(fields.keys()))
+                logger.info(
+                    "update_shift: updated shift %s with %s",
+                    shift_id,
+                    list(fields.keys()),
+                )
                 break
         if not found:
-            logger.warning("update_shift: shift %s not found in %d shifts (ids: %s)",
-                           shift_id, len(shifts), [s.get("id") for s in shifts[:5]])
+            logger.warning(
+                "update_shift: shift %s not found in %d shifts (ids: %s)",
+                shift_id,
+                len(shifts),
+                [s.get("id") for s in shifts[:5]],
+            )
 
     elif op_type == "add_shift":
         fields = op.get("fields", {})
@@ -444,11 +487,14 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
 
 def _trigger_sync(doc_id: str):
     """Trigger background sync in a thread."""
+
     def run():
         from app.db.engine import SessionLocal
+
         db = SessionLocal()
         try:
             from app.services.document_sync import sync_document
+
             sync_document(doc_id, db)
         except Exception as e:
             logger.error("Background sync failed for doc %s: %s", doc_id, e)

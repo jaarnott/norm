@@ -24,7 +24,9 @@ def _report_task_to_dict(task: Task) -> dict:
         approval = {
             "action": latest_approval.action,
             "performed_by": latest_approval.performed_by or "system",
-            "performed_at": latest_approval.performed_at.isoformat() if latest_approval.performed_at else None,
+            "performed_at": latest_approval.performed_at.isoformat()
+            if latest_approval.performed_at
+            else None,
         }
 
     return {
@@ -48,7 +50,11 @@ def _report_task_to_dict(task: Task) -> dict:
         "missing_fields": task.missing_fields or [],
         "clarification_question": task.clarification_question,
         "conversation": [
-            {"role": m.role, "text": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+            {
+                "role": m.role,
+                "text": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
             for m in sorted(task.messages, key=lambda x: x.created_at)
         ],
         "approval": approval,

@@ -27,7 +27,9 @@ def init_scheduler():
 
     db = SessionLocal()
     try:
-        active_tasks = db.query(AutomatedTask).filter(AutomatedTask.status == "active").all()
+        active_tasks = (
+            db.query(AutomatedTask).filter(AutomatedTask.status == "active").all()
+        )
         for task in active_tasks:
             schedule_task(task)
         logger.info("Scheduler started with %d active tasks", len(active_tasks))
@@ -48,7 +50,12 @@ def schedule_task(task) -> None:
         id=task.id,
         replace_existing=True,
     )
-    logger.info("Scheduled task %s (%s) with %s trigger", task.id[:12], task.title, task.schedule_type)
+    logger.info(
+        "Scheduled task %s (%s) with %s trigger",
+        task.id[:12],
+        task.title,
+        task.schedule_type,
+    )
 
 
 def unschedule_task(task_id: str) -> None:
@@ -144,8 +151,13 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             # Execute the tool loop
             test_mode = mode == "test"
             result = run_tool_loop(
-                task.prompt, temp_task, db, system_prompt, anthropic_tools,
-                context=ctx, test_mode=test_mode,
+                task.prompt,
+                temp_task,
+                db,
+                system_prompt,
+                anthropic_tools,
+                context=ctx,
+                test_mode=test_mode,
             )
 
             # Extract result

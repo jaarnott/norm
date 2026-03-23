@@ -58,7 +58,9 @@ def sync_document(doc_id: str, db: Session) -> None:
             result = _execute_tool_call(tc, db)
 
             if tc.status == "failed":
-                raise Exception(f"Sync op failed: {action} — {tc.error_message or result.get('error')}")
+                raise Exception(
+                    f"Sync op failed: {action} — {tc.error_message or result.get('error')}"
+                )
 
             processed += 1
 

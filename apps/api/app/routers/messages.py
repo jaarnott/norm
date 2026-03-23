@@ -27,7 +27,9 @@ async def post_message(
     user: User = Depends(get_current_user),
 ):
     try:
-        return handle_message(req.message, db, user_id=user.id, task_id=req.task_id, venue_id=req.venue_id)
+        return handle_message(
+            req.message, db, user_id=user.id, task_id=req.task_id, venue_id=req.venue_id
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
@@ -64,18 +66,38 @@ async def post_message_stream(
 
         def run():
             from app.agents.tool_loop import set_event_callback
+
             set_event_callback(on_event)
             db = SessionLocal()
             try:
-                result = handle_message(req.message, db, user_id=user.id, task_id=req.task_id, venue_id=req.venue_id)
+                result = handle_message(
+                    req.message,
+                    db,
+                    user_id=user.id,
+                    task_id=req.task_id,
+                    venue_id=req.venue_id,
+                )
                 on_event({"type": "complete", "data": result})
             except Exception as exc:
                 from app.services.billing_service import QuotaExceededError
+
                 err_msg = str(exc).lower()
                 if isinstance(exc, QuotaExceededError):
-                    on_event({"type": "quota_exceeded", "used": exc.used, "quota": exc.quota, "message": "You've used all your tokens for this billing period."})
+                    on_event(
+                        {
+                            "type": "quota_exceeded",
+                            "used": exc.used,
+                            "quota": exc.quota,
+                            "message": "You've used all your tokens for this billing period.",
+                        }
+                    )
                 elif "prompt is too long" in err_msg or "too many tokens" in err_msg:
-                    on_event({"type": "error", "message": "This conversation has grown too long. Please start a new conversation to continue."})
+                    on_event(
+                        {
+                            "type": "error",
+                            "message": "This conversation has grown too long. Please start a new conversation to continue.",
+                        }
+                    )
                 else:
                     on_event({"type": "error", "message": str(exc)})
             finally:

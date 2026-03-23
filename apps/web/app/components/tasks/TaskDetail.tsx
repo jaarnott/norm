@@ -18,7 +18,7 @@ const DOMAIN_ICONS: Record<string, LucideIcon> = {
 };
 
 function getDomainColor(domain: string): string {
-  return (colors as Record<string, string>)[domain] || colors.unknown;
+  return (colors as unknown as Record<string, string>)[domain] || colors.unknown;
 }
 
 const STATUS_STYLES: Record<string, { bg: string; color: string }> = {

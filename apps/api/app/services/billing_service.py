@@ -15,19 +15,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 PLAN_QUOTAS = {
-    "basic":    {"price_cents": 5000,  "tokens": 1_000_000},
+    "basic": {"price_cents": 5000, "tokens": 1_000_000},
     "standard": {"price_cents": 10000, "tokens": 3_000_000},
-    "max":      {"price_cents": 20000, "tokens": 10_000_000},
+    "max": {"price_cents": 20000, "tokens": 10_000_000},
 }
 
-VENUE_PRICE_CENTS = 1000       # $10/month per venue
+VENUE_PRICE_CENTS = 1000  # $10/month per venue
 AGENT_PRICES_CENTS = {
-    "hr": 1000,                # $10/month
-    "procurement": 500,        # $5/month
-    "reports": 0,              # free
+    "hr": 1000,  # $10/month
+    "procurement": 500,  # $5/month
+    "reports": 0,  # free
 }
-TOPUP_TOKENS = 500_000         # per top-up unit
-TOPUP_PRICE_CENTS = 1000       # $10 per top-up unit
+TOPUP_TOKENS = 500_000  # per top-up unit
+TOPUP_PRICE_CENTS = 1000  # $10 per top-up unit
 
 
 class QuotaExceededError(Exception):
@@ -43,11 +43,14 @@ class QuotaExceededError(Exception):
 # Quota checking
 # ---------------------------------------------------------------------------
 
+
 def _is_enforcement_enabled() -> bool:
     return settings.BILLING_ENFORCEMENT
 
 
-def get_monthly_usage(db: Session, org_id: str, cycle_start: datetime | None = None) -> int:
+def get_monthly_usage(
+    db: Session, org_id: str, cycle_start: datetime | None = None
+) -> int:
     """Sum total tokens for the current billing period."""
     from app.db.models import TokenUsage
 
@@ -68,7 +71,9 @@ def get_monthly_usage(db: Session, org_id: str, cycle_start: datetime | None = N
     return rows or 0
 
 
-def get_available_topup_tokens(db: Session, org_id: str, cycle_start: datetime | None = None) -> int:
+def get_available_topup_tokens(
+    db: Session, org_id: str, cycle_start: datetime | None = None
+) -> int:
     """Sum tokens from completed top-ups in the current billing period."""
     from app.db.models import TokenTopUp
 
@@ -88,9 +93,13 @@ def check_quota(db: Session, org_id: str) -> dict:
     """
     from app.db.models import Subscription
 
-    sub = db.query(Subscription).filter(
-        Subscription.organization_id == org_id,
-    ).first()
+    sub = (
+        db.query(Subscription)
+        .filter(
+            Subscription.organization_id == org_id,
+        )
+        .first()
+    )
 
     if not sub:
         if _is_enforcement_enabled():
@@ -100,11 +109,21 @@ def check_quota(db: Session, org_id: str) -> dict:
     # Canceled or past-due subscriptions cannot use tokens
     if sub.status in ("canceled", "past_due"):
         used = get_monthly_usage(db, org_id, sub.billing_cycle_start)
-        return {"allowed": False, "used": used, "quota": sub.token_quota, "remaining": 0}
+        return {
+            "allowed": False,
+            "used": used,
+            "quota": sub.token_quota,
+            "remaining": 0,
+        }
 
     if sub.status == "trialing":
         used = get_monthly_usage(db, org_id, sub.billing_cycle_start)
-        return {"allowed": True, "used": used, "quota": sub.token_quota, "remaining": max(0, sub.token_quota - used)}
+        return {
+            "allowed": True,
+            "used": used,
+            "quota": sub.token_quota,
+            "remaining": max(0, sub.token_quota - used),
+        }
 
     used = get_monthly_usage(db, org_id, sub.billing_cycle_start)
     topup = get_available_topup_tokens(db, org_id, sub.billing_cycle_start)
@@ -112,7 +131,12 @@ def check_quota(db: Session, org_id: str) -> dict:
     remaining = max(0, total_quota - used)
     allowed = used < total_quota
 
-    return {"allowed": allowed, "used": used, "quota": total_quota, "remaining": remaining}
+    return {
+        "allowed": allowed,
+        "used": used,
+        "quota": total_quota,
+        "remaining": remaining,
+    }
 
 
 def check_quota_for_user(db: Session, user_id: str | None) -> None:
@@ -122,9 +146,13 @@ def check_quota_for_user(db: Session, user_id: str | None) -> None:
 
     from app.db.models import OrganizationMembership
 
-    membership = db.query(OrganizationMembership).filter(
-        OrganizationMembership.user_id == user_id,
-    ).first()
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.user_id == user_id,
+        )
+        .first()
+    )
     if not membership:
         return
 
@@ -137,6 +165,7 @@ def check_quota_for_user(db: Session, user_id: str | None) -> None:
 # Billing info
 # ---------------------------------------------------------------------------
 
+
 def get_billing_info(db: Session, org_id: str) -> dict:
     """Get comprehensive billing info for the dashboard."""
     from app.db.models import Organization, Subscription
@@ -145,9 +174,13 @@ def get_billing_info(db: Session, org_id: str) -> dict:
     if not org:
         return {}
 
-    sub = db.query(Subscription).filter(
-        Subscription.organization_id == org_id,
-    ).first()
+    sub = (
+        db.query(Subscription)
+        .filter(
+            Subscription.organization_id == org_id,
+        )
+        .first()
+    )
 
     venue_count = len(org.venues) if org.venues else 0
     quota_info = check_quota(db, org_id)
@@ -166,7 +199,9 @@ def get_billing_info(db: Session, org_id: str) -> dict:
             "token_plan": sub.token_plan if sub else None,
             "token_quota": sub.token_quota if sub else 0,
             "status": sub.status if sub else None,
-            "billing_cycle_start": sub.billing_cycle_start.isoformat() if sub and sub.billing_cycle_start else None,
+            "billing_cycle_start": sub.billing_cycle_start.isoformat()
+            if sub and sub.billing_cycle_start
+            else None,
             "payment_method_last4": sub.payment_method_last4 if sub else None,
             "payment_method_brand": sub.payment_method_brand if sub else None,
         },
@@ -190,9 +225,11 @@ def get_billing_info(db: Session, org_id: str) -> dict:
 # Stripe operations
 # ---------------------------------------------------------------------------
 
+
 def _get_stripe():
     """Lazy import and configure stripe."""
     import stripe
+
     stripe.api_key = settings.STRIPE_SECRET_KEY
     return stripe
 
@@ -205,9 +242,13 @@ def get_or_create_stripe_customer(db: Session, org_id: str) -> str:
     if not org:
         raise ValueError(f"Organization not found: {org_id}")
 
-    sub = db.query(Subscription).filter(
-        Subscription.organization_id == org_id,
-    ).first()
+    sub = (
+        db.query(Subscription)
+        .filter(
+            Subscription.organization_id == org_id,
+        )
+        .first()
+    )
 
     if sub and sub.stripe_customer_id:
         return sub.stripe_customer_id
@@ -251,15 +292,21 @@ def create_subscription(db: Session, org_id: str, token_plan: str) -> dict:
     from app.db.models import Organization, Subscription
 
     org = db.query(Organization).filter(Organization.id == org_id).first()
-    sub = db.query(Subscription).filter(
-        Subscription.organization_id == org_id,
-    ).first()
+    sub = (
+        db.query(Subscription)
+        .filter(
+            Subscription.organization_id == org_id,
+        )
+        .first()
+    )
 
     if not sub or not sub.stripe_customer_id:
         raise ValueError("Stripe customer not set up. Call setup first.")
 
     if not sub.payment_method_last4:
-        raise ValueError("Add a payment method before subscribing. Complete the card setup first.")
+        raise ValueError(
+            "Add a payment method before subscribing. Complete the card setup first."
+        )
 
     if sub.stripe_subscription_id:
         raise ValueError("Subscription already exists. Use change_plan instead.")
@@ -307,7 +354,8 @@ def create_subscription(db: Session, org_id: str, token_plan: str) -> dict:
     sub.token_quota = plan_config["tokens"]
     sub.status = "active"
     sub.billing_cycle_start = datetime.fromtimestamp(
-        stripe_sub.current_period_start, tz=timezone.utc,
+        stripe_sub.current_period_start,
+        tz=timezone.utc,
     )
     db.flush()
 
@@ -319,9 +367,13 @@ def change_plan(db: Session, org_id: str, new_plan: str) -> dict:
     """Change the token plan on an existing subscription."""
     from app.db.models import Subscription
 
-    sub = db.query(Subscription).filter(
-        Subscription.organization_id == org_id,
-    ).first()
+    sub = (
+        db.query(Subscription)
+        .filter(
+            Subscription.organization_id == org_id,
+        )
+        .first()
+    )
     if not sub or not sub.stripe_subscription_id:
         raise ValueError("No active subscription")
 
@@ -365,13 +417,19 @@ def change_plan(db: Session, org_id: str, new_plan: str) -> dict:
     return get_billing_info(db, org_id)
 
 
-def purchase_top_up(db: Session, org_id: str, user_id: str | None, units: int = 1) -> dict:
+def purchase_top_up(
+    db: Session, org_id: str, user_id: str | None, units: int = 1
+) -> dict:
     """Purchase additional tokens. Each unit = 500K tokens for $10."""
     from app.db.models import Subscription, TokenTopUp
 
-    sub = db.query(Subscription).filter(
-        Subscription.organization_id == org_id,
-    ).first()
+    sub = (
+        db.query(Subscription)
+        .filter(
+            Subscription.organization_id == org_id,
+        )
+        .first()
+    )
     if not sub or not sub.stripe_customer_id:
         raise ValueError("No billing set up for this organization")
 
@@ -399,7 +457,9 @@ def purchase_top_up(db: Session, org_id: str, user_id: str | None, units: int = 
     db.add(topup)
     db.flush()
 
-    _log_event(db, org_id, "topup_purchased", {"tokens": tokens, "amount_cents": amount_cents})
+    _log_event(
+        db, org_id, "topup_purchased", {"tokens": tokens, "amount_cents": amount_cents}
+    )
     return {"tokens": tokens, "amount_cents": amount_cents, "status": topup.status}
 
 
@@ -408,9 +468,13 @@ def sync_venue_count(db: Session, org_id: str) -> None:
     from app.db.models import Organization, Subscription
 
     org = db.query(Organization).filter(Organization.id == org_id).first()
-    sub = db.query(Subscription).filter(
-        Subscription.organization_id == org_id,
-    ).first()
+    sub = (
+        db.query(Subscription)
+        .filter(
+            Subscription.organization_id == org_id,
+        )
+        .first()
+    )
 
     if not sub or not sub.stripe_subscription_id:
         return
@@ -435,12 +499,22 @@ def sync_venue_count(db: Session, org_id: str) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _log_event(db: Session, org_id: str, event_type: str, details: dict | None = None, stripe_event_id: str | None = None):
+
+def _log_event(
+    db: Session,
+    org_id: str,
+    event_type: str,
+    details: dict | None = None,
+    stripe_event_id: str | None = None,
+):
     from app.db.models import BillingEvent
-    db.add(BillingEvent(
-        organization_id=org_id,
-        event_type=event_type,
-        stripe_event_id=stripe_event_id,
-        details=details,
-    ))
+
+    db.add(
+        BillingEvent(
+            organization_id=org_id,
+            event_type=event_type,
+            stripe_event_id=stripe_event_id,
+            details=details,
+        )
+    )
     db.flush()

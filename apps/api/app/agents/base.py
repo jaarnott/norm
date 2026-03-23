@@ -72,14 +72,25 @@ class BaseDomainAgent(ABC):
 
         return get_db_prompt(self.domain, db)
 
-    def get_tool_definitions(self, db: Session, active_venue_name: str | None = None, venue_timezone: str | None = None) -> tuple[str, list[dict]]:
+    def get_tool_definitions(
+        self,
+        db: Session,
+        active_venue_name: str | None = None,
+        venue_timezone: str | None = None,
+    ) -> tuple[str, list[dict]]:
         """Return (system_prompt, anthropic_tools) for the agentic tool loop.
 
         Returns ("", []) if no tools are bound, meaning the agent should
         fall back to the classic interpretation path.
         """
         from app.agents.prompt_builder import build_tool_definitions
-        return build_tool_definitions(self.domain, db, active_venue_name=active_venue_name, venue_timezone=venue_timezone)
+
+        return build_tool_definitions(
+            self.domain,
+            db,
+            active_venue_name=active_venue_name,
+            venue_timezone=venue_timezone,
+        )
 
     def handle_message_with_tools(
         self,
@@ -97,7 +108,9 @@ class BaseDomainAgent(ABC):
         """
         from app.agents.tool_loop import run_tool_loop, _emit_event
 
-        system_prompt, anthropic_tools = self.get_tool_definitions(db, active_venue_name=venue_name, venue_timezone=venue_timezone)
+        system_prompt, anthropic_tools = self.get_tool_definitions(
+            db, active_venue_name=venue_name, venue_timezone=venue_timezone
+        )
         ctx = self.build_context(db, user_id)
 
         # Load or create task
@@ -131,9 +144,17 @@ class BaseDomainAgent(ABC):
         # the SSE connection drops during a long LLM call.
         _emit_event({"type": "task_created", "task_id": task.id})
 
-        return run_tool_loop(message, task, db, system_prompt, anthropic_tools, context=ctx)
+        return run_tool_loop(
+            message, task, db, system_prompt, anthropic_tools, context=ctx
+        )
 
-    def interpret(self, message: str, context: dict, db: Session | None = None, task_id: str | None = None) -> tuple[dict, str | None]:
+    def interpret(
+        self,
+        message: str,
+        context: dict,
+        db: Session | None = None,
+        task_id: str | None = None,
+    ) -> tuple[dict, str | None]:
         """Call the LLM with this agent's prompt. Returns (parsed_json, llm_call_id).
 
         Uses the shared call_llm helper so all agents go through the
@@ -157,7 +178,9 @@ class BaseDomainAgent(ABC):
 
         for key, value in context.items():
             if key == "open_task":
-                parts.append(f"OPEN TASK (this message may be a follow-up):\n{json.dumps(value, indent=2, default=str)}")
+                parts.append(
+                    f"OPEN TASK (this message may be a follow-up):\n{json.dumps(value, indent=2, default=str)}"
+                )
             elif value:
                 label = key.upper().replace("_", " ")
                 parts.append(f"{label}: {json.dumps(value)}")

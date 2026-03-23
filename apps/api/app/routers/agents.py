@@ -41,11 +41,13 @@ def _merge_capabilities(binding_caps: list[dict], spec_tools: list[dict]) -> lis
             cap["label"] = op.get("description", action.replace("_", " ").title())
             merged.append(cap)
         else:
-            merged.append({
-                "action": action,
-                "label": op.get("description", action.replace("_", " ").title()),
-                "enabled": False,
-            })
+            merged.append(
+                {
+                    "action": action,
+                    "label": op.get("description", action.replace("_", " ").title()),
+                    "enabled": False,
+                }
+            )
     # Stale binding caps (action no longer in spec) are dropped
     return merged
 
@@ -70,25 +72,31 @@ def _agent_to_dict(
         if spec and spec.tools:
             caps = _merge_capabilities(caps, spec.tools)
         label = spec.display_name if spec else connector_name
-        enriched_bindings.append({
-            "connector_name": connector_name,
-            "connector_label": label,
-            "capabilities": caps,
-            "enabled": b["enabled"],
-        })
+        enriched_bindings.append(
+            {
+                "connector_name": connector_name,
+                "connector_label": label,
+                "capabilities": caps,
+                "enabled": b["enabled"],
+            }
+        )
 
     # Build available_connectors: any spec not already bound to this agent
     available_connectors = []
     for spec in specs_by_name.values():
         if spec.connector_name not in bound_connector_names:
-            available_connectors.append({
-                "connector_name": spec.connector_name,
-                "display_name": spec.display_name,
-            })
+            available_connectors.append(
+                {
+                    "connector_name": spec.connector_name,
+                    "display_name": spec.display_name,
+                }
+            )
 
     result = {
         "slug": slug,
-        "display_name": config.display_name if config else slug.replace("_", " ").title(),
+        "display_name": config.display_name
+        if config
+        else slug.replace("_", " ").title(),
         "description": config.description if config else None,
         "has_prompt": bool(prompt),
         "enabled": config.enabled if config else True,
@@ -111,15 +119,21 @@ async def list_agents(
 
     bindings_by_slug: dict[str, list[dict]] = {}
     for b in all_bindings:
-        bindings_by_slug.setdefault(b.agent_slug, []).append({
-            "connector_name": b.connector_name,
-            "capabilities": b.capabilities or [],
-            "enabled": b.enabled,
-        })
+        bindings_by_slug.setdefault(b.agent_slug, []).append(
+            {
+                "connector_name": b.connector_name,
+                "capabilities": b.capabilities or [],
+                "enabled": b.enabled,
+            }
+        )
 
     agents = []
     for slug in KNOWN_SLUGS:
-        agents.append(_agent_to_dict(slug, configs.get(slug), bindings_by_slug.get(slug, []), specs_by_name))
+        agents.append(
+            _agent_to_dict(
+                slug, configs.get(slug), bindings_by_slug.get(slug, []), specs_by_name
+            )
+        )
     return {"agents": agents}
 
 
@@ -161,7 +175,8 @@ async def update_agent(
     if slug not in KNOWN_SLUGS:
         raise HTTPException(404, f"Unknown agent: {slug}")
     row = update_agent_config(
-        slug, db,
+        slug,
+        db,
         system_prompt=body.system_prompt,
         description=body.description,
         display_name=body.display_name,
@@ -215,7 +230,11 @@ async def upsert_binding(
         raise HTTPException(404, f"Unknown agent: {slug}")
     row = upsert_connector_binding(slug, connector, body.capabilities, body.enabled, db)
     db.commit()
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == connector).first()
+    spec = (
+        db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == connector)
+        .first()
+    )
     caps = row.capabilities or []
     if spec and spec.tools:
         caps = _merge_capabilities(caps, spec.tools)

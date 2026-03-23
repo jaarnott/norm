@@ -3,7 +3,13 @@ from app.db.models import Venue
 
 
 def _normalize(s: str) -> str:
-    return s.lower().replace("'", "").replace("\u2019", "").replace(",", "").replace("&", "and")
+    return (
+        s.lower()
+        .replace("'", "")
+        .replace("\u2019", "")
+        .replace(",", "")
+        .replace("&", "and")
+    )
 
 
 def resolve_venue(text: str, db: Session) -> dict | None:

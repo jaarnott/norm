@@ -30,17 +30,20 @@ def set_event_callback(callback):
 
 def _emit_event(event: dict):
     """Emit an event to the client if a callback is set."""
-    cb = getattr(_thread_local, 'event_callback', None)
+    cb = getattr(_thread_local, "event_callback", None)
     if cb:
         logger.debug("Emitting SSE event: type=%s", event.get("type"))
         cb(event)
     else:
-        logger.debug("No event callback set, skipping event: type=%s", event.get("type"))
+        logger.debug(
+            "No event callback set, skipping event: type=%s", event.get("type")
+        )
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def run_tool_loop(
     message: str,
@@ -59,7 +62,15 @@ def run_tool_loop(
     # Build initial messages list from conversation history
     messages = _build_messages(task, message, context)
 
-    return _execute_loop(messages, task, db, system_prompt, anthropic_tools, start_iteration=1, test_mode=test_mode)
+    return _execute_loop(
+        messages,
+        task,
+        db,
+        system_prompt,
+        anthropic_tools,
+        start_iteration=1,
+        test_mode=test_mode,
+    )
 
 
 def resume_tool_loop(
@@ -80,7 +91,9 @@ def resume_tool_loop(
     iteration = state["iteration"]
 
     # Gather approved tool calls and inject their results
-    search_available = any(t["name"] == "norm__search_tool_result" for t in anthropic_tools)
+    search_available = any(
+        t["name"] == "norm__search_tool_result" for t in anthropic_tools
+    )
     pending_ids = task.pending_tool_call_ids or []
     tool_results_content = []
 
@@ -92,17 +105,25 @@ def resume_tool_loop(
         if tc.status == "approved":
             # Execute the approved write tool (transform applied inside _execute_tool_call)
             result = _execute_tool_call(tc, db)
-            tool_results_content.append({
-                "type": "tool_result",
-                "tool_use_id": tc.id,
-                "content": _slim_tool_result(result, tc.id, search_available=search_available),
-            })
+            tool_results_content.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": _slim_tool_result(
+                        result, tc.id, search_available=search_available
+                    ),
+                }
+            )
         elif tc.status == "rejected":
-            tool_results_content.append({
-                "type": "tool_result",
-                "tool_use_id": tc.id,
-                "content": json.dumps({"status": "rejected", "message": "User rejected this action."}),
-            })
+            tool_results_content.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": json.dumps(
+                        {"status": "rejected", "message": "User rejected this action."}
+                    ),
+                }
+            )
 
     # Inject results into conversation
     if tool_results_content:
@@ -113,12 +134,20 @@ def resume_tool_loop(
     task.agent_loop_state = None
     db.flush()
 
-    return _execute_loop(messages, task, db, system_prompt, anthropic_tools, start_iteration=iteration + 1)
+    return _execute_loop(
+        messages,
+        task,
+        db,
+        system_prompt,
+        anthropic_tools,
+        start_iteration=iteration + 1,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Core loop
 # ---------------------------------------------------------------------------
+
 
 def _execute_loop(
     messages: list[dict],
@@ -136,7 +165,9 @@ def _execute_loop(
     tool_meta = _build_tool_meta(anthropic_tools, db)
 
     # Check if the search tool is available for this agent
-    search_available = any(t["name"] == "norm__search_tool_result" for t in anthropic_tools)
+    search_available = any(
+        t["name"] == "norm__search_tool_result" for t in anthropic_tools
+    )
 
     thinking_steps: list[str] = []
     display_blocks: list[dict] = []
@@ -155,28 +186,56 @@ def _execute_loop(
         except Exception as exc:
             err_msg = str(exc).lower()
             if "prompt is too long" in err_msg or "too many tokens" in err_msg:
-                logger.warning("Prompt too long in tool loop (iteration %d): %s", iteration, exc)
+                logger.warning(
+                    "Prompt too long in tool loop (iteration %d): %s", iteration, exc
+                )
                 text = (
                     "I've gathered quite a bit of data but the conversation has become too long "
                     "for me to process in one go. Please try starting a new conversation for "
                     "follow-up questions."
                 )
-                db.add(Message(task_id=task.id, role="assistant", content=text, display_blocks=display_blocks or None))
+                db.add(
+                    Message(
+                        task_id=task.id,
+                        role="assistant",
+                        content=text,
+                        display_blocks=display_blocks or None,
+                    )
+                )
                 task.status = "completed"
                 task.thinking_steps = thinking_steps or None
                 db.commit()
-                return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
+                return _build_response(
+                    task,
+                    db,
+                    text,
+                    thinking_steps=thinking_steps,
+                    display_blocks=display_blocks,
+                )
             raise
 
         # Check stop reason
         if response.stop_reason == "end_turn":
             # LLM is done — extract text and return
             text = _extract_text(response)
-            db.add(Message(task_id=task.id, role="assistant", content=text, display_blocks=display_blocks or None))
+            db.add(
+                Message(
+                    task_id=task.id,
+                    role="assistant",
+                    content=text,
+                    display_blocks=display_blocks or None,
+                )
+            )
             task.status = "completed" if task.status == "in_progress" else task.status
             task.thinking_steps = thinking_steps or None
             db.commit()
-            return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
+            return _build_response(
+                task,
+                db,
+                text,
+                thinking_steps=thinking_steps,
+                display_blocks=display_blocks,
+            )
 
         if response.stop_reason == "tool_use":
             # The LLM is calling a tool. Emit any streamed reasoning as a
@@ -185,7 +244,7 @@ def _execute_loop(
             if reasoning:
                 # Strip [Tool] prefix — frontend already handles this via token detection
                 cleaned = reasoning.lstrip()
-                if cleaned.startswith('[Tool]'):
+                if cleaned.startswith("[Tool]"):
                     cleaned = cleaned[6:].lstrip()
                 _emit_event({"type": "thinking", "text": cleaned})
             _emit_event({"type": "stream_cancel"})
@@ -225,7 +284,12 @@ def _execute_loop(
                 read_only_tcs[block.id] = tc
                 readable = action.replace("_", " ")
                 thinking_steps.append(f"Fetching {readable} from {connector}…")
-                _emit_event({"type": "thinking", "text": f"Fetching {readable} from {connector}…"})
+                _emit_event(
+                    {
+                        "type": "thinking",
+                        "text": f"Fetching {readable} from {connector}…",
+                    }
+                )
 
             if read_only_tcs:
                 db.flush()
@@ -236,14 +300,16 @@ def _execute_loop(
             if len(read_only_blocks) >= 2:
                 # Parallel execution — commit so worker threads see the TC rows
                 db.commit()
-                event_cb = getattr(_thread_local, 'event_callback', None)
+                event_cb = getattr(_thread_local, "event_callback", None)
                 max_workers = min(len(read_only_blocks), 8)
 
                 t0 = time.time()
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = {
                         executor.submit(
-                            _execute_tool_call_in_thread, block.id, event_cb,
+                            _execute_tool_call_in_thread,
+                            block.id,
+                            event_cb,
                         ): block.id
                         for block, _, _, _ in read_only_blocks
                     }
@@ -258,7 +324,8 @@ def _execute_loop(
                 elapsed = int((time.time() - t0) * 1000)
                 logger.info(
                     "Parallel execution of %d read-only tools completed in %dms",
-                    len(read_only_blocks), elapsed,
+                    len(read_only_blocks),
+                    elapsed,
                 )
 
                 # Refresh ToolCall objects so main session sees thread-committed data
@@ -279,9 +346,13 @@ def _execute_loop(
 
                 # Check for document content block (e.g., resume PDF)
                 doc_block = None
-                if isinstance(tc.result_payload, dict) and "_document" in tc.result_payload:
+                if (
+                    isinstance(tc.result_payload, dict)
+                    and "_document" in tc.result_payload
+                ):
                     doc_block = tc.result_payload.pop("_document")
                     from sqlalchemy.orm.attributes import flag_modified
+
                     flag_modified(tc, "result_payload")
                     db.flush()
 
@@ -289,7 +360,12 @@ def _execute_loop(
                 summary_fields = tool_def.get("summary_fields") if tool_def else None
 
                 # Transform already applied in _execute_tool_call — just slim for LLM context
-                slimmed = _slim_tool_result(result, block.id, summary_fields=summary_fields, search_available=search_available)
+                slimmed = _slim_tool_result(
+                    result,
+                    block.id,
+                    summary_fields=summary_fields,
+                    search_available=search_available,
+                )
                 if doc_block:
                     read_only_tool_results[block.id] = {
                         "type": "tool_result",
@@ -307,7 +383,9 @@ def _execute_loop(
                     }
                 logger.info(
                     "Phase D: %s.%s → LLM gets %d chars",
-                    connector, action, len(slimmed),
+                    connector,
+                    action,
+                    len(slimmed),
                 )
 
                 # Build display block if tool has a display_component
@@ -315,16 +393,22 @@ def _execute_loop(
                     wd_config = tool_def.get("working_document")
                     if wd_config and tc.result_payload:
                         doc = _upsert_working_document(
-                            db, task.id, connector, wd_config,
-                            tc.result_payload, tc.input_params,
+                            db,
+                            task.id,
+                            connector,
+                            wd_config,
+                            tc.result_payload,
+                            tc.input_params,
                         )
                         component = tool_def.get("display_component")
                         if component:
-                            display_blocks.append({
-                                "component": component,
-                                "data": {"working_document_id": doc.id},
-                                "props": tool_def.get("display_props") or {},
-                            })
+                            display_blocks.append(
+                                {
+                                    "component": component,
+                                    "data": {"working_document_id": doc.id},
+                                    "props": tool_def.get("display_props") or {},
+                                }
+                            )
                     else:
                         block_data = _build_display_block(tool_def, tc.result_payload)
                         if block_data:
@@ -360,8 +444,15 @@ def _execute_loop(
                         "tool_use_id": block.id,
                         "content": json.dumps(simulated),
                     }
-                    thinking_steps.append(f"[test] Would execute {action} on {connector} (simulated)")
-                    _emit_event({"type": "thinking", "text": f"[test] Would execute {action} on {connector} (simulated)"})
+                    thinking_steps.append(
+                        f"[test] Would execute {action} on {connector} (simulated)"
+                    )
+                    _emit_event(
+                        {
+                            "type": "thinking",
+                            "text": f"[test] Would execute {action} on {connector} (simulated)",
+                        }
+                    )
                     continue
 
                 tool_def = _find_tool_def(connector, action, db)
@@ -384,28 +475,43 @@ def _execute_loop(
                     db.add(tc)
                     db.flush()
 
-                    thinking_steps.append(f"Preparing {action.replace('_', ' ')} on {connector}…")
-                    _emit_event({"type": "thinking", "text": f"Preparing {action.replace('_', ' ')} on {connector}…"})
+                    thinking_steps.append(
+                        f"Preparing {action.replace('_', ' ')} on {connector}…"
+                    )
+                    _emit_event(
+                        {
+                            "type": "thinking",
+                            "text": f"Preparing {action.replace('_', ' ')} on {connector}…",
+                        }
+                    )
                     doc = _upsert_working_document(
-                        db, task.id, connector, wd_config,
-                        block.input or {}, block.input,
+                        db,
+                        task.id,
+                        connector,
+                        wd_config,
+                        block.input or {},
+                        block.input,
                     )
                     component = tool_def.get("display_component") if tool_def else None
                     if component:
-                        display_blocks.append({
-                            "component": component,
-                            "data": {"working_document_id": doc.id},
-                            "props": tool_def.get("display_props") or {},
-                        })
+                        display_blocks.append(
+                            {
+                                "component": component,
+                                "data": {"working_document_id": doc.id},
+                                "props": tool_def.get("display_props") or {},
+                            }
+                        )
 
                     write_tool_results[block.id] = {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps({
-                            "status": "draft_created",
-                            "message": f"Draft {wd_config.get('doc_type', 'document')} created. The user can review and edit it in the UI, then submit when ready.",
-                            "working_document_id": doc.id,
-                        }),
+                        "content": json.dumps(
+                            {
+                                "status": "draft_created",
+                                "message": f"Draft {wd_config.get('doc_type', 'document')} created. The user can review and edit it in the UI, then submit when ready.",
+                                "working_document_id": doc.id,
+                            }
+                        ),
                     }
                 else:
                     # Standard approval flow (no working document)
@@ -426,19 +532,23 @@ def _execute_loop(
                     pending_writes.append(tc)
 
                     if tool_def and tool_def.get("display_component"):
-                        display_blocks.append({
-                            "component": tool_def["display_component"],
-                            "data": block.input or {},
-                            "props": tool_def.get("display_props") or {},
-                        })
+                        display_blocks.append(
+                            {
+                                "component": tool_def["display_component"],
+                                "data": block.input or {},
+                                "props": tool_def.get("display_props") or {},
+                            }
+                        )
 
                     write_tool_results[block.id] = {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps({
-                            "status": "pending_approval",
-                            "message": "This write operation requires user approval before execution.",
-                        }),
+                        "content": json.dumps(
+                            {
+                                "status": "pending_approval",
+                                "message": "This write operation requires user approval before execution.",
+                            }
+                        ),
                     }
 
             # --- Phase F: Assemble tool_results in original block order ---
@@ -474,13 +584,32 @@ def _execute_loop(
                 # Build a description of what the agent wants to do
                 desc_parts = []
                 for tc in pending_writes:
-                    desc_parts.append(f"**{tc.action}** on {tc.connector_name} with: {json.dumps(tc.input_params)}")
-                approval_text = "I'd like to perform the following actions:\n\n" + "\n".join(f"- {d}" for d in desc_parts) + "\n\nPlease approve or reject."
+                    desc_parts.append(
+                        f"**{tc.action}** on {tc.connector_name} with: {json.dumps(tc.input_params)}"
+                    )
+                approval_text = (
+                    "I'd like to perform the following actions:\n\n"
+                    + "\n".join(f"- {d}" for d in desc_parts)
+                    + "\n\nPlease approve or reject."
+                )
 
-                db.add(Message(task_id=task.id, role="assistant", content=approval_text, display_blocks=display_blocks or None))
+                db.add(
+                    Message(
+                        task_id=task.id,
+                        role="assistant",
+                        content=approval_text,
+                        display_blocks=display_blocks or None,
+                    )
+                )
                 task.thinking_steps = thinking_steps or None
                 db.commit()
-                return _build_response(task, db, approval_text, thinking_steps=thinking_steps, display_blocks=display_blocks)
+                return _build_response(
+                    task,
+                    db,
+                    approval_text,
+                    thinking_steps=thinking_steps,
+                    display_blocks=display_blocks,
+                )
 
             # Don't count search-only iterations toward the limit
             only_searches = all(
@@ -501,22 +630,45 @@ def _execute_loop(
         else:
             # Unexpected stop reason — treat as end_turn
             text = _extract_text(response)
-            db.add(Message(task_id=task.id, role="assistant", content=text, display_blocks=display_blocks or None))
+            db.add(
+                Message(
+                    task_id=task.id,
+                    role="assistant",
+                    content=text,
+                    display_blocks=display_blocks or None,
+                )
+            )
             task.thinking_steps = thinking_steps or None
             db.commit()
-            return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
+            return _build_response(
+                task,
+                db,
+                text,
+                thinking_steps=thinking_steps,
+                display_blocks=display_blocks,
+            )
 
     # Max iterations reached
     text = "I've gathered what I can. Let me know if you need anything else or want me to continue."
-    db.add(Message(task_id=task.id, role="assistant", content=text, display_blocks=display_blocks or None))
+    db.add(
+        Message(
+            task_id=task.id,
+            role="assistant",
+            content=text,
+            display_blocks=display_blocks or None,
+        )
+    )
     task.thinking_steps = thinking_steps or None
     db.commit()
-    return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
+    return _build_response(
+        task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks
+    )
 
 
 # ---------------------------------------------------------------------------
 # Tool execution
 # ---------------------------------------------------------------------------
+
 
 def _execute_tool_call_in_thread(tc_id: str, event_callback) -> tuple[str, dict]:
     """Execute a tool call in a worker thread with its own DB session.
@@ -546,9 +698,13 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
     from app.db.models import ConnectorSpec
     from app.connectors.spec_executor import execute_spec
 
-    spec = db.query(ConnectorSpec).filter(
-        ConnectorSpec.connector_name == tc.connector_name,
-    ).first()
+    spec = (
+        db.query(ConnectorSpec)
+        .filter(
+            ConnectorSpec.connector_name == tc.connector_name,
+        )
+        .first()
+    )
 
     if not spec:
         tc.status = "failed"
@@ -565,6 +721,7 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
 
     # Check for internal handler first — works for any execution_mode
     from app.agents.internal_tools import get_handler
+
     handler = get_handler(tc.connector_name, tc.action)
 
     if not handler and not tool_def:
@@ -583,7 +740,6 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
             )
 
     if handler or spec.execution_mode == "internal":
-
         t0 = time.time()
         try:
             result = handler(tc.input_params or {}, db, tc.task_id)
@@ -596,14 +752,30 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
             if tool_def:
                 transform_config = tool_def.get("response_transform")
                 if transform_config and transform_config.get("enabled") and payload:
-                    from app.connectors.response_transform import apply_response_transform
-                    wrapped = {"data": payload} if isinstance(payload, list) else (payload if isinstance(payload, dict) else {"data": payload})
+                    from app.connectors.response_transform import (
+                        apply_response_transform,
+                    )
+
+                    wrapped = (
+                        {"data": payload}
+                        if isinstance(payload, list)
+                        else (
+                            payload if isinstance(payload, dict) else {"data": payload}
+                        )
+                    )
                     transformed = apply_response_transform(wrapped, transform_config)
-                    payload = transformed.get("data", transformed) if isinstance(transformed, dict) else transformed
+                    payload = (
+                        transformed.get("data", transformed)
+                        if isinstance(transformed, dict)
+                        else transformed
+                    )
             tc.result_payload = payload
             tc.status = "executed" if result.get("success") else "failed"
             tc.error_message = result.get("error")
-            tc.rendered_request = {"mode": "internal", "handler": f"{tc.connector_name}.{tc.action}"}
+            tc.rendered_request = {
+                "mode": "internal",
+                "handler": f"{tc.connector_name}.{tc.action}",
+            }
             db.flush()
             return {**result, "data": payload}  # return transformed data
         except Exception as exc:
@@ -621,14 +793,19 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
 
     # Strip venue params before passing to spec executor (they're not API fields)
     params_for_spec = dict(tc.input_params or {})
-    params_for_spec.pop('venue', None)
-    params_for_spec.pop('venue_name', None)
-    params_for_spec.pop('venue_id', None)
+    params_for_spec.pop("venue", None)
+    params_for_spec.pop("venue_name", None)
+    params_for_spec.pop("venue_id", None)
 
     t0 = time.time()
     try:
         result, rendered = execute_spec(
-            spec, tool_def, params_for_spec, credentials, db, tc.task_id,
+            spec,
+            tool_def,
+            params_for_spec,
+            credentials,
+            db,
+            tc.task_id,
             venue_id=resolved_venue_id,
         )
         tc.duration_ms = int((time.time() - t0) * 1000)
@@ -640,9 +817,18 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
             transform_config = tool_def.get("response_transform")
             if transform_config and transform_config.get("enabled"):
                 from app.connectors.response_transform import apply_response_transform
-                wrapped = {"data": payload} if isinstance(payload, list) else (payload if isinstance(payload, dict) else {"data": payload})
+
+                wrapped = (
+                    {"data": payload}
+                    if isinstance(payload, list)
+                    else (payload if isinstance(payload, dict) else {"data": payload})
+                )
                 transformed = apply_response_transform(wrapped, transform_config)
-                payload = transformed.get("data", transformed) if isinstance(transformed, dict) else transformed
+                payload = (
+                    transformed.get("data", transformed)
+                    if isinstance(transformed, dict)
+                    else transformed
+                )
 
         tc.result_payload = payload
         tc.status = "executed" if result.success else "failed"
@@ -678,27 +864,38 @@ def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
         venue_id = resolve_venue_id(venue_name, db)
 
     if venue_id:
-        config = db.query(ConnectorConfig).filter(
-            ConnectorConfig.connector_name == connector_name,
-            ConnectorConfig.venue_id == venue_id,
-            ConnectorConfig.enabled == "true",
-        ).first()
+        config = (
+            db.query(ConnectorConfig)
+            .filter(
+                ConnectorConfig.connector_name == connector_name,
+                ConnectorConfig.venue_id == venue_id,
+                ConnectorConfig.enabled == "true",
+            )
+            .first()
+        )
         if config:
             return config
 
     # Fall back to venue-agnostic config (platform connectors only)
-    return db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == connector_name,
-        ConnectorConfig.venue_id.is_(None),
-        ConnectorConfig.enabled == "true",
-    ).first()
+    return (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == connector_name,
+            ConnectorConfig.venue_id.is_(None),
+            ConnectorConfig.enabled == "true",
+        )
+        .first()
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_messages(task: Task, new_message: str, context: dict | None = None) -> list[dict]:
+
+def _build_messages(
+    task: Task, new_message: str, context: dict | None = None
+) -> list[dict]:
     """Build the messages list from task conversation history + new message."""
     messages: list[dict] = []
 
@@ -750,8 +947,10 @@ def _parse_tool_name(name: str) -> tuple[str, str]:
     return "unknown", name
 
 
-MAX_TOOL_RESULT_CHARS = 30_000           # ~7-8k tokens — with search tool active
-MAX_TOOL_RESULT_CHARS_NO_SEARCH = 40_000   # ~10k tokens per result — room for multiple results + history
+MAX_TOOL_RESULT_CHARS = 30_000  # ~7-8k tokens — with search tool active
+MAX_TOOL_RESULT_CHARS_NO_SEARCH = (
+    40_000  # ~10k tokens per result — room for multiple results + history
+)
 
 
 def _truncate_tool_result(content: str) -> str:
@@ -766,7 +965,9 @@ def _truncate_nested_arrays(obj, max_items: int = 3):
     if isinstance(obj, dict):
         return {k: _truncate_nested_arrays(v, max_items) for k, v in obj.items()}
     if isinstance(obj, list):
-        truncated = [_truncate_nested_arrays(item, max_items) for item in obj[:max_items]]
+        truncated = [
+            _truncate_nested_arrays(item, max_items) for item in obj[:max_items]
+        ]
         if len(obj) > max_items:
             truncated.append(f"... {len(obj) - max_items} more items")
         return truncated
@@ -790,7 +991,11 @@ def _slim_tool_result(
     if len(serialized) <= max_chars:
         return serialized
 
-    data = _unwrap_array(raw_result) if isinstance(raw_result, dict) else (raw_result if isinstance(raw_result, list) else None)
+    data = (
+        _unwrap_array(raw_result)
+        if isinstance(raw_result, dict)
+        else (raw_result if isinstance(raw_result, list) else None)
+    )
 
     # Only handle array-of-objects (most common large result pattern)
     if not isinstance(data, list) or len(data) == 0 or not isinstance(data[0], dict):
@@ -798,7 +1003,12 @@ def _slim_tool_result(
 
     if summary_fields:
         # Strategy 1: Slim to configured summary_fields (truncate nested arrays)
-        slim_items = [_truncate_nested_arrays({k: item.get(k) for k in summary_fields if k in item}) for item in data]
+        slim_items = [
+            _truncate_nested_arrays(
+                {k: item.get(k) for k in summary_fields if k in item}
+            )
+            for item in data
+        ]
         summary = {
             "_slimmed": True,
             "_total_items": len(data),
@@ -814,19 +1024,21 @@ def _slim_tool_result(
         # Still too large even after slimming — fall through to strategy 2
 
     # Strategy 2: Too large — show sample item (with nested arrays truncated) and tell LLM to search
-    return json.dumps({
-        "_too_large": True,
-        "_total_items": len(data),
-        "_fields_available": list(data[0].keys()),
-        "_sample_item": _truncate_nested_arrays(data[0]),
-        "_tool_call_id": tool_call_id,
-        "success": raw_result.get("success"),
-        "message": (
-            f"Result contains {len(data)} items and is too large to display. "
-            f"Use norm__search_tool_result with tool_call_id '{tool_call_id}' "
-            f"and a search query to find specific items. Search uses fuzzy matching."
-        ),
-    })
+    return json.dumps(
+        {
+            "_too_large": True,
+            "_total_items": len(data),
+            "_fields_available": list(data[0].keys()),
+            "_sample_item": _truncate_nested_arrays(data[0]),
+            "_tool_call_id": tool_call_id,
+            "success": raw_result.get("success"),
+            "message": (
+                f"Result contains {len(data)} items and is too large to display. "
+                f"Use norm__search_tool_result with tool_call_id '{tool_call_id}' "
+                f"and a search query to find specific items. Search uses fuzzy matching."
+            ),
+        }
+    )
 
 
 def _unwrap_array(payload: dict | list) -> list | None:
@@ -857,8 +1069,8 @@ def _bigram_similarity(a: str, b: str) -> float:
         return 0.0
     if a == b:
         return 1.0
-    a_bigrams = {a[i:i+2] for i in range(len(a)-1)}
-    b_bigrams = {b[i:i+2] for i in range(len(b)-1)}
+    a_bigrams = {a[i : i + 2] for i in range(len(a) - 1)}
+    b_bigrams = {b[i : i + 2] for i in range(len(b) - 1)}
     if not a_bigrams or not b_bigrams:
         return 1.0 if a == b else 0.0
     intersection = a_bigrams & b_bigrams
@@ -880,7 +1092,9 @@ def _fuzzy_match_text(query_word: str, text: str, threshold: float = 0.45) -> bo
     return False
 
 
-def _search_tool_result(tool_call_id: str, query: str, fields: str | None, db: Session) -> dict:
+def _search_tool_result(
+    tool_call_id: str, query: str, fields: str | None, db: Session
+) -> dict:
     """Search through a stored tool call's result payload with fuzzy matching."""
     tc = db.query(ToolCall).filter(ToolCall.id == tool_call_id).first()
     if not tc or not tc.result_payload:
@@ -900,7 +1114,9 @@ def _search_tool_result(tool_call_id: str, query: str, fields: str | None, db: S
     scored: list[tuple[float, dict]] = []
     for item in data:
         # Collect all string values from the item
-        text_values = [str(v) for v in item.values() if isinstance(v, (str, int, float)) and v]
+        text_values = [
+            str(v) for v in item.values() if isinstance(v, (str, int, float)) and v
+        ]
         combined = " ".join(text_values)
 
         # Score: how many query words fuzzy-match
@@ -909,7 +1125,14 @@ def _search_tool_result(tool_call_id: str, query: str, fields: str | None, db: S
             score = match_count / len(query_words)
             if fields:
                 field_list = [f.strip() for f in fields.split(",")]
-                scored.append((score, _truncate_nested_arrays({k: item.get(k) for k in field_list if k in item})))
+                scored.append(
+                    (
+                        score,
+                        _truncate_nested_arrays(
+                            {k: item.get(k) for k in field_list if k in item}
+                        ),
+                    )
+                )
             else:
                 scored.append((score, _truncate_nested_arrays(item)))
 
@@ -958,10 +1181,14 @@ def _upsert_working_document(
                 external_ref[f] = input_params[f]
 
     # Look for existing doc with same task + doc_type
-    doc = db.query(WorkingDocument).filter(
-        WorkingDocument.task_id == task_id,
-        WorkingDocument.doc_type == doc_type,
-    ).first()
+    doc = (
+        db.query(WorkingDocument)
+        .filter(
+            WorkingDocument.task_id == task_id,
+            WorkingDocument.doc_type == doc_type,
+        )
+        .first()
+    )
 
     if doc:
         doc.data = result_payload
@@ -989,7 +1216,12 @@ def _upsert_working_document(
 def _find_tool_def(connector_name: str, action: str, db: Session) -> dict | None:
     """Look up a tool definition from the ConnectorSpec in the database."""
     from app.db.models import ConnectorSpec
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == connector_name).first()
+
+    spec = (
+        db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == connector_name)
+        .first()
+    )
     if not spec:
         return None
     for t in spec.tools or []:
@@ -1025,14 +1257,25 @@ def _serialize_block(block) -> dict:
     if block_type == "text":
         return {"type": "text", "text": block.text}
     if block_type == "tool_use":
-        return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+        return {
+            "type": "tool_use",
+            "id": block.id,
+            "name": block.name,
+            "input": block.input,
+        }
     # Fallback: use model_dump but strip any unknown extras
     if hasattr(block, "model_dump"):
         return block.model_dump()
     return {"type": "text", "text": str(block)}
 
 
-def _build_response(task: Task, db: Session, text: str, thinking_steps: list[str] | None = None, display_blocks: list[dict] | None = None) -> dict:
+def _build_response(
+    task: Task,
+    db: Session,
+    text: str,
+    thinking_steps: list[str] | None = None,
+    display_blocks: list[dict] | None = None,
+) -> dict:
     """Build the API response dict from a task.
 
     Returns a lightweight payload suitable for SSE streaming. Heavy debug
@@ -1061,25 +1304,41 @@ def _build_response(task: Task, db: Session, text: str, thinking_steps: list[str
             payload_json = json.dumps(payload, default=str)
             if len(payload_json) > 10_000:
                 if isinstance(payload, list):
-                    payload = {"_truncated": True, "_total_items": len(payload), "_preview": _truncate_nested_arrays(payload[:2])}
+                    payload = {
+                        "_truncated": True,
+                        "_total_items": len(payload),
+                        "_preview": _truncate_nested_arrays(payload[:2]),
+                    }
                 elif isinstance(payload, dict):
                     data = payload.get("data")
-                    if isinstance(data, list) and len(json.dumps(data, default=str)) > 8_000:
-                        payload = {**payload, "data": {"_truncated": True, "_total_items": len(data), "_preview": _truncate_nested_arrays(data[:2])}}
-        tool_calls.append({
-            "id": tc.id,
-            "iteration": tc.iteration,
-            "tool_name": tc.tool_name,
-            "connector_name": tc.connector_name,
-            "action": tc.action,
-            "method": tc.method,
-            "input_params": tc.input_params,
-            "status": tc.status,
-            "result_payload": payload,
-            "error_message": tc.error_message,
-            "duration_ms": tc.duration_ms,
-            "created_at": tc.created_at.isoformat() if tc.created_at else None,
-        })
+                    if (
+                        isinstance(data, list)
+                        and len(json.dumps(data, default=str)) > 8_000
+                    ):
+                        payload = {
+                            **payload,
+                            "data": {
+                                "_truncated": True,
+                                "_total_items": len(data),
+                                "_preview": _truncate_nested_arrays(data[:2]),
+                            },
+                        }
+        tool_calls.append(
+            {
+                "id": tc.id,
+                "iteration": tc.iteration,
+                "tool_name": tc.tool_name,
+                "connector_name": tc.connector_name,
+                "action": tc.action,
+                "method": tc.method,
+                "input_params": tc.input_params,
+                "status": tc.status,
+                "result_payload": payload,
+                "error_message": tc.error_message,
+                "duration_ms": tc.duration_ms,
+                "created_at": tc.created_at.isoformat() if tc.created_at else None,
+            }
+        )
 
     # Only include fields the activity timeline needs — heavy fields
     # (system_prompt, user_prompt, raw_response, tools_provided) are

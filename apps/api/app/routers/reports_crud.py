@@ -15,6 +15,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+
 class CreateReportBody(BaseModel):
     title: str = "Untitled Report"
     venue_id: str | None = None
@@ -46,6 +47,7 @@ class UpdateChartBody(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _report_to_dict(report: Report) -> dict:
     return {
@@ -79,6 +81,7 @@ def _chart_to_dict(chart: ReportChart) -> dict:
 # Report CRUD
 # ---------------------------------------------------------------------------
 
+
 @router.post("")
 async def create_report(
     body: CreateReportBody,
@@ -101,7 +104,12 @@ async def list_reports(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    reports = db.query(Report).filter(Report.user_id == user.id).order_by(Report.updated_at.desc()).all()
+    reports = (
+        db.query(Report)
+        .filter(Report.user_id == user.id)
+        .order_by(Report.updated_at.desc())
+        .all()
+    )
     return {"reports": [_report_to_dict(r) for r in reports]}
 
 
@@ -134,6 +142,7 @@ async def update_report(
     if body.layout is not None:
         report.layout = body.layout
         from sqlalchemy.orm.attributes import flag_modified
+
         flag_modified(report, "layout")
     if body.status is not None:
         report.status = body.status
@@ -159,6 +168,7 @@ async def delete_report(
 # ---------------------------------------------------------------------------
 # Chart CRUD
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{report_id}/charts")
 async def add_chart(
@@ -191,15 +201,18 @@ async def add_chart(
     for item in layout:
         if isinstance(item, dict) and "row" in item and "rowSpan" in item:
             max_row = max(max_row, item["row"] + item["rowSpan"])
-    layout.append({
-        "chart_id": chart.id,
-        "col": 1,
-        "row": max_row,
-        "colSpan": 24,
-        "rowSpan": 8,  # 8 × 40px = 320px
-    })
+    layout.append(
+        {
+            "chart_id": chart.id,
+            "col": 1,
+            "row": max_row,
+            "colSpan": 24,
+            "rowSpan": 8,  # 8 × 40px = 320px
+        }
+    )
     report.layout = layout
     from sqlalchemy.orm.attributes import flag_modified
+
     flag_modified(report, "layout")
 
     db.commit()
@@ -215,10 +228,14 @@ async def update_chart(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    chart = db.query(ReportChart).filter(
-        ReportChart.id == chart_id,
-        ReportChart.report_id == report_id,
-    ).first()
+    chart = (
+        db.query(ReportChart)
+        .filter(
+            ReportChart.id == chart_id,
+            ReportChart.report_id == report_id,
+        )
+        .first()
+    )
     if not chart:
         raise HTTPException(404, "Chart not found")
     if body.title is not None:
@@ -228,6 +245,7 @@ async def update_chart(
     if body.chart_spec is not None:
         chart.chart_spec = body.chart_spec
         from sqlalchemy.orm.attributes import flag_modified
+
         flag_modified(chart, "chart_spec")
     if body.position is not None:
         chart.position = body.position
@@ -243,18 +261,27 @@ async def remove_chart(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    chart = db.query(ReportChart).filter(
-        ReportChart.id == chart_id,
-        ReportChart.report_id == report_id,
-    ).first()
+    chart = (
+        db.query(ReportChart)
+        .filter(
+            ReportChart.id == chart_id,
+            ReportChart.report_id == report_id,
+        )
+        .first()
+    )
     if not chart:
         raise HTTPException(404, "Chart not found")
 
     # Remove from grid layout
     report = db.query(Report).filter(Report.id == report_id).first()
     if report:
-        report.layout = [item for item in (report.layout or []) if isinstance(item, dict) and item.get("chart_id") != chart_id]
+        report.layout = [
+            item
+            for item in (report.layout or [])
+            if isinstance(item, dict) and item.get("chart_id") != chart_id
+        ]
         from sqlalchemy.orm.attributes import flag_modified
+
         flag_modified(report, "layout")
 
     db.delete(chart)
@@ -265,6 +292,7 @@ async def remove_chart(
 # ---------------------------------------------------------------------------
 # Refresh — re-run chart scripts for fresh data
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{report_id}/refresh")
 async def refresh_report(
@@ -286,11 +314,20 @@ async def refresh_report(
         if not script or not script.get("connector") or not script.get("action"):
             continue
         try:
-            spec = db.query(ConnectorSpec).filter(
-                ConnectorSpec.connector_name == script["connector"],
-            ).first()
+            spec = (
+                db.query(ConnectorSpec)
+                .filter(
+                    ConnectorSpec.connector_name == script["connector"],
+                )
+                .first()
+            )
             if not spec:
-                errors.append({"chart_id": chart.id, "error": f"Connector not found: {script['connector']}"})
+                errors.append(
+                    {
+                        "chart_id": chart.id,
+                        "error": f"Connector not found: {script['connector']}",
+                    }
+                )
                 continue
 
             tool_def = None
@@ -299,19 +336,35 @@ async def refresh_report(
                     tool_def = t
                     break
             if not tool_def:
-                errors.append({"chart_id": chart.id, "error": f"Tool not found: {script['action']}"})
+                errors.append(
+                    {
+                        "chart_id": chart.id,
+                        "error": f"Tool not found: {script['action']}",
+                    }
+                )
                 continue
 
-            config_row = db.query(ConnectorConfig).filter(
-                ConnectorConfig.connector_name == script["connector"],
-                ConnectorConfig.enabled == "true",
-            ).first()
+            config_row = (
+                db.query(ConnectorConfig)
+                .filter(
+                    ConnectorConfig.connector_name == script["connector"],
+                    ConnectorConfig.enabled == "true",
+                )
+                .first()
+            )
             credentials = config_row.config if config_row else {}
 
-            result, _ = execute_spec(spec, tool_def, script.get("params", {}), credentials, db)
+            result, _ = execute_spec(
+                spec, tool_def, script.get("params", {}), credentials, db
+            )
             if result.success and result.response_payload:
-                chart.data = result.response_payload if isinstance(result.response_payload, list) else result.response_payload
+                chart.data = (
+                    result.response_payload
+                    if isinstance(result.response_payload, list)
+                    else result.response_payload
+                )
                 from sqlalchemy.orm.attributes import flag_modified
+
                 flag_modified(chart, "data")
         except Exception as exc:
             errors.append({"chart_id": chart.id, "error": str(exc)})

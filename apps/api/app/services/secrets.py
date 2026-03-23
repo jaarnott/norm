@@ -20,16 +20,21 @@ def get_api_key(connector_name: str, key: str, db: Session | None = None) -> str
     if db is not None:
         from app.db.models import ConnectorConfig
 
-        row = db.query(ConnectorConfig).filter(
-            ConnectorConfig.connector_name == connector_name,
-            ConnectorConfig.enabled == "true",
-        ).first()
+        row = (
+            db.query(ConnectorConfig)
+            .filter(
+                ConnectorConfig.connector_name == connector_name,
+                ConnectorConfig.enabled == "true",
+            )
+            .first()
+        )
         if row and row.config.get(key):
             return row.config[key]
 
     env_var = _ENV_VAR_MAP.get((connector_name, key))
     if env_var:
         from app.config import settings
+
         return getattr(settings, env_var, None) or os.environ.get(env_var)
 
     return None

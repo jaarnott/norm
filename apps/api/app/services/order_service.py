@@ -56,7 +56,9 @@ def create_draft_order(
     order = Order(
         task_id=task.id,
         venue_id=venue["id"] if venue else None,
-        supplier_id=product["supplier_id"] if product and product.get("supplier_id") else None,
+        supplier_id=product["supplier_id"]
+        if product and product.get("supplier_id")
+        else None,
         status=task.status,
     )
     db.add(order)
@@ -64,18 +66,26 @@ def create_draft_order(
 
     # Order line
     if product and quantity is not None:
-        db.add(OrderLine(
-            order_id=order.id,
-            product_id=product["id"],
-            quantity_cases=quantity,
-        ))
+        db.add(
+            OrderLine(
+                order_id=order.id,
+                product_id=product["id"],
+                quantity_cases=quantity,
+            )
+        )
 
     db.commit()
     db.refresh(task)
     return _task_to_dict(task)
 
 
-def update_order(db: Session, task_id: str, product: dict | None, venue: dict | None, quantity: int | None) -> dict | None:
+def update_order(
+    db: Session,
+    task_id: str,
+    product: dict | None,
+    venue: dict | None,
+    quantity: int | None,
+) -> dict | None:
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         return None
@@ -87,7 +97,9 @@ def update_order(db: Session, task_id: str, product: dict | None, venue: dict | 
     if product:
         old_product = extracted.get("product")
         if old_product and old_product.get("id") != product["id"]:
-            revisions.append(f"Product changed from {old_product['name']} to {product['name']}")
+            revisions.append(
+                f"Product changed from {old_product['name']} to {product['name']}"
+            )
         elif not old_product:
             revisions.append(f"Product set to {product['name']}")
         extracted["product"] = product
@@ -96,7 +108,9 @@ def update_order(db: Session, task_id: str, product: dict | None, venue: dict | 
     if venue:
         old_venue = extracted.get("venue")
         if old_venue and old_venue.get("id") != venue["id"]:
-            revisions.append(f"Venue changed from {old_venue['name']} to {venue['name']}")
+            revisions.append(
+                f"Venue changed from {old_venue['name']} to {venue['name']}"
+            )
         elif not old_venue:
             revisions.append(f"Venue set to {venue['name']}")
         extracted["venue"] = venue
@@ -112,14 +126,18 @@ def update_order(db: Session, task_id: str, product: dict | None, venue: dict | 
 
     task.extracted_fields = extracted
 
-    missing = _calc_missing(extracted.get("product"), extracted.get("venue"), extracted.get("quantity"))
+    missing = _calc_missing(
+        extracted.get("product"), extracted.get("venue"), extracted.get("quantity")
+    )
     task.missing_fields = missing
 
     # Build assistant message
     if revisions:
         revision_text = ". ".join(revisions) + "."
         if not missing:
-            assistant_msg = f"{revision_text} Draft order updated and ready for approval."
+            assistant_msg = (
+                f"{revision_text} Draft order updated and ready for approval."
+            )
         else:
             q = _procurement_question(missing)
             assistant_msg = f"{revision_text} {q}"
@@ -150,12 +168,20 @@ def update_order(db: Session, task_id: str, product: dict | None, venue: dict | 
 
         # Upsert order line
         if p and extracted.get("quantity") is not None:
-            existing = db.query(OrderLine).filter(OrderLine.order_id == order.id).first()
+            existing = (
+                db.query(OrderLine).filter(OrderLine.order_id == order.id).first()
+            )
             if existing:
                 existing.product_id = p["id"]
                 existing.quantity_cases = extracted["quantity"]
             else:
-                db.add(OrderLine(order_id=order.id, product_id=p["id"], quantity_cases=extracted["quantity"]))
+                db.add(
+                    OrderLine(
+                        order_id=order.id,
+                        product_id=p["id"],
+                        quantity_cases=extracted["quantity"],
+                    )
+                )
 
     db.commit()
     db.refresh(task)
@@ -163,7 +189,9 @@ def update_order(db: Session, task_id: str, product: dict | None, venue: dict | 
 
 
 def get_order(db: Session, task_id: str) -> dict | None:
-    task = db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+    task = (
+        db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+    )
     if not task:
         return None
     return _task_to_dict(task)
@@ -172,12 +200,14 @@ def get_order(db: Session, task_id: str) -> dict | None:
 def approve_order(db: Session, task_id: str, user=None) -> dict | None:
     result = _set_status(db, task_id, "approved")
     if result:
-        db.add(Approval(
-            task_id=task_id,
-            action="approved",
-            performed_by=user.email if user else "system",
-            user_id=user.id if user else None,
-        ))
+        db.add(
+            Approval(
+                task_id=task_id,
+                action="approved",
+                performed_by=user.email if user else "system",
+                user_id=user.id if user else None,
+            )
+        )
         db.commit()
     return result
 
@@ -185,18 +215,22 @@ def approve_order(db: Session, task_id: str, user=None) -> dict | None:
 def reject_order(db: Session, task_id: str, user=None) -> dict | None:
     result = _set_status(db, task_id, "rejected")
     if result:
-        db.add(Approval(
-            task_id=task_id,
-            action="rejected",
-            performed_by=user.email if user else "system",
-            user_id=user.id if user else None,
-        ))
+        db.add(
+            Approval(
+                task_id=task_id,
+                action="rejected",
+                performed_by=user.email if user else "system",
+                user_id=user.id if user else None,
+            )
+        )
         db.commit()
     return result
 
 
 def submit_order(db: Session, task_id: str) -> dict | None:
-    task = db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+    task = (
+        db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+    )
     if not task or task.status != "approved":
         return None
 
@@ -240,7 +274,9 @@ def find_open_order(db: Session, user_id: str | None = None) -> dict | None:
 
 
 def _set_status(db: Session, task_id: str, status: str) -> dict | None:
-    task = db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+    task = (
+        db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+    )
     if not task:
         return None
     task.status = status
@@ -254,6 +290,7 @@ def _set_status(db: Session, task_id: str, status: str) -> dict | None:
 
 
 # -- helpers --
+
 
 def _calc_missing(product, venue, quantity) -> list[str]:
     m = []
@@ -298,7 +335,9 @@ def _task_to_dict(task: Task) -> dict:
             "connector": latest_run.connector_name,
             "status": latest_run.status,
             "reference": (latest_run.response_payload or {}).get("order_reference"),
-            "submitted_at": latest_run.created_at.isoformat() if latest_run.created_at else None,
+            "submitted_at": latest_run.created_at.isoformat()
+            if latest_run.created_at
+            else None,
             "error": latest_run.error_message,
         }
 
@@ -309,7 +348,9 @@ def _task_to_dict(task: Task) -> dict:
         approval = {
             "action": latest_approval.action,
             "performed_by": latest_approval.performed_by or "system",
-            "performed_at": latest_approval.performed_at.isoformat() if latest_approval.performed_at else None,
+            "performed_at": latest_approval.performed_at.isoformat()
+            if latest_approval.performed_at
+            else None,
         }
 
     return {
@@ -327,14 +368,20 @@ def _task_to_dict(task: Task) -> dict:
             "name": product["name"],
             "unit": product.get("unit", "case"),
             "category": product.get("category"),
-        } if product else None,
+        }
+        if product
+        else None,
         "supplier": product.get("supplier") if product else None,
         "quantity": quantity,
         "line_summary": line_summary,
         "missing_fields": task.missing_fields or [],
         "clarification_question": task.clarification_question,
         "conversation": [
-            {"role": m.role, "text": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+            {
+                "role": m.role,
+                "text": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
             for m in sorted(task.messages, key=lambda x: x.created_at)
         ],
         "integration_run": integration_run,
@@ -372,6 +419,8 @@ def _task_to_dict(task: Task) -> dict:
                 "created_at": tc.created_at.isoformat() if tc.created_at else None,
             }
             for tc in sorted(task.tool_calls, key=lambda x: x.created_at)
-        ] if task.tool_calls else [],
+        ]
+        if task.tool_calls
+        else [],
         "thinking_steps": task.thinking_steps or [],
     }

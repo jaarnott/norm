@@ -15,7 +15,9 @@ class BambooHrConnector(BaseConnector):
         else:
             subdomain = os.environ["BAMBOOHR_SUBDOMAIN"]
             self.api_key = os.environ["BAMBOOHR_API_KEY"]
-        self.base_url = f"https://{subdomain}.bamboohr.com/api/gateway.php/{subdomain}/v1"
+        self.base_url = (
+            f"https://{subdomain}.bamboohr.com/api/gateway.php/{subdomain}/v1"
+        )
 
     def submit(self, payload: dict) -> ConnectorResult:
         bamboo_payload = self._map_fields(payload)

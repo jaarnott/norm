@@ -18,10 +18,17 @@ from app.agents.router import classify
 logger = logging.getLogger(__name__)
 
 
-def handle_message(message: str, db: Session, user_id: str | None = None, task_id: str | None = None, venue_id: str | None = None) -> dict:
+def handle_message(
+    message: str,
+    db: Session,
+    user_id: str | None = None,
+    task_id: str | None = None,
+    venue_id: str | None = None,
+) -> dict:
     """Process a user message through routing then agent delegation."""
     # Quota gate — block before any LLM call if tokens exhausted
     from app.services.billing_service import check_quota_for_user
+
     check_quota_for_user(db, user_id)
 
     # Track whether we're continuing a meta/unknown task
@@ -39,18 +46,28 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
             venue_timezone = None
             if venue_id:
                 from app.db.models import Venue
+
                 venue_obj = db.query(Venue).filter(Venue.id == venue_id).first()
                 if venue_obj:
                     venue_name = venue_obj.name
                     venue_timezone = venue_obj.timezone
             agent = get_agent(task.domain)
             if agent:
-                return agent.handle_message(message, db, user_id, task_id, venue_id=venue_id, venue_name=venue_name, venue_timezone=venue_timezone)
+                return agent.handle_message(
+                    message,
+                    db,
+                    user_id,
+                    task_id,
+                    venue_id=venue_id,
+                    venue_name=venue_name,
+                    venue_timezone=venue_timezone,
+                )
             # Handle venue clarification follow-ups — resolve venue from reply
             # and re-route the original message
             if task.intent == "venue_clarification":
                 from app.services.venue_service import resolve_venue_id
                 from app.db.models import Venue
+
                 resolved_id = resolve_venue_id(message.strip(), db)
                 if resolved_id:
                     venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
@@ -69,6 +86,7 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
                 else:
                     # Couldn't resolve — ask again
                     from app.services.venue_service import get_user_venues
+
                     venues = get_user_venues(db)
                     venue_list = ", ".join(v.name for v in venues)
                     reply = f"I couldn't find a venue called '{message.strip()}'. Available venues: {venue_list}"
@@ -77,11 +95,22 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
                     db.commit()
                     db.refresh(task)
                     return {
-                        "id": task.id, "domain": "unknown", "intent": "venue_clarification",
-                        "title": task.title, "message": message, "status": "needs_clarification",
-                        "created_at": task.created_at.isoformat(), "updated_at": task.updated_at.isoformat(),
+                        "id": task.id,
+                        "domain": "unknown",
+                        "intent": "venue_clarification",
+                        "title": task.title,
+                        "message": message,
+                        "status": "needs_clarification",
+                        "created_at": task.created_at.isoformat(),
+                        "updated_at": task.updated_at.isoformat(),
                         "conversation": [
-                            {"role": m.role, "text": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+                            {
+                                "role": m.role,
+                                "text": m.content,
+                                "created_at": m.created_at.isoformat()
+                                if m.created_at
+                                else None,
+                            }
                             for m in sorted(task.messages, key=lambda x: x.created_at)
                         ],
                         "clarification_question": reply,
@@ -101,11 +130,15 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
     for slug in domains:
         info = caps.get(slug, {})
         desc = info.get("description", slug)
-        actions = ", ".join(c["label"] for c in info.get("capabilities", []) if c.get("enabled", True))
+        actions = ", ".join(
+            c["label"] for c in info.get("capabilities", []) if c.get("enabled", True)
+        )
         line = f"{slug}: {desc}" + (f" (can: {actions})" if actions else "")
         domain_descs.append(line)
     # Add meta domain — only for broad "what can you do" with no specific domain
-    domain_descs.append("meta: ONLY when the user asks a general question about the whole system's capabilities without mentioning a specific domain (e.g. 'what can you do?', 'help'). If they mention a specific area like HR, procurement, or reports, route to that domain instead.")
+    domain_descs.append(
+        "meta: ONLY when the user asks a general question about the whole system's capabilities without mentioning a specific domain (e.g. 'what can you do?', 'help'). If they mention a specific area like HR, procurement, or reports, route to that domain instead."
+    )
 
     routing = classify(message, domain_descs, db=db)
     domain = routing["domain"]
@@ -114,6 +147,7 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
     if not venue_id:
         from app.services.venue_service import get_user_venues, resolve_venue_id
         from app.db.models import Venue
+
         venues = get_user_venues(db)
 
         if len(venues) == 1:
@@ -135,20 +169,27 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
 
     # Emit routing event so the frontend knows which agent was selected
     from app.agents.tool_loop import _emit_event
+
     agent_display = caps.get(domain, {}).get("display_name", domain.title())
-    _emit_event({
-        "type": "routing",
-        "domain": domain,
-        "title": routing.get("title"),
-        "agent_label": agent_display,
-    })
+    _emit_event(
+        {
+            "type": "routing",
+            "domain": domain,
+            "title": routing.get("title"),
+            "agent_label": agent_display,
+        }
+    )
 
     # Handle meta domain — self-description
     if domain == "meta":
-        result = _build_capabilities_response(message, caps, db, user_id, prior_task=prior_task)
+        result = _build_capabilities_response(
+            message, caps, db, user_id, prior_task=prior_task
+        )
         # Back-fill task_id on the routing LLM call
         if routing.get("llm_call_id") and result.get("id"):
-            llm_call = db.query(LlmCall).filter(LlmCall.id == routing["llm_call_id"]).first()
+            llm_call = (
+                db.query(LlmCall).filter(LlmCall.id == routing["llm_call_id"]).first()
+            )
             if llm_call:
                 llm_call.task_id = result["id"]
                 db.commit()
@@ -158,7 +199,14 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
     # 3. Delegate to the domain agent
     agent = get_agent(domain)
     if agent:
-        result = agent.handle_message(message, db, user_id, venue_id=venue_id, venue_name=venue_name, venue_timezone=venue_timezone)
+        result = agent.handle_message(
+            message,
+            db,
+            user_id,
+            venue_id=venue_id,
+            venue_name=venue_name,
+            venue_timezone=venue_timezone,
+        )
 
         # Set the LLM-generated title on the task
         title = routing.get("title")
@@ -176,13 +224,21 @@ def handle_message(message: str, db: Session, user_id: str | None = None, task_i
             new_task = db.query(Task).filter(Task.id == result["id"]).first()
             if new_task:
                 result["conversation"] = [
-                    {"role": m.role, "text": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+                    {
+                        "role": m.role,
+                        "text": m.content,
+                        "created_at": m.created_at.isoformat()
+                        if m.created_at
+                        else None,
+                    }
                     for m in sorted(new_task.messages, key=lambda x: x.created_at)
                 ]
 
         # Back-fill task_id on the routing LLM call and include it in the response
         if routing.get("llm_call_id") and result.get("id"):
-            llm_call = db.query(LlmCall).filter(LlmCall.id == routing["llm_call_id"]).first()
+            llm_call = (
+                db.query(LlmCall).filter(LlmCall.id == routing["llm_call_id"]).first()
+            )
             if llm_call:
                 llm_call.task_id = result["id"]
                 db.commit()
@@ -235,7 +291,13 @@ def _migrate_prior_task(prior_task: Task, new_task_id: str, db: Session) -> None
     db.commit()
 
 
-def _build_capabilities_response(message: str, caps: dict, db: Session, user_id: str | None = None, prior_task: Task | None = None) -> dict:
+def _build_capabilities_response(
+    message: str,
+    caps: dict,
+    db: Session,
+    user_id: str | None = None,
+    prior_task: Task | None = None,
+) -> dict:
     """Build a meta response listing all agent capabilities.
 
     If prior_task is provided, continues that conversation instead of creating a new task.
@@ -247,7 +309,9 @@ def _build_capabilities_response(message: str, caps: dict, db: Session, user_id:
         display = info.get("display_name", slug.title())
         desc = info.get("description", "")
         line = f"**{display}** — {desc}" if desc else f"**{display}**"
-        cap_labels = [c["label"] for c in info.get("capabilities", []) if c.get("enabled", True)]
+        cap_labels = [
+            c["label"] for c in info.get("capabilities", []) if c.get("enabled", True)
+        ]
         if cap_labels:
             line += f" (can: {', '.join(cap_labels)})"
         lines.append(f"- {line}")
@@ -287,13 +351,19 @@ def _build_capabilities_response(message: str, caps: dict, db: Session, user_id:
         "created_at": task.created_at.isoformat(),
         "updated_at": task.updated_at.isoformat(),
         "conversation": [
-            {"role": m.role, "text": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+            {
+                "role": m.role,
+                "text": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
             for m in sorted(task.messages, key=lambda x: x.created_at)
         ],
     }
 
 
-def _create_venue_clarification(message: str, venue_list: str, db: Session, user_id: str | None = None) -> dict:
+def _create_venue_clarification(
+    message: str, venue_list: str, db: Session, user_id: str | None = None
+) -> dict:
     """Ask the user to specify which venue before proceeding."""
     question = f"Which venue would you like me to check? Available venues: {venue_list}"
 

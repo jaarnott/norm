@@ -48,7 +48,8 @@ def _collect_tools(domain: str, db: Session) -> list[dict]:
                     ConnectorConfig.connector_name == binding.connector_name,
                     ConnectorConfig.enabled == "true",
                 )
-                .count() > 0
+                .count()
+                > 0
             )
             if not has_config:
                 continue
@@ -96,10 +97,16 @@ def build_dynamic_prompt(domain: str, db: Session) -> str | None:
 
     # Tools are bound — return the DB prompt (the admin manages it in Settings)
     from app.services.agent_config_service import get_system_prompt
+
     return get_system_prompt(domain, db) or None
 
 
-def build_tool_definitions(domain: str, db: Session, active_venue_name: str | None = None, venue_timezone: str | None = None) -> tuple[str, list[dict]]:
+def build_tool_definitions(
+    domain: str,
+    db: Session,
+    active_venue_name: str | None = None,
+    venue_timezone: str | None = None,
+) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
     Returns (system_prompt, anthropic_tools) where anthropic_tools is a list
@@ -114,10 +121,15 @@ def build_tool_definitions(domain: str, db: Session, active_venue_name: str | No
     # System prompt comes directly from the DB — the admin manages the full
     # prompt in the Settings UI. Supports {{today}} placeholder.
     from app.services.agent_config_service import get_system_prompt
+
     system_prompt = get_system_prompt(domain, db)
     if not system_prompt:
-        system_prompt = f"You are the {domain} agent for Norm, a hospitality operations platform."
-    system_prompt = system_prompt.replace('{{today}}', datetime.date.today().isoformat())
+        system_prompt = (
+            f"You are the {domain} agent for Norm, a hospitality operations platform."
+        )
+    system_prompt = system_prompt.replace(
+        "{{today}}", datetime.date.today().isoformat()
+    )
 
     # Add automated tasks guidance if those tools are available
     has_automated_tasks = any(t.get("action") == "create_automated_task" for t in tools)
@@ -167,18 +179,25 @@ The search uses fuzzy matching so it handles misspellings and partial matches. I
     # Add venue guidance when multiple venues exist
     from app.services.venue_service import get_user_venues
     from app.db.models import ConnectorConfig
+
     user_venues = get_user_venues(db)
     if len(user_venues) > 1:
         # Build per-venue connector availability
         venue_lines = []
         for v in user_venues:
-            configs = db.query(ConnectorConfig).filter(
-                ConnectorConfig.venue_id == v.id,
-                ConnectorConfig.enabled == "true",
-            ).all()
+            configs = (
+                db.query(ConnectorConfig)
+                .filter(
+                    ConnectorConfig.venue_id == v.id,
+                    ConnectorConfig.enabled == "true",
+                )
+                .all()
+            )
             connector_names = [c.connector_name for c in configs]
             if connector_names:
-                venue_lines.append(f"- {v.name} (connected to: {', '.join(connector_names)})")
+                venue_lines.append(
+                    f"- {v.name} (connected to: {', '.join(connector_names)})"
+                )
             else:
                 venue_lines.append(f"- {v.name} (no connectors configured)")
         venue_detail = "\n".join(venue_lines)
@@ -188,12 +207,15 @@ The search uses fuzzy matching so it handles misspellings and partial matches. I
             if venue_timezone:
                 try:
                     from zoneinfo import ZoneInfo
+
                     tz = ZoneInfo(venue_timezone)
                     now = datetime.datetime.now(tz)
-                    offset = now.strftime('%z')
+                    offset = now.strftime("%z")
                     offset_fmt = f"{offset[:3]}:{offset[3:]}"
-                    today_in_tz = now.strftime('%Y-%m-%d')
-                    tz_info = f" (timezone: {venue_timezone}, currently UTC{offset_fmt})"
+                    today_in_tz = now.strftime("%Y-%m-%d")
+                    tz_info = (
+                        f" (timezone: {venue_timezone}, currently UTC{offset_fmt})"
+                    )
                     tz_info += f"\nToday's date in this timezone is {today_in_tz}. When making API calls that require dates or datetimes, use the offset {offset_fmt} (URL-encoded as %2B{offset[1:3]}:{offset[3:]} for positive offsets)."
                 except Exception:
                     tz_info = f" (timezone: {venue_timezone})"
@@ -246,7 +268,9 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
         properties: dict = {}
         field_descs = tool.get("field_descriptions") or {}
         field_schemas = tool.get("field_schema") or {}
-        all_fields = list(tool["required_fields"]) + list(tool.get("optional_fields") or [])
+        all_fields = list(tool["required_fields"]) + list(
+            tool.get("optional_fields") or []
+        )
         for field in all_fields:
             # Use explicit schema if provided (supports nested objects/arrays)
             if field in field_schemas:
@@ -270,15 +294,21 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             properties[field] = prop
 
         # Inject venue parameter for external connectors when multiple venues exist
-        is_external = tool["connector"] != "norm" and not tool["connector"].startswith("norm_")
+        is_external = tool["connector"] != "norm" and not tool["connector"].startswith(
+            "norm_"
+        )
         if is_external and len(user_venues) > 1:
             configured_venues = [
-                v.name for v in user_venues
-                if db.query(ConnectorConfig).filter(
+                v.name
+                for v in user_venues
+                if db.query(ConnectorConfig)
+                .filter(
                     ConnectorConfig.connector_name == tool["connector"],
                     ConnectorConfig.venue_id == v.id,
                     ConnectorConfig.enabled == "true",
-                ).count() > 0
+                )
+                .count()
+                > 0
             ]
             if configured_venues:
                 properties["venue"] = {
@@ -291,16 +321,18 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
         desc = tool.get("description") or tool["action"].replace("_", " ")
         desc_full = f"[{method}] {desc}"
 
-        anthropic_tools.append({
-            "name": tool_name,
-            "description": desc_full,
-            "input_schema": {
-                "type": "object",
-                "properties": properties,
-                "required": tool["required_fields"],
-                "additionalProperties": False,
-            },
-        })
+        anthropic_tools.append(
+            {
+                "name": tool_name,
+                "description": desc_full,
+                "input_schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": tool["required_fields"],
+                    "additionalProperties": False,
+                },
+            }
+        )
 
     logger.info(
         "Built %d Anthropic tool definitions for domain=%s",

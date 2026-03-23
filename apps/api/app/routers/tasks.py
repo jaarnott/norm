@@ -8,7 +8,10 @@ from app.db.engine import get_db
 from app.db.models import Task, Approval, ToolCall, User
 from app.auth.dependencies import get_current_user
 from app.services.order_service import (
-    get_order, approve_order, reject_order, submit_order,
+    get_order,
+    approve_order,
+    reject_order,
+    submit_order,
 )
 from app.services.hr_service import (
     get_task as get_hr_task,
@@ -145,7 +148,16 @@ def _task_summary(task: Task) -> dict:
     # Domain-specific card fields
     if task.domain == "procurement":
         summary["venue"] = {"id": venue["id"], "name": venue["name"]} if venue else None
-        summary["product"] = {"id": product["id"], "name": product["name"], "unit": product.get("unit", "case"), "category": product.get("category")} if product else None
+        summary["product"] = (
+            {
+                "id": product["id"],
+                "name": product["name"],
+                "unit": product.get("unit", "case"),
+                "category": product.get("category"),
+            }
+            if product
+            else None
+        )
         summary["supplier"] = product.get("supplier") if product else None
         summary["quantity"] = extracted.get("quantity")
     elif task.domain == "hr":
@@ -160,7 +172,9 @@ def _task_summary(task: Task) -> dict:
 
 
 @router.delete("/tasks/{task_id}")
-async def delete_task(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def delete_task(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     task = db.query(Task).filter(Task.id == task_id, Task.user_id == user.id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -170,7 +184,9 @@ async def delete_task(task_id: str, db: Session = Depends(get_db), user: User = 
 
 
 @router.get("/tasks/{task_id}")
-async def get_task_detail(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def get_task_detail(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     task, _ = _find(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -178,7 +194,9 @@ async def get_task_detail(task_id: str, db: Session = Depends(get_db), user: Use
 
 
 @router.post("/tasks/{task_id}/approve")
-async def approve(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def approve(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     # Check if this is a tool-approval request
     raw_task = db.query(Task).filter(Task.id == task_id).first()
     if raw_task and raw_task.status == "awaiting_tool_approval":
@@ -197,7 +215,9 @@ async def approve(task_id: str, db: Session = Depends(get_db), user: User = Depe
 
 
 @router.post("/tasks/{task_id}/reject")
-async def reject(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def reject(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     # Check if this is a tool-rejection request
     raw_task = db.query(Task).filter(Task.id == task_id).first()
     if raw_task and raw_task.status == "awaiting_tool_approval":
@@ -216,7 +236,9 @@ async def reject(task_id: str, db: Session = Depends(get_db), user: User = Depen
 
 
 @router.post("/tasks/{task_id}/submit")
-async def submit(task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def submit(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     task, domain = _find(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -226,7 +248,9 @@ async def submit(task_id: str, db: Session = Depends(get_db), user: User = Depen
         result = submit_hr_task(db, task_id)
     elif domain == "reports":
         # Reports don't submit externally — approve is the terminal action
-        raise HTTPException(status_code=400, detail="Reports cannot be submitted to external systems")
+        raise HTTPException(
+            status_code=400, detail="Reports cannot be submitted to external systems"
+        )
     else:
         raise HTTPException(status_code=400, detail="Unsupported domain")
     if not result:
@@ -236,17 +260,20 @@ async def submit(task_id: str, db: Session = Depends(get_db), user: User = Depen
 
 def _approve_report(db: Session, task_id: str, user: User | None = None) -> dict:
     from datetime import datetime, timezone
+
     task = db.query(Task).filter(Task.id == task_id, Task.domain == "reports").first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     task.status = "approved"
     task.updated_at = datetime.now(timezone.utc)
-    db.add(Approval(
-        task_id=task_id,
-        action="approved",
-        performed_by=user.email if user else "system",
-        user_id=user.id if user else None,
-    ))
+    db.add(
+        Approval(
+            task_id=task_id,
+            action="approved",
+            performed_by=user.email if user else "system",
+            user_id=user.id if user else None,
+        )
+    )
     db.commit()
     db.refresh(task)
     return _report_task_to_dict(task)
@@ -254,17 +281,20 @@ def _approve_report(db: Session, task_id: str, user: User | None = None) -> dict
 
 def _reject_report(db: Session, task_id: str, user: User | None = None) -> dict:
     from datetime import datetime, timezone
+
     task = db.query(Task).filter(Task.id == task_id, Task.domain == "reports").first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     task.status = "rejected"
     task.updated_at = datetime.now(timezone.utc)
-    db.add(Approval(
-        task_id=task_id,
-        action="rejected",
-        performed_by=user.email if user else "system",
-        user_id=user.id if user else None,
-    ))
+    db.add(
+        Approval(
+            task_id=task_id,
+            action="rejected",
+            performed_by=user.email if user else "system",
+            user_id=user.id if user else None,
+        )
+    )
     db.commit()
     db.refresh(task)
     return _report_task_to_dict(task)
@@ -276,19 +306,21 @@ def _approve_tool_calls(db: Session, task: Task, user: User) -> dict:
     from app.agents.prompt_builder import build_tool_definitions
 
     # Mark pending tool calls as approved
-    for tc_id in (task.pending_tool_call_ids or []):
+    for tc_id in task.pending_tool_call_ids or []:
         tc = db.query(ToolCall).filter(ToolCall.id == tc_id).first()
         if tc and tc.status == "pending_approval":
             tc.status = "approved"
     db.flush()
 
     # Record the approval
-    db.add(Approval(
-        task_id=task.id,
-        action="tool_calls_approved",
-        performed_by=user.email,
-        user_id=user.id,
-    ))
+    db.add(
+        Approval(
+            task_id=task.id,
+            action="tool_calls_approved",
+            performed_by=user.email,
+            user_id=user.id,
+        )
+    )
     db.flush()
 
     # Resume the loop
@@ -302,19 +334,21 @@ def _reject_tool_calls(db: Session, task: Task, user: User) -> dict:
     from app.agents.prompt_builder import build_tool_definitions
 
     # Mark pending tool calls as rejected
-    for tc_id in (task.pending_tool_call_ids or []):
+    for tc_id in task.pending_tool_call_ids or []:
         tc = db.query(ToolCall).filter(ToolCall.id == tc_id).first()
         if tc and tc.status == "pending_approval":
             tc.status = "rejected"
     db.flush()
 
     # Record the rejection
-    db.add(Approval(
-        task_id=task.id,
-        action="tool_calls_rejected",
-        performed_by=user.email,
-        user_id=user.id,
-    ))
+    db.add(
+        Approval(
+            task_id=task.id,
+            action="tool_calls_rejected",
+            performed_by=user.email,
+            user_id=user.id,
+        )
+    )
     db.flush()
 
     # Resume the loop — the tool results will contain rejection messages
@@ -325,6 +359,7 @@ def _reject_tool_calls(db: Session, task: Task, user: User) -> dict:
 # ---------------------------------------------------------------------------
 # Widget-initiated tool actions
 # ---------------------------------------------------------------------------
+
 
 class WidgetActionRequest(BaseModel):
     connector_name: str
@@ -349,12 +384,18 @@ async def widget_action(
 
     # Reject if there are already pending tool calls
     if task.status == "awaiting_tool_approval":
-        raise HTTPException(status_code=409, detail="Task already has pending tool calls awaiting approval")
+        raise HTTPException(
+            status_code=409,
+            detail="Task already has pending tool calls awaiting approval",
+        )
 
     # Look up the tool definition
     tool_def = _find_tool_def(body.connector_name, body.action, db)
     if not tool_def:
-        raise HTTPException(status_code=404, detail=f"Tool not found: {body.action} on {body.connector_name}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Tool not found: {body.action} on {body.connector_name}",
+        )
 
     method = tool_def.get("method", "POST").upper()
     is_read_only = method == "GET"

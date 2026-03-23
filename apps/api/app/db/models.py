@@ -2,7 +2,14 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column, String, Integer, Text, DateTime, ForeignKey, JSON, Boolean,
+    Column,
+    String,
+    Integer,
+    Text,
+    DateTime,
+    ForeignKey,
+    JSON,
+    Boolean,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -57,7 +64,9 @@ class Organization(Base):
 
 class OrganizationMembership(Base):
     __tablename__ = "organization_memberships"
-    __table_args__ = (UniqueConstraint("user_id", "organization_id", name="uq_user_org"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "organization_id", name="uq_user_org"),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
@@ -146,14 +155,45 @@ class Task(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    messages = relationship("Message", back_populates="task", order_by="Message.created_at", cascade="all, delete-orphan")
-    order = relationship("Order", back_populates="task", uselist=False, cascade="all, delete-orphan")
-    hr_setup = relationship("HrSetup", back_populates="task", uselist=False, cascade="all, delete-orphan")
-    approvals = relationship("Approval", back_populates="task", order_by="Approval.performed_at", cascade="all, delete-orphan")
-    integration_runs = relationship("IntegrationRun", back_populates="task", order_by="IntegrationRun.created_at", cascade="all, delete-orphan")
-    llm_calls = relationship("LlmCall", back_populates="task", order_by="LlmCall.created_at", cascade="all, delete-orphan")
-    tool_calls = relationship("ToolCall", back_populates="task", order_by="ToolCall.created_at", cascade="all, delete-orphan")
-    working_documents = relationship("WorkingDocument", back_populates="task", cascade="all, delete-orphan")
+    messages = relationship(
+        "Message",
+        back_populates="task",
+        order_by="Message.created_at",
+        cascade="all, delete-orphan",
+    )
+    order = relationship(
+        "Order", back_populates="task", uselist=False, cascade="all, delete-orphan"
+    )
+    hr_setup = relationship(
+        "HrSetup", back_populates="task", uselist=False, cascade="all, delete-orphan"
+    )
+    approvals = relationship(
+        "Approval",
+        back_populates="task",
+        order_by="Approval.performed_at",
+        cascade="all, delete-orphan",
+    )
+    integration_runs = relationship(
+        "IntegrationRun",
+        back_populates="task",
+        order_by="IntegrationRun.created_at",
+        cascade="all, delete-orphan",
+    )
+    llm_calls = relationship(
+        "LlmCall",
+        back_populates="task",
+        order_by="LlmCall.created_at",
+        cascade="all, delete-orphan",
+    )
+    tool_calls = relationship(
+        "ToolCall",
+        back_populates="task",
+        order_by="ToolCall.created_at",
+        cascade="all, delete-orphan",
+    )
+    working_documents = relationship(
+        "WorkingDocument", back_populates="task", cascade="all, delete-orphan"
+    )
     user = relationship("User", back_populates="tasks")
 
 
@@ -222,13 +262,15 @@ class IntegrationRun(Base):
     connector_name = Column(String, nullable=False)
     request_payload = Column(JSON)
     response_payload = Column(JSON)
-    status = Column(String, nullable=False, default="pending")  # "success", "failed", "pending"
+    status = Column(
+        String, nullable=False, default="pending"
+    )  # "success", "failed", "pending"
     error_message = Column(Text)
     created_at = Column(DateTime(timezone=True), default=_now)
     duration_ms = Column(Integer)
-    execution_mode = Column(String)       # "template" | "agent" | "legacy"
-    rendered_request = Column(JSON)       # {method, url, headers, body}
-    spec_version = Column(Integer)        # which version of connector spec was used
+    execution_mode = Column(String)  # "template" | "agent" | "legacy"
+    rendered_request = Column(JSON)  # {method, url, headers, body}
+    spec_version = Column(Integer)  # which version of connector spec was used
 
     task = relationship("Task", back_populates="integration_runs")
 
@@ -238,7 +280,9 @@ class LlmCall(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
-    call_type = Column(String, nullable=False)       # "routing" | "interpretation" | "execution" | "spec_generation"
+    call_type = Column(
+        String, nullable=False
+    )  # "routing" | "interpretation" | "execution" | "spec_generation"
     model = Column(String, nullable=False)
     system_prompt = Column(Text, nullable=False)
     user_prompt = Column(Text, nullable=False)
@@ -261,17 +305,25 @@ class ConnectorSpec(Base):
     id = Column(String, primary_key=True, default=_uuid)
     connector_name = Column(String, unique=True, nullable=False)
     display_name = Column(String, nullable=False)
-    category = Column(String)                          # "hr", "procurement"
-    execution_mode = Column(String, nullable=False, default="template")  # "template" | "agent"
-    auth_type = Column(String, nullable=False)         # "bearer" | "api_key_header" | "basic" | "oauth2"
+    category = Column(String)  # "hr", "procurement"
+    execution_mode = Column(
+        String, nullable=False, default="template"
+    )  # "template" | "agent"
+    auth_type = Column(
+        String, nullable=False
+    )  # "bearer" | "api_key_header" | "basic" | "oauth2"
     auth_config = Column(JSON, nullable=False, default=dict)
-    base_url_template = Column(String)                 # Jinja2 template
+    base_url_template = Column(String)  # Jinja2 template
     tools = Column(JSON, nullable=False, default=list)
-    api_documentation = Column(Text)                   # for agent mode
+    api_documentation = Column(Text)  # for agent mode
     example_requests = Column(JSON, nullable=False, default=list)
     credential_fields = Column(JSON, nullable=False, default=list)
-    oauth_config = Column(JSON, nullable=True)         # {authorize_url, token_url, scopes, client_id, client_secret}
-    test_request = Column(JSON, nullable=True)          # {method, path_template, headers, success_status_codes}
+    oauth_config = Column(
+        JSON, nullable=True
+    )  # {authorize_url, token_url, scopes, client_id, client_secret}
+    test_request = Column(
+        JSON, nullable=True
+    )  # {method, path_template, headers, success_status_codes}
     version = Column(Integer, nullable=False, default=1)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
@@ -280,6 +332,7 @@ class ConnectorSpec(Base):
 
 class OAuthState(Base):
     """Temporary storage for pending OAuth authorization flows."""
+
     __tablename__ = "oauth_states"
 
     id = Column(String, primary_key=True, default=_uuid)
@@ -291,11 +344,15 @@ class OAuthState(Base):
 
 class ConnectorConfig(Base):
     __tablename__ = "connector_configs"
-    __table_args__ = (UniqueConstraint("connector_name", "venue_id", name="uq_connector_venue"),)
+    __table_args__ = (
+        UniqueConstraint("connector_name", "venue_id", name="uq_connector_venue"),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
     connector_name = Column(String, nullable=False)
-    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)  # NULL for platform connectors (e.g., Anthropic)
+    venue_id = Column(
+        String, ForeignKey("venues.id"), nullable=True
+    )  # NULL for platform connectors (e.g., Anthropic)
     config = Column(JSON, nullable=False, default=dict)
     enabled = Column(String, nullable=False, default="true")
     access_token = Column(Text, nullable=True)
@@ -341,15 +398,19 @@ class ToolCall(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
-    llm_call_id = Column(String, ForeignKey("llm_calls.id", ondelete="SET NULL"), nullable=True)
+    llm_call_id = Column(
+        String, ForeignKey("llm_calls.id", ondelete="SET NULL"), nullable=True
+    )
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
     iteration = Column(Integer, nullable=False)
-    tool_name = Column(String, nullable=False)          # e.g. "bidfood__check_stock"
+    tool_name = Column(String, nullable=False)  # e.g. "bidfood__check_stock"
     connector_name = Column(String, nullable=False)
     action = Column(String, nullable=False)
-    method = Column(String, nullable=False)              # GET/POST/PUT/DELETE
+    method = Column(String, nullable=False)  # GET/POST/PUT/DELETE
     input_params = Column(JSON, nullable=True)
-    status = Column(String, nullable=False, default="pending")  # "executed", "pending_approval", "approved", "rejected", "failed"
+    status = Column(
+        String, nullable=False, default="pending"
+    )  # "executed", "pending_approval", "approved", "rejected", "failed"
     result_payload = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     rendered_request = Column(JSON, nullable=True)
@@ -365,12 +426,16 @@ class WorkingDocument(Base):
     id = Column(String, primary_key=True, default=_uuid)
     task_id = Column(String, ForeignKey("tasks.id"), nullable=True, index=True)
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
-    doc_type = Column(String, nullable=False)          # "roster", "order", etc.
+    doc_type = Column(String, nullable=False)  # "roster", "order", etc.
     connector_name = Column(String, nullable=False)
     sync_mode = Column(String, nullable=False, default="auto")  # "auto" | "submit"
     data = Column(JSON, nullable=False, default=dict)
-    external_ref = Column(JSON, nullable=True)         # e.g. {"roster_id": "abc", "search_date": "2026-03-09"}
-    sync_status = Column(String, nullable=False, default="synced")  # "synced" | "dirty" | "syncing" | "error" | "pending_submit"
+    external_ref = Column(
+        JSON, nullable=True
+    )  # e.g. {"roster_id": "abc", "search_date": "2026-03-09"}
+    sync_status = Column(
+        String, nullable=False, default="synced"
+    )  # "synced" | "dirty" | "syncing" | "error" | "pending_submit"
     sync_error = Column(Text, nullable=True)
     pending_ops = Column(JSON, nullable=True, default=list)
     version = Column(Integer, nullable=False, default=1)
@@ -403,9 +468,11 @@ class HiringCriteria(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
-    scope = Column(String, nullable=False)              # "company" | "position"
-    position_name = Column(String, nullable=True)       # null for company-level
-    criteria = Column(JSON, nullable=False, default=list)  # [{id, text, required, category}]
+    scope = Column(String, nullable=False)  # "company" | "position"
+    position_name = Column(String, nullable=True)  # null for company-level
+    criteria = Column(
+        JSON, nullable=False, default=list
+    )  # [{id, text, required, category}]
     created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
@@ -418,7 +485,9 @@ class Job(Base):
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
     title = Column(String, nullable=False)
     department = Column(String, nullable=True)
-    status = Column(String, nullable=False, default="open")  # "draft" | "open" | "closed"
+    status = Column(
+        String, nullable=False, default="open"
+    )  # "draft" | "open" | "closed"
     description = Column(Text, nullable=True)
     criteria_id = Column(String, ForeignKey("hiring_criteria.id"), nullable=True)
     created_by = Column(String, nullable=True)
@@ -426,7 +495,9 @@ class Job(Base):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     criteria = relationship("HiringCriteria")
-    applications = relationship("Application", back_populates="job", cascade="all, delete-orphan")
+    applications = relationship(
+        "Application", back_populates="job", cascade="all, delete-orphan"
+    )
 
 
 class Candidate(Base):
@@ -441,17 +512,23 @@ class Candidate(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    applications = relationship("Application", back_populates="candidate", cascade="all, delete-orphan")
+    applications = relationship(
+        "Application", back_populates="candidate", cascade="all, delete-orphan"
+    )
 
 
 class Application(Base):
     __tablename__ = "applications"
-    __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
     job_id = Column(String, ForeignKey("jobs.id"), nullable=False)
     candidate_id = Column(String, ForeignKey("candidates.id"), nullable=False)
-    status = Column(String, nullable=False, default="applied")  # applied|screening|interview|offer|hired|rejected
+    status = Column(
+        String, nullable=False, default="applied"
+    )  # applied|screening|interview|offer|hired|rejected
     score = Column(Integer, nullable=True)
     notes = Column(Text, nullable=True)
     applied_at = Column(DateTime(timezone=True), default=_now)
@@ -470,8 +547,12 @@ class AutomatedTask(Base):
     description = Column(Text, nullable=True)
     agent_slug = Column(String, nullable=False)
     prompt = Column(Text, nullable=False)
-    schedule_type = Column(String, nullable=False, default="manual")  # manual|hourly|daily|weekly|monthly
-    schedule_config = Column(JSON, nullable=False, default=dict)  # {hour, minute, day_of_week, day_of_month}
+    schedule_type = Column(
+        String, nullable=False, default="manual"
+    )  # manual|hourly|daily|weekly|monthly
+    schedule_config = Column(
+        JSON, nullable=False, default=dict
+    )  # {hour, minute, day_of_week, day_of_month}
     status = Column(String, nullable=False, default="draft")  # active|paused|draft
     created_by = Column(String, ForeignKey("users.id"), nullable=True)
     last_run_at = Column(DateTime(timezone=True), nullable=True)
@@ -479,7 +560,12 @@ class AutomatedTask(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    runs = relationship("AutomatedTaskRun", back_populates="automated_task", cascade="all, delete-orphan", order_by="AutomatedTaskRun.started_at.desc()")
+    runs = relationship(
+        "AutomatedTaskRun",
+        back_populates="automated_task",
+        cascade="all, delete-orphan",
+        order_by="AutomatedTaskRun.started_at.desc()",
+    )
     creator = relationship("User")
 
 
@@ -502,7 +588,9 @@ class AutomatedTaskRun(Base):
 
 class TokenUsage(Base):
     __tablename__ = "token_usage"
-    __table_args__ = (UniqueConstraint("organization_id", "user_id", "date", name="uq_org_user_date"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", "date", name="uq_org_user_date"),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
@@ -519,13 +607,17 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id = Column(String, primary_key=True, default=_uuid)
-    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False, unique=True)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, unique=True
+    )
     stripe_customer_id = Column(String, nullable=True, unique=True)
     stripe_subscription_id = Column(String, nullable=True, unique=True)
     token_plan = Column(String, nullable=False, default="basic")  # basic|standard|max
     token_quota = Column(Integer, nullable=False, default=1_000_000)
     billing_cycle_start = Column(DateTime(timezone=True), nullable=True)
-    status = Column(String, nullable=False, default="trialing")  # active|past_due|canceled|trialing
+    status = Column(
+        String, nullable=False, default="trialing"
+    )  # active|past_due|canceled|trialing
     payment_method_last4 = Column(String, nullable=True)
     payment_method_brand = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
@@ -542,7 +634,9 @@ class TokenTopUp(Base):
     tokens = Column(Integer, nullable=False)
     amount_cents = Column(Integer, nullable=False)
     stripe_payment_intent_id = Column(String, nullable=True)
-    status = Column(String, nullable=False, default="pending")  # pending|completed|failed
+    status = Column(
+        String, nullable=False, default="pending"
+    )  # pending|completed|failed
     purchased_by = Column(String, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
@@ -554,7 +648,9 @@ class BillingEvent(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
-    event_type = Column(String, nullable=False)  # subscription_created|payment_succeeded|payment_failed|plan_changed|topup_purchased|quota_exceeded
+    event_type = Column(
+        String, nullable=False
+    )  # subscription_created|payment_succeeded|payment_failed|plan_changed|topup_purchased|quota_exceeded
     stripe_event_id = Column(String, nullable=True, unique=True)
     details = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
@@ -573,7 +669,12 @@ class Report(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    charts = relationship("ReportChart", back_populates="report", cascade="all, delete-orphan", order_by="ReportChart.position")
+    charts = relationship(
+        "ReportChart",
+        back_populates="report",
+        cascade="all, delete-orphan",
+        order_by="ReportChart.position",
+    )
     user = relationship("User")
 
 
@@ -583,10 +684,16 @@ class ReportChart(Base):
     id = Column(String, primary_key=True, default=_uuid)
     report_id = Column(String, ForeignKey("reports.id"), nullable=False)
     title = Column(String, nullable=False)
-    chart_type = Column(String, nullable=False, default="bar")  # bar|stacked_bar|line|pie|scatter|bubble|table
-    chart_spec = Column(JSON, nullable=False, default=dict)  # {x_axis, y_axis, series, orientation}
+    chart_type = Column(
+        String, nullable=False, default="bar"
+    )  # bar|stacked_bar|line|pie|scatter|bubble|table
+    chart_spec = Column(
+        JSON, nullable=False, default=dict
+    )  # {x_axis, y_axis, series, orientation}
     data = Column(JSON, nullable=False, default=list)  # row data
-    script = Column(JSON, nullable=False, default=dict)  # {connector, action, params} replayable recipe
+    script = Column(
+        JSON, nullable=False, default=dict
+    )  # {connector, action, params} replayable recipe
     position = Column(Integer, nullable=False, default=0)
     source_task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
@@ -604,7 +711,9 @@ class Deployment(Base):
     image_tag = Column(String, nullable=False)
     git_sha = Column(String, nullable=False)
     commit_message = Column(Text, nullable=True)
-    status = Column(String, nullable=False, default="pending")  # pending|running|success|failed
+    status = Column(
+        String, nullable=False, default="pending"
+    )  # pending|running|success|failed
     started_at = Column(DateTime(timezone=True), default=_now)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     logs_url = Column(String, nullable=True)
@@ -618,7 +727,9 @@ class E2ETest(Base):
     name = Column(String, nullable=False)
     description = Column(Text, nullable=False)  # The natural language input
     playwright_script = Column(Text, nullable=False)
-    steps_json = Column(JSON, default=list)  # [{step: 1, description: "...", selector: "..."}]
+    steps_json = Column(
+        JSON, default=list
+    )  # [{step: 1, description: "...", selector: "..."}]
     created_by = Column(String, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
@@ -630,9 +741,13 @@ class E2ETestRun(Base):
     __tablename__ = "e2e_test_runs"
 
     id = Column(String, primary_key=True, default=_uuid)
-    test_id = Column(String, ForeignKey("e2e_tests.id"), nullable=True)  # null for suite runs
+    test_id = Column(
+        String, ForeignKey("e2e_tests.id"), nullable=True
+    )  # null for suite runs
     environment = Column(String, nullable=False)
-    status = Column(String, nullable=False, default="pending")  # pending | running | passed | failed | error
+    status = Column(
+        String, nullable=False, default="pending"
+    )  # pending | running | passed | failed | error
     started_at = Column(DateTime(timezone=True), default=_now)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     duration_ms = Column(Integer, nullable=True)

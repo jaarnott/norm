@@ -26,10 +26,12 @@ def _build_parsed_response(response) -> dict:
         if block.type == "text":
             text_parts.append(block.text)
         elif block.type == "tool_use":
-            tool_calls_summary.append({
-                "tool": block.name,
-                "input": block.input,
-            })
+            tool_calls_summary.append(
+                {
+                    "tool": block.name,
+                    "input": block.input,
+                }
+            )
     if text_parts:
         parsed["text"] = "\n".join(text_parts)
     if tool_calls_summary:
@@ -40,6 +42,7 @@ def _build_parsed_response(response) -> dict:
 # ---------------------------------------------------------------------------
 # Reusable LLM helper — agents import this directly
 # ---------------------------------------------------------------------------
+
 
 def call_llm(
     system_prompt: str,
@@ -63,7 +66,11 @@ def call_llm(
 
     import anthropic
 
-    resolved_model = model or get_api_key("anthropic", "interpreter_model", db) or settings.LLM_INTERPRETER_MODEL
+    resolved_model = (
+        model
+        or get_api_key("anthropic", "interpreter_model", db)
+        or settings.LLM_INTERPRETER_MODEL
+    )
 
     today = datetime.date.today().isoformat()
     dated_user_prompt = f"[{today}] {user_prompt}"
@@ -89,12 +96,18 @@ def call_llm(
         # Persist LLM call record
         if db is not None:
             llm_call_id = _persist_llm_call(
-                db, task_id=task_id, call_type=call_type,
-                model=resolved_model, system_prompt=system_prompt,
-                user_prompt=user_prompt, raw_response=raw,
-                parsed_response=parsed, status="success",
+                db,
+                task_id=task_id,
+                call_type=call_type,
+                model=resolved_model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                raw_response=raw,
+                parsed_response=parsed,
+                status="success",
                 duration_ms=duration_ms,
-                input_tokens=_input_tokens, output_tokens=_output_tokens,
+                input_tokens=_input_tokens,
+                output_tokens=_output_tokens,
             )
 
         return parsed, llm_call_id
@@ -103,22 +116,41 @@ def call_llm(
         duration_ms = int((time.time() - t0) * 1000)
         if db is not None:
             _persist_llm_call(
-                db, task_id=task_id, call_type=call_type,
-                model=resolved_model, system_prompt=system_prompt,
-                user_prompt=user_prompt, raw_response=None,
-                parsed_response=None, status="error",
-                error_message=str(exc), duration_ms=duration_ms,
+                db,
+                task_id=task_id,
+                call_type=call_type,
+                model=resolved_model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                raw_response=None,
+                parsed_response=None,
+                status="error",
+                error_message=str(exc),
+                duration_ms=duration_ms,
             )
         raise
 
 
 def _persist_llm_call(
-    db: Session, *, task_id, call_type, model, system_prompt,
-    user_prompt, raw_response, parsed_response, status,
-    error_message=None, duration_ms=None, tools_provided=None,
-    input_tokens=None, output_tokens=None, user_id=None,
+    db: Session,
+    *,
+    task_id,
+    call_type,
+    model,
+    system_prompt,
+    user_prompt,
+    raw_response,
+    parsed_response,
+    status,
+    error_message=None,
+    duration_ms=None,
+    tools_provided=None,
+    input_tokens=None,
+    output_tokens=None,
+    user_id=None,
 ) -> str:
     from app.db.models import LlmCall
+
     record = LlmCall(
         task_id=task_id,
         call_type=call_type,
@@ -141,9 +173,11 @@ def _persist_llm_call(
     if input_tokens or output_tokens:
         try:
             from app.services.usage_service import record_usage
+
             # Resolve user_id from task if not provided
             if not user_id and task_id:
                 from app.db.models import Task
+
                 task = db.query(Task).filter(Task.id == task_id).first()
                 if task:
                     user_id = task.user_id
@@ -177,7 +211,11 @@ def call_llm_with_tools(
 
     import anthropic
 
-    resolved_model = model or get_api_key("anthropic", "interpreter_model", db) or settings.LLM_INTERPRETER_MODEL
+    resolved_model = (
+        model
+        or get_api_key("anthropic", "interpreter_model", db)
+        or settings.LLM_INTERPRETER_MODEL
+    )
 
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None
@@ -185,6 +223,7 @@ def call_llm_with_tools(
 
     try:
         from app.agents.tool_loop import _emit_event
+
         with client.messages.stream(
             model=resolved_model,
             max_tokens=max_tokens,
@@ -199,7 +238,11 @@ def call_llm_with_tools(
 
         # Serialize for audit logging
         raw_text = json.dumps([block.model_dump() for block in response.content])
-        user_prompt_summary = json.dumps(messages[-1]["content"][:500] if isinstance(messages[-1]["content"], str) else "[tool_results]")
+        user_prompt_summary = json.dumps(
+            messages[-1]["content"][:500]
+            if isinstance(messages[-1]["content"], str)
+            else "[tool_results]"
+        )
 
         # Extract token usage from response
         _input_tokens = response.usage.input_tokens if response.usage else None
@@ -207,13 +250,19 @@ def call_llm_with_tools(
 
         if db is not None:
             llm_call_id = _persist_llm_call(
-                db, task_id=task_id, call_type=call_type,
-                model=resolved_model, system_prompt=system_prompt,
-                user_prompt=user_prompt_summary, raw_response=raw_text,
+                db,
+                task_id=task_id,
+                call_type=call_type,
+                model=resolved_model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt_summary,
+                raw_response=raw_text,
                 parsed_response=_build_parsed_response(response),
-                status="success", duration_ms=duration_ms,
+                status="success",
+                duration_ms=duration_ms,
                 tools_provided=tools if tools else None,
-                input_tokens=_input_tokens, output_tokens=_output_tokens,
+                input_tokens=_input_tokens,
+                output_tokens=_output_tokens,
             )
 
         return response, llm_call_id
@@ -222,11 +271,17 @@ def call_llm_with_tools(
         duration_ms = int((time.time() - t0) * 1000)
         if db is not None:
             _persist_llm_call(
-                db, task_id=task_id, call_type=call_type,
-                model=resolved_model, system_prompt=system_prompt,
-                user_prompt="[tool_use call]", raw_response=None,
-                parsed_response=None, status="error",
-                error_message=str(exc), duration_ms=duration_ms,
+                db,
+                task_id=task_id,
+                call_type=call_type,
+                model=resolved_model,
+                system_prompt=system_prompt,
+                user_prompt="[tool_use call]",
+                raw_response=None,
+                parsed_response=None,
+                status="error",
+                error_message=str(exc),
+                duration_ms=duration_ms,
             )
         raise
 

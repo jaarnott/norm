@@ -3,15 +3,33 @@
 import re
 
 ROLES = [
-    "bartender", "barista", "chef", "head chef", "sous chef",
-    "kitchen hand", "dishwasher", "waiter", "waitress", "host",
-    "hostess", "manager", "duty manager", "floor manager",
-    "bar manager", "kitchen manager", "server",
+    "bartender",
+    "barista",
+    "chef",
+    "head chef",
+    "sous chef",
+    "kitchen hand",
+    "dishwasher",
+    "waiter",
+    "waitress",
+    "host",
+    "hostess",
+    "manager",
+    "duty manager",
+    "floor manager",
+    "bar manager",
+    "kitchen manager",
+    "server",
 ]
 
 DAYS = [
-    "monday", "tuesday", "wednesday", "thursday",
-    "friday", "saturday", "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
 ]
 
 
@@ -57,7 +75,9 @@ def extract_name_from_short_reply(text: str) -> str | None:
     text = text.strip()
 
     # "her name is <Name>" / "name is <Name>" / "it's <Name>" / "they're called <Name>"
-    m = re.search(r"(?:name\s+is|it'?s|called)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", text)
+    m = re.search(
+        r"(?:name\s+is|it'?s|called)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", text
+    )
     if m:
         return m.group(1)
 

@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class ProcurementAgent(BaseDomainAgent):
-
     @property
     def domain(self) -> str:
         return "procurement"
@@ -34,9 +33,19 @@ class ProcurementAgent(BaseDomainAgent):
         venue_timezone: str | None = None,
     ) -> dict:
         # Try the agentic tool loop first (if tools are bound)
-        system_prompt, anthropic_tools = self.get_tool_definitions(db, active_venue_name=venue_name, venue_timezone=venue_timezone)
+        system_prompt, anthropic_tools = self.get_tool_definitions(
+            db, active_venue_name=venue_name, venue_timezone=venue_timezone
+        )
         if anthropic_tools:
-            return self.handle_message_with_tools(message, db, user_id, task_id, venue_id=venue_id, venue_name=venue_name, venue_timezone=venue_timezone)
+            return self.handle_message_with_tools(
+                message,
+                db,
+                user_id,
+                task_id,
+                venue_id=venue_id,
+                venue_name=venue_name,
+                venue_timezone=venue_timezone,
+            )
 
         # Classic single-shot interpretation (no tools bound)
         ctx = self.build_context(db, user_id)
@@ -44,6 +53,7 @@ class ProcurementAgent(BaseDomainAgent):
         # If task_id provided, load it as open task for follow-up
         if task_id:
             from app.services.order_service import _task_to_dict as order_to_dict
+
             task = db.query(Task).filter(Task.id == task_id).first()
             if task and task.domain == "procurement":
                 ctx["open_task"] = order_to_dict(task)
@@ -82,7 +92,9 @@ class ProcurementAgent(BaseDomainAgent):
         intent = parsed.get("intent", "procurement.order")
 
         # New task path
-        result = self._create(message, extracted, clarification_question, db, user_id, intent=intent)
+        result = self._create(
+            message, extracted, clarification_question, db, user_id, intent=intent
+        )
 
         # Back-fill task_id on the LLM call record
         if llm_call_id and result.get("id"):

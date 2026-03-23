@@ -21,10 +21,12 @@ _REGISTRY: dict[tuple[str, str], InternalHandler] = {}
 
 def register(connector_name: str, action: str):
     """Decorator to register an internal tool handler."""
+
     def decorator(fn: InternalHandler) -> InternalHandler:
         _REGISTRY[(connector_name, action)] = fn
         logger.info("Registered internal handler: %s.%s", connector_name, action)
         return fn
+
     return decorator
 
 
@@ -36,6 +38,7 @@ def get_handler(connector_name: str, action: str) -> InternalHandler | None:
 # ---------------------------------------------------------------------------
 # HR Criteria Handlers
 # ---------------------------------------------------------------------------
+
 
 @register("norm", "get_criteria")
 def _get_criteria(params: dict, db: Session, task_id: str | None) -> dict:
@@ -86,7 +89,11 @@ def _save_criteria(params: dict, db: Session, task_id: str | None) -> dict:
     query = db.query(HiringCriteria).filter(HiringCriteria.scope == scope)
     if scope == "position":
         if not position_name:
-            return {"success": False, "data": {}, "error": "position_name is required for position scope"}
+            return {
+                "success": False,
+                "data": {},
+                "error": "position_name is required for position scope",
+            }
         query = query.filter(HiringCriteria.position_name == position_name)
     else:
         query = query.filter(HiringCriteria.position_name.is_(None))
@@ -96,6 +103,7 @@ def _save_criteria(params: dict, db: Session, task_id: str | None) -> dict:
     if existing:
         existing.criteria = criteria
         from sqlalchemy.orm.attributes import flag_modified
+
         flag_modified(existing, "criteria")
         db.flush()
         row = existing
@@ -123,6 +131,7 @@ def _save_criteria(params: dict, db: Session, task_id: str | None) -> dict:
 # Hiring — Jobs, Candidates, Applications
 # ---------------------------------------------------------------------------
 
+
 def _job_to_dict(job, include_applications: bool = False) -> dict:
     d: dict = {
         "id": job.id,
@@ -133,7 +142,9 @@ def _job_to_dict(job, include_applications: bool = False) -> dict:
         "criteria_id": job.criteria_id,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
-        "candidate_count": len([a for a in job.applications if a.status != "rejected"]) if job.applications else 0,
+        "candidate_count": len([a for a in job.applications if a.status != "rejected"])
+        if job.applications
+        else 0,
     }
     if include_applications:
         d["applications"] = [
@@ -157,6 +168,7 @@ def _job_to_dict(job, include_applications: bool = False) -> dict:
 def _get_jobs(params: dict, db: Session, task_id: str | None) -> dict:
     """List all jobs with optional status filter."""
     from app.db.models import Job
+
     q = db.query(Job)
     status = params.get("status")
     if status:
@@ -169,6 +181,7 @@ def _get_jobs(params: dict, db: Session, task_id: str | None) -> dict:
 def _get_job(params: dict, db: Session, task_id: str | None) -> dict:
     """Get a single job with its applications and candidate info."""
     from app.db.models import Job
+
     job_id = params.get("job_id")
     if not job_id:
         return {"success": False, "data": {}, "error": "job_id is required"}
@@ -182,6 +195,7 @@ def _get_job(params: dict, db: Session, task_id: str | None) -> dict:
 def _create_job(params: dict, db: Session, task_id: str | None) -> dict:
     """Create a new job position."""
     from app.db.models import Job
+
     title = params.get("title")
     if not title:
         return {"success": False, "data": {}, "error": "title is required"}
@@ -201,6 +215,7 @@ def _create_job(params: dict, db: Session, task_id: str | None) -> dict:
 def _update_job(params: dict, db: Session, task_id: str | None) -> dict:
     """Update a job's fields."""
     from app.db.models import Job
+
     job_id = params.get("job_id")
     if not job_id:
         return {"success": False, "data": {}, "error": "job_id is required"}
@@ -218,12 +233,17 @@ def _update_job(params: dict, db: Session, task_id: str | None) -> dict:
 def _get_candidate(params: dict, db: Session, task_id: str | None) -> dict:
     """Get a candidate with their application details."""
     from app.db.models import Candidate
+
     candidate_id = params.get("candidate_id")
     if not candidate_id:
         return {"success": False, "data": {}, "error": "candidate_id is required"}
     candidate = db.query(Candidate).filter(Candidate.id == candidate_id).first()
     if not candidate:
-        return {"success": False, "data": {}, "error": f"Candidate not found: {candidate_id}"}
+        return {
+            "success": False,
+            "data": {},
+            "error": f"Candidate not found: {candidate_id}",
+        }
 
     apps = candidate.applications
     job_id = params.get("job_id")
@@ -259,6 +279,7 @@ def _get_candidate(params: dict, db: Session, task_id: str | None) -> dict:
 def _create_candidate(params: dict, db: Session, task_id: str | None) -> dict:
     """Add a candidate to a job."""
     from app.db.models import Candidate, Application
+
     job_id = params.get("job_id")
     name = params.get("name")
     if not job_id or not name:
@@ -303,12 +324,17 @@ def _create_candidate(params: dict, db: Session, task_id: str | None) -> dict:
 def _update_application(params: dict, db: Session, task_id: str | None) -> dict:
     """Update an application's status, score, or notes."""
     from app.db.models import Application
+
     app_id = params.get("application_id")
     if not app_id:
         return {"success": False, "data": {}, "error": "application_id is required"}
     app = db.query(Application).filter(Application.id == app_id).first()
     if not app:
-        return {"success": False, "data": {}, "error": f"Application not found: {app_id}"}
+        return {
+            "success": False,
+            "data": {},
+            "error": f"Application not found: {app_id}",
+        }
     for field in ("status", "score", "notes"):
         if field in params:
             setattr(app, field, params[field])
@@ -330,6 +356,7 @@ def _update_application(params: dict, db: Session, task_id: str | None) -> dict:
 # BambooHR — File Access (hybrid: internal handler calling external API)
 # ---------------------------------------------------------------------------
 
+
 @register("bamboohr", "get_applicant_resume")
 def _get_applicant_resume(params: dict, db: Session, task_id: str | None) -> dict:
     """Fetch an applicant's resume from BambooHR and return as a document block for the LLM."""
@@ -341,11 +368,17 @@ def _get_applicant_resume(params: dict, db: Session, task_id: str | None) -> dic
     if not file_id:
         return {"success": False, "data": {}, "error": "file_id is required"}
 
-    config = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == "bamboohr"
-    ).first()
+    config = (
+        db.query(ConnectorConfig)
+        .filter(ConnectorConfig.connector_name == "bamboohr")
+        .first()
+    )
     if not config:
-        return {"success": False, "data": {}, "error": "BambooHR connector not configured"}
+        return {
+            "success": False,
+            "data": {},
+            "error": "BambooHR connector not configured",
+        }
 
     subdomain = config.config.get("subdomain", "")
     api_key = config.config.get("api_key", "")
@@ -357,9 +390,15 @@ def _get_applicant_resume(params: dict, db: Session, task_id: str | None) -> dic
         return {"success": False, "data": {}, "error": f"Failed to fetch file: {exc}"}
 
     if resp.status_code != 200:
-        return {"success": False, "data": {}, "error": f"BambooHR returned {resp.status_code}"}
+        return {
+            "success": False,
+            "data": {},
+            "error": f"BambooHR returned {resp.status_code}",
+        }
 
-    content_type = resp.headers.get("content-type", "application/pdf").split(";")[0].strip()
+    content_type = (
+        resp.headers.get("content-type", "application/pdf").split(";")[0].strip()
+    )
     # Parse filename from Content-Disposition header
     cd = resp.headers.get("content-disposition", "")
     filename = "resume.pdf"
@@ -370,7 +409,11 @@ def _get_applicant_resume(params: dict, db: Session, task_id: str | None) -> dic
 
     return {
         "success": True,
-        "data": {"filename": filename, "size_bytes": len(resp.content), "content_type": content_type},
+        "data": {
+            "filename": filename,
+            "size_bytes": len(resp.content),
+            "content_type": content_type,
+        },
         "_document": {
             "type": "document",
             "source": {"type": "base64", "media_type": content_type, "data": b64},
@@ -381,6 +424,7 @@ def _get_applicant_resume(params: dict, db: Session, task_id: str | None) -> dic
 # ---------------------------------------------------------------------------
 # Reports — Chart Rendering
 # ---------------------------------------------------------------------------
+
 
 @register("norm_reports", "render_chart")
 def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
@@ -394,7 +438,11 @@ def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
 
     source_id = params.get("source_tool_call_id", "")
     if not source_id:
-        return {"success": False, "data": {}, "error": "source_tool_call_id is required"}
+        return {
+            "success": False,
+            "data": {},
+            "error": "source_tool_call_id is required",
+        }
 
     tc = db.query(ToolCall).filter(ToolCall.id == source_id).first()
 
@@ -408,17 +456,27 @@ def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
                 ToolCall.method == "GET",
                 ToolCall.status == "executed",
                 ToolCall.connector_name != "norm_reports",  # not another render_chart
-                ToolCall.connector_name != "norm",           # not internal tools
+                ToolCall.connector_name != "norm",  # not internal tools
                 ToolCall.result_payload.isnot(None),
             )
             .order_by(ToolCall.created_at.desc())
             .first()
         )
         if tc:
-            logger.info("render_chart: ID %s not found, falling back to most recent GET: %s (%s.%s)", source_id, tc.id, tc.connector_name, tc.action)
+            logger.info(
+                "render_chart: ID %s not found, falling back to most recent GET: %s (%s.%s)",
+                source_id,
+                tc.id,
+                tc.connector_name,
+                tc.action,
+            )
 
     if not tc or not tc.result_payload:
-        return {"success": False, "data": {}, "error": f"Tool call not found or has no data: {source_id}"}
+        return {
+            "success": False,
+            "data": {},
+            "error": f"Tool call not found or has no data: {source_id}",
+        }
 
     # Extract the data array from the tool call's result
     payload = tc.result_payload
@@ -426,11 +484,13 @@ def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
 
     # Apply response_transform if configured on the source tool
     from app.agents.tool_loop import _find_tool_def
+
     tool_def = _find_tool_def(tc.connector_name, tc.action, db)
     if tool_def:
         transform_config = tool_def.get("response_transform")
         if transform_config and transform_config.get("enabled"):
             from app.connectors.response_transform import apply_response_transform
+
             transformed = apply_response_transform(payload, transform_config)
             rows = _find_data_array(transformed)
 
@@ -446,6 +506,7 @@ def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
     if isinstance(select_fields, str):
         try:
             import json
+
             select_fields = json.loads(select_fields)
         except (json.JSONDecodeError, TypeError):
             select_fields = None
@@ -457,6 +518,7 @@ def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
     if isinstance(field_labels, str):
         try:
             import json
+
             field_labels = json.loads(field_labels)
         except (json.JSONDecodeError, TypeError):
             field_labels = {}
@@ -469,21 +531,35 @@ def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
     series = params.get("series", [])
     orientation = params.get("orientation", "vertical")
 
-    default_colors = ["#d4c4ae", "#a8cfc0", "#b8c8dc", "#e0c8a8", "#c8b8d4", "#a8d0b8", "#d8c0b8", "#b8d0d4"]
+    default_colors = [
+        "#d4c4ae",
+        "#a8cfc0",
+        "#b8c8dc",
+        "#e0c8a8",
+        "#c8b8d4",
+        "#a8d0b8",
+        "#d8c0b8",
+        "#b8d0d4",
+    ]
     formatted_series = []
     for i, s in enumerate(series):
         if isinstance(s, dict):
             key = s.get("key", "")
-            formatted_series.append({
-                "key": key,
-                "label": s.get("label", field_labels.get(key, key)),
-                "color": s.get("color", default_colors[i % len(default_colors)]),
-            })
+            formatted_series.append(
+                {
+                    "key": key,
+                    "label": s.get("label", field_labels.get(key, key)),
+                    "color": s.get("color", default_colors[i % len(default_colors)]),
+                }
+            )
         elif isinstance(s, str):
-            formatted_series.append({
-                "key": s, "label": field_labels.get(s, s),
-                "color": default_colors[i % len(default_colors)],
-            })
+            formatted_series.append(
+                {
+                    "key": s,
+                    "label": field_labels.get(s, s),
+                    "color": default_colors[i % len(default_colors)],
+                }
+            )
 
     return {
         "success": True,
@@ -523,6 +599,7 @@ def _find_data_array(payload):
 # Search Tool Result (slimmed result search)
 # ---------------------------------------------------------------------------
 
+
 @register("norm", "search_tool_result")
 def _handle_search_tool_result(params: dict, db: Session, task_id: str | None) -> dict:
     """Search through a stored tool call's result payload by keyword."""
@@ -540,6 +617,7 @@ def _handle_search_tool_result(params: dict, db: Session, task_id: str | None) -
 # ---------------------------------------------------------------------------
 # Automated Tasks
 # ---------------------------------------------------------------------------
+
 
 def _task_to_dict(t) -> dict:
     return {
@@ -566,7 +644,11 @@ def _create_automated_task(params: dict, db: Session, task_id: str | None) -> di
     prompt = params.get("prompt")
     agent_slug = params.get("agent_slug")
     if not title or not prompt or not agent_slug:
-        return {"success": False, "data": {}, "error": "title, prompt, and agent_slug are required"}
+        return {
+            "success": False,
+            "data": {},
+            "error": "title, prompt, and agent_slug are required",
+        }
 
     task = AutomatedTask(
         title=title,
@@ -614,7 +696,14 @@ def _update_automated_task(params: dict, db: Session, task_id: str | None) -> di
     if not task:
         return {"success": False, "data": {}, "error": f"Task not found: {atask_id}"}
 
-    for field in ("title", "description", "prompt", "schedule_type", "schedule_config", "status"):
+    for field in (
+        "title",
+        "description",
+        "prompt",
+        "schedule_type",
+        "schedule_config",
+        "status",
+    ):
         if field in params:
             setattr(task, field, params[field])
 
@@ -646,6 +735,7 @@ def _run_automated_task(params: dict, db: Session, task_id: str | None) -> dict:
 # Consolidator Execution Engine
 # ---------------------------------------------------------------------------
 
+
 def _resolve_path(obj, path_str: str):
     """Walk a dotted path with optional [N] array indexing into a nested object.
 
@@ -655,12 +745,13 @@ def _resolve_path(obj, path_str: str):
         "name"          -> obj[0]["name"] if obj is a list (auto-unwrap first element)
     """
     import re as _re
+
     segments = path_str.split(".")
     current = obj
     for seg in segments:
         if current is None:
             return None
-        m = _re.match(r'^(\w+)\[(\d+)\]$', seg)
+        m = _re.match(r"^(\w+)\[(\d+)\]$", seg)
         if m:
             key, idx = m.group(1), int(m.group(2))
             if isinstance(current, dict):
@@ -674,7 +765,11 @@ def _resolve_path(obj, path_str: str):
         else:
             if isinstance(current, dict):
                 current = current.get(seg)
-            elif isinstance(current, list) and len(current) > 0 and isinstance(current[0], dict):
+            elif (
+                isinstance(current, list)
+                and len(current) > 0
+                and isinstance(current[0], dict)
+            ):
                 current = current[0].get(seg)
             else:
                 return None
@@ -697,7 +792,9 @@ def _step_result_preview(step_result: dict) -> dict:
             if isinstance(v, list):
                 preview[k] = f"[{len(v)} items]"
                 if v and isinstance(v[0], dict):
-                    preview[k] = f"[{len(v)} items: {{{', '.join(list(v[0].keys())[:5])}}}]"
+                    preview[k] = (
+                        f"[{len(v)} items: {{{', '.join(list(v[0].keys())[:5])}}}]"
+                    )
             elif isinstance(v, dict):
                 preview[k] = f"{{{', '.join(list(v.keys())[:5])}}}"
             else:
@@ -707,7 +804,9 @@ def _step_result_preview(step_result: dict) -> dict:
     return {"_value": str(data)[:200]}
 
 
-def execute_consolidator(config: dict, input_params: dict, db: Session, task_id: str | None) -> dict:
+def execute_consolidator(
+    config: dict, input_params: dict, db: Session, task_id: str | None
+) -> dict:
     """Execute a consolidator config — call sub-tools and aggregate results.
 
     A consolidator defines a sequence of connector tool calls (steps),
@@ -725,7 +824,11 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
     output_fields = config.get("output_fields")
 
     if not steps:
-        return {"success": False, "data": {}, "error": "No steps defined in consolidator config"}
+        return {
+            "success": False,
+            "data": {},
+            "error": "No steps defined in consolidator config",
+        }
 
     # Build template context for variable resolution
     # Resolve timezone from venue if available
@@ -734,24 +837,37 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
         venue_name = input_params.get("venue") or input_params.get("venue_name")
         if venue_name:
             from app.services.venue_service import resolve_venue_id
+
             venue_id = resolve_venue_id(venue_name, db)
             if venue_id:
                 from app.db.models import Venue
+
                 venue = db.query(Venue).filter(Venue.id == venue_id).first()
                 if venue and venue.timezone:
                     from zoneinfo import ZoneInfo
+
                     tz = ZoneInfo(venue.timezone)
-                    offset = datetime.datetime.now(tz).strftime('%z')
-                    tz_offset = f"%2B{offset[1:3]}:{offset[3:]}" if offset[0] == '+' else f"-{offset[1:3]}:{offset[3:]}"
+                    offset = datetime.datetime.now(tz).strftime("%z")
+                    tz_offset = (
+                        f"%2B{offset[1:3]}:{offset[3:]}"
+                        if offset[0] == "+"
+                        else f"-{offset[1:3]}:{offset[3:]}"
+                    )
         elif not venue_name:
             # No venue specified — try to find any venue with a timezone
             from app.db.models import Venue as _V
+
             any_venue = db.query(_V).filter(_V.timezone.isnot(None)).first()
             if any_venue and any_venue.timezone:
                 from zoneinfo import ZoneInfo
+
                 tz = ZoneInfo(any_venue.timezone)
-                offset = datetime.datetime.now(tz).strftime('%z')
-                tz_offset = f"%2B{offset[1:3]}:{offset[3:]}" if offset[0] == '+' else f"-{offset[1:3]}:{offset[3:]}"
+                offset = datetime.datetime.now(tz).strftime("%z")
+                tz_offset = (
+                    f"%2B{offset[1:3]}:{offset[3:]}"
+                    if offset[0] == "+"
+                    else f"-{offset[1:3]}:{offset[3:]}"
+                )
     except Exception:
         pass  # Fall back to UTC
 
@@ -771,6 +887,7 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
 
     def resolve_template(value: str) -> str:
         """Replace {{var}} with values from template context or step results."""
+
         def replacer(match: re.Match) -> str:
             key = match.group(1).strip()
             # 1. Flat lookup in template context (backwards compatible)
@@ -793,10 +910,14 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
                 return json.dumps(data) if not isinstance(data, str) else data
             # 4. No match — return original placeholder
             return match.group(0)
-        return re.sub(r'\{\{(.+?)\}\}', replacer, value)
+
+        return re.sub(r"\{\{(.+?)\}\}", replacer, value)
 
     def resolve_params(params: dict) -> dict:
-        return {k: resolve_template(str(v)) if isinstance(v, str) else v for k, v in params.items()}
+        return {
+            k: resolve_template(str(v)) if isinstance(v, str) else v
+            for k, v in params.items()
+        }
 
     # Execute each step
     step_results: dict[str, dict] = {}
@@ -810,20 +931,36 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
         filter_config = step.get("filter")
         if source_step and filter_config:
             from app.agents.tool_loop import _unwrap_array
+
             source_data = step_results.get(source_step, {})
-            raw = source_data.get("data", source_data) if isinstance(source_data, dict) else source_data
+            raw = (
+                source_data.get("data", source_data)
+                if isinstance(source_data, dict)
+                else source_data
+            )
             arr = _unwrap_array(raw) if isinstance(raw, (dict, list)) else None
 
             if arr is None:
-                step_results[step_id] = {"error": f"Source step '{source_step}' has no array data"}
-                step_meta.append({"id": step_id, "status": "error", "type": "filter", "error": f"No data from '{source_step}'"})
+                step_results[step_id] = {
+                    "error": f"Source step '{source_step}' has no array data"
+                }
+                step_meta.append(
+                    {
+                        "id": step_id,
+                        "status": "error",
+                        "type": "filter",
+                        "error": f"No data from '{source_step}'",
+                    }
+                )
                 continue
 
             field = filter_config.get("field", "")
             keyword = resolve_template(filter_config.get("contains", ""))
             matches = [
-                item for item in arr
-                if isinstance(item, dict) and keyword.lower() in str(item.get(field, "")).lower()
+                item
+                for item in arr
+                if isinstance(item, dict)
+                and keyword.lower() in str(item.get(field, "")).lower()
             ]
 
             # Single match → store flat so {{step_id.field}} resolves directly
@@ -831,7 +968,15 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
                 step_results[step_id] = {"success": True, "data": matches[0]}
             else:
                 step_results[step_id] = {"success": True, "data": matches}
-            step_meta.append({"id": step_id, "status": "success", "type": "filter", "match_count": len(matches), "result_preview": _step_result_preview(step_results[step_id])})
+            step_meta.append(
+                {
+                    "id": step_id,
+                    "status": "success",
+                    "type": "filter",
+                    "match_count": len(matches),
+                    "result_preview": _step_result_preview(step_results[step_id]),
+                }
+            )
             continue
 
         # --- API step: call a connector tool ---
@@ -841,14 +986,30 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
 
         if not connector_name or not action:
             step_results[step_id] = {"error": "Missing connector or action"}
-            step_meta.append({"id": step_id, "status": "error", "error": "Missing connector or action"})
+            step_meta.append(
+                {
+                    "id": step_id,
+                    "status": "error",
+                    "error": "Missing connector or action",
+                }
+            )
             continue
 
         # Look up spec and tool def
-        spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == connector_name).first()
+        spec = (
+            db.query(ConnectorSpec)
+            .filter(ConnectorSpec.connector_name == connector_name)
+            .first()
+        )
         if not spec:
             step_results[step_id] = {"error": f"Connector not found: {connector_name}"}
-            step_meta.append({"id": step_id, "status": "error", "error": f"Connector not found: {connector_name}"})
+            step_meta.append(
+                {
+                    "id": step_id,
+                    "status": "error",
+                    "error": f"Connector not found: {connector_name}",
+                }
+            )
             continue
 
         tool_def = None
@@ -858,21 +1019,33 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
                 break
         if not tool_def:
             step_results[step_id] = {"error": f"Tool not found: {action}"}
-            step_meta.append({"id": step_id, "status": "error", "error": f"Tool not found: {action}"})
+            step_meta.append(
+                {"id": step_id, "status": "error", "error": f"Tool not found: {action}"}
+            )
             continue
 
         # Get credentials (venue-aware) — check step params, then input_params
         from app.agents.tool_loop import _resolve_venue_config
+
         venue_lookup = {**input_params, **step_params}  # step params take priority
         config_row = _resolve_venue_config(connector_name, venue_lookup, db)
 
         # Fallback: if no venue-specific config found and no venue was specified,
         # try to find ANY enabled config for this connector
-        if not config_row and not venue_lookup.get("venue") and not venue_lookup.get("venue_name") and not venue_lookup.get("venue_id"):
-            config_row = db.query(ConnectorConfig).filter(
-                ConnectorConfig.connector_name == connector_name,
-                ConnectorConfig.enabled == "true",
-            ).first()
+        if (
+            not config_row
+            and not venue_lookup.get("venue")
+            and not venue_lookup.get("venue_name")
+            and not venue_lookup.get("venue_id")
+        ):
+            config_row = (
+                db.query(ConnectorConfig)
+                .filter(
+                    ConnectorConfig.connector_name == connector_name,
+                    ConnectorConfig.enabled == "true",
+                )
+                .first()
+            )
 
         credentials = config_row.config if config_row else {}
         venue_id = config_row.venue_id if config_row else None
@@ -884,7 +1057,9 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
 
         t0 = time.time()
         try:
-            result, rendered = execute_spec(spec, tool_def, step_params, credentials, db, task_id, venue_id=venue_id)
+            result, rendered = execute_spec(
+                spec, tool_def, step_params, credentials, db, task_id, venue_id=venue_id
+            )
             duration_ms = int((time.time() - t0) * 1000)
 
             # Apply the tool's response_transform to the step result
@@ -892,9 +1067,22 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
             step_transform = tool_def.get("response_transform")
             if step_transform and step_transform.get("enabled"):
                 from app.connectors.response_transform import apply_response_transform
-                wrapped = {"data": step_payload} if isinstance(step_payload, list) else (step_payload if isinstance(step_payload, dict) else {"data": step_payload})
+
+                wrapped = (
+                    {"data": step_payload}
+                    if isinstance(step_payload, list)
+                    else (
+                        step_payload
+                        if isinstance(step_payload, dict)
+                        else {"data": step_payload}
+                    )
+                )
                 transformed = apply_response_transform(wrapped, step_transform)
-                step_payload = transformed.get("data", transformed) if isinstance(transformed, dict) else transformed
+                step_payload = (
+                    transformed.get("data", transformed)
+                    if isinstance(transformed, dict)
+                    else transformed
+                )
 
             step_results[step_id] = {
                 "success": result.success,
@@ -913,16 +1101,30 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
             payload = result.response_payload
             if payload is not None:
                 from app.agents.tool_loop import _unwrap_array
-                arr = _unwrap_array(payload) if isinstance(payload, (dict, list)) else None
+
+                arr = (
+                    _unwrap_array(payload)
+                    if isinstance(payload, (dict, list))
+                    else None
+                )
                 if arr is not None and len(arr) == 0:
                     meta_entry["result_empty"] = True
-                    meta_entry["note"] = "API returned successfully but with no data for these parameters"
+                    meta_entry["note"] = (
+                        "API returned successfully but with no data for these parameters"
+                    )
             meta_entry["result_preview"] = _step_result_preview(step_results[step_id])
             step_meta.append(meta_entry)
         except Exception as exc:
             duration_ms = int((time.time() - t0) * 1000)
             step_results[step_id] = {"error": str(exc)}
-            step_meta.append({"id": step_id, "status": "error", "duration_ms": duration_ms, "error": str(exc)})
+            step_meta.append(
+                {
+                    "id": step_id,
+                    "status": "error",
+                    "duration_ms": duration_ms,
+                    "error": str(exc),
+                }
+            )
 
     # Apply search if configured
     if search_config:
@@ -931,6 +1133,7 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
 
         if keyword:
             from app.agents.tool_loop import _unwrap_array
+
             filtered_results: dict[str, list] = {}
 
             for step_id in search_steps:
@@ -943,7 +1146,9 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
                     for item in arr:
                         if keyword.lower() in json.dumps(item).lower():
                             if output_fields:
-                                matches.append({k: item.get(k) for k in output_fields if k in item})
+                                matches.append(
+                                    {k: item.get(k) for k in output_fields if k in item}
+                                )
                             else:
                                 matches.append(item)
                     filtered_results[step_id] = matches
@@ -954,7 +1159,10 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
                     filtered_results[step_id] = []
 
             # Check for overall empty results and add diagnostic info
-            all_empty = all(len(v) == 0 if isinstance(v, list) else True for v in filtered_results.values())
+            all_empty = all(
+                len(v) == 0 if isinstance(v, list) else True
+                for v in filtered_results.values()
+            )
             result_data: dict = filtered_results
             if all_empty:
                 result_data = {
@@ -963,11 +1171,11 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
                         "message": f"No results found matching '{keyword}' across searched steps.",
                         "searched_steps": search_steps,
                         "steps_with_empty_api_response": [
-                            s["id"] for s in step_meta
-                            if s.get("result_empty")
+                            s["id"] for s in step_meta if s.get("result_empty")
                         ],
                         "steps_with_errors": [
-                            {"id": s["id"], "error": s.get("error")} for s in step_meta
+                            {"id": s["id"], "error": s.get("error")}
+                            for s in step_meta
                             if s.get("status") == "error"
                         ],
                         "hint": "This may mean no data exists for the given parameters (e.g., date too far in the past, item not found in this template).",
@@ -986,10 +1194,15 @@ def execute_consolidator(config: dict, input_params: dict, db: Session, task_id:
             data = sr.get("data", sr)
             arr = _unwrap_array(data) if isinstance(data, (dict, list)) else None
             if arr:
-                step_results[step_id] = [{k: item.get(k) for k in output_fields if k in item} for item in arr]
+                step_results[step_id] = [
+                    {k: item.get(k) for k in output_fields if k in item} for item in arr
+                ]
 
     return {
-        "success": all(sr.get("success", False) or "error" not in sr for sr in step_results.values()),
+        "success": all(
+            sr.get("success", False) or "error" not in sr
+            for sr in step_results.values()
+        ),
         "data": step_results,
         "_steps": step_meta,
     }

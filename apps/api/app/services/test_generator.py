@@ -9,12 +9,46 @@ logger = logging.getLogger(__name__)
 
 # Available data-testid selectors in the frontend
 AVAILABLE_SELECTORS = {
-    "sidebar": ["sidebar-home", "sidebar-procurement", "sidebar-hr", "sidebar-reports", "sidebar-settings", "sidebar-logout"],
-    "auth": ["login-email", "login-password", "login-name", "login-submit", "login-toggle-mode"],
+    "sidebar": [
+        "sidebar-home",
+        "sidebar-procurement",
+        "sidebar-hr",
+        "sidebar-reports",
+        "sidebar-settings",
+        "sidebar-logout",
+    ],
+    "auth": [
+        "login-email",
+        "login-password",
+        "login-name",
+        "login-submit",
+        "login-toggle-mode",
+    ],
     "home": ["home-message-input", "home-send-btn"],
-    "tasks": ["new-chat-btn", "search-btn", "filter-all", "filter-awaiting", "filter-needs-input", "filter-completed"],
-    "task_detail": ["tab-conversation", "tab-details", "tab-activity", "message-input", "send-btn", "approve-btn", "reject-btn"],
-    "settings": ["settings-tab-connectors", "settings-tab-agents", "settings-tab-specs", "settings-tab-deployments", "settings-tab-tests"],
+    "tasks": [
+        "new-chat-btn",
+        "search-btn",
+        "filter-all",
+        "filter-awaiting",
+        "filter-needs-input",
+        "filter-completed",
+    ],
+    "task_detail": [
+        "tab-conversation",
+        "tab-details",
+        "tab-activity",
+        "message-input",
+        "send-btn",
+        "approve-btn",
+        "reject-btn",
+    ],
+    "settings": [
+        "settings-tab-connectors",
+        "settings-tab-agents",
+        "settings-tab-specs",
+        "settings-tab-deployments",
+        "settings-tab-tests",
+    ],
 }
 
 SYSTEM_PROMPT = """You are an expert Playwright test generator. Given a natural language description of a user flow, generate:
@@ -53,7 +87,12 @@ async def generate_test(description: str) -> dict:
         model=settings.LLM_INTERPRETER_MODEL or "claude-sonnet-4-20250514",
         max_tokens=4096,
         system=SYSTEM_PROMPT.format(selectors=selectors_str),
-        messages=[{"role": "user", "content": f"Generate a Playwright E2E test for: {description}"}],
+        messages=[
+            {
+                "role": "user",
+                "content": f"Generate a Playwright E2E test for: {description}",
+            }
+        ],
     )
 
     text = response.content[0].text.strip()

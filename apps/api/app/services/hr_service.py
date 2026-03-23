@@ -23,7 +23,11 @@ def create_employee_setup(
     core_missing = _calc_core_missing(employee_name, venue, role, start_date)
     has_basics = bool(venue and (employee_name or role))
 
-    status = "awaiting_approval" if (has_basics and not core_missing) else "awaiting_user_input"
+    status = (
+        "awaiting_approval"
+        if (has_basics and not core_missing)
+        else "awaiting_user_input"
+    )
     question = _hr_question(core_missing) if core_missing else None
 
     extracted = {}
@@ -99,7 +103,9 @@ def update_employee_setup(
     if venue:
         old_venue = extracted.get("venue")
         if old_venue and old_venue.get("id") != venue["id"]:
-            revisions.append(f"Venue changed from {old_venue['name']} to {venue['name']}")
+            revisions.append(
+                f"Venue changed from {old_venue['name']} to {venue['name']}"
+            )
         elif not old_venue:
             revisions.append(f"Venue set to {venue['name']}")
         extracted["venue"] = venue
@@ -136,7 +142,9 @@ def update_employee_setup(
     if revisions:
         revision_text = ". ".join(revisions) + "."
         if not core_missing:
-            assistant_msg = f"{revision_text} Employee setup updated and ready for approval."
+            assistant_msg = (
+                f"{revision_text} Employee setup updated and ready for approval."
+            )
         else:
             q = _hr_question(core_missing)
             assistant_msg = f"{revision_text} {q}"
@@ -180,12 +188,14 @@ def get_task(db: Session, task_id: str) -> dict | None:
 def approve_task(db: Session, task_id: str, user=None) -> dict | None:
     result = _set_status(db, task_id, "approved")
     if result:
-        db.add(Approval(
-            task_id=task_id,
-            action="approved",
-            performed_by=user.email if user else "system",
-            user_id=user.id if user else None,
-        ))
+        db.add(
+            Approval(
+                task_id=task_id,
+                action="approved",
+                performed_by=user.email if user else "system",
+                user_id=user.id if user else None,
+            )
+        )
         db.commit()
     return result
 
@@ -193,12 +203,14 @@ def approve_task(db: Session, task_id: str, user=None) -> dict | None:
 def reject_task(db: Session, task_id: str, user=None) -> dict | None:
     result = _set_status(db, task_id, "rejected")
     if result:
-        db.add(Approval(
-            task_id=task_id,
-            action="rejected",
-            performed_by=user.email if user else "system",
-            user_id=user.id if user else None,
-        ))
+        db.add(
+            Approval(
+                task_id=task_id,
+                action="rejected",
+                performed_by=user.email if user else "system",
+                user_id=user.id if user else None,
+            )
+        )
         db.commit()
     return result
 
@@ -263,6 +275,7 @@ def _set_status(db: Session, task_id: str, status: str) -> dict | None:
 
 # -- helpers --
 
+
 def _calc_core_missing(employee_name, venue, role, start_date) -> list[str]:
     m = []
     if not employee_name:
@@ -314,7 +327,9 @@ def _task_to_dict(task: Task) -> dict:
             "connector": latest_run.connector_name,
             "status": latest_run.status,
             "reference": (latest_run.response_payload or {}).get("employee_id"),
-            "submitted_at": latest_run.created_at.isoformat() if latest_run.created_at else None,
+            "submitted_at": latest_run.created_at.isoformat()
+            if latest_run.created_at
+            else None,
             "error": latest_run.error_message,
         }
 
@@ -325,7 +340,9 @@ def _task_to_dict(task: Task) -> dict:
         approval = {
             "action": latest_approval.action,
             "performed_by": latest_approval.performed_by or "system",
-            "performed_at": latest_approval.performed_at.isoformat() if latest_approval.performed_at else None,
+            "performed_at": latest_approval.performed_at.isoformat()
+            if latest_approval.performed_at
+            else None,
         }
 
     return {
@@ -345,7 +362,11 @@ def _task_to_dict(task: Task) -> dict:
         "checklist": _build_checklist(extracted),
         "clarification_question": task.clarification_question,
         "conversation": [
-            {"role": m.role, "text": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+            {
+                "role": m.role,
+                "text": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
             for m in sorted(task.messages, key=lambda x: x.created_at)
         ],
         "integration_run": integration_run,
@@ -383,6 +404,8 @@ def _task_to_dict(task: Task) -> dict:
                 "created_at": tc.created_at.isoformat() if tc.created_at else None,
             }
             for tc in sorted(task.tool_calls, key=lambda x: x.created_at)
-        ] if task.tool_calls else [],
+        ]
+        if task.tool_calls
+        else [],
         "thinking_steps": task.thinking_steps or [],
     }

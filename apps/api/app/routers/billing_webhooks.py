@@ -22,6 +22,7 @@ async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
     from app.config import settings
+
     webhook_secret = settings.STRIPE_WEBHOOK_SECRET
 
     if not webhook_secret:
@@ -55,63 +56,94 @@ def _handle_event(event: dict, db: Session) -> None:
     data = event["data"]["object"]
 
     # Deduplicate
-    existing = db.query(BillingEvent).filter(
-        BillingEvent.stripe_event_id == event["id"],
-    ).first()
+    existing = (
+        db.query(BillingEvent)
+        .filter(
+            BillingEvent.stripe_event_id == event["id"],
+        )
+        .first()
+    )
     if existing:
         logger.info("Duplicate webhook event: %s", event["id"])
         return
 
     if event_type == "invoice.payment_succeeded":
         customer_id = data.get("customer")
-        sub = db.query(Subscription).filter(
-            Subscription.stripe_customer_id == customer_id,
-        ).first()
+        sub = (
+            db.query(Subscription)
+            .filter(
+                Subscription.stripe_customer_id == customer_id,
+            )
+            .first()
+        )
         if sub:
             sub.status = "active"
             # Update billing cycle start from the subscription period
             period_start = data.get("period_start")
             if period_start:
-                sub.billing_cycle_start = datetime.fromtimestamp(period_start, tz=timezone.utc)
-            db.add(BillingEvent(
-                organization_id=sub.organization_id,
-                event_type="payment_succeeded",
-                stripe_event_id=event["id"],
-                details={"amount": data.get("amount_paid"), "invoice_id": data.get("id")},
-            ))
+                sub.billing_cycle_start = datetime.fromtimestamp(
+                    period_start, tz=timezone.utc
+                )
+            db.add(
+                BillingEvent(
+                    organization_id=sub.organization_id,
+                    event_type="payment_succeeded",
+                    stripe_event_id=event["id"],
+                    details={
+                        "amount": data.get("amount_paid"),
+                        "invoice_id": data.get("id"),
+                    },
+                )
+            )
 
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")
-        sub = db.query(Subscription).filter(
-            Subscription.stripe_customer_id == customer_id,
-        ).first()
+        sub = (
+            db.query(Subscription)
+            .filter(
+                Subscription.stripe_customer_id == customer_id,
+            )
+            .first()
+        )
         if sub:
             sub.status = "past_due"
-            db.add(BillingEvent(
-                organization_id=sub.organization_id,
-                event_type="payment_failed",
-                stripe_event_id=event["id"],
-                details={"attempt_count": data.get("attempt_count")},
-            ))
+            db.add(
+                BillingEvent(
+                    organization_id=sub.organization_id,
+                    event_type="payment_failed",
+                    stripe_event_id=event["id"],
+                    details={"attempt_count": data.get("attempt_count")},
+                )
+            )
 
     elif event_type == "customer.subscription.deleted":
         sub_id = data.get("id")
-        sub = db.query(Subscription).filter(
-            Subscription.stripe_subscription_id == sub_id,
-        ).first()
+        sub = (
+            db.query(Subscription)
+            .filter(
+                Subscription.stripe_subscription_id == sub_id,
+            )
+            .first()
+        )
         if sub:
             sub.status = "canceled"
-            db.add(BillingEvent(
-                organization_id=sub.organization_id,
-                event_type="subscription_canceled",
-                stripe_event_id=event["id"],
-            ))
+            db.add(
+                BillingEvent(
+                    organization_id=sub.organization_id,
+                    event_type="subscription_canceled",
+                    stripe_event_id=event["id"],
+                )
+            )
 
     elif event_type == "customer.subscription.updated":
         sub_id = data.get("id")
-        sub = db.query(Subscription).filter(
-            Subscription.stripe_subscription_id == sub_id,
-        ).first()
+        sub = (
+            db.query(Subscription)
+            .filter(
+                Subscription.stripe_subscription_id == sub_id,
+            )
+            .first()
+        )
         if sub:
             status = data.get("status")
             if status:
@@ -119,46 +151,65 @@ def _handle_event(event: dict, db: Session) -> None:
             # Sync billing cycle
             period_start = data.get("current_period_start")
             if period_start:
-                sub.billing_cycle_start = datetime.fromtimestamp(period_start, tz=timezone.utc)
-            db.add(BillingEvent(
-                organization_id=sub.organization_id,
-                event_type="subscription_updated",
-                stripe_event_id=event["id"],
-                details={"status": status},
-            ))
+                sub.billing_cycle_start = datetime.fromtimestamp(
+                    period_start, tz=timezone.utc
+                )
+            db.add(
+                BillingEvent(
+                    organization_id=sub.organization_id,
+                    event_type="subscription_updated",
+                    stripe_event_id=event["id"],
+                    details={"status": status},
+                )
+            )
 
     elif event_type == "payment_intent.succeeded":
         # Check if this is a top-up payment
         pi_id = data.get("id")
-        topup = db.query(TokenTopUp).filter(
-            TokenTopUp.stripe_payment_intent_id == pi_id,
-        ).first()
+        topup = (
+            db.query(TokenTopUp)
+            .filter(
+                TokenTopUp.stripe_payment_intent_id == pi_id,
+            )
+            .first()
+        )
         if topup:
             topup.status = "completed"
 
     elif event_type == "payment_intent.failed":
         pi_id = data.get("id")
-        topup = db.query(TokenTopUp).filter(
-            TokenTopUp.stripe_payment_intent_id == pi_id,
-        ).first()
+        topup = (
+            db.query(TokenTopUp)
+            .filter(
+                TokenTopUp.stripe_payment_intent_id == pi_id,
+            )
+            .first()
+        )
         if topup:
             topup.status = "failed"
-            db.add(BillingEvent(
-                organization_id=topup.organization_id,
-                event_type="topup_failed",
-                stripe_event_id=event["id"],
-                details={"payment_intent_id": pi_id},
-            ))
+            db.add(
+                BillingEvent(
+                    organization_id=topup.organization_id,
+                    event_type="topup_failed",
+                    stripe_event_id=event["id"],
+                    details={"payment_intent_id": pi_id},
+                )
+            )
 
     elif event_type == "setup_intent.succeeded":
         # Update payment method info
         customer_id = data.get("customer")
         pm_id = data.get("payment_method")
-        sub = db.query(Subscription).filter(
-            Subscription.stripe_customer_id == customer_id,
-        ).first()
+        sub = (
+            db.query(Subscription)
+            .filter(
+                Subscription.stripe_customer_id == customer_id,
+            )
+            .first()
+        )
         if sub and pm_id:
             import stripe as stripe_mod
+
             stripe_mod.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
             try:
                 pm = stripe_mod.PaymentMethod.retrieve(pm_id)

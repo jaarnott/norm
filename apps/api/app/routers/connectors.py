@@ -20,6 +20,7 @@ AVAILABLE_MODELS = [
 def _get_platform_connectors():
     """Build platform connector definitions with runtime defaults."""
     from app.config import settings
+
     return [
         {
             "name": "anthropic",
@@ -27,8 +28,22 @@ def _get_platform_connectors():
             "domain": "_platform",
             "fields": [
                 {"key": "api_key", "label": "API Key", "secret": True},
-                {"key": "interpreter_model", "label": "Agent Model", "secret": False, "type": "select", "options": AVAILABLE_MODELS, "default": settings.LLM_INTERPRETER_MODEL},
-                {"key": "router_model", "label": "Router Model", "secret": False, "type": "select", "options": AVAILABLE_MODELS, "default": settings.ROUTER_MODEL},
+                {
+                    "key": "interpreter_model",
+                    "label": "Agent Model",
+                    "secret": False,
+                    "type": "select",
+                    "options": AVAILABLE_MODELS,
+                    "default": settings.LLM_INTERPRETER_MODEL,
+                },
+                {
+                    "key": "router_model",
+                    "label": "Router Model",
+                    "secret": False,
+                    "type": "select",
+                    "options": AVAILABLE_MODELS,
+                    "default": settings.ROUTER_MODEL,
+                },
             ],
         },
     ]
@@ -38,7 +53,9 @@ def _get_platform_connectors():
 PLATFORM_CONNECTORS = _get_platform_connectors()
 
 
-def _redact_config(config: dict, connector_name: str, credential_fields: list | None = None) -> dict:
+def _redact_config(
+    config: dict, connector_name: str, credential_fields: list | None = None
+) -> dict:
     # Check platform connectors first
     meta = next((c for c in PLATFORM_CONNECTORS if c["name"] == connector_name), None)
     fields = meta["fields"] if meta else (credential_fields or [])
@@ -49,7 +66,11 @@ def _redact_config(config: dict, connector_name: str, credential_fields: list | 
 
 
 @router.get("/connectors")
-async def list_connectors(venue_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+async def list_connectors(
+    venue_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     # Filter configs by venue_id (None = platform/global configs)
     config_query = db.query(ConnectorConfig)
     if venue_id:
@@ -62,12 +83,14 @@ async def list_connectors(venue_id: str | None = None, db: Session = Depends(get
     # Platform connectors (Anthropic)
     for meta in PLATFORM_CONNECTORS:
         row = saved.get(meta["name"])
-        result.append({
-            **meta,
-            "configured": row is not None,
-            "enabled": row.enabled == "true" if row else False,
-            "config": _redact_config(row.config, meta["name"]) if row else {},
-        })
+        result.append(
+            {
+                **meta,
+                "configured": row is not None,
+                "enabled": row.enabled == "true" if row else False,
+                "config": _redact_config(row.config, meta["name"]) if row else {},
+            }
+        )
 
     # Spec-driven connectors from the DB
     specs = db.query(ConnectorSpec).all()
@@ -85,7 +108,11 @@ async def list_connectors(venue_id: str | None = None, db: Session = Depends(get
                 "spec_driven": True,
                 "configured": config_row is not None,
                 "enabled": config_row.enabled == "true" if config_row else False,
-                "config": _redact_config(config_row.config, spec.connector_name, spec.credential_fields) if config_row else {},
+                "config": _redact_config(
+                    config_row.config, spec.connector_name, spec.credential_fields
+                )
+                if config_row
+                else {},
             }
             if spec.auth_type == "oauth2" and config_row:
                 entry["oauth_connected"] = bool(config_row.access_token)
@@ -101,11 +128,18 @@ class ConnectorConfigBody(BaseModel):
 
 
 @router.put("/connectors/{name}")
-async def upsert_connector(name: str, body: ConnectorConfigBody, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
+async def upsert_connector(
+    name: str,
+    body: ConnectorConfigBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+):
     meta = next((c for c in PLATFORM_CONNECTORS if c["name"] == name), None)
     if not meta:
         # Check if it's a spec-driven connector
-        spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+        spec = (
+            db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+        )
         if not spec:
             raise HTTPException(404, f"Unknown connector: {name}")
 
@@ -143,8 +177,14 @@ async def upsert_connector(name: str, body: ConnectorConfigBody, db: Session = D
 
 
 @router.patch("/connectors/{name}/toggle")
-async def toggle_connector(name: str, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
-    row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+async def toggle_connector(
+    name: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+):
+    row = (
+        db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+    )
     if not row:
         raise HTTPException(404, f"No config for connector: {name}")
     row.enabled = "false" if row.enabled == "true" else "true"
@@ -157,8 +197,14 @@ async def toggle_connector(name: str, db: Session = Depends(get_db), user: User 
 
 
 @router.delete("/connectors/{name}")
-async def delete_connector(name: str, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
-    row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+async def delete_connector(
+    name: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+):
+    row = (
+        db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+    )
     if not row:
         raise HTTPException(404, f"No config for connector: {name}")
     db.delete(row)
@@ -171,11 +217,21 @@ class TestBody(BaseModel):
 
 
 @router.post("/connectors/{name}/test")
-async def test_connector(name: str, body: TestBody, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
+async def test_connector(
+    name: str,
+    body: TestBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+):
     if name == "anthropic":
         import anthropic
+
         # Merge saved credentials with form values (skip redacted)
-        config_row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+        config_row = (
+            db.query(ConnectorConfig)
+            .filter(ConnectorConfig.connector_name == name)
+            .first()
+        )
         credentials = dict(config_row.config) if config_row else {}
         for k, v in body.config.items():
             if v and v != "••••••••":
@@ -198,10 +254,15 @@ async def test_connector(name: str, body: TestBody, db: Session = Depends(get_db
         raise HTTPException(404, f"Unknown connector: {name}")
 
     if not spec.test_request:
-        return {"success": False, "error": "No test request configured for this connector. Add one in the Connector Spec editor."}
+        return {
+            "success": False,
+            "error": "No test request configured for this connector. Add one in the Connector Spec editor.",
+        }
 
     # Merge saved credentials with any values from the form (non-redacted only)
-    config_row = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+    config_row = (
+        db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
+    )
     credentials = config_row.config if config_row else {}
     for k, v in body.config.items():
         if v and v != "••••••••":
@@ -219,10 +280,26 @@ async def test_connector(name: str, body: TestBody, db: Session = Depends(get_db
 
     try:
         rendered = render_request(spec, test_op, {}, credentials, db=db)
-        result = execute_http(rendered, test_op, credentials=credentials, auth_type=spec.auth_type, auth_config=spec.auth_config)
+        result = execute_http(
+            rendered,
+            test_op,
+            credentials=credentials,
+            auth_type=spec.auth_type,
+            auth_config=spec.auth_config,
+        )
         if result.success:
-            return {"success": True, "message": "Connected successfully", "rendered_request": rendered.to_audit_dict(), "response": result.response_payload}
-        return {"success": False, "error": result.error_message or "API returned an error", "rendered_request": rendered.to_audit_dict(), "response": result.response_payload}
+            return {
+                "success": True,
+                "message": "Connected successfully",
+                "rendered_request": rendered.to_audit_dict(),
+                "response": result.response_payload,
+            }
+        return {
+            "success": False,
+            "error": result.error_message or "API returned an error",
+            "rendered_request": rendered.to_audit_dict(),
+            "response": result.response_payload,
+        }
     except Exception as exc:
         return {"success": False, "error": f"Connection test failed: {exc}"}
 
@@ -242,6 +319,7 @@ async def execute_connector_action(
     """Execute a connector tool directly (no LLM, no task)."""
     # Check internal tool handlers first — these don't need a ConnectorSpec row
     from app.agents.internal_tools import get_handler
+
     handler = get_handler(name, action)
     if handler:
         result = handler(body.params, db, None)
@@ -264,16 +342,23 @@ async def execute_connector_action(
         raise HTTPException(400, "Only read-only (GET) tools can be executed directly")
 
     # External tools — need credentials
-    config_row = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == name,
-        ConnectorConfig.enabled == "true",
-    ).first()
+    config_row = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == name,
+            ConnectorConfig.enabled == "true",
+        )
+        .first()
+    )
     if not config_row:
         raise HTTPException(400, f"No credentials configured for {name}")
 
     from app.connectors.spec_executor import execute_spec
+
     try:
-        result, rendered = execute_spec(spec, tool_def, body.params, config_row.config, db)
+        result, rendered = execute_spec(
+            spec, tool_def, body.params, config_row.config, db
+        )
         return {
             "success": result.success,
             "data": result.response_payload,
@@ -293,10 +378,14 @@ async def download_bamboohr_file(
     import httpx
     from fastapi.responses import Response
 
-    config_row = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == "bamboohr",
-        ConnectorConfig.enabled == "true",
-    ).first()
+    config_row = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == "bamboohr",
+            ConnectorConfig.enabled == "true",
+        )
+        .first()
+    )
     if not config_row:
         raise HTTPException(400, "BambooHR connector not configured")
 
@@ -312,7 +401,11 @@ async def download_bamboohr_file(
     if resp.status_code != 200:
         raise HTTPException(resp.status_code, f"BambooHR returned {resp.status_code}")
 
-    content_type = resp.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
+    content_type = (
+        resp.headers.get("content-type", "application/octet-stream")
+        .split(";")[0]
+        .strip()
+    )
     cd = resp.headers.get("content-disposition", "")
     headers = {}
     if cd:

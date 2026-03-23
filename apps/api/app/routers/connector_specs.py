@@ -19,6 +19,7 @@ router = APIRouter(prefix="/connector-specs", tags=["connector-specs"])
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+
 class ToolSchema(BaseModel):
     action: str
     method: str = "POST"
@@ -90,6 +91,7 @@ class GenerateBody(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _spec_to_dict(spec: ConnectorSpec) -> dict:
     return {
         "id": spec.id,
@@ -117,6 +119,7 @@ def _spec_to_dict(spec: ConnectorSpec) -> dict:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get("")
 async def list_specs(
     db: Session = Depends(get_db),
@@ -132,9 +135,11 @@ async def create_spec(
     db: Session = Depends(get_db),
     user: User = Depends(require_role("admin")),
 ):
-    existing = db.query(ConnectorSpec).filter(
-        ConnectorSpec.connector_name == body.connector_name
-    ).first()
+    existing = (
+        db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == body.connector_name)
+        .first()
+    )
     if existing:
         raise HTTPException(409, f"Spec already exists: {body.connector_name}")
 
@@ -226,22 +231,29 @@ async def dry_run(
 
     # Find tool
     operation = None
-    for op in (spec.tools or []):
+    for op in spec.tools or []:
         if body.tool_action and op.get("action") == body.tool_action:
             operation = op
             break
     if operation is None and body.tool_action:
         available = [op.get("action") for op in (spec.tools or [])]
-        raise HTTPException(400, f"Tool '{body.tool_action}' not found. Save the spec first. Available: {available}")
+        raise HTTPException(
+            400,
+            f"Tool '{body.tool_action}' not found. Save the spec first. Available: {available}",
+        )
     if operation is None and spec.tools:
         operation = spec.tools[0]
     if operation is None:
         raise HTTPException(400, "No tools defined on this spec")
 
     # Get credentials (use empty dict for dry-run if none configured)
-    config_row = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == name,
-    ).first()
+    config_row = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == name,
+        )
+        .first()
+    )
     credentials = config_row.config if config_row else {}
 
     try:
@@ -267,28 +279,39 @@ async def test_spec(
 
     # Find tool
     operation = None
-    for op in (spec.tools or []):
+    for op in spec.tools or []:
         if body.tool_action and op.get("action") == body.tool_action:
             operation = op
             break
     if operation is None and body.tool_action:
         available = [op.get("action") for op in (spec.tools or [])]
-        raise HTTPException(400, f"Tool '{body.tool_action}' not found. Save the spec first. Available: {available}")
+        raise HTTPException(
+            400,
+            f"Tool '{body.tool_action}' not found. Save the spec first. Available: {available}",
+        )
     if operation is None and spec.tools:
         operation = spec.tools[0]
     if operation is None:
         raise HTTPException(400, "No tools defined on this spec")
 
-    config_row = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == name,
-        ConnectorConfig.enabled == "true",
-    ).first()
+    config_row = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == name,
+            ConnectorConfig.enabled == "true",
+        )
+        .first()
+    )
     if not config_row:
         raise HTTPException(400, f"No credentials configured for {name}")
 
     try:
         result, rendered = execute_spec(
-            spec, operation, body.extracted_fields, config_row.config, db,
+            spec,
+            operation,
+            body.extracted_fields,
+            config_row.config,
+            db,
         )
         return {
             "success": result.success,
@@ -316,6 +339,7 @@ async def preview_transform(
 ):
     """Preview a response transform on a sample payload."""
     from app.connectors.response_transform import apply_response_transform
+
     try:
         transformed = apply_response_transform(body.payload, body.response_transform)
         return {"transformed": transformed}
@@ -342,6 +366,7 @@ async def generate_spec(
 # ---------------------------------------------------------------------------
 # Consolidator endpoints
 # ---------------------------------------------------------------------------
+
 
 class GenerateConsolidatorBody(BaseModel):
     description: str
@@ -372,7 +397,9 @@ def _build_tools_context(db: Session) -> str:
         if spec.execution_mode == "internal":
             continue
         for t in spec.tools or []:
-            tools_context.append(f"- {spec.connector_name}.{t.get('action')} [{t.get('method', 'GET')}]: {t.get('description', '')}")
+            tools_context.append(
+                f"- {spec.connector_name}.{t.get('action')} [{t.get('method', 'GET')}]: {t.get('description', '')}"
+            )
             fields = t.get("required_fields", [])
             descs = t.get("field_descriptions", {})
             if fields:
@@ -404,6 +431,7 @@ _CONFIG_SCHEMA_TEXT = """- action: a snake_case name for this consolidator tool
 def _parse_ai_json(raw: str) -> dict:
     """Strip markdown fences and parse JSON from AI response."""
     import json as json_mod
+
     raw = raw.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")
@@ -520,10 +548,23 @@ async def test_consolidator(
                 step_json = json.dumps(step_data, default=str)
                 if len(step_json) > 50_000:
                     if isinstance(step_data, list):
-                        result["data"][step_id] = {"_truncated": True, "_total_items": len(step_data), "_preview": step_data[:3]}
-                    elif isinstance(step_data, dict) and isinstance(step_data.get("data"), list):
+                        result["data"][step_id] = {
+                            "_truncated": True,
+                            "_total_items": len(step_data),
+                            "_preview": step_data[:3],
+                        }
+                    elif isinstance(step_data, dict) and isinstance(
+                        step_data.get("data"), list
+                    ):
                         arr = step_data["data"]
-                        result["data"][step_id] = {**step_data, "data": {"_truncated": True, "_total_items": len(arr), "_preview": arr[:3]}}
+                        result["data"][step_id] = {
+                            **step_data,
+                            "data": {
+                                "_truncated": True,
+                                "_total_items": len(arr),
+                                "_preview": arr[:3],
+                            },
+                        }
         return result
     except Exception as exc:
         return {"success": False, "error": str(exc)}
@@ -545,7 +586,10 @@ async def auto_build_consolidator(
     log = logging.getLogger("consolidator.auto_build")
 
     if not body.description and not body.current_tool:
-        raise HTTPException(400, "Provide either 'description' (new build) or 'current_tool' (fix existing)")
+        raise HTTPException(
+            400,
+            "Provide either 'description' (new build) or 'current_tool' (fix existing)",
+        )
 
     api_key = get_api_key("anthropic", "api_key", db)
     if not api_key:
@@ -583,51 +627,76 @@ Return ONLY valid JSON, no markdown fences."""
             messages=[{"role": "user", "content": gen_prompt}],
         )
         tool_config = _parse_ai_json(response.content[0].text)
-        log.info("Auto-build: initial config generated — action=%s, steps=%d",
-                 tool_config.get("action"), len((tool_config.get("consolidator_config") or {}).get("steps", [])))
+        log.info(
+            "Auto-build: initial config generated — action=%s, steps=%d",
+            tool_config.get("action"),
+            len((tool_config.get("consolidator_config") or {}).get("steps", [])),
+        )
 
     # Step 2: Test → Fix loop
     test_result = None
     for attempt in range(1, max_iter + 1):
         consolidator_config = tool_config.get("consolidator_config", tool_config)
-        log.info("Auto-build attempt %d/%d — testing config with %d steps",
-                 attempt, max_iter, len(consolidator_config.get("steps", [])))
+        log.info(
+            "Auto-build attempt %d/%d — testing config with %d steps",
+            attempt,
+            max_iter,
+            len(consolidator_config.get("steps", [])),
+        )
 
         try:
-            test_result = execute_consolidator(consolidator_config, body.test_params, db, None)
+            test_result = execute_consolidator(
+                consolidator_config, body.test_params, db, None
+            )
         except Exception as exc:
-            log.error("Auto-build attempt %d — execute_consolidator raised: %s", attempt, exc)
+            log.error(
+                "Auto-build attempt %d — execute_consolidator raised: %s", attempt, exc
+            )
             test_result = {"success": False, "error": str(exc), "_steps": []}
 
         # Check success
         all_steps_ok = test_result.get("success", False)
-        step_errors = [s for s in test_result.get("_steps", []) if s.get("status") == "error"]
+        step_errors = [
+            s for s in test_result.get("_steps", []) if s.get("status") == "error"
+        ]
         is_success = all_steps_ok and not step_errors
 
         error_summary = None
         if not is_success:
-            error_summary = "; ".join(
-                f"Step '{s.get('id', '?')}': {s.get('error', 'unknown')}"
-                for s in step_errors
-            ) if step_errors else test_result.get("error") or "Unknown error"
+            error_summary = (
+                "; ".join(
+                    f"Step '{s.get('id', '?')}': {s.get('error', 'unknown')}"
+                    for s in step_errors
+                )
+                if step_errors
+                else test_result.get("error") or "Unknown error"
+            )
 
-        log.info("Auto-build attempt %d — %s%s", attempt,
-                 "SUCCESS" if is_success else "FAILED",
-                 f": {error_summary}" if error_summary else "")
+        log.info(
+            "Auto-build attempt %d — %s%s",
+            attempt,
+            "SUCCESS" if is_success else "FAILED",
+            f": {error_summary}" if error_summary else "",
+        )
 
-        iteration_log.append({
-            "attempt": attempt,
-            "success": is_success,
-            "error_summary": error_summary,
-            "config": tool_config,
-            "test_result": test_result,
-        })
+        iteration_log.append(
+            {
+                "attempt": attempt,
+                "success": is_success,
+                "error_summary": error_summary,
+                "config": tool_config,
+                "test_result": test_result,
+            }
+        )
 
         if is_success:
             break
 
         if attempt >= max_iter:
-            log.warning("Auto-build: max iterations reached (%d), returning last config", max_iter)
+            log.warning(
+                "Auto-build: max iterations reached (%d), returning last config",
+                max_iter,
+            )
             break
 
         # Fix: send the config + test result to AI for repair
@@ -666,17 +735,22 @@ Return ONLY valid JSON, no markdown fences."""
                 messages=[{"role": "user", "content": fix_prompt}],
             )
             tool_config = _parse_ai_json(fix_response.content[0].text)
-            log.info("Auto-build attempt %d — AI returned fix with %d steps",
-                     attempt, len((tool_config.get("consolidator_config") or {}).get("steps", [])))
+            log.info(
+                "Auto-build attempt %d — AI returned fix with %d steps",
+                attempt,
+                len((tool_config.get("consolidator_config") or {}).get("steps", [])),
+            )
         except Exception as exc:
             log.error("Auto-build attempt %d — AI fix call failed: %s", attempt, exc)
-            iteration_log.append({
-                "attempt": attempt,
-                "success": False,
-                "error_summary": f"AI fix failed: {exc}",
-                "config": tool_config,
-                "test_result": test_result,
-            })
+            iteration_log.append(
+                {
+                    "attempt": attempt,
+                    "success": False,
+                    "error_summary": f"AI fix failed: {exc}",
+                    "config": tool_config,
+                    "test_result": test_result,
+                }
+            )
             break
 
     return {
@@ -690,6 +764,7 @@ Return ONLY valid JSON, no markdown fences."""
 # ---------------------------------------------------------------------------
 # Consolidator Chat — interactive AI tool builder with real connector access
 # ---------------------------------------------------------------------------
+
 
 class ConsolidatorChatBody(BaseModel):
     messages: list[dict]
@@ -708,7 +783,8 @@ _SAVE_TOOL = {
             "action": {"type": "string", "description": "Snake-case action name"},
             "description": {"type": "string", "description": "What this tool does"},
             "required_fields": {
-                "type": "array", "items": {"type": "string"},
+                "type": "array",
+                "items": {"type": "string"},
                 "description": "Field names the LLM must provide when calling this tool",
             },
             "field_descriptions": {
@@ -720,7 +796,13 @@ _SAVE_TOOL = {
                 "description": "The consolidator config (steps, search, output_fields)",
             },
         },
-        "required": ["action", "description", "required_fields", "field_descriptions", "consolidator_config"],
+        "required": [
+            "action",
+            "description",
+            "required_fields",
+            "field_descriptions",
+            "consolidator_config",
+        ],
     },
 }
 
@@ -728,6 +810,7 @@ _SAVE_TOOL = {
 def _build_connector_tools(db) -> list[dict]:
     """Build Anthropic tool schemas for all enabled connector specs, with venue injection."""
     from app.db.models import Venue
+
     specs = db.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()  # noqa: E712
 
     # Build venue lookup: connector_name -> list of venue names with configs
@@ -785,15 +868,17 @@ def _build_connector_tools(db) -> list[dict]:
                 }
             method = t.get("method", "GET")
             desc = t.get("description", action)
-            anthropic_tools.append({
-                "name": tool_name,
-                "description": f"[{method}] {desc}",
-                "input_schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-            })
+            anthropic_tools.append(
+                {
+                    "name": tool_name,
+                    "description": f"[{method}] {desc}",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                }
+            )
     return anthropic_tools
 
 
@@ -830,7 +915,10 @@ async def consolidator_chat(
                 # Build real connector tools for the LLM
                 connector_tools = _build_connector_tools(db)
                 tools = [_SAVE_TOOL] + connector_tools
-                log.info("Consolidator chat: %d connector tools available", len(connector_tools))
+                log.info(
+                    "Consolidator chat: %d connector tools available",
+                    len(connector_tools),
+                )
 
                 current_tool_text = ""
                 if body.current_tool:
@@ -860,7 +948,11 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                 messages = list(body.messages)
 
                 for iteration in range(25):  # max tool-use iterations
-                    log.info("Consolidator chat: LLM call %d with %d messages", iteration + 1, len(messages))
+                    log.info(
+                        "Consolidator chat: LLM call %d with %d messages",
+                        iteration + 1,
+                        len(messages),
+                    )
 
                     response = client.messages.create(
                         model="claude-sonnet-4-20250514",
@@ -877,14 +969,18 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                     for block in response.content:
                         if block.type == "text":
                             on_event({"type": "text", "text": block.text})
-                            assistant_content.append({"type": "text", "text": block.text})
+                            assistant_content.append(
+                                {"type": "text", "text": block.text}
+                            )
                         elif block.type == "tool_use":
-                            assistant_content.append({
-                                "type": "tool_use",
-                                "id": block.id,
-                                "name": block.name,
-                                "input": block.input,
-                            })
+                            assistant_content.append(
+                                {
+                                    "type": "tool_use",
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "input": block.input,
+                                }
+                            )
                             tool_calls.append(block)
 
                     if not tool_calls:
@@ -896,28 +992,70 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                     for block in tool_calls:
                         if block.name == "save_consolidator":
                             on_event({"type": "save", "config": block.input})
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": "Config saved successfully.",
-                            })
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": "Config saved successfully.",
+                                }
+                            )
                             continue
 
                         # Real connector tool — parse name and execute
-                        on_event({"type": "tool_use", "name": block.name, "input": block.input})
+                        on_event(
+                            {
+                                "type": "tool_use",
+                                "name": block.name,
+                                "input": block.input,
+                            }
+                        )
                         parts = block.name.split("__", 1)
                         if len(parts) != 2:
-                            result_text = json.dumps({"error": f"Unknown tool: {block.name}"})
-                            on_event({"type": "tool_result", "name": block.name, "result": {"error": f"Unknown tool: {block.name}"}})
-                            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
+                            result_text = json.dumps(
+                                {"error": f"Unknown tool: {block.name}"}
+                            )
+                            on_event(
+                                {
+                                    "type": "tool_result",
+                                    "name": block.name,
+                                    "result": {"error": f"Unknown tool: {block.name}"},
+                                }
+                            )
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": result_text,
+                                }
+                            )
                             continue
 
                         connector_name, action = parts
-                        spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == connector_name).first()
+                        spec = (
+                            db.query(ConnectorSpec)
+                            .filter(ConnectorSpec.connector_name == connector_name)
+                            .first()
+                        )
                         if not spec:
-                            result_text = json.dumps({"error": f"Connector not found: {connector_name}"})
-                            on_event({"type": "tool_result", "name": block.name, "result": {"error": f"Connector not found: {connector_name}"}})
-                            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
+                            result_text = json.dumps(
+                                {"error": f"Connector not found: {connector_name}"}
+                            )
+                            on_event(
+                                {
+                                    "type": "tool_result",
+                                    "name": block.name,
+                                    "result": {
+                                        "error": f"Connector not found: {connector_name}"
+                                    },
+                                }
+                            )
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": result_text,
+                                }
+                            )
                             continue
 
                         tool_def = None
@@ -926,19 +1064,39 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                                 tool_def = t
                                 break
                         if not tool_def:
-                            result_text = json.dumps({"error": f"Tool not found: {action}"})
-                            on_event({"type": "tool_result", "name": block.name, "result": {"error": f"Tool not found: {action}"}})
-                            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
+                            result_text = json.dumps(
+                                {"error": f"Tool not found: {action}"}
+                            )
+                            on_event(
+                                {
+                                    "type": "tool_result",
+                                    "name": block.name,
+                                    "result": {"error": f"Tool not found: {action}"},
+                                }
+                            )
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": result_text,
+                                }
+                            )
                             continue
 
                         # Resolve credentials
-                        config_row = _resolve_venue_config(connector_name, block.input or {}, db)
+                        config_row = _resolve_venue_config(
+                            connector_name, block.input or {}, db
+                        )
                         # Fallback: if no venue specified, find any enabled config
                         if not config_row:
-                            config_row = db.query(ConnectorConfig).filter(
-                                ConnectorConfig.connector_name == connector_name,
-                                ConnectorConfig.enabled == "true",
-                            ).first()
+                            config_row = (
+                                db.query(ConnectorConfig)
+                                .filter(
+                                    ConnectorConfig.connector_name == connector_name,
+                                    ConnectorConfig.enabled == "true",
+                                )
+                                .first()
+                            )
                         credentials = config_row.config if config_row else {}
                         venue_id = config_row.venue_id if config_row else None
 
@@ -949,20 +1107,45 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                         params.pop("venue_id", None)
 
                         import time as _time
+
                         t0 = _time.time()
-                        log.info("Consolidator chat: calling %s.%s with %s", connector_name, action, params)
+                        log.info(
+                            "Consolidator chat: calling %s.%s with %s",
+                            connector_name,
+                            action,
+                            params,
+                        )
                         try:
-                            result, rendered = execute_spec(spec, tool_def, params, credentials, db, None, venue_id=venue_id)
+                            result, rendered = execute_spec(
+                                spec,
+                                tool_def,
+                                params,
+                                credentials,
+                                db,
+                                None,
+                                venue_id=venue_id,
+                            )
                             duration_ms = int((_time.time() - t0) * 1000)
                             result_data = {
                                 "success": result.success,
                                 "data": result.response_payload,
                                 "error": result.error_message,
                             }
-                            log.info("Consolidator chat: %s.%s returned in %dms (success=%s)", connector_name, action, duration_ms, result.success)
+                            log.info(
+                                "Consolidator chat: %s.%s returned in %dms (success=%s)",
+                                connector_name,
+                                action,
+                                duration_ms,
+                                result.success,
+                            )
                         except Exception as exc:
                             duration_ms = int((_time.time() - t0) * 1000)
-                            log.error("Consolidator chat tool %s error after %dms: %s", block.name, duration_ms, exc)
+                            log.error(
+                                "Consolidator chat tool %s error after %dms: %s",
+                                block.name,
+                                duration_ms,
+                                exc,
+                            )
                             result_data = {"success": False, "error": str(exc)}
 
                         # Send a slim version to the frontend (don't send 1MB+ payloads over SSE)
@@ -971,7 +1154,12 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                         if raw_size > 5000:
                             # Show summary to frontend: item count + first few items
                             from app.agents.tool_loop import _unwrap_array
-                            arr = _unwrap_array(result_data.get("data")) if isinstance(result_data.get("data"), (dict, list)) else None
+
+                            arr = (
+                                _unwrap_array(result_data.get("data"))
+                                if isinstance(result_data.get("data"), (dict, list))
+                                else None
+                            )
                             if arr:
                                 preview_items = arr[:3]
                                 frontend_data = {
@@ -988,16 +1176,31 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                                 }
                         else:
                             frontend_data = result_data
-                        on_event({"type": "tool_result", "name": block.name, "result": frontend_data})
+                        on_event(
+                            {
+                                "type": "tool_result",
+                                "name": block.name,
+                                "result": frontend_data,
+                            }
+                        )
 
                         # Send smart summary to LLM for large responses
                         result_text = json.dumps(result_data, default=str)
                         if len(result_text) > 12000:
                             from app.agents.tool_loop import _unwrap_array
-                            arr = _unwrap_array(result_data.get("data")) if isinstance(result_data.get("data"), (dict, list)) else None
+
+                            arr = (
+                                _unwrap_array(result_data.get("data"))
+                                if isinstance(result_data.get("data"), (dict, list))
+                                else None
+                            )
                             if arr:
                                 # Show field names from first item + first 3 items fully + count
-                                first_keys = list(arr[0].keys()) if arr and isinstance(arr[0], dict) else []
+                                first_keys = (
+                                    list(arr[0].keys())
+                                    if arr and isinstance(arr[0], dict)
+                                    else []
+                                )
                                 summary = {
                                     "success": result_data.get("success"),
                                     "total_items": len(arr),
@@ -1009,7 +1212,13 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                             else:
                                 result_text = result_text[:12000] + '..."}'
 
-                        tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": result_text,
+                            }
+                        )
 
                     messages.append({"role": "assistant", "content": assistant_content})
                     messages.append({"role": "user", "content": tool_results})
