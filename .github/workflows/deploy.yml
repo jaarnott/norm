@@ -85,7 +85,7 @@ jobs:
   # ── Deploy to staging (auto after testing passes) ───────────────
   deploy-staging:
     name: Deploy to Staging
-    needs: deploy-testing
+    needs: [build-and-push, deploy-testing]
     if: >
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success'
