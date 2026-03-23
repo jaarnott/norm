@@ -18,6 +18,8 @@ jobs:
 
     env:
       REGION: australia-southeast1
+      # Images are always built and stored in the testing project's Artifact Registry
+      REGISTRY: australia-southeast1-docker.pkg.dev/norm-testing/norm
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +43,7 @@ jobs:
       - name: Deploy API to Cloud Run
         run: |
           gcloud run services update norm-api-${{ inputs.environment }} \
-            --image $REGION-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-api:${{ inputs.image_tag }} \
+            --image $REGISTRY/norm-api:${{ inputs.image_tag }} \
             --region $REGION \
             --project ${{ vars.GCP_PROJECT_ID }} \
             --quiet
@@ -49,7 +51,7 @@ jobs:
       - name: Deploy Web to Cloud Run
         run: |
           gcloud run services update norm-web-${{ inputs.environment }} \
-            --image $REGION-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/norm/norm-web:${{ inputs.image_tag }} \
+            --image $REGISTRY/norm-web:${{ inputs.image_tag }} \
             --region $REGION \
             --project ${{ vars.GCP_PROJECT_ID }} \
             --quiet
