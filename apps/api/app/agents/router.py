@@ -5,7 +5,6 @@ Uses Haiku for speed (~500ms).
 
 import json
 import logging
-import os
 import time
 
 from sqlalchemy.orm import Session
@@ -49,7 +48,8 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
         system += '\nInclude "venue" in your JSON response with the venue name if the user mentions or implies a specific venue. Use null if no venue is mentioned or it is ambiguous.'
 
     from app.config import settings
-    model = settings.ROUTER_MODEL
+    from app.services.secrets import get_api_key as _get_config
+    model = _get_config("anthropic", "router_model", db) or settings.ROUTER_MODEL
 
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None
@@ -69,7 +69,7 @@ def _llm_classify(message: str, domains: list[str], api_key: str, db: Session | 
         clean = raw
         if clean.startswith("```"):
             lines = clean.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             clean = "\n".join(lines).strip()
 
         # Extract just the first JSON object if the model returned extra text

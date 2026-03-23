@@ -1,7 +1,6 @@
 """Billing service — Stripe integration, quota checks, subscription management."""
 
 import logging
-import os
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session

@@ -1,6 +1,5 @@
 """AI-assisted connector spec generation from API documentation."""
 
-import json
 import re
 
 from sqlalchemy.orm import Session

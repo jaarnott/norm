@@ -287,8 +287,12 @@ export default function Home() {
             setSelectedTaskId(data.id);
             // Backfill full LLM call data (system prompts, etc.) from the detail endpoint
             apiFetch(`/api/tasks/${data.id}`).then(r => r.ok ? r.json() : null).then(full => {
-              if (full?.llm_calls) {
-                setTasks(prev => prev.map(t => t.id === data.id ? { ...t, llm_calls: full.llm_calls } : t));
+              if (full) {
+                setTasks(prev => prev.map(t => t.id === data.id ? {
+                  ...t,
+                  llm_calls: full.llm_calls ?? t.llm_calls,
+                  tool_calls: full.tool_calls ?? t.tool_calls,
+                } : t));
               }
             }).catch(() => {});
           } else if (event.type === 'quota_exceeded') {

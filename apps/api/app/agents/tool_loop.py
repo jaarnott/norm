@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Message, ToolCall, LlmCall
+from app.db.models import Task, Message, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -143,14 +143,30 @@ def _execute_loop(
 
     iteration = start_iteration
     while iteration <= MAX_ITERATIONS:
-        response, llm_call_id = call_llm_with_tools(
-            system_prompt=system_prompt,
-            messages=messages,
-            tools=anthropic_tools,
-            db=db,
-            task_id=task.id,
-            call_type="tool_use",
-        )
+        try:
+            response, llm_call_id = call_llm_with_tools(
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=anthropic_tools,
+                db=db,
+                task_id=task.id,
+                call_type="tool_use",
+            )
+        except Exception as exc:
+            err_msg = str(exc).lower()
+            if "prompt is too long" in err_msg or "too many tokens" in err_msg:
+                logger.warning("Prompt too long in tool loop (iteration %d): %s", iteration, exc)
+                text = (
+                    "I've gathered quite a bit of data but the conversation has become too long "
+                    "for me to process in one go. Please try starting a new conversation for "
+                    "follow-up questions."
+                )
+                db.add(Message(task_id=task.id, role="assistant", content=text, display_blocks=display_blocks or None))
+                task.status = "completed"
+                task.thinking_steps = thinking_steps or None
+                db.commit()
+                return _build_response(task, db, text, thinking_steps=thinking_steps, display_blocks=display_blocks)
+            raise
 
         # Check stop reason
         if response.stop_reason == "end_turn":
@@ -527,7 +543,7 @@ def _execute_tool_call_in_thread(tc_id: str, event_callback) -> tuple[str, dict]
 
 def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
     """Execute a tool call against the connector spec and record the result."""
-    from app.db.models import ConnectorSpec, ConnectorConfig
+    from app.db.models import ConnectorSpec
     from app.connectors.spec_executor import execute_spec
 
     spec = db.query(ConnectorSpec).filter(
@@ -560,9 +576,11 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
     # Check for consolidator config on the tool definition
     if not handler and tool_def and tool_def.get("consolidator_config"):
         from app.agents.internal_tools import execute_consolidator
-        handler = lambda params, db_sess, tid: execute_consolidator(
-            tool_def["consolidator_config"], params, db_sess, tid
-        )
+
+        def handler(params, db_sess, tid):
+            return execute_consolidator(
+                tool_def["consolidator_config"], params, db_sess, tid
+            )
 
     if handler or spec.execution_mode == "internal":
 
@@ -574,12 +592,20 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
             # Preserve _chart_props on result_payload so _build_display_block can find them
             if isinstance(payload, dict) and "_chart_props" in result:
                 payload = {**payload, "_chart_props": result["_chart_props"]}
+            # Apply response transform for internal tools too
+            if tool_def:
+                transform_config = tool_def.get("response_transform")
+                if transform_config and transform_config.get("enabled") and payload:
+                    from app.connectors.response_transform import apply_response_transform
+                    wrapped = {"data": payload} if isinstance(payload, list) else (payload if isinstance(payload, dict) else {"data": payload})
+                    transformed = apply_response_transform(wrapped, transform_config)
+                    payload = transformed.get("data", transformed) if isinstance(transformed, dict) else transformed
             tc.result_payload = payload
             tc.status = "executed" if result.get("success") else "failed"
             tc.error_message = result.get("error")
             tc.rendered_request = {"mode": "internal", "handler": f"{tc.connector_name}.{tc.action}"}
             db.flush()
-            return result
+            return {**result, "data": payload}  # return transformed data
         except Exception as exc:
             tc.duration_ms = int((time.time() - t0) * 1000)
             tc.status = "failed"
@@ -725,7 +751,7 @@ def _parse_tool_name(name: str) -> tuple[str, str]:
 
 
 MAX_TOOL_RESULT_CHARS = 30_000           # ~7-8k tokens — with search tool active
-MAX_TOOL_RESULT_CHARS_NO_SEARCH = 60_000   # ~15k tokens — room for multiple results + history
+MAX_TOOL_RESULT_CHARS_NO_SEARCH = 40_000   # ~10k tokens per result — room for multiple results + history
 
 
 def _truncate_tool_result(content: str) -> str:
@@ -733,6 +759,18 @@ def _truncate_tool_result(content: str) -> str:
     if len(content) <= MAX_TOOL_RESULT_CHARS:
         return content
     return content[:MAX_TOOL_RESULT_CHARS] + "\n\n[... truncated — result too large]"
+
+
+def _truncate_nested_arrays(obj, max_items: int = 3):
+    """Recursively truncate nested arrays to max_items for preview/sample purposes."""
+    if isinstance(obj, dict):
+        return {k: _truncate_nested_arrays(v, max_items) for k, v in obj.items()}
+    if isinstance(obj, list):
+        truncated = [_truncate_nested_arrays(item, max_items) for item in obj[:max_items]]
+        if len(obj) > max_items:
+            truncated.append(f"... {len(obj) - max_items} more items")
+        return truncated
+    return obj
 
 
 def _slim_tool_result(
@@ -759,8 +797,8 @@ def _slim_tool_result(
         return serialized[:max_chars] + "\n\n[... truncated — result too large]"
 
     if summary_fields:
-        # Strategy 1: Slim to configured summary_fields
-        slim_items = [{k: item.get(k) for k in summary_fields if k in item} for item in data]
+        # Strategy 1: Slim to configured summary_fields (truncate nested arrays)
+        slim_items = [_truncate_nested_arrays({k: item.get(k) for k in summary_fields if k in item}) for item in data]
         summary = {
             "_slimmed": True,
             "_total_items": len(data),
@@ -775,12 +813,12 @@ def _slim_tool_result(
             return result
         # Still too large even after slimming — fall through to strategy 2
 
-    # Strategy 2: Too large — show sample item and tell LLM to search
+    # Strategy 2: Too large — show sample item (with nested arrays truncated) and tell LLM to search
     return json.dumps({
         "_too_large": True,
         "_total_items": len(data),
         "_fields_available": list(data[0].keys()),
-        "_sample_item": data[0],
+        "_sample_item": _truncate_nested_arrays(data[0]),
         "_tool_call_id": tool_call_id,
         "success": raw_result.get("success"),
         "message": (
@@ -871,9 +909,9 @@ def _search_tool_result(tool_call_id: str, query: str, fields: str | None, db: S
             score = match_count / len(query_words)
             if fields:
                 field_list = [f.strip() for f in fields.split(",")]
-                scored.append((score, {k: item.get(k) for k in field_list if k in item}))
+                scored.append((score, _truncate_nested_arrays({k: item.get(k) for k in field_list if k in item})))
             else:
-                scored.append((score, item))
+                scored.append((score, _truncate_nested_arrays(item)))
 
     # Sort by score descending, cap at 20
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -904,7 +942,7 @@ def _upsert_working_document(
     wd_config: dict,
     result_payload: dict | list,
     input_params: dict | None,
-) -> "WorkingDocument":
+) -> "WorkingDocument":  # noqa: F821
     """Create or update a working document from a tool response."""
     from app.db.models import WorkingDocument
 
@@ -1023,11 +1061,11 @@ def _build_response(task: Task, db: Session, text: str, thinking_steps: list[str
             payload_json = json.dumps(payload, default=str)
             if len(payload_json) > 10_000:
                 if isinstance(payload, list):
-                    payload = {"_truncated": True, "_total_items": len(payload), "_preview": payload[:2]}
+                    payload = {"_truncated": True, "_total_items": len(payload), "_preview": _truncate_nested_arrays(payload[:2])}
                 elif isinstance(payload, dict):
                     data = payload.get("data")
                     if isinstance(data, list) and len(json.dumps(data, default=str)) > 8_000:
-                        payload = {**payload, "data": {"_truncated": True, "_total_items": len(data), "_preview": data[:2]}}
+                        payload = {**payload, "data": {"_truncated": True, "_total_items": len(data), "_preview": _truncate_nested_arrays(data[:2])}}
         tool_calls.append({
             "id": tc.id,
             "iteration": tc.iteration,

@@ -1,11 +1,10 @@
 """Order store backed by Postgres."""
 
-import json
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Message, Order, OrderLine, Approval, IntegrationRun
+from app.db.models import Task, Message, Order, OrderLine, Approval
 from app.connectors.registry import resolve_connector
 from app.services.integration_service import execute_submission_v2
 

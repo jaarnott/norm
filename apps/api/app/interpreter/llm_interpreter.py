@@ -8,7 +8,6 @@ and lifecycle remain in the deterministic backend services.
 import datetime
 import json
 import logging
-import os
 import time
 
 from sqlalchemy.orm import Session
@@ -64,7 +63,7 @@ def call_llm(
 
     import anthropic
 
-    resolved_model = model or settings.LLM_INTERPRETER_MODEL
+    resolved_model = model or get_api_key("anthropic", "interpreter_model", db) or settings.LLM_INTERPRETER_MODEL
 
     today = datetime.date.today().isoformat()
     dated_user_prompt = f"[{today}] {user_prompt}"
@@ -178,7 +177,7 @@ def call_llm_with_tools(
 
     import anthropic
 
-    resolved_model = model or settings.LLM_INTERPRETER_MODEL
+    resolved_model = model or get_api_key("anthropic", "interpreter_model", db) or settings.LLM_INTERPRETER_MODEL
 
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None
@@ -237,6 +236,6 @@ def _parse_response(raw: str) -> dict:
     text = raw.strip()
     if text.startswith("```"):
         lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         text = "\n".join(lines).strip()
     return json.loads(text)

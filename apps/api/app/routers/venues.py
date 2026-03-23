@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
-from app.db.models import Venue, User
+from app.db.models import User
 from app.auth.dependencies import get_current_user
 from app.services.venue_service import get_user_venues
 

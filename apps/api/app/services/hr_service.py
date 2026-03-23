@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Message, HrSetup, Approval, IntegrationRun
+from app.db.models import Task, Message, HrSetup, Approval
 from app.connectors.registry import resolve_connector
 from app.services.integration_service import execute_submission_v2
 

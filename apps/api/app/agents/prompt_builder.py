@@ -2,7 +2,6 @@
 
 import datetime
 import logging
-import re
 
 from sqlalchemy.orm import Session
 

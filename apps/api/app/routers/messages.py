@@ -71,8 +71,11 @@ async def post_message_stream(
                 on_event({"type": "complete", "data": result})
             except Exception as exc:
                 from app.services.billing_service import QuotaExceededError
+                err_msg = str(exc).lower()
                 if isinstance(exc, QuotaExceededError):
                     on_event({"type": "quota_exceeded", "used": exc.used, "quota": exc.quota, "message": "You've used all your tokens for this billing period."})
+                elif "prompt is too long" in err_msg or "too many tokens" in err_msg:
+                    on_event({"type": "error", "message": "This conversation has grown too long. Please start a new conversation to continue."})
                 else:
                     on_event({"type": "error", "message": str(exc)})
             finally:

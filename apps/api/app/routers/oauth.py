@@ -7,7 +7,6 @@ Provides:
 - POST /oauth/disconnect/{connector} — remove stored OAuth tokens
 """
 
-import os
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import HTMLResponse

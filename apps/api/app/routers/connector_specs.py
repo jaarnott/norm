@@ -407,7 +407,7 @@ def _parse_ai_json(raw: str) -> dict:
     raw = raw.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         raw = "\n".join(lines).strip()
     try:
         return json_mod.loads(raw)

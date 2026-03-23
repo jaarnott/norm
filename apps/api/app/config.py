@@ -7,7 +7,6 @@ calling ``os.environ.get()`` directly.
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from typing import Literal
 
@@ -25,7 +24,7 @@ class Settings(BaseSettings):
 
     # ── LLM ─────────────────────────────────────────────────────────────
     ANTHROPIC_API_KEY: str = ""
-    LLM_INTERPRETER_MODEL: str = "claude-sonnet-4-20250514"
+    LLM_INTERPRETER_MODEL: str = "claude-opus-4-20250514"
     ROUTER_MODEL: str = "claude-haiku-4-5-20251001"
 
     # ── Stripe / Billing ────────────────────────────────────────────────

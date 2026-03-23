@@ -57,12 +57,6 @@ def _get_criteria(params: dict, db: Session, task_id: str | None) -> dict:
 
     result: dict = {"company": [], "positions": {}}
     for row in rows:
-        entry = {
-            "id": row.id,
-            "scope": row.scope,
-            "position_name": row.position_name,
-            "criteria": row.criteria or [],
-        }
         if row.scope == "company":
             result["company"] = row.criteria or []
         else:
@@ -130,7 +124,6 @@ def _save_criteria(params: dict, db: Session, task_id: str | None) -> dict:
 # ---------------------------------------------------------------------------
 
 def _job_to_dict(job, include_applications: bool = False) -> dict:
-    from app.db.models import Application
     d: dict = {
         "id": job.id,
         "title": job.title,
@@ -224,7 +217,7 @@ def _update_job(params: dict, db: Session, task_id: str | None) -> dict:
 @register("norm_hr", "get_candidate")
 def _get_candidate(params: dict, db: Session, task_id: str | None) -> dict:
     """Get a candidate with their application details."""
-    from app.db.models import Candidate, Application
+    from app.db.models import Candidate
     candidate_id = params.get("candidate_id")
     if not candidate_id:
         return {"success": False, "data": {}, "error": "candidate_id is required"}
@@ -690,7 +683,6 @@ def _resolve_path(obj, path_str: str):
 
 def _step_result_preview(step_result: dict) -> dict:
     """Build a compact preview of a step result for debugging."""
-    import json as _json
     data = step_result.get("data", step_result)
     if isinstance(data, list):
         preview: dict = {"_type": "array", "_count": len(data)}

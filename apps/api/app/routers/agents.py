@@ -8,7 +8,6 @@ from app.db.engine import get_db
 from app.db.models import AgentConfig, AgentConnectorBinding, ConnectorSpec, User
 from app.auth.dependencies import get_current_user, require_role
 from app.services.agent_config_service import (
-    get_system_prompt,
     update_agent_config,
     reset_prompt,
     get_connector_bindings,

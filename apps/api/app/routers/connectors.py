@@ -10,16 +10,32 @@ router = APIRouter()
 
 # Platform-level connectors that are not spec-driven (e.g. the LLM API key).
 # Domain connectors (BambooHR, Deputy, etc.) are managed as ConnectorSpecs in the DB.
-PLATFORM_CONNECTORS = [
-    {
-        "name": "anthropic",
-        "label": "Anthropic (Claude)",
-        "domain": "_platform",
-        "fields": [
-            {"key": "api_key", "label": "API Key", "secret": True},
-        ],
-    },
+AVAILABLE_MODELS = [
+    {"id": "claude-sonnet-4-20250514", "label": "Claude Sonnet 4"},
+    {"id": "claude-opus-4-20250514", "label": "Claude Opus 4 (Recommended)"},
+    {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (Fast)"},
 ]
+
+
+def _get_platform_connectors():
+    """Build platform connector definitions with runtime defaults."""
+    from app.config import settings
+    return [
+        {
+            "name": "anthropic",
+            "label": "Anthropic (Claude)",
+            "domain": "_platform",
+            "fields": [
+                {"key": "api_key", "label": "API Key", "secret": True},
+                {"key": "interpreter_model", "label": "Agent Model", "secret": False, "type": "select", "options": AVAILABLE_MODELS, "default": settings.LLM_INTERPRETER_MODEL},
+                {"key": "router_model", "label": "Router Model", "secret": False, "type": "select", "options": AVAILABLE_MODELS, "default": settings.ROUTER_MODEL},
+            ],
+        },
+    ]
+
+
+# Kept for backwards compat in helper functions that only need names/field keys
+PLATFORM_CONNECTORS = _get_platform_connectors()
 
 
 def _redact_config(config: dict, connector_name: str, credential_fields: list | None = None) -> dict:

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.db.engine import get_db
-from app.db.models import Task, WorkingDocument, User
+from app.db.models import WorkingDocument, User
 from app.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ async def submit_document(
         return {"status": "no_changes", "message": "No pending changes to submit."}
 
     from app.services.document_sync import sync_document
-    result = sync_document(doc.id, db)
+    sync_document(doc.id, db)
     db.refresh(doc)
     return {
         "status": doc.sync_status,

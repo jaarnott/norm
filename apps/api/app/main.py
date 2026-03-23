@@ -1,4 +1,3 @@
-import os
 
 import sentry_sdk
 from fastapi import FastAPI
@@ -17,7 +16,7 @@ if settings.SENTRY_DSN:
         traces_sample_rate=0.1 if settings.ENVIRONMENT == "production" else 0.5,
     )
 
-from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth, working_documents, automated_tasks, organizations, billing, billing_webhooks, reports_crud, admin
+from app.routers import health, venues, messages, orders, tasks, connectors, connector_specs, auth, agents, oauth, working_documents, automated_tasks, organizations, billing, billing_webhooks, reports_crud, admin  # noqa: E402
 
 app = FastAPI(
     title="Norm API",
@@ -25,8 +24,8 @@ app = FastAPI(
     version="0.1.0",
 )
 
-from app.middleware.request_tracing import RequestTracingMiddleware
-from app.middleware.metrics import MetricsMiddleware
+from app.middleware.request_tracing import RequestTracingMiddleware  # noqa: E402
+from app.middleware.metrics import MetricsMiddleware  # noqa: E402
 
 app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(MetricsMiddleware)

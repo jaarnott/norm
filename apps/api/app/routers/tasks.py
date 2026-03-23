@@ -341,9 +341,7 @@ async def widget_action(
 ):
     """Execute a tool call initiated from an interactive widget."""
     from app.agents.tool_loop import _execute_tool_call, _find_tool_def
-    from app.db.models import ConnectorSpec
     import uuid
-    import time as _time
 
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
