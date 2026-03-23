@@ -8,9 +8,12 @@ from app.config import Settings
 class TestDefaultConfig:
     """Verify default values load correctly."""
 
-    def test_defaults_load(self):
+    def test_defaults_load(self, monkeypatch):
+        # Clear CI env vars so we test actual defaults
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+        monkeypatch.delenv("JWT_SECRET", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
         s = Settings(
-            ENVIRONMENT="local",
             DATABASE_URL="postgresql://test:test@localhost/test",
             _env_file=None,
         )
@@ -20,11 +23,13 @@ class TestDefaultConfig:
         assert s.LLM_INTERPRETER_MODEL == "claude-opus-4-20250514"
         assert s.BILLING_ENFORCEMENT is False
 
-    def test_is_local_true_by_default(self):
-        s = Settings(ENVIRONMENT="local", _env_file=None)
+    def test_is_local_true_by_default(self, monkeypatch):
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+        s = Settings(_env_file=None)
         assert s.is_local is True
 
-    def test_is_production_false_by_default(self):
+    def test_is_production_false_by_default(self, monkeypatch):
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
         s = Settings(_env_file=None)
         assert s.is_production is False
 
