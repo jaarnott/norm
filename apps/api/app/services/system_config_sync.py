@@ -59,6 +59,11 @@ def _sync_connector_specs(db: Session) -> None:
                 category=defn.get("category"),
                 execution_mode=defn.get("execution_mode", "template"),
                 auth_type=defn.get("auth_type", "none"),
+                base_url_template=defn.get("base_url_template"),
+                auth_config=defn.get("auth_config", {}),
+                credential_fields=defn.get("credential_fields", []),
+                oauth_config=defn.get("oauth_config"),
+                test_request=defn.get("test_request"),
                 tools=defn.get("tools", []),
             )
             db.add(spec)
@@ -66,22 +71,39 @@ def _sync_connector_specs(db: Session) -> None:
         else:
             # Always overwrite tools and metadata from code
             changed = False
+
+            # Scalar fields
             for field in (
                 "display_name",
                 "category",
                 "execution_mode",
                 "auth_type",
+                "base_url_template",
             ):
                 code_val = defn.get(field)
                 if code_val is not None and getattr(spec, field) != code_val:
                     setattr(spec, field, code_val)
                     changed = True
 
-            code_tools = defn.get("tools", [])
-            if spec.tools != code_tools:
-                spec.tools = code_tools
-                flag_modified(spec, "tools")
-                changed = True
+            # JSON fields (need flag_modified for mutation tracking)
+            for json_field in (
+                "tools",
+                "auth_config",
+                "credential_fields",
+                "oauth_config",
+                "test_request",
+            ):
+                code_val = defn.get(json_field)
+                if code_val is None:
+                    # Allow explicitly setting to None for nullable fields
+                    if json_field in defn and getattr(spec, json_field) is not None:
+                        setattr(spec, json_field, None)
+                        flag_modified(spec, json_field)
+                        changed = True
+                elif getattr(spec, json_field) != code_val:
+                    setattr(spec, json_field, code_val)
+                    flag_modified(spec, json_field)
+                    changed = True
 
             if changed:
                 spec.version = (spec.version or 1) + 1
