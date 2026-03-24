@@ -46,7 +46,10 @@ RUN addgroup -g 1001 -S norm && adduser -S norm -u 1001
 # Copy standalone output
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=builder /app/apps/web/public ./apps/web/public
+
+# Public dir may be empty — ensure it exists for Next.js
+RUN mkdir -p ./apps/web/public
+COPY --from=builder /app/apps/web/public/. ./apps/web/public/
 
 USER norm
 
