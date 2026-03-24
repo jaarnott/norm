@@ -15,10 +15,11 @@ from app.services.agent_config_service import (
     delete_connector_binding,
     get_all_capabilities_summary,
 )
+from app.system_config import AGENT_CONFIGS
 
 router = APIRouter()
 
-KNOWN_SLUGS = ["procurement", "hr", "reports", "router"]
+KNOWN_SLUGS = [a["agent_slug"] for a in AGENT_CONFIGS]
 
 
 def _merge_capabilities(binding_caps: list[dict], spec_tools: list[dict]) -> list[dict]:
