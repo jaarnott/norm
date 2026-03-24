@@ -82,10 +82,23 @@ jobs:
       image_tag: ${{ needs.build-and-push.outputs.image_tag }}
     secrets: inherit
 
-  # ── Deploy to staging (auto after testing passes) ───────────────
+  # ── Run E2E tests against testing ────────────────────────────────
+  e2e-testing:
+    name: E2E Tests (Testing)
+    needs: deploy-testing
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
+    uses: ./.github/workflows/e2e-tests.yml
+    with:
+      environment: testing
+      target_url: https://testing.bettercallnorm.com
+    secrets: inherit
+
+  # ── Deploy to staging (auto after testing + E2E pass) ──────────
   deploy-staging:
     name: Deploy to Staging
-    needs: [build-and-push, deploy-testing]
+    needs: [build-and-push, deploy-testing, e2e-testing]
     if: >
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success'

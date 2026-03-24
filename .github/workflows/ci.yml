@@ -106,5 +106,6 @@ jobs:
 
       - name: Build Web image
         run: docker build -f apps/web/Dockerfile .
-# CI/CD pipeline verified 2026-03-23T19:57:48Z
-# Pipeline test 22:49
+
+      - name: Build E2E image
+        run: docker build -f apps/e2e/Dockerfile apps/e2e

@@ -1,0 +1,12 @@
+{
+  "name": "@norm/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "run-suite": "node runner.mjs"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

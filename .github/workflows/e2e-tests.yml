@@ -14,45 +14,30 @@ jobs:
   e2e:
     name: E2E Tests (${{ inputs.environment }})
     runs-on: ubuntu-latest
-
-    # TODO (Phase 3/4): Activate when test runner and test builder are deployed
-    # container:
-    #   image: mcr.microsoft.com/playwright:v1.49.0-noble
+    container:
+      image: mcr.microsoft.com/playwright:v1.49.0-noble
 
     steps:
       - uses: actions/checkout@v4
 
-      # TODO (Phase 4): Fetch saved tests from Norm API
-      # - name: Fetch test suite
-      #   run: |
-      #     curl -s "${{ inputs.target_url }}/api/admin/tests" \
-      #       -H "Authorization: Bearer ${{ secrets.E2E_API_TOKEN }}" \
-      #       -o tests.json
+      - name: Install E2E dependencies
+        working-directory: apps/e2e
+        run: npm install
 
-      # TODO (Phase 4): Run Playwright tests
-      # - name: Run tests
-      #   run: |
-      #     node e2e-runner.js \
-      #       --tests tests.json \
-      #       --base-url "${{ inputs.target_url }}" \
-      #       --screenshots ./artifacts/screenshots \
-      #       --video ./artifacts/videos
+      - name: Run E2E test suite
+        working-directory: apps/e2e
+        env:
+          BASE_URL: ${{ inputs.target_url }}
+          API_URL: ${{ inputs.target_url }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          GIT_SHA: ${{ github.sha }}
+        run: node runner.mjs
+        continue-on-error: true
 
-      # TODO (Phase 4): Upload artifacts
-      # - name: Upload test artifacts
-      #   if: always()
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: e2e-results-${{ inputs.environment }}
-      #     path: artifacts/
-
-      # TODO (Phase 4): Report results to Norm API
-      # - name: Report results
-      #   if: always()
-      #   run: |
-      #     curl -X POST "${{ inputs.target_url }}/api/admin/test-runs/webhook" \
-      #       -H "Content-Type: application/json" \
-      #       -d '{"environment": "${{ inputs.environment }}", "status": "${{ job.status }}"}'
-
-      - name: Placeholder
-        run: echo "E2E test runner will be activated in Phase 4 (AI Test Builder)"
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-${{ inputs.environment }}
+          path: apps/e2e/results/
+          retention-days: 14
