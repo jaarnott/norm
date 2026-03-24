@@ -644,41 +644,43 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
       backgroundColor: '#fff',
       userSelect: isDragging ? 'none' : undefined,
     }}>
-      {/* Header */}
-      <div data-split-header style={{
-        padding: '1rem 1.5rem 0',
-        borderBottom: hasSplitLayout ? 'none' : '1px solid #eee',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
-          <DomainIcon size={18} strokeWidth={1.75} style={{ color: dc }} />
-          <span style={{
-            fontSize: '0.72rem', fontWeight: 600, color: dc,
-            textTransform: 'uppercase', letterSpacing: '0.04em',
-          }}>
-            {task.domain}
-          </span>
-          <span style={{
-            fontSize: '0.65rem', fontWeight: 600,
-            padding: '0.15rem 0.5rem', borderRadius: 10,
-            backgroundColor: stl.bg, color: stl.color,
-            textTransform: 'capitalize', marginLeft: 'auto',
-          }}>
-            {task.status.replace(/_/g, ' ')}
-          </span>
+      {/* Header — hidden when split layout is active */}
+      {!hasSplitLayout && (
+        <div data-split-header style={{
+          padding: '1rem 1.5rem 0',
+          borderBottom: '1px solid #eee',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
+            <DomainIcon size={18} strokeWidth={1.75} style={{ color: dc }} />
+            <span style={{
+              fontSize: '0.72rem', fontWeight: 600, color: dc,
+              textTransform: 'uppercase', letterSpacing: '0.04em',
+            }}>
+              {task.domain}
+            </span>
+            <span style={{
+              fontSize: '0.65rem', fontWeight: 600,
+              padding: '0.15rem 0.5rem', borderRadius: 10,
+              backgroundColor: stl.bg, color: stl.color,
+              textTransform: 'capitalize', marginLeft: 'auto',
+            }}>
+              {task.status.replace(/_/g, ' ')}
+            </span>
+          </div>
+          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', marginBottom: '0.6rem' }}>
+            {getTaskTitle(task)}
+          </div>
+          {tabsRow}
         </div>
-        <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', marginBottom: hasSplitLayout ? '0.4rem' : '0.6rem' }}>
-          {getTaskTitle(task)}
-        </div>
-
-        {/* Tabs — only in header when NO split layout */}
-        {!hasSplitLayout && tabsRow}
-      </div>
+      )}
+      {/* Minimal header for split pane (needed for useSplitPane to find) */}
+      {hasSplitLayout && <div data-split-header style={{ height: 0 }} />}
 
       {hasSplitLayout ? (
         <>
           {/* Top pane: full-width component */}
           <div style={{
-            height: topPaneHeight ?? '60%',
+            height: topPaneHeight ?? '50%',
             flexShrink: 0,
             overflowY: 'auto',
           }}>

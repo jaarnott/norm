@@ -62,6 +62,7 @@ def _tool_use_task_to_dict(task: Task) -> dict:
             "input_params": tc.input_params,
             "status": tc.status,
             "result_payload": tc.result_payload,
+            "slimmed_content": tc.slimmed_content,
             "error_message": tc.error_message,
             "duration_ms": tc.duration_ms,
             "created_at": tc.created_at.isoformat() if tc.created_at else None,

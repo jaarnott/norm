@@ -174,6 +174,46 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
   );
 }
 
+function ToolCallResult({ tc }: { tc: ToolCallRecord }) {
+  const [showFull, setShowFull] = useState(false);
+  const hasSlimmed = !!tc.slimmed_content;
+
+  return (
+    <div>
+      {hasSlimmed && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+          <button
+            onClick={() => setShowFull(false)}
+            style={{
+              padding: '2px 8px', fontSize: '0.65rem', fontWeight: !showFull ? 600 : 400,
+              border: 'none', borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
+              backgroundColor: !showFull ? '#eef' : 'transparent',
+              color: !showFull ? '#4d65ff' : '#999',
+            }}
+          >What LLM saw</button>
+          <button
+            onClick={() => setShowFull(true)}
+            style={{
+              padding: '2px 8px', fontSize: '0.65rem', fontWeight: showFull ? 600 : 400,
+              border: 'none', borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
+              backgroundColor: showFull ? '#eef' : 'transparent',
+              color: showFull ? '#4d65ff' : '#999',
+            }}
+          >Full result</button>
+        </div>
+      )}
+      <DetailBox label={hasSlimmed && !showFull ? 'Result (slimmed for LLM)' : 'Result'}>
+        <pre style={CODE_STYLE}>
+          {hasSlimmed && !showFull
+            ? tc.slimmed_content
+            : JSON.stringify(tc.result_payload, null, 2)
+          }
+        </pre>
+      </DetailBox>
+    </div>
+  );
+}
+
 function ToolCallDetail({ tc }: { tc: ToolCallRecord }) {
   return (
     <div style={{
@@ -223,9 +263,7 @@ function ToolCallDetail({ tc }: { tc: ToolCallRecord }) {
       )}
 
       {tc.result_payload ? (
-        <DetailBox label="Result">
-          <pre style={CODE_STYLE}>{JSON.stringify(tc.result_payload, null, 2)}</pre>
-        </DetailBox>
+        <ToolCallResult tc={tc} />
       ) : (
         <div style={{ color: '#bbb', fontSize: '0.7rem', fontStyle: 'italic' }}>
           Result not yet available

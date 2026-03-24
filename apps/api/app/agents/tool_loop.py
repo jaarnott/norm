@@ -366,6 +366,9 @@ def _execute_loop(
                     summary_fields=summary_fields,
                     search_available=search_available,
                 )
+                # Store what the LLM actually sees for the activity timeline
+                tc.slimmed_content = slimmed
+                db.flush()
                 if doc_block:
                     read_only_tool_results[block.id] = {
                         "type": "tool_result",
@@ -1334,6 +1337,7 @@ def _build_response(
                 "input_params": tc.input_params,
                 "status": tc.status,
                 "result_payload": payload,
+                "slimmed_content": tc.slimmed_content,
                 "error_message": tc.error_message,
                 "duration_ms": tc.duration_ms,
                 "created_at": tc.created_at.isoformat() if tc.created_at else None,

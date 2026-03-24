@@ -414,6 +414,9 @@ class ToolCall(Base):
     result_payload = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     rendered_request = Column(JSON, nullable=True)
+    slimmed_content = Column(
+        Text, nullable=True
+    )  # What the LLM actually saw (after slim/truncation)
     duration_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 

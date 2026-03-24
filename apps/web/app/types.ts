@@ -161,6 +161,7 @@ export interface ToolCallRecord {
   input_params: Record<string, unknown> | null;
   status: 'pending' | 'executed' | 'pending_approval' | 'approved' | 'rejected' | 'failed';
   result_payload: Record<string, unknown> | null;
+  slimmed_content: string | null;
   error_message: string | null;
   duration_ms: number | null;
   rendered_request: Record<string, unknown> | null;
