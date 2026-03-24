@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
-import { Circle, ExternalLink, Rocket, X } from 'lucide-react';
+import { Circle, ExternalLink, Rocket, RotateCcw, X } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,6 +85,8 @@ export default function DeploymentsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [promoteTarget, setPromoteTarget] = useState<{ sha: string; imageTag: string; commitMessage: string } | null>(null);
   const [promoting, setPromoting] = useState(false);
+  const [rollbackTarget, setRollbackTarget] = useState<{ env: string; currentImageTag: string } | null>(null);
+  const [rollingBack, setRollingBack] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -134,6 +136,29 @@ export default function DeploymentsPanel() {
       setError(String(e));
     }
     setPromoting(false);
+  };
+
+  const handleRollback = async () => {
+    if (!rollbackTarget) return;
+    setRollingBack(true);
+    setError(null);
+    try {
+      const res = await apiFetch('/api/admin/rollback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_tag: rollbackTarget.currentImageTag, target_environment: rollbackTarget.env }),
+      });
+      if (res.ok) {
+        setRollbackTarget(null);
+        await fetchData();
+      } else {
+        const d = await res.json();
+        setError(d.detail || 'Rollback failed');
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+    setRollingBack(false);
   };
 
   // Determine if staging has a newer deploy than production
@@ -220,32 +245,55 @@ export default function DeploymentsPanel() {
                 ) : (
                   <div style={{ fontSize: '0.75rem', color: '#4a5568' }}>No deployments yet</div>
                 )}
-                {isProd && canPromote && stagingEnv?.latest_deploy && (
-                  <button
-                    onClick={() => setPromoteTarget({
-                      sha: stagingEnv.latest_deploy!.git_sha,
-                      imageTag: stagingEnv.latest_deploy!.image_tag,
-                      commitMessage: stagingEnv.latest_deploy!.commit_message,
-                    })}
-                    style={{
-                      marginTop: '0.5rem',
-                      padding: '5px 12px',
-                      fontSize: '0.72rem',
-                      fontWeight: 600,
-                      border: '1px solid #c4a882',
-                      borderRadius: 5,
-                      backgroundColor: 'transparent',
-                      color: '#c4a882',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 4,
-                    }}
-                  >
-                    <Rocket size={12} />
-                    Promote
-                  </button>
+                {deploy && (
+                  <div style={{ display: 'flex', gap: 6, marginTop: '0.5rem' }}>
+                    {isProd && canPromote && stagingEnv?.latest_deploy && (
+                      <button
+                        onClick={() => setPromoteTarget({
+                          sha: stagingEnv.latest_deploy!.git_sha,
+                          imageTag: stagingEnv.latest_deploy!.image_tag,
+                          commitMessage: stagingEnv.latest_deploy!.commit_message,
+                        })}
+                        style={{
+                          padding: '5px 12px',
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          border: '1px solid #c4a882',
+                          borderRadius: 5,
+                          backgroundColor: 'transparent',
+                          color: '#c4a882',
+                          cursor: 'pointer',
+                          fontFamily: 'inherit',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        <Rocket size={12} />
+                        Promote
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setRollbackTarget({ env: envName, currentImageTag: deploy.image_tag })}
+                      style={{
+                        padding: '5px 12px',
+                        fontSize: '0.72rem',
+                        fontWeight: 600,
+                        border: '1px solid #718096',
+                        borderRadius: 5,
+                        backgroundColor: 'transparent',
+                        color: '#718096',
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                    >
+                      <RotateCcw size={12} />
+                      Rollback
+                    </button>
+                  </div>
                 )}
               </div>
             );
@@ -393,6 +441,88 @@ export default function DeploymentsPanel() {
               >
                 <Rocket size={14} />
                 {promoting ? 'Deploying...' : 'Confirm Deploy'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ============ ROLLBACK MODAL ============ */}
+      {rollbackTarget && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+          }}
+          onClick={() => !rollingBack && setRollbackTarget(null)}
+        >
+          <div
+            style={{
+              backgroundColor: '#1a1a2e',
+              border: '1px solid #2a2a4a',
+              borderRadius: 10,
+              padding: '1.5rem',
+              width: '100%',
+              maxWidth: 440,
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: '#e2e8f0' }}>
+                Rollback {rollbackTarget.env}
+              </h3>
+              <button
+                onClick={() => !rollingBack && setRollbackTarget(null)}
+                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#718096', padding: 2 }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ fontSize: '0.8rem', color: '#a0aec0', marginBottom: '1.25rem' }}>
+              This will redeploy the <strong>previous successful version</strong> of <span style={{ color: '#c4a882', textTransform: 'capitalize' }}>{rollbackTarget.env}</span>.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setRollbackTarget(null)}
+                disabled={rollingBack}
+                style={{
+                  padding: '6px 16px',
+                  fontSize: '0.78rem',
+                  fontWeight: 600,
+                  border: '1px solid #2a2a4a',
+                  borderRadius: 6,
+                  backgroundColor: 'transparent',
+                  color: '#a0aec0',
+                  cursor: rollingBack ? 'not-allowed' : 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRollback}
+                disabled={rollingBack}
+                style={{
+                  padding: '6px 16px',
+                  fontSize: '0.78rem',
+                  fontWeight: 600,
+                  border: 'none',
+                  borderRadius: 6,
+                  backgroundColor: '#fc8181',
+                  color: '#0f0f1a',
+                  cursor: rollingBack ? 'not-allowed' : 'pointer',
+                  fontFamily: 'inherit',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                <RotateCcw size={14} />
+                {rollingBack ? 'Rolling back...' : 'Confirm Rollback'}
               </button>
             </div>
           </div>
