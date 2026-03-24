@@ -125,10 +125,21 @@ def _sync_agent_configs(db: Session) -> None:
                 agent_slug=slug,
                 display_name=defn["display_name"],
                 description=defn.get("description"),
+                system_prompt=defn.get("system_prompt", ""),
             )
             db.add(row)
             log.info("Created system AgentConfig: %s", slug)
-        # Existing rows are left untouched — admin may have customized them
+        else:
+            # Fill in system_prompt if the admin hasn't set one yet.
+            # Once an admin writes a custom prompt, it's never overwritten.
+            if not row.system_prompt and defn.get("system_prompt"):
+                row.system_prompt = defn["system_prompt"]
+                log.info("Set default system_prompt for: %s", slug)
+            # Update display_name and description if still at defaults
+            if defn.get("display_name") and not row.display_name:
+                row.display_name = defn["display_name"]
+            if defn.get("description") and not row.description:
+                row.description = defn["description"]
 
 
 # ---------------------------------------------------------------------------
