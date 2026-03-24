@@ -52,7 +52,9 @@ def test_sync_creates_bindings(db_session: Session):
             )
             .first()
         )
-        assert row is not None, f"Missing binding: {defn['agent_slug']}↔{defn['connector_name']}"
+        assert row is not None, (
+            f"Missing binding: {defn['agent_slug']}↔{defn['connector_name']}"
+        )
         assert row.enabled is True
 
 
@@ -80,9 +82,7 @@ def test_sync_preserves_admin_customizations(db_session: Session):
 
     # Simulate admin customizing a prompt
     agent = (
-        db_session.query(AgentConfig)
-        .filter(AgentConfig.agent_slug == "router")
-        .first()
+        db_session.query(AgentConfig).filter(AgentConfig.agent_slug == "router").first()
     )
     agent.system_prompt = "Custom admin prompt"
     agent.display_name = "My Custom Router"
@@ -92,9 +92,7 @@ def test_sync_preserves_admin_customizations(db_session: Session):
     sync_system_config(db_session)
 
     agent = (
-        db_session.query(AgentConfig)
-        .filter(AgentConfig.agent_slug == "router")
-        .first()
+        db_session.query(AgentConfig).filter(AgentConfig.agent_slug == "router").first()
     )
     assert agent.system_prompt == "Custom admin prompt"
     assert agent.display_name == "My Custom Router"

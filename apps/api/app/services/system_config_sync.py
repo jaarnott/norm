@@ -49,9 +49,7 @@ def _sync_connector_specs(db: Session) -> None:
     for defn in CONNECTOR_SPECS:
         name = defn["connector_name"]
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == name)
-            .first()
+            db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
         )
 
         if spec is None:
@@ -98,11 +96,7 @@ def _sync_connector_specs(db: Session) -> None:
 def _sync_agent_configs(db: Session) -> None:
     for defn in AGENT_CONFIGS:
         slug = defn["agent_slug"]
-        row = (
-            db.query(AgentConfig)
-            .filter(AgentConfig.agent_slug == slug)
-            .first()
-        )
+        row = db.query(AgentConfig).filter(AgentConfig.agent_slug == slug).first()
 
         if row is None:
             row = AgentConfig(
