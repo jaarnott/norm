@@ -64,9 +64,16 @@ jobs:
             --format "value(status.url)")
 
           echo "Testing API at $API_URL"
-          curl -f "$API_URL/health" || exit 1
-          echo ""
-          echo "Health check passed"
+          for i in 1 2 3 4 5 6; do
+            if curl -sf "$API_URL/health" > /dev/null 2>&1; then
+              echo "Health check passed (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "Health check failed after 6 attempts"
+          exit 1
 
       - name: Report deploy status
         if: always()
