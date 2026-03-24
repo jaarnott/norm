@@ -105,3 +105,16 @@ variable "cloudrun_web_memory" {
   type        = string
   default     = "512Mi"
 }
+
+# ── Monitoring ──────────────────────────────────────────────────
+variable "alert_email" {
+  description = "Email for alert notifications"
+  type        = string
+  default     = "admin@bettercallnorm.com"
+}
+
+variable "enable_alerts" {
+  description = "Enable alert policies (staging + production only)"
+  type        = bool
+  default     = false
+}

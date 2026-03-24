@@ -117,6 +117,21 @@ module "dns" {
   depends_on = [google_project_service.apis]
 }
 
+module "monitoring" {
+  source      = "./modules/monitoring"
+  project_id  = var.project_id
+  environment = var.environment
+  alert_email = var.alert_email
+
+  api_service_name  = module.cloud_run.api_service_name
+  web_service_name  = module.cloud_run.web_service_name
+  database_instance = module.database.instance_name
+
+  enable_alerts = var.enable_alerts
+
+  depends_on = [google_project_service.apis]
+}
+
 # ── Outputs ─────────────────────────────────────────────────────
 output "api_url" {
   value = module.cloud_run.api_url

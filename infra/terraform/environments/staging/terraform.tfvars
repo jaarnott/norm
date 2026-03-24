@@ -18,3 +18,7 @@ cloudrun_api_cpu    = "2"
 cloudrun_api_memory = "2Gi"
 cloudrun_web_cpu    = "1"
 cloudrun_web_memory = "512Mi"
+
+# Monitoring
+alert_email    = "jaarnott@gmail.com"
+enable_alerts  = true
