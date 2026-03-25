@@ -5,6 +5,7 @@ import { apiFetch } from '../../lib/api';
 import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
 import BillingTab from './BillingTab';
+import EmailTab from './EmailTab';
 import DeploymentsPanel from './DeploymentsPanel';
 import TestsPanel from './TestsPanel';
 import RolesPanel from './RolesPanel';
@@ -382,6 +383,7 @@ function MembersTab() {
   const [addEmail, setAddEmail] = useState('');
   const [addRole, setAddRole] = useState('member');
   const [addError, setAddError] = useState('');
+  const [availableRoles, setAvailableRoles] = useState<{ id: string; name: string; display_name: string; is_system: boolean }[]>([]);
   const [expandedMember, setExpandedMember] = useState<string | null>(null);
   const [memberDailyUsage, setMemberDailyUsage] = useState<Record<string, Record<string, DailyUsageEntry>>>({});
   const [showDailyUsage, setShowDailyUsage] = useState(false);
@@ -409,6 +411,13 @@ function MembersTab() {
           }
         }
         setMemberVenues(venueMap);
+
+        // Load available roles for role assignment dropdown
+        const rolesRes = await apiFetch(`/api/organizations/${orgs[0].id}/roles`);
+        if (rolesRes.ok) {
+          const rolesData = await rolesRes.json();
+          setAvailableRoles(rolesData.roles || []);
+        }
 
         // Load token usage for current month
         const usageRes = await apiFetch(`/api/organizations/${orgs[0].id}/usage`);
@@ -467,6 +476,15 @@ function MembersTab() {
       body: JSON.stringify({ venue_ids: updated }),
     });
     setMemberVenues(prev => ({ ...prev, [userId]: updated }));
+  };
+
+  const handleRoleChange = async (userId: string, roleId: string) => {
+    if (!org) return;
+    await apiFetch(`/api/organizations/${org.id}/members/${userId}/role`, {
+      method: 'PUT',
+      body: JSON.stringify({ role_id: roleId }),
+    });
+    loadData();
   };
 
   if (loading) return <div style={{ color: '#999' }}>Loading...</div>;
@@ -583,9 +601,17 @@ function MembersTab() {
           <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Role</label>
           <select value={addRole} onChange={e => setAddRole(e.target.value)}
             style={{ padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }}>
-            <option value="member">Member</option>
-            <option value="admin">Admin</option>
-            <option value="owner">Owner</option>
+            {availableRoles.length > 0 ? (
+              availableRoles.map(r => (
+                <option key={r.id} value={r.name}>{r.display_name}</option>
+              ))
+            ) : (
+              <>
+                <option value="member">Team Member</option>
+                <option value="admin">Manager</option>
+                <option value="owner">Owner</option>
+              </>
+            )}
           </select>
         </div>
         <button onClick={handleAdd} style={{
@@ -636,11 +662,29 @@ function MembersTab() {
                     </span>
                   );
                 })()}
-                <span style={{
-                  fontSize: '0.65rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-                  backgroundColor: m.role === 'owner' ? '#dbeafe' : m.role === 'admin' ? '#fef3c7' : '#f3f4f6',
-                  color: m.role === 'owner' ? '#1e40af' : m.role === 'admin' ? '#92400e' : '#6b7280',
-                }}>{m.role}</span>
+                {availableRoles.length > 0 ? (
+                  <select
+                    value={m.role_id || ''}
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => handleRoleChange(m.user_id, e.target.value)}
+                    style={{
+                      fontSize: '0.7rem', fontWeight: 600, padding: '2px 6px', borderRadius: 6,
+                      border: '1px solid #e5e7eb', backgroundColor: '#f9fafb', cursor: 'pointer',
+                      fontFamily: 'inherit', color: '#374151',
+                    }}
+                  >
+                    {!m.role_id && <option value="">— Unassigned —</option>}
+                    {availableRoles.map(r => (
+                      <option key={r.id} value={r.id}>{r.display_name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span style={{
+                    fontSize: '0.65rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                    backgroundColor: m.role_name === 'owner' ? '#dbeafe' : m.role_name === 'manager' ? '#fef3c7' : '#f3f4f6',
+                    color: m.role_name === 'owner' ? '#1e40af' : m.role_name === 'manager' ? '#92400e' : '#6b7280',
+                  }}>{m.role_display_name || m.role}</span>
+                )}
                 <span style={{
                   fontSize: '0.6rem', color: '#bbb',
                   transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
@@ -744,7 +788,7 @@ function MembersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing' | 'deployments' | 'tests' | 'roles';
+type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -1059,6 +1103,7 @@ export default function SettingsPanel() {
         <button data-testid="settings-tab-venues" onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
         <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Members</button>
         <button data-testid="settings-tab-billing" onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
+        <button onClick={() => setActiveTab('email')} style={tabStyle('email')}>Email</button>
         {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
         {showAgents && <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>}
         {showSpecs && <button data-testid="settings-tab-specs" onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>}
@@ -1645,6 +1690,9 @@ export default function SettingsPanel() {
 
         {/* ============ BILLING TAB ============ */}
         {activeTab === 'billing' && orgId && <BillingTab orgId={orgId} />}
+
+        {/* ============ EMAIL TAB ============ */}
+        {activeTab === 'email' && <EmailTab />}
 
         {/* ============ DEPLOYMENTS TAB ============ */}
         {activeTab === 'deployments' && <DeploymentsPanel />}

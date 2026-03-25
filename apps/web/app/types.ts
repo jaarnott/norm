@@ -353,6 +353,9 @@ export interface OrgMember {
   email: string;
   full_name: string;
   role: string;
+  role_id?: string | null;
+  role_name?: string;
+  role_display_name?: string;
 }
 
 export interface User {
