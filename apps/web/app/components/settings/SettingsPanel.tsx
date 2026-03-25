@@ -387,7 +387,8 @@ function UsersTab() {
   const [addSuccess, setAddSuccess] = useState('');
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [resendStatus, setResendStatus] = useState<Record<string, 'sending' | 'sent' | 'failed'>>({});
-  const [availableRoles, setAvailableRoles] = useState<{ id: string; name: string; display_name: string; is_system: boolean }[]>([]);
+  const [viewingRoleId, setViewingRoleId] = useState<string | null>(null);
+  const [availableRoles, setAvailableRoles] = useState<{ id: string; name: string; display_name: string; is_system: boolean; permissions: string[] }[]>([]);
   const [expandedMember, setExpandedMember] = useState<string | null>(null);
   const [memberDailyUsage, setMemberDailyUsage] = useState<Record<string, Record<string, DailyUsageEntry>>>({});
   const [showDailyUsage, setShowDailyUsage] = useState(false);
@@ -685,6 +686,60 @@ function UsersTab() {
         </div>
       )}
 
+      {/* Role Permissions Modal */}
+      {viewingRoleId && (() => {
+        const role = availableRoles.find(r => r.id === viewingRoleId);
+        if (!role) return null;
+        const perms = (role as { permissions?: string[] }).permissions || [];
+        // Group permissions by category
+        const groups: Record<string, string[]> = {};
+        for (const p of perms) {
+          const [cat] = p.split(':');
+          const label = cat.charAt(0).toUpperCase() + cat.slice(1);
+          if (!groups[label]) groups[label] = [];
+          groups[label].push(p);
+        }
+        return (
+          <div style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000,
+          }} onClick={() => setViewingRoleId(null)}>
+            <div style={{
+              backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem', width: 400, maxWidth: '90vw',
+              maxHeight: '80vh', overflow: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
+            }} onClick={e => e.stopPropagation()}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: '#1a1a1a' }}>
+                  {role.display_name} Permissions
+                </h3>
+                <button onClick={() => setViewingRoleId(null)} style={{
+                  border: 'none', background: 'none', cursor: 'pointer', fontSize: '1.1rem', color: '#999',
+                }}>×</button>
+              </div>
+              <p style={{ fontSize: '0.78rem', color: '#666', margin: '0 0 1rem' }}>
+                {perms.length} permissions granted
+              </p>
+              {Object.entries(groups).map(([cat, catPerms]) => (
+                <div key={cat} style={{ marginBottom: '0.75rem' }}>
+                  <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#999', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+                    {cat}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {catPerms.map(p => (
+                      <span key={p} style={{
+                        fontSize: '0.68rem', padding: '2px 8px', borderRadius: 4,
+                        backgroundColor: '#f0ebe5', color: '#8a7356',
+                      }}>{p.split(':')[1]}</span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* User list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
         {members.map(m => {
@@ -743,29 +798,38 @@ function UsersTab() {
                     </span>
                   );
                 })()}
-                {availableRoles.length > 0 ? (
-                  <select
-                    value={m.role_id || ''}
-                    onClick={e => e.stopPropagation()}
-                    onChange={e => handleRoleChange(m.user_id, e.target.value)}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} onClick={e => e.stopPropagation()}>
+                  {availableRoles.length > 0 ? (
+                    <select
+                      value={m.role_id || ''}
+                      onChange={e => handleRoleChange(m.user_id, e.target.value)}
+                      style={{
+                        fontSize: '0.7rem', fontWeight: 600, padding: '2px 6px', borderRadius: 6,
+                        border: '1px solid #e5e7eb', backgroundColor: '#f9fafb', cursor: 'pointer',
+                        fontFamily: 'inherit', color: '#374151',
+                      }}
+                    >
+                      {!m.role_id && <option value="">— Unassigned —</option>}
+                      {availableRoles.map(r => (
+                        <option key={r.id} value={r.id}>{r.display_name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span style={{
+                      fontSize: '0.65rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                      backgroundColor: m.role_name === 'owner' ? '#dbeafe' : m.role_name === 'manager' ? '#fef3c7' : '#f3f4f6',
+                      color: m.role_name === 'owner' ? '#1e40af' : m.role_name === 'manager' ? '#92400e' : '#6b7280',
+                    }}>{m.role_display_name || m.role}</span>
+                  )}
+                  <button
+                    onClick={() => setViewingRoleId(viewingRoleId === (m.role_id || '') ? null : (m.role_id || ''))}
+                    title="View role permissions"
                     style={{
-                      fontSize: '0.7rem', fontWeight: 600, padding: '2px 6px', borderRadius: 6,
-                      border: '1px solid #e5e7eb', backgroundColor: '#f9fafb', cursor: 'pointer',
-                      fontFamily: 'inherit', color: '#374151',
+                      border: 'none', background: 'none', cursor: 'pointer',
+                      fontSize: '0.7rem', color: '#999', padding: '2px 4px', borderRadius: 4,
                     }}
-                  >
-                    {!m.role_id && <option value="">— Unassigned —</option>}
-                    {availableRoles.map(r => (
-                      <option key={r.id} value={r.id}>{r.display_name}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <span style={{
-                    fontSize: '0.65rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-                    backgroundColor: m.role_name === 'owner' ? '#dbeafe' : m.role_name === 'manager' ? '#fef3c7' : '#f3f4f6',
-                    color: m.role_name === 'owner' ? '#1e40af' : m.role_name === 'manager' ? '#92400e' : '#6b7280',
-                  }}>{m.role_display_name || m.role}</span>
-                )}
+                  >ℹ</button>
+                </div>
                 <span style={{
                   fontSize: '0.6rem', color: '#bbb',
                   transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
@@ -883,8 +947,8 @@ export default function SettingsPanel() {
   const storedUser = getStoredUser() as User | null;
   const isAdmin = storedUser?.role === 'admin';
 
-  const showConnectors = hasSettingsPermission(storedUser, 'settings:connectors');
-  const showAgents = hasSettingsPermission(storedUser, 'settings:agents');
+  const showConnectors = isAdmin;
+  const showAgents = isAdmin;
   const showSpecs = isAdmin;
   const showDeployments = isAdmin;
   const showTests = isAdmin;
