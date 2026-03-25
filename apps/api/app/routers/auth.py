@@ -1,5 +1,6 @@
 """Authentication endpoints: register, login, me, invite, password reset."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -20,6 +21,7 @@ from app.auth.dependencies import get_current_user, require_permission
 from app.auth.permissions import ALL_ORG_PERMISSIONS
 from app.middleware.rate_limit import limiter
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -182,10 +184,11 @@ def invite_user(
     org_name = org.name if org else "Norm"
     inviter_name = user.full_name
 
+    email_log_id = None
     try:
-        send_system_email(
-            to_email=email,
+        email_log_id = send_system_email(
             template_name="invite_user",
+            to=[email],
             context={
                 "invite_url": invite_url,
                 "inviter_name": inviter_name,
@@ -194,10 +197,11 @@ def invite_user(
             },
             db=db,
         )
-    except Exception:
-        pass  # Don't fail the invite if email fails — it's logged
+        db.commit()
+    except Exception as exc:
+        logger.exception("Failed to send invite email to %s: %s", email, exc)
 
-    return {"ok": True, "user_id": target_user.id}
+    return {"ok": True, "user_id": target_user.id, "email_log_id": email_log_id}
 
 
 # ── Accept Invite ───────────────────────────────────────────────
@@ -254,16 +258,17 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
 
         try:
             send_system_email(
-                to_email=email,
                 template_name="password_reset",
+                to=[email],
                 context={
                     "reset_url": reset_url,
                     "full_name": user.full_name,
                 },
                 db=db,
             )
-        except Exception:
-            pass
+            db.commit()
+        except Exception as exc:
+            logger.exception("Failed to send reset email to %s: %s", email, exc)
 
     # Always return 200 to not leak email existence
     return {"ok": True, "message": "If that email exists, a reset link has been sent."}

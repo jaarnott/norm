@@ -386,6 +386,7 @@ function UsersTab() {
   const [addError, setAddError] = useState('');
   const [addSuccess, setAddSuccess] = useState('');
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [resendStatus, setResendStatus] = useState<Record<string, 'sending' | 'sent' | 'failed'>>({});
   const [availableRoles, setAvailableRoles] = useState<{ id: string; name: string; display_name: string; is_system: boolean }[]>([]);
   const [expandedMember, setExpandedMember] = useState<string | null>(null);
   const [memberDailyUsage, setMemberDailyUsage] = useState<Record<string, Record<string, DailyUsageEntry>>>({});
@@ -469,14 +470,19 @@ function UsersTab() {
 
   const handleResendInvite = async (email: string) => {
     if (!org) return;
+    setResendStatus(prev => ({ ...prev, [email]: 'sending' }));
     try {
       const roleId = availableRoles.length > 0 ? availableRoles[0].id : '';
-      await apiFetch('/api/auth/invite', {
+      const res = await apiFetch('/api/auth/invite', {
         method: 'POST',
         body: JSON.stringify({ email, org_id: org.id, role_id: roleId, venue_ids: [] }),
       });
-      setAddSuccess(`Invite resent to ${email}`);
-    } catch { /* ignore */ }
+      setResendStatus(prev => ({ ...prev, [email]: res.ok ? 'sent' : 'failed' }));
+      // Clear status after 3 seconds
+      setTimeout(() => setResendStatus(prev => { const n = { ...prev }; delete n[email]; return n; }), 3000);
+    } catch {
+      setResendStatus(prev => ({ ...prev, [email]: 'failed' }));
+    }
   };
 
   const handleRemove = async (userId: string) => {
@@ -714,13 +720,19 @@ function UsersTab() {
                   </div>
                   <div style={{ fontSize: '0.72rem', color: '#999' }}>{m.email}</div>
                 </div>
-                {m.is_active === false && (
-                  <button onClick={e => { e.stopPropagation(); handleResendInvite(m.email); }} style={{
-                    padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
-                    backgroundColor: '#fff', color: '#c4a882', border: '1px solid #c4a882', borderRadius: 6,
-                    cursor: 'pointer', fontFamily: 'inherit',
-                  }}>Resend Invite</button>
-                )}
+                {m.is_active === false && (() => {
+                  const status = resendStatus[m.email];
+                  if (status === 'sending') return <span style={{ fontSize: '0.68rem', color: '#999' }}>Sending...</span>;
+                  if (status === 'sent') return <span style={{ fontSize: '0.68rem', color: '#28a745', fontWeight: 600 }}>Sent!</span>;
+                  if (status === 'failed') return <span style={{ fontSize: '0.68rem', color: '#dc3545', fontWeight: 600 }}>Failed</span>;
+                  return (
+                    <button onClick={e => { e.stopPropagation(); handleResendInvite(m.email); }} style={{
+                      padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
+                      backgroundColor: '#fff', color: '#c4a882', border: '1px solid #c4a882', borderRadius: 6,
+                      cursor: 'pointer', fontFamily: 'inherit',
+                    }}>Resend Invite</button>
+                  );
+                })()}
                 {(() => {
                   const u = usage[m.user_id];
                   if (!u) return null;
