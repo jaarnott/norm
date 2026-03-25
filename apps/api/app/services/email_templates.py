@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy.orm import Session
 
@@ -10,7 +11,10 @@ logger = logging.getLogger(__name__)
 
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "email"
 
-_jinja_env = SandboxedEnvironment(autoescape=True)
+_jinja_env = SandboxedEnvironment(
+    loader=FileSystemLoader(str(TEMPLATE_DIR)),
+    autoescape=True,
+)
 
 
 def render_template(
