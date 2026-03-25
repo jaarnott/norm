@@ -354,3 +354,12 @@ export interface OrgMember {
   full_name: string;
   role: string;
 }
+
+export interface User {
+  id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  permissions: string[];
+  org_role: { name: string; display_name: string } | null;
+}

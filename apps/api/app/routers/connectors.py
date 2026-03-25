@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
 from app.db.models import ConnectorConfig, ConnectorSpec, User
-from app.auth.dependencies import get_current_user, require_role
+from app.auth.dependencies import get_current_user, require_permission
 
 router = APIRouter()
 
@@ -132,7 +132,7 @@ async def upsert_connector(
     name: str,
     body: ConnectorConfigBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("settings:connectors")),
 ):
     meta = next((c for c in PLATFORM_CONNECTORS if c["name"] == name), None)
     if not meta:
@@ -180,7 +180,7 @@ async def upsert_connector(
 async def toggle_connector(
     name: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("settings:connectors")),
 ):
     row = (
         db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
@@ -200,7 +200,7 @@ async def toggle_connector(
 async def delete_connector(
     name: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("settings:connectors")),
 ):
     row = (
         db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
@@ -221,7 +221,7 @@ async def test_connector(
     name: str,
     body: TestBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("settings:connectors")),
 ):
     if name == "anthropic":
         import anthropic

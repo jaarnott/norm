@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
-from app.db.models import User
+from app.db.models import User, OrganizationMembership, Role
 from app.auth.security import hash_password, verify_password, create_access_token
 from app.auth.schemas import RegisterRequest, LoginRequest, TokenResponse, UserResponse
 from app.auth.dependencies import get_current_user
+from app.auth.permissions import ALL_ORG_PERMISSIONS
 from app.middleware.rate_limit import limiter
 
 router = APIRouter()
@@ -34,9 +35,9 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
-    # First user gets admin role, rest get manager
+    # First user gets admin role, rest get user
     is_first = db.query(User).count() == 0
-    role = "admin" if is_first else "manager"
+    role = "admin" if is_first else "user"
 
     user = User(
         email=req.email,
@@ -66,7 +67,32 @@ async def login(request: Request, req: LoginRequest, db: Session = Depends(get_d
 
 
 @router.get("/auth/me")
-async def me(user: User = Depends(get_current_user)):
-    return UserResponse(
+async def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    permissions: list[str] = []
+    org_role: dict | None = None
+
+    if user.role == "admin":
+        # Platform admins get all org permissions
+        permissions = list(ALL_ORG_PERMISSIONS)
+    else:
+        # Load membership -> role -> permissions
+        membership = (
+            db.query(OrganizationMembership)
+            .filter(OrganizationMembership.user_id == user.id)
+            .first()
+        )
+        if membership and membership.role_id:
+            role_obj = db.query(Role).filter(Role.id == membership.role_id).first()
+            if role_obj:
+                permissions = role_obj.permissions or []
+                org_role = {
+                    "name": role_obj.name,
+                    "display_name": role_obj.display_name,
+                }
+
+    resp = UserResponse(
         id=user.id, email=user.email, full_name=user.full_name, role=user.role
     ).model_dump()
+    resp["permissions"] = permissions
+    resp["org_role"] = org_role
+    return resp

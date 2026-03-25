@@ -15,7 +15,7 @@ import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, set
 import { PanelLeft as PanelLeftIcon } from 'lucide-react';
 import type { Task, WidgetAction, VenueDetail } from '../types';
 
-type AuthUser = { id: string; email: string; full_name: string; role: string };
+type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null };
 
 export default function Home() {
   const [token, setTokenState] = useState<string | null>(null);

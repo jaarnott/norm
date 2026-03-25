@@ -17,16 +17,28 @@ export const AGENTS: AgentTab[] = [
   { id: 'reports', label: 'Reports', icon: BarChart3, color: colors.reports },
 ];
 
+interface SidebarUser {
+  full_name: string;
+  role: string;
+  permissions?: string[];
+}
+
+function hasPermission(user: SidebarUser | null | undefined, ...perms: string[]): boolean {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return perms.some(p => user.permissions?.includes(p));
+}
+
 interface SidebarProps {
   selected: string;
   onSelect: (id: string) => void;
   taskCounts: Record<string, number>;
-  user?: { full_name: string; role: string } | null;
+  user?: SidebarUser | null;
   onLogout?: () => void;
 }
 
 export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout }: SidebarProps) {
-  const isAdmin = user?.role === 'admin';
+  const showSettings = hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read');
 
   return (
     <div style={{
@@ -85,8 +97,8 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
 
       {/* Bottom section: Settings + User + Logout */}
       <div style={{ padding: '0.75rem 0', borderTop: '1px solid #e2ddd7', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-        {/* Settings (admin only) */}
-        {isAdmin && (
+        {/* Settings (permission-based) */}
+        {showSettings && (
           <button
             data-testid="sidebar-settings"
             onClick={() => onSelect('settings')}

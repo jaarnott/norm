@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import require_permission
 from app.db.engine import get_db
 from app.db.models import Deployment, E2ETest, E2ETestRun, User
 
@@ -46,11 +46,10 @@ class PromoteRequest(BaseModel):
 def list_deployments(
     environment: str | None = None,
     limit: int = 20,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:deployments")),
     db: Session = Depends(get_db),
 ):
     """List recent deployments, optionally filtered by environment."""
-    _require_admin(user)
     q = db.query(Deployment).order_by(Deployment.started_at.desc())
     if environment:
         q = q.filter(Deployment.environment == environment)
@@ -76,11 +75,10 @@ def list_deployments(
 
 @router.get("/admin/environments")
 def list_environments(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:deployments")),
     db: Session = Depends(get_db),
 ):
     """List all environments with their latest deployment status."""
-    _require_admin(user)
     envs = []
     for env_name in ("testing", "staging", "production"):
         latest = (
@@ -152,14 +150,13 @@ def deploy_webhook(
 @router.post("/admin/promote")
 def promote(
     body: PromoteRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:deployments")),
     db: Session = Depends(get_db),
 ):
     """Trigger a production deployment via GitHub Actions workflow_dispatch.
 
     TODO (Phase 3): Integrate with GitHub API to trigger the deploy workflow.
     """
-    _require_admin(user)
     # For now, create a pending deployment record
     dep = Deployment(
         environment=body.target_environment,
@@ -185,7 +182,7 @@ def promote(
 @router.post("/admin/rollback")
 def rollback(
     body: PromoteRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:deployments")),
     db: Session = Depends(get_db),
 ):
     """Roll back an environment to a previous known-good deployment.
@@ -193,7 +190,6 @@ def rollback(
     Finds the last successful deployment for the target environment
     and re-deploys that image tag.
     """
-    _require_admin(user)
 
     # Find the last successful deploy for this environment (excluding the current one)
     last_good = (
@@ -279,10 +275,9 @@ class TestRunWebhookPayload(BaseModel):
 @router.post("/admin/tests/generate")
 async def generate_test(
     body: GenerateTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
 ):
     """Generate a Playwright test from a natural language description."""
-    _require_admin(user)
     from app.services.test_generator import generate_test as _generate
 
     result = await _generate(body.description)
@@ -292,11 +287,10 @@ async def generate_test(
 @router.post("/admin/tests")
 def save_test(
     body: SaveTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
     """Save a generated test to the suite."""
-    _require_admin(user)
     test = E2ETest(
         name=body.name,
         description=body.description,
@@ -319,11 +313,10 @@ def save_test(
 
 @router.get("/admin/tests")
 def list_tests(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
     """List all E2E tests with last run status."""
-    _require_admin(user)
     rows = db.query(E2ETest).order_by(E2ETest.created_at.desc()).all()
     return {
         "tests": [
@@ -346,11 +339,10 @@ def list_tests(
 @router.get("/admin/tests/{test_id}")
 def get_test(
     test_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
     """Get a single E2E test detail."""
-    _require_admin(user)
     test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
     if not test:
         raise HTTPException(404, "Test not found")
@@ -371,11 +363,10 @@ def get_test(
 def update_test(
     test_id: str,
     body: UpdateTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
     """Update an existing E2E test."""
-    _require_admin(user)
     test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
     if not test:
         raise HTTPException(404, "Test not found")
@@ -400,11 +391,10 @@ def update_test(
 @router.delete("/admin/tests/{test_id}")
 def delete_test(
     test_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
     """Delete an E2E test."""
-    _require_admin(user)
     test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
     if not test:
         raise HTTPException(404, "Test not found")
@@ -416,11 +406,10 @@ def delete_test(
 @router.post("/admin/tests/run")
 def run_tests(
     body: RunTestsRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
     """Create pending test run records. Actual execution happens externally (CI/CD)."""
-    _require_admin(user)
     if body.test_ids:
         tests = db.query(E2ETest).filter(E2ETest.id.in_(body.test_ids)).all()
     else:
@@ -452,11 +441,10 @@ def list_test_runs(
     environment: str | None = None,
     limit: int = 50,
     offset: int = 0,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
     """List test runs, optionally filtered by environment."""
-    _require_admin(user)
     q = db.query(E2ETestRun).order_by(E2ETestRun.started_at.desc())
     if environment:
         q = q.filter(E2ETestRun.environment == environment)
@@ -487,11 +475,10 @@ def list_test_runs(
 @router.get("/admin/test-runs/{run_id}")
 def get_test_run(
     run_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
     """Get a single test run detail."""
-    _require_admin(user)
     run = db.query(E2ETestRun).filter(E2ETestRun.id == run_id).first()
     if not run:
         raise HTTPException(404, "Test run not found")

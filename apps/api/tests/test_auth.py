@@ -47,15 +47,15 @@ class TestRegister:
         assert resp.status_code == 200
         assert resp.json()["user"]["role"] == "admin"
 
-    def test_second_user_is_manager(self, client, db_session, admin_user):
-        """When at least one user exists, new registrations get the manager role."""
+    def test_second_user_is_user(self, client, db_session, admin_user):
+        """When at least one user exists, new registrations get the user role."""
         resp = client.post("/api/auth/register", json={
             "email": "second@example.com",
             "password": "securepass123",
             "full_name": "Second User",
         })
         assert resp.status_code == 200
-        assert resp.json()["user"]["role"] == "manager"
+        assert resp.json()["user"]["role"] == "user"
 
     def test_register_duplicate_email_returns_400(self, client, db_session, admin_user):
         """Registering with an already-taken email should fail."""

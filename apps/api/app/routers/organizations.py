@@ -13,7 +13,7 @@ from app.db.models import (
     User,
     ConnectorConfig,
 )
-from app.auth.dependencies import get_current_user, require_role
+from app.auth.dependencies import get_current_user, require_permission
 
 router = APIRouter()
 
@@ -135,7 +135,7 @@ async def list_organizations(
 async def create_organization(
     body: CreateOrgBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Create a new organization. The creating user becomes the owner."""
     existing = db.query(Organization).filter(Organization.slug == body.slug).first()
@@ -192,25 +192,12 @@ async def update_organization(
     org_id: str,
     body: UpdateOrgBody,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("org:manage")),
 ):
     """Update organization details."""
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
-
-    # Verify user is owner or admin
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(
-            OrganizationMembership.organization_id == org_id,
-            OrganizationMembership.user_id == user.id,
-            OrganizationMembership.role.in_(["owner", "admin"]),
-        )
-        .first()
-    )
-    if not membership and user.role != "admin":
-        raise HTTPException(403, "Insufficient permissions")
 
     if body.name is not None:
         org.name = body.name
@@ -231,7 +218,7 @@ async def add_member(
     org_id: str,
     body: AddMemberBody,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("org:members")),
 ):
     """Add a user to an organization."""
     org = db.query(Organization).filter(Organization.id == org_id).first()
@@ -270,7 +257,7 @@ async def remove_member(
     org_id: str,
     member_user_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("org:members")),
 ):
     """Remove a user from an organization."""
     membership = (
@@ -297,7 +284,7 @@ async def create_venue(
     org_id: str,
     body: CreateVenueBody,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("org:venues")),
 ):
     """Create a venue within an organization."""
     org = db.query(Organization).filter(Organization.id == org_id).first()
@@ -367,7 +354,7 @@ async def update_venue(
 async def delete_venue(
     venue_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("org:venues")),
 ):
     """Delete a venue and its connector configs."""
     venue = db.query(Venue).filter(Venue.id == venue_id).first()
@@ -442,7 +429,7 @@ async def set_user_venues(
     user_id: str,
     body: dict,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("org:members")),
 ):
     """Set venue access for a user. Body: {"venue_ids": ["v1", "v2"]}."""
     venue_ids = body.get("venue_ids", [])

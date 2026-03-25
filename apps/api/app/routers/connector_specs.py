@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import get_db, SessionLocal
 from app.db.models import ConnectorSpec, ConnectorConfig, User
-from app.auth.dependencies import get_current_user, require_role
+from app.auth.dependencies import get_current_user, require_permission
 
 router = APIRouter(prefix="/connector-specs", tags=["connector-specs"])
 
@@ -133,7 +133,7 @@ async def list_specs(
 async def create_spec(
     body: ConnectorSpecCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     existing = (
         db.query(ConnectorSpec)
@@ -182,7 +182,7 @@ async def update_spec(
     name: str,
     body: ConnectorSpecUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
     if not spec:
@@ -202,7 +202,7 @@ async def update_spec(
 async def delete_spec(
     name: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
     if not spec:
@@ -217,7 +217,7 @@ async def dry_run(
     name: str,
     body: DryRunBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Render a template with sample fields — returns the HTTP request without executing it."""
     from app.connectors.spec_executor import render_request
@@ -268,7 +268,7 @@ async def test_spec(
     name: str,
     body: DryRunBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Execute a test request against the real API."""
     from app.connectors.spec_executor import execute_spec
@@ -335,7 +335,7 @@ async def preview_transform(
     name: str,
     body: TransformPreviewBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Preview a response transform on a sample payload."""
     from app.connectors.response_transform import apply_response_transform
@@ -351,7 +351,7 @@ async def preview_transform(
 async def generate_spec(
     body: GenerateBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """AI-assisted: send API docs, get back a draft connector spec."""
     from app.services.spec_generator import generate_connector_spec
@@ -447,7 +447,7 @@ def _parse_ai_json(raw: str) -> dict:
 async def generate_consolidator(
     body: GenerateConsolidatorBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Use AI to generate a consolidator config from a natural language description."""
     from app.services.secrets import get_api_key
@@ -488,7 +488,7 @@ Return ONLY valid JSON, no markdown fences."""
 async def edit_consolidator(
     body: EditConsolidatorBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Use AI to edit an existing consolidator config based on a natural language instruction."""
     from app.services.secrets import get_api_key
@@ -535,7 +535,7 @@ Return ONLY valid JSON, no markdown fences."""
 async def test_consolidator(
     body: TestConsolidatorBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Test a consolidator config with real data without saving it."""
     from app.agents.internal_tools import execute_consolidator
@@ -574,7 +574,7 @@ async def test_consolidator(
 async def auto_build_consolidator(
     body: AutoBuildConsolidatorBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Autonomous loop: generate/fix a consolidator config, test it, iterate until it works."""
     from app.services.secrets import get_api_key
@@ -885,7 +885,7 @@ def _build_connector_tools(db) -> list[dict]:
 @router.post("/norm/consolidator-chat")
 async def consolidator_chat(
     body: ConsolidatorChatBody,
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """SSE chat endpoint for building/editing consolidator tools interactively."""
     queue: asyncio.Queue = asyncio.Queue()

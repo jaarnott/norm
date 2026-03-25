@@ -47,3 +47,61 @@ def require_role(*roles: str):
         return user
 
     return role_checker
+
+
+def require_permission(*permissions: str):
+    """Check user has ALL specified permissions.
+
+    - admin:* scopes -> checks User.role == "admin"
+    - org scopes -> loads membership -> role -> permissions
+    - Platform admins (User.role == "admin") bypass org checks
+    """
+
+    def checker(
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        from app.auth.permissions import PLATFORM_ADMIN_SCOPES
+
+        needed = set(permissions)
+
+        # Platform admin scopes
+        admin_needed = needed & PLATFORM_ADMIN_SCOPES
+        if admin_needed:
+            if user.role != "admin":
+                raise HTTPException(403, "Platform admin required")
+            needed -= admin_needed
+
+        if not needed:
+            return user
+
+        # Platform admins bypass org permission checks
+        if user.role == "admin":
+            return user
+
+        # Load membership -> role -> permissions
+        from app.db.models import OrganizationMembership, Role
+
+        membership = (
+            db.query(OrganizationMembership)
+            .filter(OrganizationMembership.user_id == user.id)
+            .first()
+        )
+
+        if not membership or not membership.role_id:
+            raise HTTPException(403, "No organization role assigned")
+
+        role = db.query(Role).filter(Role.id == membership.role_id).first()
+        if not role:
+            raise HTTPException(403, "Role not found")
+
+        user_perms = set(role.permissions or [])
+        missing = needed - user_perms
+        if missing:
+            raise HTTPException(
+                403, f"Missing permissions: {', '.join(sorted(missing))}"
+            )
+
+        return user
+
+    return checker

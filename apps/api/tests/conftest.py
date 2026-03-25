@@ -20,14 +20,14 @@ from app.db.models import (
     Base, User, Organization, OrganizationMembership, Venue,
     UserVenueAccess, Task, Order, OrderLine, Supplier, Product,
     ConnectorConfig, ConnectorSpec, AutomatedTask, Report, ReportChart,
-    WorkingDocument, Subscription, TokenUsage,
+    WorkingDocument, Subscription, TokenUsage, Role,
 )
 from app.db.engine import get_db
 from app.auth.security import hash_password, create_access_token
 from app.routers import (
     auth, admin, tasks, venues, organizations, connectors,
     billing, automated_tasks, reports_crud, working_documents,
-    orders, agents,
+    orders, agents, roles,
 )
 
 
@@ -47,6 +47,7 @@ _test_app.include_router(reports_crud.router, prefix="/api")
 _test_app.include_router(working_documents.router, prefix="/api")
 _test_app.include_router(orders.router, prefix="/api")
 _test_app.include_router(agents.router, prefix="/api")
+_test_app.include_router(roles.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +97,7 @@ def client(db_session):
 # User helpers
 # ---------------------------------------------------------------------------
 
-def _make_user(db_session, *, email=None, role="manager", full_name="Test User"):
+def _make_user(db_session, *, email=None, role="user", full_name="Test User"):
     """Insert a user directly into the database and return it."""
     user = User(
         id=str(uuid.uuid4()),

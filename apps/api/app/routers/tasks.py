@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
 from app.db.models import Task, Approval, ToolCall, User
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, require_permission
 from app.services.order_service import (
     get_order,
     approve_order,
@@ -110,7 +110,7 @@ def _tool_use_task_to_dict(task: Task) -> dict:
 @router.get("/tasks")
 async def get_all_tasks(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("tasks:read")),
 ):
     """Return lightweight task summaries for the sidebar list.
 
@@ -174,7 +174,9 @@ def _task_summary(task: Task) -> dict:
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(
-    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    task_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("tasks:write")),
 ):
     task = db.query(Task).filter(Task.id == task_id, Task.user_id == user.id).first()
     if not task:
@@ -186,7 +188,9 @@ async def delete_task(
 
 @router.get("/tasks/{task_id}")
 async def get_task_detail(
-    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    task_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("tasks:read")),
 ):
     task, _ = _find(db, task_id)
     if not task:

@@ -34,7 +34,7 @@ class User(Base):
     email = Column(String, unique=True, nullable=False, index=True)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=False)
-    role = Column(String, nullable=False, default="manager")  # "admin" or "manager"
+    role = Column(String, nullable=False, default="user")  # "admin" or "user"
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
@@ -60,6 +60,29 @@ class Organization(Base):
 
     venues = relationship("Venue", back_populates="organization")
     memberships = relationship("OrganizationMembership", back_populates="organization")
+    roles = relationship("Role", back_populates="organization")
+
+
+class Role(Base):
+    __tablename__ = "roles"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_org_role_name"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=True
+    )  # NULL = system default role
+    name = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    is_system = Column(Boolean, nullable=False, default=False)
+    permissions = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    organization = relationship("Organization", back_populates="roles")
+    memberships = relationship("OrganizationMembership", back_populates="role_obj")
 
 
 class OrganizationMembership(Base):
@@ -71,11 +94,15 @@ class OrganizationMembership(Base):
     id = Column(String, primary_key=True, default=_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
-    role = Column(String, nullable=False, default="member")  # owner|admin|member
+    role = Column(
+        String, nullable=False, default="member"
+    )  # legacy: owner|admin|member
+    role_id = Column(String, ForeignKey("roles.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
     user = relationship("User", back_populates="memberships")
     organization = relationship("Organization", back_populates="memberships")
+    role_obj = relationship("Role", back_populates="memberships")
 
 
 class UserVenueAccess(Base):

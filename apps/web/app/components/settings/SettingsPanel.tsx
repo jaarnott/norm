@@ -7,7 +7,9 @@ import ConnectorSpecsPanel from './ConnectorSpecsPanel';
 import BillingTab from './BillingTab';
 import DeploymentsPanel from './DeploymentsPanel';
 import TestsPanel from './TestsPanel';
+import RolesPanel from './RolesPanel';
 import { getStoredUser } from '../../lib/api';
+import type { User } from '../../types';
 
 interface ConnectorField {
   key: string;
@@ -742,13 +744,26 @@ function MembersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing' | 'deployments' | 'tests';
+type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing' | 'deployments' | 'tests' | 'roles';
+
+function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return perms.some(p => user.permissions?.includes(p));
+}
 
 export default function SettingsPanel() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('connectors');
   const [orgId, setOrgId] = useState<string | null>(null);
-  const storedUser = getStoredUser();
+  const storedUser = getStoredUser() as User | null;
   const isAdmin = storedUser?.role === 'admin';
+
+  const showConnectors = hasSettingsPermission(storedUser, 'settings:connectors');
+  const showAgents = hasSettingsPermission(storedUser, 'settings:agents');
+  const showSpecs = isAdmin;
+  const showDeployments = isAdmin;
+  const showTests = isAdmin;
+  const showRoles = hasSettingsPermission(storedUser, 'org:roles', 'org:members');
 
   // Fetch org ID for billing tab
   useEffect(() => {
@@ -1044,11 +1059,12 @@ export default function SettingsPanel() {
         <button data-testid="settings-tab-venues" onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
         <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Members</button>
         <button data-testid="settings-tab-billing" onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
-        <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>
-        <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>
-        <button data-testid="settings-tab-specs" onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>
-        {isAdmin && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
-        {isAdmin && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
+        {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
+        {showAgents && <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>}
+        {showSpecs && <button data-testid="settings-tab-specs" onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>}
+        {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
+        {showTests && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
+        {showRoles && <button data-testid="settings-tab-roles" onClick={() => setActiveTab('roles')} style={tabStyle('roles')}>Roles</button>}
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '1.5rem' }}>
@@ -1635,6 +1651,9 @@ export default function SettingsPanel() {
 
         {/* ============ TESTS TAB ============ */}
         {activeTab === 'tests' && <TestsPanel />}
+
+        {/* ============ ROLES TAB ============ */}
+        {activeTab === 'roles' && orgId && <RolesPanel orgId={orgId} />}
       </div>
     </div>
   );

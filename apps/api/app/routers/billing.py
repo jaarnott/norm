@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.engine import get_db
 from app.db.models import User, OrganizationMembership
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import require_permission
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -44,10 +44,8 @@ def _require_org_owner(user: User, org_id: str, db: Session) -> OrganizationMemb
 async def get_billing(
     org_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:read")),
 ):
-    """Get billing info for the organization."""
-    _require_org_access(user, org_id, db)
     from app.services.billing_service import get_billing_info
 
     return get_billing_info(db, org_id)
@@ -67,10 +65,9 @@ async def setup_billing(
     org_id: str,
     body: SetupBody,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:manage")),
 ):
     """Create Stripe customer and return SetupIntent for payment method collection."""
-    _require_org_owner(user, org_id, db)
     from app.services.billing_service import create_setup_intent
 
     try:
@@ -91,10 +88,9 @@ async def subscribe(
     org_id: str,
     body: SubscribeBody,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:manage")),
 ):
     """Create the Stripe subscription after payment method is collected."""
-    _require_org_owner(user, org_id, db)
     from app.services.billing_service import create_subscription
 
     try:
@@ -120,10 +116,9 @@ async def update_plan(
     org_id: str,
     body: ChangePlanBody,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:manage")),
 ):
     """Change the token plan (prorated)."""
-    _require_org_owner(user, org_id, db)
     from app.services.billing_service import change_plan
 
     try:
@@ -150,10 +145,9 @@ async def update_agents(
     org_id: str,
     body: AgentBody,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:manage")),
 ):
     """Enable/disable paid agents."""
-    _require_org_owner(user, org_id, db)
     from app.db.models import Organization
 
     org = db.query(Organization).filter(Organization.id == org_id).first()
@@ -184,10 +178,9 @@ async def top_up(
     org_id: str,
     body: TopUpBody,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:manage")),
 ):
     """Purchase additional tokens."""
-    _require_org_owner(user, org_id, db)
     from app.services.billing_service import purchase_top_up
 
     try:
@@ -208,10 +201,9 @@ async def top_up(
 async def update_payment_method(
     org_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:manage")),
 ):
     """Get a new SetupIntent to update the payment method."""
-    _require_org_owner(user, org_id, db)
     from app.services.billing_service import create_setup_intent
 
     try:
@@ -232,10 +224,9 @@ async def update_payment_method(
 async def list_invoices(
     org_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:read")),
 ):
     """List recent invoices from Stripe."""
-    _require_org_access(user, org_id, db)
     from app.db.models import Subscription
 
     sub = (
@@ -281,10 +272,9 @@ async def list_invoices(
 async def cancel_subscription(
     org_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("billing:manage")),
 ):
     """Cancel subscription at end of billing period."""
-    _require_org_owner(user, org_id, db)
     from app.db.models import Subscription
 
     sub = (
