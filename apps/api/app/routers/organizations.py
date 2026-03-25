@@ -92,6 +92,7 @@ def _org_to_dict(org: Organization, db: Session, include_details: bool = False) 
                 "role_display_name": m.role_obj.display_name
                 if m.role_obj
                 else m.role.title(),
+                "is_active": m.user.is_active if m.user else True,
             }
             for m in org.memberships
         ]
