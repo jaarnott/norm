@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
+import { DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
 import { extractShifts, extractRosterMeta, getWeekDays, dateKey, buildStaffRows, DAY_NAMES, formatTimeShort, calcHours, roleColor } from './roster/shared';
@@ -267,7 +267,8 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
 
   // --- Drag and drop (dnd-kit) ---
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 6 } })
   );
 
   const [activeShift, setActiveShift] = useState<Shift | null>(null);

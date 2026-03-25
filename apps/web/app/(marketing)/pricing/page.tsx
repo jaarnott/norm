@@ -1,4 +1,7 @@
+'use client';
+
 import Link from 'next/link';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 const PLANS = [
   {
@@ -34,23 +37,24 @@ const FAQ = [
   { q: 'Is there a free trial?', a: 'Yes, new accounts start with a trial period so you can explore the platform before committing to a plan.' },
 ];
 
-const sectionStyle = { maxWidth: 1000, margin: '0 auto', padding: '0 2rem' };
-
 export default function PricingPage() {
+  const { isMobile } = useBreakpoint();
+  const sectionStyle = { maxWidth: 1000, margin: '0 auto', padding: isMobile ? '0 1rem' : '0 2rem' };
+
   return (
     <div>
-      <section style={{ ...sectionStyle, paddingTop: '4rem', paddingBottom: '3rem', textAlign: 'center' }}>
-        <h1 style={{ fontSize: '2.5rem', fontWeight: 800, marginBottom: '0.75rem', color: '#2d2a26' }}>
+      <section style={{ ...sectionStyle, paddingTop: isMobile ? '2.5rem' : '4rem', paddingBottom: '3rem', textAlign: 'center' }}>
+        <h1 style={{ fontSize: isMobile ? '1.8rem' : '2.5rem', fontWeight: 800, marginBottom: '0.75rem', color: '#2d2a26' }}>
           Simple, transparent pricing
         </h1>
-        <p style={{ color: '#999', fontSize: '1.1rem', maxWidth: 500, margin: '0 auto' }}>
+        <p style={{ color: '#999', fontSize: isMobile ? '1rem' : '1.1rem', maxWidth: 500, margin: '0 auto' }}>
           Pick a token plan, add the agents you need, and connect your venues.
         </p>
       </section>
 
       {/* Plans */}
       <section style={{ ...sectionStyle, paddingBottom: '3rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '1.25rem' }}>
           {PLANS.map(p => (
             <div key={p.name} style={{
               backgroundColor: '#fff', borderRadius: 12, padding: '2rem 1.5rem', textAlign: 'center',
@@ -97,8 +101,8 @@ export default function PricingPage() {
         <div style={{ backgroundColor: '#fff', borderRadius: 12, border: '1px solid #e8e4de', overflow: 'hidden' }}>
           {ADDONS.map((a, i) => (
             <div key={a.name} style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              padding: '1rem 1.5rem', borderBottom: i < ADDONS.length - 1 ? '1px solid #f0ece6' : 'none',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem',
+              padding: isMobile ? '1rem' : '1rem 1.5rem', borderBottom: i < ADDONS.length - 1 ? '1px solid #f0ece6' : 'none',
             }}>
               <div>
                 <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#2d2a26' }}>{a.name}</div>

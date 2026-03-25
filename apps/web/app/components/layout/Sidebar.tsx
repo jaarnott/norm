@@ -2,6 +2,7 @@
 
 import { Home, Package, UserRound, BarChart3, Settings, LogOut, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 export interface AgentTab {
   id: string;
@@ -38,8 +39,63 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout }: SidebarProps) {
-  // Show settings for anyone with any org-level permission (venues, members, billing, connectors, agents, roles)
+  const { isMobile } = useBreakpoint();
   const showSettings = hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read');
+
+  if (isMobile) {
+    return (
+      <div className="safe-bottom" style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: 56,
+        backgroundColor: '#faf8f5',
+        borderTop: '1px solid #e2ddd7',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-around',
+        zIndex: 100,
+      }}>
+        {AGENTS.map((agent) => {
+          const isActive = selected === agent.id;
+          return (
+            <button
+              key={agent.id}
+              data-testid={`sidebar-${agent.id}`}
+              onClick={() => onSelect(agent.id)}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                minWidth: 48, minHeight: 48,
+                border: 'none', borderRadius: 8,
+                backgroundColor: isActive ? '#f0ebe5' : 'transparent',
+                cursor: 'pointer', fontFamily: 'inherit', gap: 2,
+              }}
+            >
+              <agent.icon size={20} strokeWidth={1.75} />
+              <span style={{ fontSize: '0.6rem', color: isActive ? '#1a1a1a' : '#999' }}>{agent.label}</span>
+            </button>
+          );
+        })}
+        {showSettings && (
+          <button
+            data-testid="sidebar-settings"
+            onClick={() => onSelect('settings')}
+            style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              minWidth: 48, minHeight: 48,
+              border: 'none', borderRadius: 8,
+              backgroundColor: selected === 'settings' ? '#f0ebe5' : 'transparent',
+              cursor: 'pointer', fontFamily: 'inherit', gap: 2,
+            }}
+          >
+            <Settings size={20} strokeWidth={1.75} />
+            <span style={{ fontSize: '0.6rem', color: selected === 'settings' ? '#1a1a1a' : '#999' }}>Settings</span>
+          </button>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -67,9 +123,6 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
       <div style={{ padding: '0.75rem 0', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
         {AGENTS.map((agent) => {
           const isActive = selected === agent.id;
-          const count = agent.id === 'home'
-            ? Object.values(taskCounts).reduce((a, b) => a + b, 0)
-            : (taskCounts[agent.id] || 0);
           return (
             <button
               key={agent.id}
@@ -98,7 +151,6 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
 
       {/* Bottom section: Settings + User + Logout */}
       <div style={{ padding: '0.75rem 0', borderTop: '1px solid #e2ddd7', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-        {/* Settings (permission-based) */}
         {showSettings && (
           <button
             data-testid="sidebar-settings"
@@ -122,7 +174,6 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
           </button>
         )}
 
-        {/* User avatar */}
         {user && (
           <div
             title={`${user.full_name} (${user.role})`}
@@ -144,7 +195,6 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
           </div>
         )}
 
-        {/* Logout */}
         {onLogout && (
           <button
             data-testid="sidebar-logout"

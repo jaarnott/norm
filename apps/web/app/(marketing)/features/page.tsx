@@ -1,4 +1,7 @@
+'use client';
+
 import Link from 'next/link';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 const FEATURES = [
   {
@@ -43,34 +46,34 @@ const FEATURES = [
   },
 ];
 
-const sectionStyle = { maxWidth: 900, margin: '0 auto', padding: '0 2rem' };
-
 export default function FeaturesPage() {
+  const { isMobile } = useBreakpoint();
+  const sectionStyle = { maxWidth: 900, margin: '0 auto', padding: isMobile ? '0 1rem' : '0 2rem' };
+
   return (
     <div>
-      <section style={{ ...sectionStyle, paddingTop: '4rem', paddingBottom: '3rem', textAlign: 'center' }}>
-        <h1 style={{ fontSize: '2.5rem', fontWeight: 800, marginBottom: '0.75rem', color: '#2d2a26' }}>
+      <section style={{ ...sectionStyle, paddingTop: isMobile ? '2.5rem' : '4rem', paddingBottom: '3rem', textAlign: 'center' }}>
+        <h1 style={{ fontSize: isMobile ? '1.8rem' : '2.5rem', fontWeight: 800, marginBottom: '0.75rem', color: '#2d2a26' }}>
           Built for hospitality operations
         </h1>
-        <p style={{ color: '#999', fontSize: '1.1rem', maxWidth: 550, margin: '0 auto' }}>
+        <p style={{ color: '#999', fontSize: isMobile ? '1rem' : '1.1rem', maxWidth: 550, margin: '0 auto' }}>
           Every feature designed around how hospitality venues actually work — from shift scheduling to stock orders.
         </p>
       </section>
 
       <section style={{ ...sectionStyle, paddingBottom: '5rem' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-          {FEATURES.map((f, i) => (
+          {FEATURES.map((f) => (
             <div key={f.title} style={{
-              display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2.5rem', alignItems: 'start',
-              backgroundColor: '#fff', borderRadius: 14, padding: '2rem', border: '1px solid #e8e4de',
-              direction: i % 2 === 1 ? 'rtl' : 'ltr',
+              display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? '1rem' : '2.5rem', alignItems: 'start',
+              backgroundColor: '#fff', borderRadius: 14, padding: isMobile ? '1.25rem' : '2rem', border: '1px solid #e8e4de',
             }}>
-              <div style={{ direction: 'ltr' }}>
+              <div>
                 <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>{f.icon}</div>
                 <h2 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.75rem', color: '#2d2a26' }}>{f.title}</h2>
                 <p style={{ color: '#888', fontSize: '0.9rem', lineHeight: 1.6, margin: 0 }}>{f.desc}</p>
               </div>
-              <div style={{ direction: 'ltr' }}>
+              <div>
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
                   {f.details.map(d => (
                     <li key={d} style={{ fontSize: '0.82rem', color: '#666', padding: '0.35rem 0', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
@@ -87,7 +90,7 @@ export default function FeaturesPage() {
 
       {/* CTA */}
       <section style={{ ...sectionStyle, paddingBottom: '5rem', textAlign: 'center' }}>
-        <h2 style={{ fontSize: '1.8rem', fontWeight: 700, marginBottom: '1rem', color: '#2d2a26' }}>
+        <h2 style={{ fontSize: isMobile ? '1.4rem' : '1.8rem', fontWeight: 700, marginBottom: '1rem', color: '#2d2a26' }}>
           See it in action
         </h2>
         <p style={{ color: '#999', fontSize: '1rem', marginBottom: '2rem' }}>

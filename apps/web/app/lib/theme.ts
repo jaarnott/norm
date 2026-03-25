@@ -1,3 +1,8 @@
+export const breakpoints = {
+  mobile: 768,
+  tablet: 1024,
+};
+
 export const colors = {
   // Brand
   primary: '#c4a882',        // Warm tan (LoadedHub CTA)

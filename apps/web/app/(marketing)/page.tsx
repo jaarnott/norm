@@ -1,4 +1,7 @@
+'use client';
+
 import Link from 'next/link';
+import { useBreakpoint } from '../hooks/useBreakpoint';
 
 const FEATURES = [
   { title: 'AI-Powered Chat', desc: 'Tell Norm what you need in plain English. It figures out the details, calls the right tools, and gets it done.', icon: '💬' },
@@ -29,22 +32,24 @@ const CHAT_MESSAGES = [
   { role: 'assistant', text: "I've prepared a draft order for 20 cartons of Peroni 330ml from Drinks Direct.", actions: true },
 ];
 
-const sectionStyle = { maxWidth: 1200, margin: '0 auto', padding: '0 2rem' };
-
 export default function LandingPage() {
+  const { isMobile, isTablet } = useBreakpoint();
+  const compact = isMobile || isTablet;
+  const sectionStyle = { maxWidth: 1200, margin: '0 auto', padding: isMobile ? '0 1rem' : '0 2rem' };
+
   return (
     <div>
       {/* Hero */}
-      <section style={{ ...sectionStyle, paddingTop: '5rem', paddingBottom: '5rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4rem', alignItems: 'center' }}>
+      <section style={{ ...sectionStyle, paddingTop: isMobile ? '2.5rem' : '5rem', paddingBottom: isMobile ? '2.5rem' : '5rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: compact ? '1fr' : '1fr 1fr', gap: isMobile ? '2rem' : '4rem', alignItems: 'center' }}>
           <div>
-            <h1 style={{ fontSize: '3.2rem', fontWeight: 800, lineHeight: 1.1, letterSpacing: '-0.03em', margin: '0 0 1.5rem', color: '#2d2a26' }}>
+            <h1 style={{ fontSize: isMobile ? '2rem' : isTablet ? '2.5rem' : '3.2rem', fontWeight: 800, lineHeight: 1.1, letterSpacing: '-0.03em', margin: '0 0 1.5rem', color: '#2d2a26' }}>
               The best hospitality manager you&apos;ve ever had. Working 24/7.
             </h1>
-            <p style={{ fontSize: '1.15rem', color: '#888', lineHeight: 1.6, margin: '0 0 2rem', maxWidth: 480 }}>
+            <p style={{ fontSize: isMobile ? '1rem' : '1.15rem', color: '#888', lineHeight: 1.6, margin: '0 0 2rem', maxWidth: 480 }}>
               Norm handles rostering, procurement, stock management, and reporting — so you can focus on your guests.
             </p>
-            <div style={{ display: 'flex', gap: '0.75rem' }}>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <Link href="/login" style={{
                 backgroundColor: '#a08060', color: '#fff', padding: '0.75rem 2rem',
                 borderRadius: 10, fontSize: '1rem', fontWeight: 700, textDecoration: 'none',
@@ -62,7 +67,7 @@ export default function LandingPage() {
 
           {/* Chat mockup — dark panel for contrast */}
           <div style={{
-            backgroundColor: '#1a1a24', borderRadius: 16, padding: '1.5rem',
+            backgroundColor: '#1a1a24', borderRadius: 16, padding: isMobile ? '1rem' : '1.5rem',
             boxShadow: '0 20px 60px rgba(0,0,0,0.15)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '1.25rem' }}>
@@ -81,8 +86,8 @@ export default function LandingPage() {
                   <div style={{
                     padding: '0.6rem 0.85rem', borderRadius: 10, fontSize: '0.82rem', lineHeight: 1.5,
                     ...(msg.role === 'user'
-                      ? { backgroundColor: '#2a2a38', color: '#ddd', marginLeft: '2rem' }
-                      : { backgroundColor: '#111118', color: '#bbb', marginRight: '1rem', border: '1px solid #2a2a38' }
+                      ? { backgroundColor: '#2a2a38', color: '#ddd', marginLeft: isMobile ? '1rem' : '2rem' }
+                      : { backgroundColor: '#111118', color: '#bbb', marginRight: isMobile ? '0.5rem' : '1rem', border: '1px solid #2a2a38' }
                     ),
                   }}>
                     {msg.role === 'user' && <div style={{ fontSize: '0.65rem', color: '#888', marginBottom: 2 }}>YOU</div>}
@@ -106,14 +111,14 @@ export default function LandingPage() {
       </section>
 
       {/* Features grid */}
-      <section style={{ ...sectionStyle, paddingTop: '4rem', paddingBottom: '4rem' }}>
-        <h2 style={{ fontSize: '2rem', fontWeight: 700, textAlign: 'center', marginBottom: '0.5rem', color: '#2d2a26' }}>
+      <section style={{ ...sectionStyle, paddingTop: isMobile ? '2rem' : '4rem', paddingBottom: isMobile ? '2rem' : '4rem' }}>
+        <h2 style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: 700, textAlign: 'center', marginBottom: '0.5rem', color: '#2d2a26' }}>
           Everything you need to run your venue
         </h2>
-        <p style={{ textAlign: 'center', color: '#999', fontSize: '1rem', marginBottom: '3rem' }}>
+        <p style={{ textAlign: 'center', color: '#999', fontSize: '1rem', marginBottom: isMobile ? '2rem' : '3rem' }}>
           One AI assistant that connects to all your systems and handles the operational workload.
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : isTablet ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)', gap: '1.25rem' }}>
           {FEATURES.map(f => (
             <div key={f.title} style={{
               backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem',
@@ -128,11 +133,11 @@ export default function LandingPage() {
       </section>
 
       {/* How it works */}
-      <section style={{ ...sectionStyle, paddingTop: '4rem', paddingBottom: '4rem' }}>
-        <h2 style={{ fontSize: '2rem', fontWeight: 700, textAlign: 'center', marginBottom: '3rem', color: '#2d2a26' }}>
+      <section style={{ ...sectionStyle, paddingTop: isMobile ? '2rem' : '4rem', paddingBottom: isMobile ? '2rem' : '4rem' }}>
+        <h2 style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: 700, textAlign: 'center', marginBottom: isMobile ? '2rem' : '3rem', color: '#2d2a26' }}>
           How it works
         </h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '2rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '2rem' }}>
           {STEPS.map(s => (
             <div key={s.num} style={{ textAlign: 'center' }}>
               <div style={{ fontSize: '2.5rem', fontWeight: 800, color: '#c4a882', opacity: 0.4, marginBottom: '0.5rem' }}>{s.num}</div>
@@ -144,14 +149,14 @@ export default function LandingPage() {
       </section>
 
       {/* Pricing preview */}
-      <section style={{ ...sectionStyle, paddingTop: '4rem', paddingBottom: '5rem' }}>
-        <h2 style={{ fontSize: '2rem', fontWeight: 700, textAlign: 'center', marginBottom: '0.5rem', color: '#2d2a26' }}>
+      <section style={{ ...sectionStyle, paddingTop: isMobile ? '2rem' : '4rem', paddingBottom: isMobile ? '3rem' : '5rem' }}>
+        <h2 style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: 700, textAlign: 'center', marginBottom: '0.5rem', color: '#2d2a26' }}>
           Simple, transparent pricing
         </h2>
         <p style={{ textAlign: 'center', color: '#999', fontSize: '1rem', marginBottom: '2.5rem' }}>
           Start with what you need. Scale as you grow.
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.25rem', maxWidth: 800, margin: '0 auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: '1.25rem', maxWidth: 800, margin: '0 auto' }}>
           {PLANS.map(p => (
             <div key={p.name} style={{
               backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem', textAlign: 'center',
@@ -182,8 +187,8 @@ export default function LandingPage() {
       </section>
 
       {/* CTA */}
-      <section style={{ ...sectionStyle, paddingTop: '4rem', paddingBottom: '5rem', textAlign: 'center' }}>
-        <h2 style={{ fontSize: '2.2rem', fontWeight: 700, marginBottom: '1rem', color: '#2d2a26' }}>
+      <section style={{ ...sectionStyle, paddingTop: isMobile ? '2rem' : '4rem', paddingBottom: isMobile ? '3rem' : '5rem', textAlign: 'center' }}>
+        <h2 style={{ fontSize: isMobile ? '1.6rem' : '2.2rem', fontWeight: 700, marginBottom: '1rem', color: '#2d2a26' }}>
           Ready to put your operations on autopilot?
         </h2>
         <p style={{ color: '#999', fontSize: '1.05rem', marginBottom: '2rem' }}>

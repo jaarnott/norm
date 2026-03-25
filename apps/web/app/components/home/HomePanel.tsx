@@ -23,8 +23,7 @@ export default function HomePanel({ onSend, loading }: HomePanelProps) {
   }, [onSend, input]);
 
   return (
-    <div style={{
-      height: '100vh',
+    <div className="full-height" style={{
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',

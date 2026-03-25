@@ -1,5 +1,8 @@
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: #faf8f5; }
+html, body { margin: 0; height: 100%; background: #faf8f5; -webkit-text-size-adjust: 100%; }
+html { height: 100dvh; height: 100%; }
+.full-height { height: 100vh; height: 100dvh; }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 .compact-card:hover .compact-remove { opacity: 1 !important; }
 .split-drag-handle:hover .split-drag-pill { opacity: 1 !important; }

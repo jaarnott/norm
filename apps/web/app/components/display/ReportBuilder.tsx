@@ -232,6 +232,7 @@ export default function ReportBuilder({ data }: Props) {
             No charts yet. Ask Norm for data in the conversation below, then click &ldquo;+ Report&rdquo; on a chart to add it here.
           </div>
         ) : (
+          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           <div
             ref={gridRef}
             style={{
@@ -240,6 +241,7 @@ export default function ReportBuilder({ data }: Props) {
               gridAutoRows: ROW_HEIGHT,
               gap: 4,
               position: 'relative',
+              minWidth: 600,
             }}
           >
             {layout.map(item => {
@@ -267,6 +269,7 @@ export default function ReportBuilder({ data }: Props) {
                 pointerEvents: 'none',
               }}
             />
+          </div>
           </div>
         )}
 

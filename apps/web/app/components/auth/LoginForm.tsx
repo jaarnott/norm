@@ -74,8 +74,10 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
       fontFamily: 'system-ui, sans-serif',
     }}>
       <div style={{
-        width: 380,
-        padding: '2.5rem',
+        maxWidth: 380,
+        width: '100%',
+        padding: '2rem 1.5rem',
+        margin: '0 1rem',
         backgroundColor: '#fff',
         borderRadius: 12,
         boxShadow: '0 2px 12px rgba(0,0,0,0.08)',

@@ -1244,7 +1244,7 @@ export default function SettingsPanel() {
       </div>
 
       {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee' }}>
+      <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
         <button data-testid="settings-tab-venues" onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
         <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Users</button>
         <button data-testid="settings-tab-billing" onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>

@@ -12,7 +12,8 @@ import FunctionalPage from '../components/pages/FunctionalPage';
 import QuotaExceededModal from '../components/display/QuotaExceededModal';
 import { FUNCTIONAL_PAGES } from '../components/pages/pageRegistry';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
-import { PanelLeft as PanelLeftIcon } from 'lucide-react';
+import { PanelLeft as PanelLeftIcon, ArrowLeft } from 'lucide-react';
+import { useBreakpoint } from '../hooks/useBreakpoint';
 import type { Task, WidgetAction, VenueDetail } from '../types';
 
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null };
@@ -33,6 +34,8 @@ export default function Home() {
   const [venues, setVenues] = useState<VenueDetail[]>([]);
   const [activeVenueId, setActiveVenueId] = useState<string | null>(null);
   const [quotaExceeded, setQuotaExceeded] = useState<{ used: number; quota: number } | null>(null);
+  const { isMobile } = useBreakpoint();
+  const [mobileView, setMobileView] = useState<'list' | 'detail' | 'home' | 'settings'>('home');
 
   // Check for existing auth on mount
   useEffect(() => {
@@ -367,6 +370,7 @@ export default function Home() {
     setSelectedTaskId(null);
     setActivePage(null);
     setActiveAgent('home');
+    setMobileView('home');
   }, []);
 
   const handleSelectPage = useCallback((pageId: string) => {
@@ -473,9 +477,104 @@ export default function Home() {
     return <LoginForm onSuccess={handleAuthSuccess} />;
   }
 
+  const handleSelectTaskMobile = useCallback((id: string) => {
+    setSelectedTaskId(id);
+    setMobileView('detail');
+  }, []);
+
+  const handleSelectAgentMobile = useCallback((id: string) => {
+    setActiveAgent(id);
+    if (id === 'settings') {
+      setMobileView('settings');
+    } else {
+      setMobileView('list');
+    }
+  }, []);
+
+  const handleMobileBack = useCallback(() => {
+    setMobileView('list');
+    setSelectedTaskId(null);
+    setActivePage(null);
+  }, []);
+
+  // Mobile layout: single panel at a time with bottom tab bar
+  if (isMobile) {
+    const renderMobileContent = () => {
+      if (mobileView === 'settings') {
+        return (
+          <div style={{ flex: 1, overflow: 'auto', paddingBottom: 56 }}>
+            <SettingsPanel />
+          </div>
+        );
+      }
+      if (mobileView === 'detail' || mobileView === 'home' && selectedTask) {
+        const content = activePage ? (() => {
+          const pageConfig = FUNCTIONAL_PAGES.find(p => p.id === activePage);
+          if (!pageConfig) return null;
+          return <FunctionalPage config={pageConfig} task={selectedTask} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} />;
+        })() : selectedTask ? (
+          <TaskDetail task={selectedTask} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} loading={loading} openTask={openTask || null} />
+        ) : (
+          <HomePanel onSend={sendMessage} loading={loading} />
+        );
+        return (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: 56 }}>
+            <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem', borderBottom: '1px solid #e2ddd7' }}>
+              <button onClick={handleMobileBack} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
+                backgroundColor: 'transparent', cursor: 'pointer',
+              }}>
+                <ArrowLeft size={20} strokeWidth={1.75} />
+              </button>
+              <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#111' }}>
+                {selectedTask?.title || activePage || 'Back'}
+              </span>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto' }}>{content}</div>
+          </div>
+        );
+      }
+      if (mobileView === 'list') {
+        return (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: 56 }}>
+            <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
+            <TaskList
+              tasks={tasks}
+              selectedId={selectedTaskId}
+              onSelectTask={handleSelectTaskMobile}
+              onRemoveTask={removeTask}
+              activeAgent={activeAgent}
+              filter={filter}
+              onFilterChange={setFilter}
+              onNewChat={handleNewChat}
+              onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
+            />
+          </div>
+        );
+      }
+      // home
+      return (
+        <div style={{ flex: 1, overflow: 'auto', paddingBottom: 56 }}>
+          <HomePanel onSend={sendMessage} loading={loading} />
+        </div>
+      );
+    };
+
+    return (
+      <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+        {quotaExceeded && (
+          <QuotaExceededModal used={quotaExceeded.used} quota={quotaExceeded.quota} onClose={() => setQuotaExceeded(null)} onTopUp={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} onUpgrade={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} />
+        )}
+        {renderMobileContent()}
+        <Sidebar selected={activeAgent} onSelect={handleSelectAgentMobile} taskCounts={taskCounts} user={user} onLogout={handleLogout} />
+      </div>
+    );
+  }
+
+  // Desktop layout: three-panel
   return (
     <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
-      {/* Quota exceeded modal */}
       {quotaExceeded && (
         <QuotaExceededModal
           used={quotaExceeded.used}
@@ -504,10 +603,7 @@ export default function Home() {
         overflow: 'hidden',
         transition: 'width 0.2s ease, min-width 0.2s ease',
       }}>
-        {/* Routing indicator */}
         <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
-
-        {/* Task list */}
         <TaskList
           tasks={tasks}
           selectedId={selectedTaskId}
@@ -529,20 +625,11 @@ export default function Home() {
             onClick={() => setPanelCollapsed(false)}
             title="Show panel"
             style={{
-              position: 'absolute',
-              top: 12,
-              left: 12,
-              zIndex: 10,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 32,
-              height: 32,
-              border: '1px solid #e2ddd7',
-              borderRadius: 8,
-              backgroundColor: '#faf8f5',
-              cursor: 'pointer',
-              color: '#999',
+              position: 'absolute', top: 12, left: 12, zIndex: 10,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 32, height: 32,
+              border: '1px solid #e2ddd7', borderRadius: 8,
+              backgroundColor: '#faf8f5', cursor: 'pointer', color: '#999',
             }}
           >
             <PanelLeftIcon size={16} strokeWidth={1.75} />
