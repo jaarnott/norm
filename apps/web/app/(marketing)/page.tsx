@@ -196,6 +196,10 @@ export default function LandingPage() {
         }}>
           Get Started Free
         </Link>
+        <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'center', gap: '1.5rem' }}>
+          <Link href="/privacy" style={{ color: '#999', fontSize: '0.8rem', textDecoration: 'none' }}>Privacy Policy</Link>
+          <Link href="/terms" style={{ color: '#999', fontSize: '0.8rem', textDecoration: 'none' }}>Terms of Service</Link>
+        </div>
       </section>
     </div>
   );
