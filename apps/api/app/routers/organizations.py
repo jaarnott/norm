@@ -89,7 +89,9 @@ def _org_to_dict(org: Organization, db: Session, include_details: bool = False) 
                 "role": m.role,  # legacy
                 "role_id": m.role_id,
                 "role_name": m.role_obj.name if m.role_obj else m.role,
-                "role_display_name": m.role_obj.display_name if m.role_obj else m.role.title(),
+                "role_display_name": m.role_obj.display_name
+                if m.role_obj
+                else m.role.title(),
             }
             for m in org.memberships
         ]
