@@ -469,14 +469,6 @@ export default function Home() {
     if (selectedTaskId === taskId) setSelectedTaskId(null);
   }, [selectedTaskId]);
 
-  // Show nothing while checking auth
-  if (!authChecked) return null;
-
-  // Show login if not authenticated
-  if (!token || !user) {
-    return <LoginForm onSuccess={handleAuthSuccess} />;
-  }
-
   const handleSelectTaskMobile = useCallback((id: string) => {
     setSelectedTaskId(id);
     setMobileView('detail');
@@ -496,6 +488,14 @@ export default function Home() {
     setSelectedTaskId(null);
     setActivePage(null);
   }, []);
+
+  // Show nothing while checking auth
+  if (!authChecked) return null;
+
+  // Show login if not authenticated
+  if (!token || !user) {
+    return <LoginForm onSuccess={handleAuthSuccess} />;
+  }
 
   // Mobile layout: single panel at a time with bottom tab bar
   if (isMobile) {
