@@ -85,11 +85,22 @@ export default function Home() {
       .catch(() => {});
   }, [token]);
 
-  const handleAuthSuccess = useCallback((newToken: string, newUser: AuthUser) => {
+  const handleAuthSuccess = useCallback((newToken: string, newUser: { id: string; email: string; full_name: string; role: string }) => {
     setToken(newToken);
-    setStoredUser(newUser);
     setTokenState(newToken);
-    setUser(newUser);
+    // Login response has basic user info; fetch /me for full profile with permissions
+    apiFetch('/api/auth/me')
+      .then(res => res.ok ? res.json() : null)
+      .then(fullUser => {
+        const u = fullUser || { ...newUser, permissions: [], org_role: null };
+        setUser(u);
+        setStoredUser(u);
+      })
+      .catch(() => {
+        const u = { ...newUser, permissions: [] as string[], org_role: null };
+        setUser(u);
+        setStoredUser(u);
+      });
   }, []);
 
   const handleLogout = useCallback(() => {
