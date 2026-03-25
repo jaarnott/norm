@@ -367,12 +367,12 @@ function VenuesTab() {
   );
 }
 
-// --- Members Tab ---
+// --- Users Tab ---
 
 interface UsageByUser { input_tokens: number; output_tokens: number; llm_call_count: number }
 interface DailyUsageEntry { input_tokens: number; output_tokens: number; llm_call_count: number }
 
-function MembersTab() {
+function UsersTab() {
   const [org, setOrg] = useState<Organization | null>(null);
   const [members, setMembers] = useState<OrgMember[]>([]);
   const [venues, setVenues] = useState<VenueDetail[]>([]);
@@ -385,6 +385,7 @@ function MembersTab() {
   const [addVenueIds, setAddVenueIds] = useState<string[]>([]);
   const [addError, setAddError] = useState('');
   const [addSuccess, setAddSuccess] = useState('');
+  const [showInviteModal, setShowInviteModal] = useState(false);
   const [availableRoles, setAvailableRoles] = useState<{ id: string; name: string; display_name: string; is_system: boolean }[]>([]);
   const [expandedMember, setExpandedMember] = useState<string | null>(null);
   const [memberDailyUsage, setMemberDailyUsage] = useState<Record<string, Record<string, DailyUsageEntry>>>({});
@@ -507,9 +508,17 @@ function MembersTab() {
 
   return (
     <div>
-      <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        Members {org && <span style={{ fontWeight: 400, textTransform: 'none' }}>— {org.name}</span>}
-      </h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Users {org && <span style={{ fontWeight: 400, textTransform: 'none' }}>— {org.name}</span>}
+        </h3>
+        <button onClick={() => { setShowInviteModal(true); setAddError(''); setAddSuccess(''); setAddEmail(''); setAddVenueIds([]); }}
+          style={{
+            padding: '6px 16px', fontSize: '0.75rem', fontWeight: 600,
+            backgroundColor: '#c4a882', color: '#fff', border: 'none', borderRadius: 6,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>+ Invite User</button>
+      </div>
 
       {/* Usage summary */}
       {usageTotals.calls > 0 && (
@@ -602,59 +611,75 @@ function MembersTab() {
         </div>
       )}
 
-      {/* Invite new member */}
-      <div style={{
-        marginBottom: '1rem', padding: '1rem',
-        border: '1px solid #e2ddd7', borderRadius: 8, backgroundColor: '#fafafa',
-      }}>
-        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#1a1a1a', marginBottom: '0.75rem' }}>Invite New Member</div>
-        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 180 }}>
-            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Email</label>
-            <input value={addEmail} onChange={e => { setAddEmail(e.target.value); setAddError(''); setAddSuccess(''); }}
-              placeholder="user@example.com"
-              style={{ width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7', borderRadius: 8, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-          </div>
-          <div>
-            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Role</label>
-            <select value={addRole} onChange={e => setAddRole(e.target.value)}
-              style={{ display: 'block', padding: '0.65rem', border: '1px solid #e2ddd7', borderRadius: 8, fontSize: '0.82rem', fontFamily: 'inherit' }}>
-              {availableRoles.map(r => (
-                <option key={r.id} value={r.id}>{r.display_name}</option>
-              ))}
-              {availableRoles.length === 0 && <option value="">No roles</option>}
-            </select>
-          </div>
-        </div>
-        {venues.length > 0 && (
-          <div style={{ marginTop: '0.5rem' }}>
-            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Venues</label>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: 4 }}>
-              {venues.map(v => (
-                <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.78rem', color: '#555', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={addVenueIds.includes(v.id)}
-                    onChange={e => {
-                      setAddVenueIds(prev => e.target.checked ? [...prev, v.id] : prev.filter(id => id !== v.id));
-                    }}
-                    style={{ accentColor: '#c4a882' }} />
-                  {v.name}
-                </label>
-              ))}
+      {/* Invite User Modal */}
+      {showInviteModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 1000,
+        }} onClick={() => setShowInviteModal(false)}>
+          <div style={{
+            backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem', width: 420, maxWidth: '90vw',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
+          }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 1rem', fontSize: '0.95rem', fontWeight: 600, color: '#1a1a1a' }}>Invite User</h3>
+
+            <div style={{ marginBottom: '0.75rem' }}>
+              <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 600, display: 'block', marginBottom: 4 }}>Email</label>
+              <input value={addEmail} onChange={e => { setAddEmail(e.target.value); setAddError(''); setAddSuccess(''); }}
+                placeholder="user@example.com"
+                style={{ width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7', borderRadius: 8, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+            </div>
+
+            <div style={{ marginBottom: '0.75rem' }}>
+              <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 600, display: 'block', marginBottom: 4 }}>Role</label>
+              <select value={addRole} onChange={e => setAddRole(e.target.value)}
+                style={{ width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7', borderRadius: 8, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }}>
+                {availableRoles.map(r => (
+                  <option key={r.id} value={r.id}>{r.display_name}</option>
+                ))}
+                {availableRoles.length === 0 && <option value="">No roles</option>}
+              </select>
+            </div>
+
+            {venues.length > 0 && (
+              <div style={{ marginBottom: '0.75rem' }}>
+                <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 600, display: 'block', marginBottom: 4 }}>Venues</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  {venues.map(v => (
+                    <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.78rem', color: '#555', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={addVenueIds.includes(v.id)}
+                        onChange={e => {
+                          setAddVenueIds(prev => e.target.checked ? [...prev, v.id] : prev.filter(id => id !== v.id));
+                        }}
+                        style={{ accentColor: '#c4a882' }} />
+                      {v.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {addError && <div style={{ color: '#dc2626', fontSize: '0.78rem', marginBottom: '0.5rem' }}>{addError}</div>}
+            {addSuccess && <div style={{ color: '#28a745', fontSize: '0.78rem', marginBottom: '0.5rem' }}>{addSuccess}</div>}
+
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+              <button onClick={() => setShowInviteModal(false)} style={{
+                padding: '8px 16px', fontSize: '0.78rem', fontWeight: 500,
+                backgroundColor: 'transparent', color: '#666', border: '1px solid #e2ddd7', borderRadius: 8,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}>Cancel</button>
+              <button onClick={async () => { await handleInvite(); }} style={{
+                padding: '8px 20px', fontSize: '0.78rem', fontWeight: 600,
+                backgroundColor: '#c4a882', color: '#fff', border: 'none', borderRadius: 8,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}>Send Invite</button>
             </div>
           </div>
-        )}
-        <div style={{ marginTop: '0.75rem' }}>
-          <button onClick={handleInvite} style={{
-            padding: '8px 20px', fontSize: '0.78rem', fontWeight: 600,
-            backgroundColor: '#c4a882', color: '#fff', border: 'none', borderRadius: 8,
-            cursor: 'pointer', fontFamily: 'inherit',
-          }}>Send Invite</button>
         </div>
-        {addError && <div style={{ color: '#dc2626', fontSize: '0.78rem', marginTop: '0.5rem' }}>{addError}</div>}
-        {addSuccess && <div style={{ color: '#28a745', fontSize: '0.78rem', marginTop: '0.5rem' }}>{addSuccess}</div>}
-      </div>
+      )}
 
-      {/* Member list */}
+      {/* User list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
         {members.map(m => {
           const isExpanded = expandedMember === m.user_id;
@@ -1145,7 +1170,7 @@ export default function SettingsPanel() {
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee' }}>
         <button data-testid="settings-tab-venues" onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
-        <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Members</button>
+        <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Users</button>
         <button data-testid="settings-tab-billing" onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
         <button onClick={() => setActiveTab('email')} style={tabStyle('email')}>Email</button>
         {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
@@ -1161,7 +1186,7 @@ export default function SettingsPanel() {
         {activeTab === 'venues' && <VenuesTab />}
 
         {/* ============ MEMBERS TAB ============ */}
-        {activeTab === 'members' && <MembersTab />}
+        {activeTab === 'members' && <UsersTab />}
 
         {/* ============ CONNECTORS TAB ============ */}
         {activeTab === 'connectors' && (
