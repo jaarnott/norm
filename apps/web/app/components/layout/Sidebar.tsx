@@ -38,7 +38,8 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout }: SidebarProps) {
-  const showSettings = hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read');
+  // Show settings for anyone with any org-level permission (venues, members, billing, connectors, agents, roles)
+  const showSettings = hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read');
 
   return (
     <div style={{

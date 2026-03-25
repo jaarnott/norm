@@ -14,7 +14,7 @@ export function clearToken(): void {
   localStorage.removeItem('norm_user');
 }
 
-export function getStoredUser(): { id: string; email: string; full_name: string; role: string } | null {
+export function getStoredUser(): { id: string; email: string; full_name: string; role: string; permissions?: string[]; org_role?: { name: string; display_name: string } | null } | null {
   if (typeof window === 'undefined') return null;
   const raw = localStorage.getItem('norm_user');
   if (!raw) return null;
@@ -25,7 +25,7 @@ export function getStoredUser(): { id: string; email: string; full_name: string;
   }
 }
 
-export function setStoredUser(user: { id: string; email: string; full_name: string; role: string }): void {
+export function setStoredUser(user: { id: string; email: string; full_name: string; role: string; permissions?: string[]; org_role?: { name: string; display_name: string } | null }): void {
   localStorage.setItem('norm_user', JSON.stringify(user));
 }
 

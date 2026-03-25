@@ -753,7 +753,7 @@ function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
 }
 
 export default function SettingsPanel() {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('connectors');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('venues');
   const [orgId, setOrgId] = useState<string | null>(null);
   const storedUser = getStoredUser() as User | null;
   const isAdmin = storedUser?.role === 'admin';
