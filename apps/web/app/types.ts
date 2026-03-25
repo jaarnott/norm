@@ -356,6 +356,7 @@ export interface OrgMember {
   role_id?: string | null;
   role_name?: string;
   role_display_name?: string;
+  is_active?: boolean;
 }
 
 export interface User {

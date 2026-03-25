@@ -20,10 +20,25 @@ import logging
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.config import settings
 from app.db.models import AgentConfig, AgentConnectorBinding, ConnectorSpec
 from app.system_config import AGENT_BINDINGS, AGENT_CONFIGS, CONNECTOR_SPECS
 
 log = logging.getLogger(__name__)
+
+_SETTINGS_PREFIX = "_FROM_SETTINGS:"
+
+
+def _resolve_settings(obj):
+    """Recursively replace '_FROM_SETTINGS:ATTR' strings with settings values."""
+    if isinstance(obj, str) and obj.startswith(_SETTINGS_PREFIX):
+        attr = obj[len(_SETTINGS_PREFIX) :]
+        return getattr(settings, attr, "")
+    if isinstance(obj, dict):
+        return {k: _resolve_settings(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_settings(v) for v in obj]
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +61,8 @@ def sync_system_config(db: Session) -> None:
 
 
 def _sync_connector_specs(db: Session) -> None:
-    for defn in CONNECTOR_SPECS:
+    for raw_defn in CONNECTOR_SPECS:
+        defn = _resolve_settings(raw_defn)
         name = defn["connector_name"]
         spec = (
             db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()

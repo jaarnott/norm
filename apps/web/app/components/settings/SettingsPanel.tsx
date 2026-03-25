@@ -381,8 +381,10 @@ function MembersTab() {
   const [usageTotals, setUsageTotals] = useState<{ input: number; output: number; calls: number }>({ input: 0, output: 0, calls: 0 });
   const [loading, setLoading] = useState(true);
   const [addEmail, setAddEmail] = useState('');
-  const [addRole, setAddRole] = useState('member');
+  const [addRole, setAddRole] = useState('');
+  const [addVenueIds, setAddVenueIds] = useState<string[]>([]);
   const [addError, setAddError] = useState('');
+  const [addSuccess, setAddSuccess] = useState('');
   const [availableRoles, setAvailableRoles] = useState<{ id: string; name: string; display_name: string; is_system: boolean }[]>([]);
   const [expandedMember, setExpandedMember] = useState<string | null>(null);
   const [memberDailyUsage, setMemberDailyUsage] = useState<Record<string, Record<string, DailyUsageEntry>>>({});
@@ -437,29 +439,43 @@ function MembersTab() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const handleAdd = async () => {
+  const handleInvite = async () => {
     if (!addEmail.trim() || !org) return;
     setAddError('');
+    setAddSuccess('');
     try {
-      // Look up user by email
-      const lookupRes = await apiFetch(`/api/users/by-email?email=${encodeURIComponent(addEmail)}`);
-      if (!lookupRes.ok) {
-        setAddError('User not found. They must register first.');
-        return;
-      }
-      const userData = await lookupRes.json();
-      // Add to org
-      const addRes = await apiFetch(`/api/organizations/${org.id}/members`, {
+      const roleId = addRole || (availableRoles.length > 0 ? availableRoles[0].id : '');
+      const res = await apiFetch('/api/auth/invite', {
         method: 'POST',
-        body: JSON.stringify({ user_id: userData.id, role: addRole }),
+        body: JSON.stringify({
+          email: addEmail,
+          org_id: org.id,
+          role_id: roleId,
+          venue_ids: addVenueIds,
+        }),
       });
-      if (!addRes.ok) {
-        setAddError('Failed to add member');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setAddError(data.detail || 'Failed to send invite');
         return;
       }
+      setAddSuccess(`Invite sent to ${addEmail}`);
       setAddEmail('');
+      setAddVenueIds([]);
       loadData();
     } catch { setAddError('Network error'); }
+  };
+
+  const handleResendInvite = async (email: string) => {
+    if (!org) return;
+    try {
+      const roleId = availableRoles.length > 0 ? availableRoles[0].id : '';
+      await apiFetch('/api/auth/invite', {
+        method: 'POST',
+        body: JSON.stringify({ email, org_id: org.id, role_id: roleId, venue_ids: [] }),
+      });
+      setAddSuccess(`Invite resent to ${email}`);
+    } catch { /* ignore */ }
   };
 
   const handleRemove = async (userId: string) => {
@@ -586,41 +602,57 @@ function MembersTab() {
         </div>
       )}
 
-      {/* Add member */}
+      {/* Invite new member */}
       <div style={{
-        display: 'flex', gap: '0.5rem', alignItems: 'flex-end', marginBottom: '1rem',
-        padding: '0.75rem', border: '1px solid #e5e7eb', borderRadius: 8, backgroundColor: '#fafafa',
+        marginBottom: '1rem', padding: '1rem',
+        border: '1px solid #e2ddd7', borderRadius: 8, backgroundColor: '#fafafa',
       }}>
-        <div style={{ flex: 1 }}>
-          <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Email</label>
-          <input value={addEmail} onChange={e => { setAddEmail(e.target.value); setAddError(''); }}
-            placeholder="user@example.com" onKeyDown={e => e.key === 'Enter' && handleAdd()}
-            style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
+        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#1a1a1a', marginBottom: '0.75rem' }}>Invite New Member</div>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Email</label>
+            <input value={addEmail} onChange={e => { setAddEmail(e.target.value); setAddError(''); setAddSuccess(''); }}
+              placeholder="user@example.com"
+              style={{ width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7', borderRadius: 8, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Role</label>
+            <select value={addRole} onChange={e => setAddRole(e.target.value)}
+              style={{ display: 'block', padding: '0.65rem', border: '1px solid #e2ddd7', borderRadius: 8, fontSize: '0.82rem', fontFamily: 'inherit' }}>
+              {availableRoles.map(r => (
+                <option key={r.id} value={r.id}>{r.display_name}</option>
+              ))}
+              {availableRoles.length === 0 && <option value="">No roles</option>}
+            </select>
+          </div>
         </div>
-        <div>
-          <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Role</label>
-          <select value={addRole} onChange={e => setAddRole(e.target.value)}
-            style={{ padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }}>
-            {availableRoles.length > 0 ? (
-              availableRoles.map(r => (
-                <option key={r.id} value={r.name}>{r.display_name}</option>
-              ))
-            ) : (
-              <>
-                <option value="member">Team Member</option>
-                <option value="admin">Manager</option>
-                <option value="owner">Owner</option>
-              </>
-            )}
-          </select>
+        {venues.length > 0 && (
+          <div style={{ marginTop: '0.5rem' }}>
+            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Venues</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: 4 }}>
+              {venues.map(v => (
+                <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.78rem', color: '#555', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={addVenueIds.includes(v.id)}
+                    onChange={e => {
+                      setAddVenueIds(prev => e.target.checked ? [...prev, v.id] : prev.filter(id => id !== v.id));
+                    }}
+                    style={{ accentColor: '#c4a882' }} />
+                  {v.name}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        <div style={{ marginTop: '0.75rem' }}>
+          <button onClick={handleInvite} style={{
+            padding: '8px 20px', fontSize: '0.78rem', fontWeight: 600,
+            backgroundColor: '#c4a882', color: '#fff', border: 'none', borderRadius: 8,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>Send Invite</button>
         </div>
-        <button onClick={handleAdd} style={{
-          padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
-          backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
-          cursor: 'pointer', fontFamily: 'inherit',
-        }}>Add</button>
+        {addError && <div style={{ color: '#dc2626', fontSize: '0.78rem', marginTop: '0.5rem' }}>{addError}</div>}
+        {addSuccess && <div style={{ color: '#28a745', fontSize: '0.78rem', marginTop: '0.5rem' }}>{addSuccess}</div>}
       </div>
-      {addError && <div style={{ color: '#dc2626', fontSize: '0.78rem', marginBottom: '0.5rem' }}>{addError}</div>}
 
       {/* Member list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
@@ -649,9 +681,21 @@ function MembersTab() {
                 }}
               >
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, color: '#111', fontSize: '0.85rem' }}>{m.full_name}</div>
+                  <div style={{ fontWeight: 600, color: '#111', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {m.full_name || m.email}
+                    {m.is_active === false && (
+                      <span style={{ fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px', borderRadius: 10, backgroundColor: '#fff3cd', color: '#856404' }}>Pending</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: '0.72rem', color: '#999' }}>{m.email}</div>
                 </div>
+                {m.is_active === false && (
+                  <button onClick={e => { e.stopPropagation(); handleResendInvite(m.email); }} style={{
+                    padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
+                    backgroundColor: '#fff', color: '#c4a882', border: '1px solid #c4a882', borderRadius: 6,
+                    cursor: 'pointer', fontFamily: 'inherit',
+                  }}>Resend Invite</button>
+                )}
                 {(() => {
                   const u = usage[m.user_id];
                   if (!u) return null;

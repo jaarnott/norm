@@ -69,6 +69,12 @@ export default function EmailTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ to: testTo, template_name: 'task_complete', context: { task_title: 'Test Task', summary: 'This is a test email from Norm.' } }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        setTestResult(`Failed (${res.status}): ${text}`);
+        setTestSending(false);
+        return;
+      }
       const data = await res.json();
       setTestResult(data.status === 'sent' ? 'Email sent successfully!' : `Failed: ${data.error || 'Unknown error'}`);
       fetchData();
@@ -78,9 +84,21 @@ export default function EmailTab() {
     setTestSending(false);
   };
 
-  const handleConnect = (connector: string) => {
-    // Redirect to OAuth flow
-    window.open(`/api/oauth/authorize/${connector}`, '_blank', 'width=600,height=700');
+  const handleConnect = async (connector: string) => {
+    try {
+      const res = await apiFetch(`/api/oauth/authorize/${connector}`);
+      if (res.ok) {
+        const data = await res.json();
+        const popup = window.open(data.authorize_url, '_blank', 'width=600,height=700');
+        // Refresh connections when popup closes
+        const timer = setInterval(() => {
+          if (popup?.closed) {
+            clearInterval(timer);
+            fetchData();
+          }
+        }, 1000);
+      }
+    } catch { /* ignore */ }
   };
 
   const handleRetry = async (logId: string) => {

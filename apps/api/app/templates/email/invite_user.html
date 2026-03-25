@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>You're Invited</h1>
+<p>Hi,</p>
+<p><strong>{{ inviter_name }}</strong> has invited you to join <strong>{{ org_name }}</strong> on Norm.</p>
+<p>Norm is an AI-powered operations platform for hospitality — handling rostering, procurement, HR, and reporting.</p>
+<a href="{{ invite_url }}" class="btn">Accept Invitation</a>
+<p style="font-size: 13px; color: #999; margin-top: 16px;">If you didn't expect this invitation, you can safely ignore this email.</p>
+{% endblock %}

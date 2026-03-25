@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Payment Received</h1>
+<p>Hi {{ user_name }},</p>
+<p>We've received your payment of <strong>${{ amount }}</strong> for {{ org_name }}.</p>
+<p><strong>Plan:</strong> {{ plan_name }}<br>
+<strong>Period:</strong> {{ period }}</p>
+<p>Thank you for using Norm!</p>
+{% endblock %}

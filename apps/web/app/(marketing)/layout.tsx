@@ -60,6 +60,8 @@ export default function MarketingLayout({ children }: { children: React.ReactNod
               <h4 style={{ fontSize: '0.75rem', fontWeight: 600, color: '#999', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>Company</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 <Link href="/login" style={{ color: '#888', textDecoration: 'none', fontSize: '0.85rem' }}>Log in</Link>
+                <Link href="/privacy" style={{ color: '#888', textDecoration: 'none', fontSize: '0.85rem' }}>Privacy Policy</Link>
+                <Link href="/terms" style={{ color: '#888', textDecoration: 'none', fontSize: '0.85rem' }}>Terms of Service</Link>
               </div>
             </div>
           </div>

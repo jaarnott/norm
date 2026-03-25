@@ -34,6 +34,7 @@ from app.routers import (  # noqa: E402
     reports_crud,
     admin,
     roles,
+    email,
 )
 
 app = FastAPI(
@@ -79,6 +80,7 @@ app.include_router(billing_webhooks.router, prefix="/api")
 app.include_router(reports_crud.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(roles.router, prefix="/api")
+app.include_router(email.router, prefix="/api")
 
 
 @app.on_event("startup")

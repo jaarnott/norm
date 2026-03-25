@@ -365,6 +365,7 @@ class OAuthState(Base):
     id = Column(String, primary_key=True, default=_uuid)
     connector_name = Column(String, nullable=False)
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
     state = Column(String, unique=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
@@ -380,6 +381,9 @@ class ConnectorConfig(Base):
     venue_id = Column(
         String, ForeignKey("venues.id"), nullable=True
     )  # NULL for platform connectors (e.g., Anthropic)
+    user_id = Column(
+        String, ForeignKey("users.id"), nullable=True
+    )  # for per-user OAuth (email connectors)
     config = Column(JSON, nullable=False, default=dict)
     enabled = Column(String, nullable=False, default="true")
     access_token = Column(Text, nullable=True)
@@ -390,6 +394,7 @@ class ConnectorConfig(Base):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     venue = relationship("Venue")
+    user = relationship("User")
 
 
 class AgentConfig(Base):
@@ -786,3 +791,43 @@ class E2ETestRun(Base):
     video_url = Column(String, nullable=True)
     triggered_by = Column(String, nullable=True)  # ci | manual
     git_sha = Column(String, nullable=True)
+
+
+class EmailLog(Base):
+    __tablename__ = "email_logs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=True)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
+    sender_type = Column(String, nullable=False)  # system|on_behalf
+    sender_email = Column(String, nullable=False)
+    sender_user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    to_addresses = Column(JSON, nullable=False)
+    cc_addresses = Column(JSON, nullable=True)
+    bcc_addresses = Column(JSON, nullable=True)
+    subject = Column(String, nullable=False)
+    template_name = Column(String, nullable=True)
+    html_body = Column(Text, nullable=True)
+    has_attachments = Column(Boolean, default=False)
+    status = Column(
+        String, nullable=False, default="queued"
+    )  # queued|sent|failed|bounced
+    provider = Column(String, nullable=True)  # resend|gmail|microsoft_graph
+    provider_message_id = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class EmailTemplate(Base):
+    __tablename__ = "email_templates"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    name = Column(String, unique=True, nullable=False)
+    subject_template = Column(String, nullable=False)
+    html_template = Column(Text, nullable=False)
+    category = Column(String, nullable=False)  # billing|task|auth|report
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)

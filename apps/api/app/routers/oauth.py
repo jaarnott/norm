@@ -54,8 +54,16 @@ async def oauth_authorize(
         raise HTTPException(400, f"Connector {connector} has no OAuth configuration")
 
     redirect_uri = _get_redirect_uri(request)
+    # For email connectors, scope tokens to the current user
+    user_id = user.id if spec.category == "email" else None
     try:
-        authorize_url = build_authorize_url(spec, redirect_uri, db, venue_id=venue_id)
+        authorize_url = build_authorize_url(
+            spec,
+            redirect_uri,
+            db,
+            venue_id=venue_id,
+            user_id=user_id,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"authorize_url": authorize_url}
@@ -82,6 +90,7 @@ async def oauth_callback(
         raise HTTPException(400, "Invalid or expired OAuth state")
 
     connector_name = oauth_state.connector_name
+    oauth_state_user_id = oauth_state.user_id
     spec = (
         db.query(ConnectorSpec)
         .filter(ConnectorSpec.connector_name == connector_name)
@@ -101,6 +110,41 @@ async def oauth_callback(
             ),
             status_code=400,
         )
+
+    # For Google connectors, fetch user email from userinfo endpoint
+    if connector_name == "gmail" and token_data.get("access_token"):
+        try:
+            import httpx
+
+            resp = httpx.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {token_data['access_token']}"},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                userinfo = resp.json()
+                email = userinfo.get("email")
+                if email:
+                    # Update the ConnectorConfig oauth_metadata with the email
+                    from sqlalchemy.orm.attributes import flag_modified
+
+                    config_row = (
+                        db.query(ConnectorConfig)
+                        .filter(
+                            ConnectorConfig.connector_name == connector_name,
+                            ConnectorConfig.user_id == oauth_state_user_id,
+                        )
+                        .first()
+                    )
+                    if config_row:
+                        meta = config_row.oauth_metadata or {}
+                        meta["email"] = email
+                        config_row.oauth_metadata = meta
+                        flag_modified(config_row, "oauth_metadata")
+                        db.commit()
+                    token_data["email"] = email
+        except Exception:
+            pass  # Non-critical — email display is nice-to-have
 
     # Build a success message including any extra metadata
     meta_parts = []

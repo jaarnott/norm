@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 def build_authorize_url(
-    spec: ConnectorSpec, redirect_uri: str, db: Session, venue_id: str | None = None
+    spec: ConnectorSpec,
+    redirect_uri: str,
+    db: Session,
+    venue_id: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     """Build the authorization URL and persist the state parameter."""
     oauth = spec.oauth_config or {}
@@ -31,9 +35,12 @@ def build_authorize_url(
 
     state = secrets.token_urlsafe(32)
 
-    # Persist state for verification on callback (venue_id tracks which venue this is for)
+    # Persist state for verification on callback
     oauth_state = OAuthState(
-        connector_name=spec.connector_name, state=state, venue_id=venue_id
+        connector_name=spec.connector_name,
+        state=state,
+        venue_id=venue_id,
+        user_id=user_id,
     )
     db.add(oauth_state)
     db.commit()
@@ -46,6 +53,11 @@ def build_authorize_url(
     }
     if scopes:
         query["scope"] = scopes
+
+    # Google-specific: request offline access for refresh tokens
+    if "accounts.google.com" in authorize_url:
+        query["access_type"] = "offline"
+        query["prompt"] = "consent"
 
     return authorize_url + "?" + urlencode(query)
 
@@ -100,20 +112,31 @@ def exchange_code(
         )
 
     token_data = resp.json()
-    # Use venue_id from the OAuthState to store tokens for the correct venue
-    _store_tokens(db, spec.connector_name, token_data, venue_id=oauth_state.venue_id)
+    # Use venue_id/user_id from the OAuthState to store tokens correctly
+    _store_tokens(
+        db,
+        spec.connector_name,
+        token_data,
+        venue_id=oauth_state.venue_id,
+        user_id=oauth_state.user_id,
+    )
 
     return token_data
 
 
 def refresh_access_token(
-    spec: ConnectorSpec, db: Session, venue_id: str | None = None
+    spec: ConnectorSpec,
+    db: Session,
+    venue_id: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     """Refresh an expired access token. Returns the new access_token."""
     query = db.query(ConnectorConfig).filter(
         ConnectorConfig.connector_name == spec.connector_name
     )
-    if venue_id:
+    if user_id:
+        query = query.filter(ConnectorConfig.user_id == user_id)
+    elif venue_id:
         query = query.filter(ConnectorConfig.venue_id == venue_id)
     config_row = query.first()
     if not config_row or not config_row.refresh_token:
@@ -145,19 +168,26 @@ def refresh_access_token(
         )
 
     token_data = resp.json()
-    _store_tokens(db, spec.connector_name, token_data, venue_id=venue_id)
+    _store_tokens(
+        db, spec.connector_name, token_data, venue_id=venue_id, user_id=user_id
+    )
 
     return token_data["access_token"]
 
 
 def get_valid_access_token(
-    spec: ConnectorSpec, db: Session, venue_id: str | None = None
+    spec: ConnectorSpec,
+    db: Session,
+    venue_id: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     """Get a valid access token, refreshing if expired."""
     query = db.query(ConnectorConfig).filter(
         ConnectorConfig.connector_name == spec.connector_name
     )
-    if venue_id:
+    if user_id:
+        query = query.filter(ConnectorConfig.user_id == user_id)
+    elif venue_id:
         query = query.filter(ConnectorConfig.venue_id == venue_id)
     config_row = query.first()
     if not config_row or not config_row.access_token:
@@ -167,19 +197,25 @@ def get_valid_access_token(
     if config_row.token_expires_at:
         now = datetime.now(timezone.utc)
         if now >= config_row.token_expires_at - timedelta(seconds=60):
-            return refresh_access_token(spec, db, venue_id=venue_id)
+            return refresh_access_token(spec, db, venue_id=venue_id, user_id=user_id)
 
     return config_row.access_token
 
 
 def _store_tokens(
-    db: Session, connector_name: str, token_data: dict, venue_id: str | None = None
+    db: Session,
+    connector_name: str,
+    token_data: dict,
+    venue_id: str | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Store token response in ConnectorConfig."""
     query = db.query(ConnectorConfig).filter(
         ConnectorConfig.connector_name == connector_name
     )
-    if venue_id:
+    if user_id:
+        query = query.filter(ConnectorConfig.user_id == user_id)
+    elif venue_id:
         query = query.filter(ConnectorConfig.venue_id == venue_id)
     else:
         query = query.filter(ConnectorConfig.venue_id.is_(None))
@@ -189,6 +225,7 @@ def _store_tokens(
         config_row = ConnectorConfig(
             connector_name=connector_name,
             venue_id=venue_id,
+            user_id=user_id,
             config={},
             enabled="true",
         )

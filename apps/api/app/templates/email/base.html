@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f5f3f0; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .card { background: #fff; border-radius: 12px; padding: 32px; margin: 20px 0; }
+    .logo { font-size: 24px; font-weight: 800; color: #c4a882; text-decoration: none; }
+    .footer { text-align: center; padding: 20px; font-size: 12px; color: #999; }
+    .btn { display: inline-block; padding: 12px 24px; background: #c4a882; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; }
+    h1 { font-size: 20px; font-weight: 700; margin: 0 0 16px; }
+    p { line-height: 1.6; margin: 0 0 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div style="text-align: center; padding: 20px 0;">
+      <span class="logo">Norm</span>
+    </div>
+    <div class="card">
+      {% block content %}{% endblock %}
+    </div>
+    <div class="footer">
+      <p>&copy; {{ year | default('2026') }} Norm. All rights reserved.</p>
+      {% block footer_extra %}{% endblock %}
+    </div>
+  </div>
+</body>
+</html>

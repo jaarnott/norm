@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     BAMBOOHR_SUBDOMAIN: str = ""
     BAMBOOHR_API_KEY: str = ""
 
+    # ── Email ─────────────────────────────────────────────────────────
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM_ADDRESS: str = "noreply@cbhg.co.nz"
+    EMAIL_FROM_NAME: str = "Norm"
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    MICROSOFT_CLIENT_ID: str = ""
+    MICROSOFT_CLIENT_SECRET: str = ""
+    APP_URL: str = "https://bettercallnorm.com"
+
     # ── Observability (Phase 4) ─────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: Literal["json", "console"] = "console"

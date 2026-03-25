@@ -1891,6 +1891,93 @@ CONNECTOR_SPECS: list[dict] = [
             "timeout_seconds": 15,
         },
     },
+    # ── Email connectors ──────────────────────────────────────────────
+    {
+        "connector_name": "gmail",
+        "display_name": "Gmail (Send on Behalf)",
+        "category": "email",
+        "execution_mode": "internal",
+        "auth_type": "oauth2",
+        "oauth_config": {
+            "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+            "token_url": "https://oauth2.googleapis.com/token",
+            "scopes": "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email",
+            "client_id": "_FROM_SETTINGS:GOOGLE_CLIENT_ID",
+            "client_secret": "_FROM_SETTINGS:GOOGLE_CLIENT_SECRET",
+        },
+        "tools": [
+            {
+                "action": "send_email",
+                "method": "POST",
+                "description": "Send an email from the user's Gmail account.",
+                "required_fields": ["to", "subject", "body_html"],
+                "optional_fields": ["cc", "bcc"],
+                "field_descriptions": {
+                    "to": "Recipient email address(es), comma-separated",
+                    "subject": "Email subject line",
+                    "body_html": "HTML body of the email",
+                    "cc": "CC email address(es), comma-separated",
+                    "bcc": "BCC email address(es), comma-separated",
+                },
+            },
+        ],
+    },
+    {
+        "connector_name": "microsoft_outlook",
+        "display_name": "Outlook (Send on Behalf)",
+        "category": "email",
+        "execution_mode": "internal",
+        "auth_type": "oauth2",
+        "oauth_config": {
+            "authorize_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            "scopes": "https://graph.microsoft.com/Mail.Send offline_access",
+            "client_id": "",
+            "client_secret": "",
+        },
+        "tools": [
+            {
+                "action": "send_email",
+                "method": "POST",
+                "description": "Send an email from the user's Outlook account.",
+                "required_fields": ["to", "subject", "body_html"],
+                "optional_fields": ["cc", "bcc"],
+                "field_descriptions": {
+                    "to": "Recipient email address(es), comma-separated",
+                    "subject": "Email subject line",
+                    "body_html": "HTML body of the email",
+                    "cc": "CC email address(es), comma-separated",
+                    "bcc": "BCC email address(es), comma-separated",
+                },
+            },
+        ],
+    },
+    {
+        "connector_name": "norm_email",
+        "display_name": "Norm System Email",
+        "category": "email",
+        "execution_mode": "internal",
+        "auth_type": "none",
+        "tools": [
+            {
+                "action": "send_notification",
+                "method": "POST",
+                "description": "Send a system notification email from noreply@norm.com.",
+                "required_fields": ["to", "template_name", "template_context"],
+                "field_descriptions": {
+                    "to": "Recipient email address(es), comma-separated",
+                    "template_name": "Template name (e.g., task_complete, billing_receipt)",
+                    "template_context": "JSON object with template variables",
+                },
+                "field_schema": {
+                    "template_context": {
+                        "type": "object",
+                        "description": "Key-value pairs for template rendering",
+                    },
+                },
+            },
+        ],
+    },
 ]
 
 
@@ -2694,5 +2781,105 @@ AGENT_BINDINGS: list[dict] = [
             },
         ],
         "enabled": True,
+    },
+    # ── Email bindings ── all agents get email capabilities
+    {
+        "agent_slug": "procurement",
+        "connector_name": "gmail",
+        "capabilities": [
+            {
+                "action": "send_email",
+                "label": "Send email from user's Gmail",
+                "enabled": True,
+            },
+        ],
+    },
+    {
+        "agent_slug": "procurement",
+        "connector_name": "microsoft_outlook",
+        "capabilities": [
+            {
+                "action": "send_email",
+                "label": "Send email from user's Outlook",
+                "enabled": True,
+            },
+        ],
+    },
+    {
+        "agent_slug": "procurement",
+        "connector_name": "norm_email",
+        "capabilities": [
+            {
+                "action": "send_notification",
+                "label": "Send system notification email",
+                "enabled": True,
+            },
+        ],
+    },
+    {
+        "agent_slug": "hr",
+        "connector_name": "gmail",
+        "capabilities": [
+            {
+                "action": "send_email",
+                "label": "Send email from user's Gmail",
+                "enabled": True,
+            },
+        ],
+    },
+    {
+        "agent_slug": "hr",
+        "connector_name": "microsoft_outlook",
+        "capabilities": [
+            {
+                "action": "send_email",
+                "label": "Send email from user's Outlook",
+                "enabled": True,
+            },
+        ],
+    },
+    {
+        "agent_slug": "hr",
+        "connector_name": "norm_email",
+        "capabilities": [
+            {
+                "action": "send_notification",
+                "label": "Send system notification email",
+                "enabled": True,
+            },
+        ],
+    },
+    {
+        "agent_slug": "reports",
+        "connector_name": "gmail",
+        "capabilities": [
+            {
+                "action": "send_email",
+                "label": "Send email from user's Gmail",
+                "enabled": True,
+            },
+        ],
+    },
+    {
+        "agent_slug": "reports",
+        "connector_name": "microsoft_outlook",
+        "capabilities": [
+            {
+                "action": "send_email",
+                "label": "Send email from user's Outlook",
+                "enabled": True,
+            },
+        ],
+    },
+    {
+        "agent_slug": "reports",
+        "connector_name": "norm_email",
+        "capabilities": [
+            {
+                "action": "send_notification",
+                "label": "Send system notification email",
+                "enabled": True,
+            },
+        ],
     },
 ]

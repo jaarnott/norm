@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Token Quota Running Low</h1>
+<p>Hi {{ user_name }},</p>
+<p>Your organisation <strong>{{ org_name }}</strong> has used <strong>{{ used_percent }}%</strong> of your monthly token quota.</p>
+<p><strong>Used:</strong> {{ used_tokens }} / {{ quota_tokens }} tokens</p>
+<p>When you run out of tokens, AI features will pause. You can buy more tokens or upgrade your plan at any time.</p>
+<a href="{{ app_url }}/app" class="btn">Manage Plan</a>
+{% endblock %}

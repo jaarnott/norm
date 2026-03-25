@@ -422,6 +422,126 @@ def _get_applicant_resume(params: dict, db: Session, task_id: str | None) -> dic
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Email — Send on behalf + system notifications
+# ---------------------------------------------------------------------------
+
+
+@register("gmail", "send_email")
+def _gmail_send_email(params: dict, db: Session, task_id: str | None) -> dict:
+    """Send an email from the user's connected Gmail account."""
+    from app.db.models import Task
+    from app.services.email_service import send_on_behalf_gmail
+
+    to = params.get("to", "")
+    if isinstance(to, str):
+        to = [addr.strip() for addr in to.split(",") if addr.strip()]
+    subject = params.get("subject", "")
+    body_html = params.get("body_html", "")
+    cc = params.get("cc")
+    if isinstance(cc, str):
+        cc = [addr.strip() for addr in cc.split(",") if addr.strip()] if cc else None
+    bcc = params.get("bcc")
+    if isinstance(bcc, str):
+        bcc = [addr.strip() for addr in bcc.split(",") if addr.strip()] if bcc else None
+
+    if not to or not subject:
+        return {"success": False, "data": {}, "error": "to and subject are required"}
+
+    # Resolve user_id from the task
+    user_id = None
+    if task_id:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task:
+            user_id = task.user_id
+    if not user_id:
+        return {
+            "success": False,
+            "data": {},
+            "error": "Cannot determine user for email sending",
+        }
+
+    return send_on_behalf_gmail(
+        user_id, to, subject, body_html, db, cc=cc, bcc=bcc, task_id=task_id
+    )
+
+
+@register("microsoft_outlook", "send_email")
+def _outlook_send_email(params: dict, db: Session, task_id: str | None) -> dict:
+    """Send an email from the user's connected Outlook account."""
+    from app.db.models import Task
+    from app.services.email_service import send_on_behalf_outlook
+
+    to = params.get("to", "")
+    if isinstance(to, str):
+        to = [addr.strip() for addr in to.split(",") if addr.strip()]
+    subject = params.get("subject", "")
+    body_html = params.get("body_html", "")
+    cc = params.get("cc")
+    if isinstance(cc, str):
+        cc = [addr.strip() for addr in cc.split(",") if addr.strip()] if cc else None
+    bcc = params.get("bcc")
+    if isinstance(bcc, str):
+        bcc = [addr.strip() for addr in bcc.split(",") if addr.strip()] if bcc else None
+
+    if not to or not subject:
+        return {"success": False, "data": {}, "error": "to and subject are required"}
+
+    user_id = None
+    if task_id:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task:
+            user_id = task.user_id
+    if not user_id:
+        return {
+            "success": False,
+            "data": {},
+            "error": "Cannot determine user for email sending",
+        }
+
+    return send_on_behalf_outlook(
+        user_id, to, subject, body_html, db, cc=cc, bcc=bcc, task_id=task_id
+    )
+
+
+@register("norm_email", "send_notification")
+def _system_send_notification(params: dict, db: Session, task_id: str | None) -> dict:
+    """Send a system notification email from noreply@norm.com."""
+    from app.services.email_service import send_system_email
+
+    to = params.get("to", "")
+    if isinstance(to, str):
+        to = [addr.strip() for addr in to.split(",") if addr.strip()]
+    template_name = params.get("template_name", "")
+    template_context = params.get("template_context", {})
+
+    if not to or not template_name:
+        return {
+            "success": False,
+            "data": {},
+            "error": "to and template_name are required",
+        }
+
+    if isinstance(template_context, str):
+        import json
+
+        try:
+            template_context = json.loads(template_context)
+        except (json.JSONDecodeError, TypeError):
+            template_context = {}
+
+    log_id = send_system_email(template_name, to, template_context, db, task_id=task_id)
+    from app.db.models import EmailLog
+
+    log = db.query(EmailLog).filter(EmailLog.id == log_id).first() if log_id else None
+
+    return {
+        "success": log.status == "sent" if log else False,
+        "data": {"email_log_id": log_id},
+        "error": log.error_message if log else "Failed to send",
+    }
+
+
 # Reports — Chart Rendering
 # ---------------------------------------------------------------------------
 
