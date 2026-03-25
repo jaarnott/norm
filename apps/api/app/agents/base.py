@@ -77,6 +77,7 @@ class BaseDomainAgent(ABC):
         db: Session,
         active_venue_name: str | None = None,
         venue_timezone: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[str, list[dict]]:
         """Return (system_prompt, anthropic_tools) for the agentic tool loop.
 
@@ -90,6 +91,7 @@ class BaseDomainAgent(ABC):
             db,
             active_venue_name=active_venue_name,
             venue_timezone=venue_timezone,
+            user_id=user_id,
         )
 
     def handle_message_with_tools(
@@ -109,7 +111,10 @@ class BaseDomainAgent(ABC):
         from app.agents.tool_loop import run_tool_loop, _emit_event
 
         system_prompt, anthropic_tools = self.get_tool_definitions(
-            db, active_venue_name=venue_name, venue_timezone=venue_timezone
+            db,
+            active_venue_name=venue_name,
+            venue_timezone=venue_timezone,
+            user_id=user_id,
         )
         ctx = self.build_context(db, user_id)
 

@@ -34,7 +34,10 @@ class ProcurementAgent(BaseDomainAgent):
     ) -> dict:
         # Try the agentic tool loop first (if tools are bound)
         system_prompt, anthropic_tools = self.get_tool_definitions(
-            db, active_venue_name=venue_name, venue_timezone=venue_timezone
+            db,
+            active_venue_name=venue_name,
+            venue_timezone=venue_timezone,
+            user_id=user_id,
         )
         if anthropic_tools:
             return self.handle_message_with_tools(

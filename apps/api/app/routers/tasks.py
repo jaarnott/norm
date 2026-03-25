@@ -329,7 +329,9 @@ def _approve_tool_calls(db: Session, task: Task, user: User) -> dict:
     db.flush()
 
     # Resume the loop
-    system_prompt, anthropic_tools = build_tool_definitions(task.domain, db)
+    system_prompt, anthropic_tools = build_tool_definitions(
+        task.domain, db, user_id=user.id
+    )
     return resume_tool_loop(task, db, system_prompt, anthropic_tools)
 
 
@@ -357,7 +359,9 @@ def _reject_tool_calls(db: Session, task: Task, user: User) -> dict:
     db.flush()
 
     # Resume the loop — the tool results will contain rejection messages
-    system_prompt, anthropic_tools = build_tool_definitions(task.domain, db)
+    system_prompt, anthropic_tools = build_tool_definitions(
+        task.domain, db, user_id=user.id
+    )
     return resume_tool_loop(task, db, system_prompt, anthropic_tools)
 
 

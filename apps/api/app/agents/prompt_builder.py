@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
-def _collect_tools(domain: str, db: Session) -> list[dict]:
+def _collect_tools(domain: str, db: Session, user_id: str | None = None) -> list[dict]:
     """Collect all enabled tools from connector specs bound to a domain agent.
 
     Returns a list of dicts with keys: action, connector, required_fields,
@@ -52,6 +52,23 @@ def _collect_tools(domain: str, db: Session) -> list[dict]:
                 > 0
             )
             if not has_config:
+                continue
+
+        # User-scoped email connectors: require per-user ConnectorConfig
+        _USER_SCOPED_CONNECTORS = {"gmail", "microsoft_outlook"}
+        if spec.connector_name in _USER_SCOPED_CONNECTORS:
+            if not user_id:
+                continue
+            has_user_config = (
+                db.query(ConnectorConfig)
+                .filter(
+                    ConnectorConfig.connector_name == spec.connector_name,
+                    ConnectorConfig.user_id == user_id,
+                )
+                .count()
+                > 0
+            )
+            if not has_user_config:
                 continue
 
         # Build an enabled-action set from binding capabilities
@@ -106,6 +123,7 @@ def build_tool_definitions(
     db: Session,
     active_venue_name: str | None = None,
     venue_timezone: str | None = None,
+    user_id: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
@@ -114,7 +132,7 @@ def build_tool_definitions(
 
     Returns ("", []) if no tools are bound.
     """
-    tools = _collect_tools(domain, db)
+    tools = _collect_tools(domain, db, user_id=user_id)
     if not tools:
         return "", []
 
@@ -175,6 +193,56 @@ Use `norm__search_tool_result` with the `tool_call_id` and a short search `query
 Keep your search query to just the core keyword — for example, if the user asks for "corona beer boxes", search for "corona".
 The search uses fuzzy matching so it handles misspellings and partial matches. It returns up to 20 results ranked by relevance.
 """
+
+    # Add email capability guidance
+    has_system_email = any(t["connector"] == "norm_email" for t in tools)
+    has_gmail = any(t["connector"] == "gmail" for t in tools)
+    has_outlook = any(t["connector"] == "microsoft_outlook" for t in tools)
+
+    if has_system_email or has_gmail or has_outlook:
+        from app.db.models import ConnectorConfig as CC
+
+        email_lines = ["\n\n## Email Capabilities"]
+        if has_system_email:
+            email_lines.append(
+                "- **System email** (`norm_email__send_notification`): Send notifications from the platform (e.g., task results, alerts, reports). Uses a template system."
+            )
+        if has_gmail and user_id:
+            cfg = (
+                db.query(CC)
+                .filter(CC.connector_name == "gmail", CC.user_id == user_id)
+                .first()
+            )
+            addr = (
+                (cfg.oauth_metadata or {}).get("email", "connected Gmail")
+                if cfg
+                else "connected Gmail"
+            )
+            email_lines.append(
+                f"- **Gmail** (`gmail__send_email`): Send from **{addr}**. Use for outreach, purchase orders, and correspondence that should come from the user."
+            )
+        if has_outlook and user_id:
+            cfg = (
+                db.query(CC)
+                .filter(CC.connector_name == "microsoft_outlook", CC.user_id == user_id)
+                .first()
+            )
+            addr = (
+                (cfg.oauth_metadata or {}).get("email", "connected Outlook")
+                if cfg
+                else "connected Outlook"
+            )
+            email_lines.append(
+                f"- **Outlook** (`microsoft_outlook__send_email`): Send from **{addr}**. Use for outreach, purchase orders, and correspondence that should come from the user."
+            )
+        email_lines.append(
+            "\nUse system email for automated notifications and alerts. Use the user's connected account when the email should appear to come from them personally."
+        )
+        if has_automated_tasks:
+            email_lines.append(
+                "You can create automated tasks that send emails on a schedule (e.g., daily reports, weekly summaries)."
+            )
+        system_prompt += "\n".join(email_lines)
 
     # Add venue guidance when multiple venues exist
     from app.services.venue_service import get_user_venues

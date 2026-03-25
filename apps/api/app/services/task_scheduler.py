@@ -126,7 +126,9 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             if not agent:
                 raise ValueError(f"Agent not found: {task.agent_slug}")
 
-            system_prompt, anthropic_tools = agent.get_tool_definitions(db)
+            system_prompt, anthropic_tools = agent.get_tool_definitions(
+                db, user_id=task.created_by
+            )
             if not system_prompt:
                 system_prompt = f"You are the {task.agent_slug} agent for Norm."
 
