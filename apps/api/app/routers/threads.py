@@ -14,10 +14,10 @@ from app.services.order_service import (
     submit_order,
 )
 from app.services.hr_service import (
-    get_task as get_hr_task,
-    approve_task as approve_hr_task,
-    reject_task as reject_hr_task,
-    submit_task as submit_hr_task,
+    get_hr_thread,
+    approve_hr_thread,
+    reject_hr_thread,
+    submit_hr_thread,
 )
 from app.agents.reports.context import _report_task_to_dict
 
@@ -64,7 +64,7 @@ def _find(db: Session, thread_id: str) -> tuple[dict | None, str]:
     if thread.domain == "procurement":
         return get_order(db, thread_id), "procurement"
     if thread.domain == "hr":
-        return get_hr_task(db, thread_id), "hr"
+        return get_hr_thread(db, thread_id), "hr"
     if thread.domain == "reports":
         return _report_task_to_dict(thread), "reports"
     return None, ""
@@ -259,7 +259,7 @@ async def approve(
     if domain == "procurement":
         return approve_order(db, thread_id, user=user)
     if domain == "hr":
-        return approve_hr_task(db, thread_id, user=user)
+        return approve_hr_thread(db, thread_id, user=user)
     if domain == "reports":
         return _approve_report(db, thread_id, user=user)
     raise HTTPException(status_code=400, detail="Unsupported domain")
@@ -282,7 +282,7 @@ async def reject(
     if domain == "procurement":
         return reject_order(db, thread_id, user=user)
     if domain == "hr":
-        return reject_hr_task(db, thread_id, user=user)
+        return reject_hr_thread(db, thread_id, user=user)
     if domain == "reports":
         return _reject_report(db, thread_id, user=user)
     raise HTTPException(status_code=400, detail="Unsupported domain")
@@ -300,7 +300,7 @@ async def submit(
     if domain == "procurement":
         result = submit_order(db, thread_id)
     elif domain == "hr":
-        result = submit_hr_task(db, thread_id)
+        result = submit_hr_thread(db, thread_id)
     elif domain == "reports":
         # Reports don't submit externally — approve is the terminal action
         raise HTTPException(

@@ -2,8 +2,8 @@
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import Sidebar from '../components/layout/Sidebar';
-import ThreadList from '../components/tasks/TaskList';
-import ThreadDetail from '../components/tasks/TaskDetail';
+import ThreadList from '../components/tasks/ThreadList';
+import ThreadDetail from '../components/tasks/ThreadDetail';
 import RoutingIndicator from '../components/routing/RoutingIndicator';
 import HomePanel from '../components/home/HomePanel';
 import SettingsPanel from '../components/settings/SettingsPanel';

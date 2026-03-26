@@ -950,7 +950,11 @@ def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> 
 
     task = db.query(AutomatedTask).filter(AutomatedTask.id == atask_id).first()
     if not task:
-        return {"success": False, "data": {}, "error": f"Task not found: {atask_id}"}
+        return {
+            "success": False,
+            "data": {},
+            "error": f"Automated task not found: {atask_id}",
+        }
 
     for field in (
         "title",

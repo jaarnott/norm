@@ -1,7 +1,7 @@
 'use client';
 
 import type { Thread } from '../../types';
-import ThreadCard from './TaskCard';
+import ThreadCard from './ThreadCard';
 import { SquarePen, Search, PanelLeftClose } from 'lucide-react';
 import { FUNCTIONAL_PAGES } from '../pages/pageRegistry';
 

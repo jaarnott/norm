@@ -282,7 +282,7 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 "success": True,
                 "data": {
                     "run_id": run.id,
-                    "task_id": run.thread_id,
+                    "thread_id": run.thread_id,
                     "status": run.status,
                     "mode": run.mode,
                     "result_summary": run.result_summary,

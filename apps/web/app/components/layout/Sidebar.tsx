@@ -133,7 +133,7 @@ export default function Sidebar({ selected, onSelect, threadCounts, user, onLogo
                 )}
               </div>
 
-              {/* Content area — TaskList rendered by parent via children */}
+              {/* Content area — ThreadList rendered by parent via children */}
               <div style={{ flex: 1, overflow: 'auto' }}>
                 {children}
               </div>

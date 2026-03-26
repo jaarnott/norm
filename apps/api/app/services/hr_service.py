@@ -77,13 +77,13 @@ def create_employee_setup(
 
 def update_employee_setup(
     db: Session,
-    task_id: str,
+    thread_id: str,
     employee_name: str | None,
     venue: dict | None,
     role: str | None,
     start_date: str | None,
 ) -> dict | None:
-    task = db.query(Thread).filter(Thread.id == task_id).first()
+    task = db.query(Thread).filter(Thread.id == thread_id).first()
     if not task:
         return None
 
@@ -163,7 +163,7 @@ def update_employee_setup(
     task.updated_at = datetime.now(timezone.utc)
 
     # Update HR record
-    hr = db.query(HrSetup).filter(HrSetup.thread_id == task_id).first()
+    hr = db.query(HrSetup).filter(HrSetup.thread_id == thread_id).first()
     if hr:
         hr.employee_name = extracted.get("employee_name")
         hr.role = extracted.get("role")
@@ -178,19 +178,21 @@ def update_employee_setup(
     return _task_to_dict(task)
 
 
-def get_task(db: Session, task_id: str) -> dict | None:
-    task = db.query(Thread).filter(Thread.id == task_id, Thread.domain == "hr").first()
+def get_hr_thread(db: Session, thread_id: str) -> dict | None:
+    task = (
+        db.query(Thread).filter(Thread.id == thread_id, Thread.domain == "hr").first()
+    )
     if not task:
         return None
     return _task_to_dict(task)
 
 
-def approve_task(db: Session, task_id: str, user=None) -> dict | None:
-    result = _set_status(db, task_id, "approved")
+def approve_hr_thread(db: Session, thread_id: str, user=None) -> dict | None:
+    result = _set_status(db, thread_id, "approved")
     if result:
         db.add(
             Approval(
-                thread_id=task_id,
+                thread_id=thread_id,
                 action="approved",
                 performed_by=user.email if user else "system",
                 user_id=user.id if user else None,
@@ -200,12 +202,12 @@ def approve_task(db: Session, task_id: str, user=None) -> dict | None:
     return result
 
 
-def reject_task(db: Session, task_id: str, user=None) -> dict | None:
-    result = _set_status(db, task_id, "rejected")
+def reject_hr_thread(db: Session, thread_id: str, user=None) -> dict | None:
+    result = _set_status(db, thread_id, "rejected")
     if result:
         db.add(
             Approval(
-                thread_id=task_id,
+                thread_id=thread_id,
                 action="rejected",
                 performed_by=user.email if user else "system",
                 user_id=user.id if user else None,
@@ -215,8 +217,10 @@ def reject_task(db: Session, task_id: str, user=None) -> dict | None:
     return result
 
 
-def submit_task(db: Session, task_id: str) -> dict | None:
-    task = db.query(Thread).filter(Thread.id == task_id, Thread.domain == "hr").first()
+def submit_hr_thread(db: Session, thread_id: str) -> dict | None:
+    task = (
+        db.query(Thread).filter(Thread.id == thread_id, Thread.domain == "hr").first()
+    )
     if not task or task.status != "approved":
         return None
 
@@ -226,7 +230,7 @@ def submit_task(db: Session, task_id: str) -> dict | None:
 
     if run.status == "success":
         task.status = "submitted"
-        hr = db.query(HrSetup).filter(HrSetup.thread_id == task_id).first()
+        hr = db.query(HrSetup).filter(HrSetup.thread_id == thread_id).first()
         if hr:
             hr.status = "submitted"
     else:
@@ -259,13 +263,15 @@ def find_open_task(db: Session, user_id: str | None = None) -> dict | None:
     return _task_to_dict(task)
 
 
-def _set_status(db: Session, task_id: str, status: str) -> dict | None:
-    task = db.query(Thread).filter(Thread.id == task_id, Thread.domain == "hr").first()
+def _set_status(db: Session, thread_id: str, status: str) -> dict | None:
+    task = (
+        db.query(Thread).filter(Thread.id == thread_id, Thread.domain == "hr").first()
+    )
     if not task:
         return None
     task.status = status
     task.updated_at = datetime.now(timezone.utc)
-    hr = db.query(HrSetup).filter(HrSetup.thread_id == task_id).first()
+    hr = db.query(HrSetup).filter(HrSetup.thread_id == thread_id).first()
     if hr:
         hr.status = status
     db.commit()
