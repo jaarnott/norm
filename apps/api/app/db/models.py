@@ -171,6 +171,7 @@ class Task(Base):
     intent = Column(String)
     domain = Column(String)
     status = Column(String, nullable=False, default="awaiting_user_input")
+    tags = Column(JSON, nullable=False, default=list)
     title = Column(String, nullable=True)
     raw_prompt = Column(Text)
     extracted_fields = Column(JSON, default=dict)
@@ -222,6 +223,22 @@ class Task(Base):
         "WorkingDocument", back_populates="task", cascade="all, delete-orphan"
     )
     user = relationship("User", back_populates="tasks")
+
+    # ── Tag helpers ──────────────────────────────────────────────
+    def add_tag(self, tag: str) -> None:
+        """Add a tag if not already present."""
+        current = list(self.tags or [])
+        if tag not in current:
+            current.append(tag)
+            self.tags = current
+
+    def remove_tag(self, tag: str) -> None:
+        """Remove a tag if present."""
+        self.tags = [t for t in (self.tags or []) if t != tag]
+
+    def has_tag(self, tag: str) -> bool:
+        """Check if a tag is present."""
+        return tag in (self.tags or [])
 
 
 class Message(Base):
