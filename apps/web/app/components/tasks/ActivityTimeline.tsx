@@ -365,16 +365,20 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
     return { type: 'message' as const, ...classified, time: formatTime(msgTime), text: m.text, role: m.role, sortKey: msgTime, sortOrder: 0, index: i };
   });
 
-  const llmEvents = (llmCalls || []).map((call, idx) => ({
-    type: 'llm' as const,
-    call,
-    label: LLM_CALL_TYPE_LABELS[call.call_type] ?? `LLM call (${call.call_type})`,
-    icon: '⚡',
-    time: formatTime(call.created_at),
-    sortKey: call.created_at,
-    sortOrder: 0,
-    idx,
-  }));
+  const llmEvents = (llmCalls || []).map((call, idx) => {
+    const isNested = call.call_type !== 'routing' && call.call_type !== 'tool_use';
+    return {
+      type: 'llm' as const,
+      call,
+      label: LLM_CALL_TYPE_LABELS[call.call_type] ?? `LLM call (${call.call_type})`,
+      icon: '⚡',
+      time: formatTime(call.created_at),
+      sortKey: call.created_at,
+      sortOrder: 0,
+      idx,
+      nested: isNested,
+    };
+  });
 
   const toolEvents = (toolCalls || []).filter(tc => tc.status !== 'pending_approval').map((tc, idx) => ({
     type: 'tool' as const,
@@ -419,19 +423,23 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
     });
   }
 
-  // Thinking steps — SSE events shown to user during processing (no timestamps).
-  // Place them between routing and the first LLM call using interpolated sort keys.
+  // Thinking steps — SSE events captured during processing.
+  // Steps may have an embedded timestamp prefix: "[ts:ISO8601] text"
   const firstLlmTime = llmEvents.length > 0 ? llmEvents[0].sortKey : createdAt;
+  const TS_PREFIX_RE = /^\[ts:([^\]]+)\]\s*/;
   const thinkingEvents = (thinkingSteps || []).map((step, idx) => {
-    const isReasoning = step.startsWith('[reasoning] ');
+    const tsMatch = step.match(TS_PREFIX_RE);
+    const stepTime = tsMatch ? tsMatch[1] : '';
+    const stepText = tsMatch ? step.slice(tsMatch[0].length) : step;
+    const isReasoning = stepText.startsWith('[reasoning] ');
     return {
       type: 'thinking' as const,
-      label: isReasoning ? step.slice('[reasoning] '.length) : step,
+      label: isReasoning ? stepText.slice('[reasoning] '.length) : stepText,
       icon: isReasoning ? '🗨️' : '💭',
       isReasoning,
-      time: '',
-      sortKey: firstLlmTime,
-      sortOrder: 2 + idx, // after routing (sortOrder 0/1), before LLM calls (sortOrder 0 but later timestamp)
+      time: stepTime ? formatTime(stepTime) : '',
+      sortKey: stepTime || firstLlmTime,
+      sortOrder: stepTime ? 0 : 2 + idx,
       idx,
     };
   });
@@ -494,11 +502,13 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
             const key = `llm-${evt.call.id}`;
             const isExpanded = expandedItems.has(key);
             return (
-              <div key={key} style={{ marginBottom: '0.5rem', position: 'relative' }}>
+              <div key={key} style={{ marginBottom: '0.5rem', position: 'relative', marginLeft: evt.nested ? '1.5rem' : 0 }}>
                 <div onClick={() => toggle(key)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
                   <div style={{
                     position: 'absolute', left: '-1.15rem', top: 2,
-                    width: 8, height: 8, borderRadius: '50%', backgroundColor: '#c4a882',
+                    width: evt.nested ? 6 : 8, height: evt.nested ? 6 : 8, borderRadius: '50%',
+                    backgroundColor: evt.nested ? '#d4c4ae' : '#c4a882',
+                    marginTop: evt.nested ? 1 : 0,
                   }} />
                   <div style={{ flex: 1 }}>
                     <span style={{ fontSize: '0.78rem', color: '#333' }}>{evt.icon} {evt.label}</span>
@@ -625,6 +635,11 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
                     {evt.isReasoning ? 'reasoning' : 'event'}
                   </span>
                 </div>
+                {evt.time && (
+                  <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>
+                    {evt.time}
+                  </span>
+                )}
               </div>
             );
           }

@@ -145,9 +145,16 @@ def build_tool_definitions(
         system_prompt = (
             f"You are the {domain} agent for Norm, a hospitality operations platform."
         )
-    system_prompt = system_prompt.replace(
-        "{{today}}", datetime.date.today().isoformat()
-    )
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = (
+            ZoneInfo(venue_timezone) if venue_timezone else ZoneInfo("Pacific/Auckland")
+        )
+        today_str = datetime.datetime.now(tz).strftime("%Y-%m-%d")
+    except Exception:
+        today_str = datetime.date.today().isoformat()
+    system_prompt = system_prompt.replace("{{today}}", today_str)
 
     # Add automated tasks guidance if those tools are available
     has_automated_tasks = any(t.get("action") == "create_automated_task" for t in tools)

@@ -293,7 +293,9 @@ export default function Home() {
               const idx = prev.findIndex(t => t.id === currentId);
               if (idx >= 0) {
                 const next = [...prev];
-                next[idx] = data;
+                // Preserve automated_task metadata (not returned by stream)
+                const existing = next[idx];
+                next[idx] = { ...data, automated_task: data.automated_task ?? existing.automated_task };
                 return next;
               }
               return [data, ...prev];
@@ -306,6 +308,7 @@ export default function Home() {
                   ...t,
                   llm_calls: full.llm_calls ?? t.llm_calls,
                   tool_calls: full.tool_calls ?? t.tool_calls,
+                  automated_task: full.automated_task ?? t.automated_task,
                 } : t));
               }
             }).catch(() => {});
@@ -531,7 +534,7 @@ export default function Home() {
     const renderMobileContent = () => {
       if (mobileView === 'settings') {
         return (
-          <div style={{ flex: 1, overflow: 'auto', paddingBottom: 56 }}>
+          <div style={{ flex: 1, overflow: 'auto', paddingBottom: 0 }}>
             <SettingsPanel />
           </div>
         );
@@ -547,7 +550,7 @@ export default function Home() {
           <HomePanel onSend={sendMessage} loading={loading} />
         );
         return (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: 56 }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem', borderBottom: '1px solid #e2ddd7' }}>
               <button onClick={handleMobileBack} style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -566,7 +569,7 @@ export default function Home() {
       }
       if (mobileView === 'list') {
         return (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: 56 }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: 0 }}>
             <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
             <TaskList
               tasks={tasks}
@@ -584,7 +587,7 @@ export default function Home() {
       }
       // home
       return (
-        <div style={{ flex: 1, overflow: 'auto', paddingBottom: 56 }}>
+        <div style={{ flex: 1, overflow: 'auto', paddingBottom: 0 }}>
           <HomePanel onSend={sendMessage} loading={loading} />
         </div>
       );

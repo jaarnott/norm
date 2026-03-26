@@ -98,31 +98,6 @@ def _stop_scheduler() -> None:
 
 
 @app.on_event("startup")
-def _seed_system_config_if_empty() -> None:
-    """Seed system configuration only on first deploy (empty DB).
-
-    DB is the source of truth for connector specs, agent configs, and
-    bindings. Code definitions in system_config.py are only used to
-    populate a fresh database. After that, all changes are made via
-    the Settings UI or config-import API.
-    """
-    import logging
-
-    from app.db.engine import SessionLocal
-    from app.services.system_config_sync import seed_if_empty
-
-    log = logging.getLogger(__name__)
-    db = SessionLocal()
-    try:
-        seed_if_empty(db)
-    except Exception:
-        db.rollback()
-        log.exception("Failed to seed system configuration")
-    finally:
-        db.close()
-
-
-@app.on_event("startup")
 def _ensure_org_subscriptions() -> None:
     """Create trial Subscription rows for any org that doesn't have one."""
     import logging

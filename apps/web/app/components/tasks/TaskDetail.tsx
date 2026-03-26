@@ -97,16 +97,19 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
       </button>
       {showSteps && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.3rem' }}>
-          {steps.map((step, i) => (
-            <div key={i} style={{
-              fontSize: '0.8rem',
-              color: '#888',
-              lineHeight: 1.5,
-              fontStyle: 'italic',
-            }}>
-              {step}
-            </div>
-          ))}
+          {steps.map((step, i) => {
+            const display = step.replace(/^\[ts:[^\]]+\]\s*/, '');
+            return (
+              <div key={i} style={{
+                fontSize: '0.8rem',
+                color: '#888',
+                lineHeight: 1.5,
+                fontStyle: 'italic',
+              }}>
+                {display}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -588,12 +591,12 @@ function formatAtSchedule(type: string, config: Record<string, unknown>): string
   return SCHEDULE_LABELS[type] || type;
 }
 
-function AutomatedTaskHeader({ at, onUpdate }: {
+function AutomatedTaskHeader({ at, onUpdate, onRun }: {
   at: NonNullable<import('../../types').BaseTask['automated_task']>;
   onUpdate: () => void;
+  onRun: (prompt: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [running, setRunning] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
@@ -605,12 +608,8 @@ function AutomatedTaskHeader({ at, onUpdate }: {
 
   const ats = AT_STATUS[at.status] || AT_STATUS.draft;
 
-  const handleRun = async () => {
-    setRunning(true);
-    try {
-      await (await import('../../lib/api')).apiFetch(`/api/automated-tasks/${at.id}/run`, { method: 'POST', body: JSON.stringify({ mode: 'live' }) });
-      onUpdate();
-    } finally { setRunning(false); }
+  const handleRun = () => {
+    onRun(at.prompt);
   };
 
   const handleToggle = async () => {
@@ -641,11 +640,11 @@ function AutomatedTaskHeader({ at, onUpdate }: {
         <span style={{ fontSize: '0.65rem', fontWeight: 600, padding: '1px 8px', borderRadius: 10, backgroundColor: ats.bg, color: ats.color }}>{at.status}</span>
         <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>{formatAtSchedule(at.schedule_type, at.schedule_config)}</span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.3rem' }}>
-          <button onClick={handleRun} disabled={running} style={{
+          <button onClick={handleRun} style={{
             padding: '3px 10px', fontSize: '0.68rem', fontWeight: 600,
             border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff',
-            cursor: running ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-          }}>{running ? '...' : 'Run Now'}</button>
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>Run Now</button>
           <button onClick={handleToggle} disabled={toggling} style={{
             padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
             border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#6b7280',
@@ -842,7 +841,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
             {getTaskTitle(task)}
           </div>
           {task.automated_task && (
-            <AutomatedTaskHeader at={task.automated_task} onUpdate={() => onAction(task.id, 'reload')} />
+            <AutomatedTaskHeader at={task.automated_task} onUpdate={() => onAction(task.id, 'reload')} onRun={onSend} />
           )}
           {tabsRow}
         </div>

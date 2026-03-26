@@ -840,18 +840,6 @@ def _apply_binding_fields(binding: AgentConnectorBinding, imp: dict) -> None:
         binding.capabilities = imp["capabilities"]
 
 
-@router.post("/admin/config-reseed")
-def config_reseed(
-    user: User = Depends(require_permission("admin:system")),
-    db: Session = Depends(get_db),
-):
-    """Emergency recovery: reseed all system config from code definitions."""
-    from app.services.system_config_sync import sync_system_config
-
-    sync_system_config(db)
-    return {"ok": True, "message": "System configuration reseeded from code"}
-
-
 @router.post("/admin/config-fetch-remote")
 async def config_fetch_remote(
     body: ConfigFetchRemoteRequest,

@@ -46,7 +46,7 @@ export default function HomePanel({ onSend, loading }: HomePanelProps) {
           value={input}
           onChange={handleInput}
           onKeyDown={handleKeyDown}
-          placeholder="e.g. Order stock, check a roster, or generate a sales report"
+          placeholder="Get Norm to do it"
           rows={1}
           style={{
             flex: 1,

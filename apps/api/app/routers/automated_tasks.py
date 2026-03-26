@@ -375,6 +375,29 @@ async def get_conversation(
     }
 
 
+@router.post("/automated-tasks/{task_id}/ensure-conversation")
+async def ensure_conversation(
+    task_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Create the conversation task if it doesn't exist. Lightweight — no LLM call."""
+    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
+    if not task:
+        raise HTTPException(404, "Automated task not found")
+
+    from app.services.task_scheduler import _ensure_conversation_task
+
+    conv_task_id = _ensure_conversation_task(task, db)
+    # Ensure user_id is set on the conversation task
+    conv_task = db.query(Task).filter(Task.id == conv_task_id).first()
+    if conv_task and not conv_task.user_id:
+        conv_task.user_id = user.id
+    db.commit()
+
+    return {"conversation_task_id": conv_task_id}
+
+
 @router.post("/automated-tasks/{task_id}/message")
 async def send_message(
     task_id: str,

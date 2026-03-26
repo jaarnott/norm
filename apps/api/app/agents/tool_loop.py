@@ -5,6 +5,7 @@ Drives multi-turn conversations where the LLM can invoke connector tools
 to MAX_ITERATIONS before returning a response to the user.
 """
 
+import datetime
 import json
 import logging
 import threading
@@ -18,6 +19,12 @@ from app.db.models import Task, Message, ToolCall
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 10
+
+
+def _ts_step(text: str) -> str:
+    """Return a thinking step prefixed with an ISO timestamp."""
+    return f"[ts:{datetime.datetime.now(datetime.timezone.utc).isoformat()}] {text}"
+
 
 # Thread-local storage for streaming events to the client during the tool loop
 _thread_local = threading.local()
@@ -284,7 +291,9 @@ def _execute_loop(
                 db.add(tc)
                 read_only_tcs[block.id] = tc
                 readable = action.replace("_", " ")
-                thinking_steps.append(f"Fetching {readable} from {connector}…")
+                thinking_steps.append(
+                    _ts_step(f"Fetching {readable} from {connector}…")
+                )
                 _emit_event(
                     {
                         "type": "thinking",
@@ -449,7 +458,9 @@ def _execute_loop(
                         "content": json.dumps(simulated),
                     }
                     thinking_steps.append(
-                        f"[test] Would execute {action} on {connector} (simulated)"
+                        _ts_step(
+                            f"[test] Would execute {action} on {connector} (simulated)"
+                        )
                     )
                     _emit_event(
                         {
@@ -480,7 +491,9 @@ def _execute_loop(
                     db.flush()
 
                     thinking_steps.append(
-                        f"Preparing {action.replace('_', ' ')} on {connector}…"
+                        _ts_step(
+                            f"Preparing {action.replace('_', ' ')} on {connector}…"
+                        )
                     )
                     _emit_event(
                         {
@@ -571,7 +584,7 @@ def _execute_loop(
             # distinguish it from short status thinking steps.
             intermediate_text = _extract_text(response)
             if intermediate_text and intermediate_text != "Done.":
-                thinking_steps.append(f"[reasoning] {intermediate_text}")
+                thinking_steps.append(_ts_step(f"[reasoning] {intermediate_text}"))
 
             if pending_writes:
                 # Serialize the assistant response content for state storage
@@ -625,17 +638,24 @@ def _execute_loop(
                 iteration -= 1
 
             # Display-only tools (e.g. render_chart) don't produce data
-            # the LLM needs.  If the LLM already emitted text alongside
-            # these tool calls, treat as end_turn — skip the extra call.
-            if not pending_writes and reasoning:
-                tool_use_ids = {b.id for b in response.content if b.type == "tool_use"}
-                new_display_blocks = len(display_blocks) - display_blocks_before
-                if tool_use_ids and new_display_blocks == len(tool_use_ids):
+            # the LLM needs.  If the LLM already emitted a substantive
+            # answer alongside these tool calls, treat as end_turn —
+            # skip the extra LLM call that would just say "Done.".
+            new_display_blocks = len(display_blocks) - display_blocks_before
+            if not pending_writes and reasoning and new_display_blocks > 0:
+                # At least one display-only tool ran.  The LLM's text
+                # is the real answer — strip [Tool] prefix if present.
+                answer = reasoning.lstrip()
+                if answer.startswith("[Tool]"):
+                    answer = answer[len("[Tool]") :].lstrip()
+                # Only early-exit when the text is a real answer
+                # (not just a short tool-call explanation).
+                if len(answer) > 120:
                     db.add(
                         Message(
                             task_id=task.id,
                             role="assistant",
-                            content=reasoning,
+                            content=answer,
                             display_blocks=display_blocks or None,
                         )
                     )
@@ -647,7 +667,7 @@ def _execute_loop(
                     return _build_response(
                         task,
                         db,
-                        reasoning,
+                        answer,
                         thinking_steps=thinking_steps,
                         display_blocks=display_blocks,
                     )

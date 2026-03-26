@@ -631,17 +631,8 @@ Rules:
             call_type="date_resolution",
             max_tokens=4096,
         )
-        text = parsed.get("text", "")
-        # Strip markdown fences if present
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1]
-        if text.endswith("```"):
-            text = text.rsplit("```", 1)[0]
-        text = text.strip()
-
-        data = _json.loads(text)
-        periods = data.get("periods", [])
+        # call_llm returns the already-parsed JSON dict directly
+        periods = parsed.get("periods", [])
         if not periods:
             return {
                 "success": False,

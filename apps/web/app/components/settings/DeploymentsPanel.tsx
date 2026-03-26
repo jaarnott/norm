@@ -143,8 +143,6 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
   const [sourceEnv, setSourceEnv] = useState<Env>(ENVS[0] || 'testing');
   const [comparing, setComparing] = useState(false);
   const [applying, setApplying] = useState(false);
-  const [reseeding, setReseeding] = useState(false);
-  const [showReseedModal, setShowReseedModal] = useState(false);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
   const [remoteConfig, setRemoteConfig] = useState<Record<string, unknown> | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -303,26 +301,6 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
     setApplying(false);
   };
 
-  const handleReseed = async () => {
-    setReseeding(true);
-    setFeedback(null);
-    try {
-      const res = await apiFetch('/api/admin/config-reseed', { method: 'POST' });
-      if (res.ok) {
-        setFeedback({ type: 'success', message: 'Configuration reseeded from code defaults.' });
-        setShowReseedModal(false);
-        setDiffResult(null);
-        setRemoteConfig(null);
-        setSelected(new Set());
-      } else {
-        const d = await res.json();
-        setFeedback({ type: 'error', message: d.detail || 'Reseed failed' });
-      }
-    } catch (e) {
-      setFeedback({ type: 'error', message: String(e) });
-    }
-    setReseeding(false);
-  };
 
   const btnBase: React.CSSProperties = {
     padding: '6px 14px',
@@ -570,114 +548,7 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
           </div>
         )}
 
-        {/* Reseed from Code */}
-        <div style={{ borderTop: '1px solid #2a2a4a', paddingTop: '0.75rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-            <div>
-              <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#e2e8f0', marginBottom: 2 }}>Reseed from Code</div>
-              <div style={{ fontSize: '0.7rem', color: '#718096' }}>
-                Overwrite all specs, configs, and bindings with code defaults. Credentials and user data are preserved.
-              </div>
-            </div>
-            <button
-              onClick={() => setShowReseedModal(true)}
-              style={{
-                ...btnBase,
-                border: '1px solid #fc8181',
-                backgroundColor: 'transparent',
-                color: '#fc8181',
-                flexShrink: 0,
-              }}
-            >
-              <RotateCcw size={12} />
-              Reseed
-            </button>
-          </div>
-        </div>
       </div>
-
-      {/* ============ RESEED CONFIRMATION MODAL ============ */}
-      {showReseedModal && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-          }}
-          onClick={() => !reseeding && setShowReseedModal(false)}
-        >
-          <div
-            style={{
-              backgroundColor: '#1a1a2e',
-              border: '1px solid #2a2a4a',
-              borderRadius: 10,
-              padding: '1.5rem',
-              width: '100%',
-              maxWidth: 440,
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: '#e2e8f0' }}>
-                Reseed Configuration
-              </h3>
-              <button
-                onClick={() => !reseeding && setShowReseedModal(false)}
-                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#718096', padding: 2 }}
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div style={{ fontSize: '0.8rem', color: '#a0aec0', marginBottom: '1.25rem', lineHeight: 1.5 }}>
-              This will overwrite all connector specs, agent configs, and bindings with the defaults from code. Credentials and user data are preserved.
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => setShowReseedModal(false)}
-                disabled={reseeding}
-                style={{
-                  padding: '6px 16px',
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                  border: '1px solid #2a2a4a',
-                  borderRadius: 6,
-                  backgroundColor: 'transparent',
-                  color: '#a0aec0',
-                  cursor: reseeding ? 'not-allowed' : 'pointer',
-                  fontFamily: 'inherit',
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleReseed}
-                disabled={reseeding}
-                style={{
-                  padding: '6px 16px',
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                  border: 'none',
-                  borderRadius: 6,
-                  backgroundColor: '#fc8181',
-                  color: '#0f0f1a',
-                  cursor: reseeding ? 'not-allowed' : 'pointer',
-                  fontFamily: 'inherit',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                }}
-              >
-                <RotateCcw size={14} />
-                {reseeding ? 'Reseeding...' : 'Confirm Reseed'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }
