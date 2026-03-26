@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Message
+from app.db.models import Thread, Message
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class BaseDomainAgent(ABC):
         message: str,
         db: Session,
         user_id: str | None = None,
-        task_id: str | None = None,
+        thread_id: str | None = None,
         venue_id: str | None = None,
         venue_name: str | None = None,
         venue_timezone: str | None = None,
@@ -99,7 +99,7 @@ class BaseDomainAgent(ABC):
         message: str,
         db: Session,
         user_id: str | None = None,
-        task_id: str | None = None,
+        thread_id: str | None = None,
         venue_id: str | None = None,
         venue_name: str | None = None,
         venue_timezone: str | None = None,
@@ -118,19 +118,19 @@ class BaseDomainAgent(ABC):
         )
         ctx = self.build_context(db, user_id)
 
-        # Load or create task
-        if task_id:
-            task = db.query(Task).filter(Task.id == task_id).first()
-            if not task:
-                raise ValueError(f"Task not found: {task_id}")
-            # Use task's venue if none provided
-            if not venue_id and task.venue_id:
-                venue_id = task.venue_id
+        # Load or create thread
+        if thread_id:
+            thread = db.query(Thread).filter(Thread.id == thread_id).first()
+            if not thread:
+                raise ValueError(f"Thread not found: {thread_id}")
+            # Use thread's venue if none provided
+            if not venue_id and thread.venue_id:
+                venue_id = thread.venue_id
             # Add the user message
-            db.add(Message(task_id=task.id, role="user", content=message))
+            db.add(Message(thread_id=thread.id, role="user", content=message))
             db.flush()
         else:
-            task = Task(
+            thread = Thread(
                 user_id=user_id,
                 venue_id=venue_id,
                 domain=self.domain,
@@ -140,17 +140,17 @@ class BaseDomainAgent(ABC):
                 extracted_fields={},
                 missing_fields=[],
             )
-            db.add(task)
+            db.add(thread)
             db.flush()
-            db.add(Message(task_id=task.id, role="user", content=message))
+            db.add(Message(thread_id=thread.id, role="user", content=message))
             db.flush()
 
-        # Emit the real task ID immediately so the frontend can recover if
+        # Emit the real thread ID immediately so the frontend can recover if
         # the SSE connection drops during a long LLM call.
-        _emit_event({"type": "task_created", "task_id": task.id})
+        _emit_event({"type": "task_created", "task_id": thread.id})
 
         return run_tool_loop(
-            message, task, db, system_prompt, anthropic_tools, context=ctx
+            message, thread, db, system_prompt, anthropic_tools, context=ctx
         )
 
     def interpret(
@@ -158,7 +158,7 @@ class BaseDomainAgent(ABC):
         message: str,
         context: dict,
         db: Session | None = None,
-        task_id: str | None = None,
+        thread_id: str | None = None,
     ) -> tuple[dict, str | None]:
         """Call the LLM with this agent's prompt. Returns (parsed_json, llm_call_id).
 
@@ -171,7 +171,7 @@ class BaseDomainAgent(ABC):
             system_prompt=self.get_system_prompt(db=db),
             user_prompt=self._build_user_prompt(message, context),
             db=db,
-            task_id=task_id,
+            thread_id=thread_id,
             call_type="interpretation",
         )
 

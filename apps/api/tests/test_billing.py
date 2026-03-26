@@ -1,13 +1,6 @@
 """Tests for billing endpoints."""
 
-import uuid
-from unittest.mock import patch, MagicMock
-
-import pytest
-
-from app.db.models import (
-    Organization, OrganizationMembership, Subscription, TokenUsage,
-)
+from unittest.mock import patch
 
 
 class TestGetBilling:
@@ -15,8 +8,14 @@ class TestGetBilling:
 
     @patch("app.services.billing_service.get_billing_info")
     def test_get_billing_as_member(
-        self, mock_billing, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        mock_billing,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         mock_billing.return_value = {
             "organization_id": organization.id,
@@ -32,7 +31,12 @@ class TestGetBilling:
         assert data["organization_id"] == organization.id
 
     def test_get_billing_not_member_returns_403(
-        self, client, db_session, manager_user, manager_headers, organization,
+        self,
+        client,
+        db_session,
+        manager_user,
+        manager_headers,
+        organization,
     ):
         resp = client.get(f"/api/billing/{organization.id}", headers=manager_headers)
         assert resp.status_code == 403
@@ -47,8 +51,14 @@ class TestSetupBilling:
 
     @patch("app.services.billing_service.create_setup_intent")
     def test_setup_billing_as_owner(
-        self, mock_setup, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        mock_setup,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         mock_setup.return_value = "seti_test_client_secret"
 
@@ -61,8 +71,13 @@ class TestSetupBilling:
         assert resp.json()["client_secret"] == "seti_test_client_secret"
 
     def test_setup_billing_as_member_returns_403(
-        self, client, db_session, manager_user, manager_headers,
-        organization, manager_org_membership,
+        self,
+        client,
+        db_session,
+        manager_user,
+        manager_headers,
+        organization,
+        manager_org_membership,
     ):
         resp = client.post(
             f"/api/billing/{organization.id}/setup",
@@ -77,8 +92,14 @@ class TestSubscribe:
 
     @patch("app.services.billing_service.create_subscription")
     def test_subscribe_as_owner(
-        self, mock_sub, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        mock_sub,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         mock_sub.return_value = {"status": "active", "plan": "basic"}
 
@@ -96,8 +117,14 @@ class TestChangePlan:
 
     @patch("app.services.billing_service.change_plan")
     def test_change_plan_as_owner(
-        self, mock_change, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        mock_change,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         mock_change.return_value = {"status": "active", "plan": "standard"}
 
@@ -109,8 +136,13 @@ class TestChangePlan:
         assert resp.status_code == 200
 
     def test_change_plan_as_member_returns_403(
-        self, client, db_session, manager_user, manager_headers,
-        organization, manager_org_membership,
+        self,
+        client,
+        db_session,
+        manager_user,
+        manager_headers,
+        organization,
+        manager_org_membership,
     ):
         resp = client.put(
             f"/api/billing/{organization.id}/plan",
@@ -124,8 +156,13 @@ class TestUpdateAgents:
     """PUT /api/billing/{org_id}/agents"""
 
     def test_update_agents_as_owner(
-        self, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         with patch("app.services.billing_service.get_billing_info") as mock_info:
             mock_info.return_value = {
@@ -146,8 +183,14 @@ class TestTopUp:
 
     @patch("app.services.billing_service.purchase_top_up")
     def test_top_up_as_owner(
-        self, mock_topup, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        mock_topup,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         mock_topup.return_value = {"tokens": 500_000, "status": "completed"}
 
@@ -159,8 +202,13 @@ class TestTopUp:
         assert resp.status_code == 200
 
     def test_top_up_as_member_returns_403(
-        self, client, db_session, manager_user, manager_headers,
-        organization, manager_org_membership,
+        self,
+        client,
+        db_session,
+        manager_user,
+        manager_headers,
+        organization,
+        manager_org_membership,
     ):
         resp = client.post(
             f"/api/billing/{organization.id}/topup",
@@ -174,17 +222,31 @@ class TestListInvoices:
     """GET /api/billing/{org_id}/invoices"""
 
     def test_list_invoices_no_subscription(
-        self, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
-        resp = client.get(f"/api/billing/{organization.id}/invoices", headers=admin_headers)
+        resp = client.get(
+            f"/api/billing/{organization.id}/invoices", headers=admin_headers
+        )
         assert resp.status_code == 200
         assert resp.json()["invoices"] == []
 
     def test_list_invoices_not_member_returns_403(
-        self, client, db_session, manager_user, manager_headers, organization,
+        self,
+        client,
+        db_session,
+        manager_user,
+        manager_headers,
+        organization,
     ):
-        resp = client.get(f"/api/billing/{organization.id}/invoices", headers=manager_headers)
+        resp = client.get(
+            f"/api/billing/{organization.id}/invoices", headers=manager_headers
+        )
         assert resp.status_code == 403
 
 
@@ -192,8 +254,13 @@ class TestCancelSubscription:
     """DELETE /api/billing/{org_id}/subscription"""
 
     def test_cancel_no_subscription_returns_400(
-        self, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         resp = client.delete(
             f"/api/billing/{organization.id}/subscription",
@@ -202,8 +269,13 @@ class TestCancelSubscription:
         assert resp.status_code == 400
 
     def test_cancel_as_member_returns_403(
-        self, client, db_session, manager_user, manager_headers,
-        organization, manager_org_membership,
+        self,
+        client,
+        db_session,
+        manager_user,
+        manager_headers,
+        organization,
+        manager_org_membership,
     ):
         resp = client.delete(
             f"/api/billing/{organization.id}/subscription",

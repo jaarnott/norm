@@ -49,7 +49,7 @@ def call_llm(
     user_prompt: str,
     model: str | None = None,
     db: Session | None = None,
-    task_id: str | None = None,
+    thread_id: str | None = None,
     call_type: str = "interpretation",
     max_tokens: int = 4096,
 ) -> tuple[dict, str | None]:
@@ -104,7 +104,7 @@ def call_llm(
         if db is not None:
             llm_call_id = _persist_llm_call(
                 db,
-                task_id=task_id,
+                thread_id=thread_id,
                 call_type=call_type,
                 model=resolved_model,
                 system_prompt=system_prompt,
@@ -126,7 +126,7 @@ def call_llm(
         if db is not None:
             _persist_llm_call(
                 db,
-                task_id=task_id,
+                thread_id=thread_id,
                 call_type=call_type,
                 model=resolved_model,
                 system_prompt=system_prompt,
@@ -143,7 +143,7 @@ def call_llm(
 def _persist_llm_call(
     db: Session,
     *,
-    task_id,
+    thread_id,
     call_type,
     model,
     system_prompt,
@@ -161,7 +161,7 @@ def _persist_llm_call(
     from app.db.models import LlmCall
 
     record = LlmCall(
-        task_id=task_id,
+        thread_id=thread_id,
         call_type=call_type,
         model=model,
         system_prompt=system_prompt,
@@ -184,10 +184,10 @@ def _persist_llm_call(
             from app.services.usage_service import record_usage
 
             # Resolve user_id from task if not provided
-            if not user_id and task_id:
-                from app.db.models import Task
+            if not user_id and thread_id:
+                from app.db.models import Thread
 
-                task = db.query(Task).filter(Task.id == task_id).first()
+                task = db.query(Thread).filter(Thread.id == thread_id).first()
                 if task:
                     user_id = task.user_id
             record_usage(db, user_id, input_tokens, output_tokens)
@@ -203,7 +203,7 @@ def call_llm_with_tools(
     tools: list[dict],
     model: str | None = None,
     db: Session | None = None,
-    task_id: str | None = None,
+    thread_id: str | None = None,
     call_type: str = "tool_use",
     max_tokens: int = 4096,
 ):
@@ -260,7 +260,7 @@ def call_llm_with_tools(
         if db is not None:
             llm_call_id = _persist_llm_call(
                 db,
-                task_id=task_id,
+                thread_id=thread_id,
                 call_type=call_type,
                 model=resolved_model,
                 system_prompt=system_prompt,
@@ -281,7 +281,7 @@ def call_llm_with_tools(
         if db is not None:
             _persist_llm_call(
                 db,
-                task_id=task_id,
+                thread_id=thread_id,
                 call_type=call_type,
                 model=resolved_model,
                 system_prompt=system_prompt,

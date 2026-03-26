@@ -95,13 +95,13 @@ def _execute_automated_task(task_id: str):
 
 
 def _ensure_conversation_task(automated_task, db) -> str:
-    """Ensure the automated task has a persistent conversation Task. Returns its id."""
-    from app.db.models import Task
+    """Ensure the automated task has a persistent conversation Thread. Returns its id."""
+    from app.db.models import Thread
 
-    if automated_task.conversation_task_id:
-        return automated_task.conversation_task_id
+    if automated_task.conversation_thread_id:
+        return automated_task.conversation_thread_id
 
-    conv_task = Task(
+    conv_thread = Thread(
         user_id=automated_task.created_by,
         domain=automated_task.agent_slug,
         intent=f"{automated_task.agent_slug}.automated_conversation",
@@ -111,11 +111,11 @@ def _ensure_conversation_task(automated_task, db) -> str:
         extracted_fields={},
         missing_fields=[],
     )
-    db.add(conv_task)
+    db.add(conv_thread)
     db.flush()
-    automated_task.conversation_task_id = conv_task.id
+    automated_task.conversation_thread_id = conv_thread.id
     db.flush()
-    return conv_task.id
+    return conv_thread.id
 
 
 def _build_augmented_prompt(automated_task, db) -> str:
@@ -134,10 +134,10 @@ def _build_augmented_prompt(automated_task, db) -> str:
         parts.append(f"\n[Thread Summary]\n{automated_task.thread_summary}")
 
     # Recent conversation messages
-    if automated_task.conversation_task_id:
+    if automated_task.conversation_thread_id:
         recent = (
             db.query(Message)
-            .filter(Message.task_id == automated_task.conversation_task_id)
+            .filter(Message.thread_id == automated_task.conversation_thread_id)
             .order_by(Message.created_at.desc())
             .limit(RECENT_MESSAGES_LIMIT)
             .all()
@@ -169,7 +169,7 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
     Can be called by the scheduler (background thread) or by an API endpoint.
     """
     from app.db.engine import SessionLocal
-    from app.db.models import AutomatedTask, AutomatedTaskRun, Task, Message
+    from app.db.models import AutomatedTask, AutomatedTaskRun, Thread, Message
     from app.agents.registry import get_agent
     from app.agents.tool_loop import run_tool_loop
 
@@ -214,7 +214,7 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             augmented_prompt = _build_augmented_prompt(task, db)
 
             # Create execution Task record for the tool loop
-            temp_task = Task(
+            temp_task = Thread(
                 user_id=task.created_by,
                 domain=task.agent_slug,
                 intent=f"{task.agent_slug}.automated_task",
@@ -228,9 +228,11 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             db.flush()
 
             # Link run to execution task
-            run.task_id = temp_task.id
+            run.thread_id = temp_task.id
 
-            db.add(Message(task_id=temp_task.id, role="user", content=augmented_prompt))
+            db.add(
+                Message(thread_id=temp_task.id, role="user", content=augmented_prompt)
+            )
             db.flush()
 
             # Execute the tool loop
@@ -263,12 +265,12 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 task.overrides_next_run = None
 
             # Post run summary to conversation task
-            if task.conversation_task_id and result_text:
+            if task.conversation_thread_id and result_text:
                 run_label = f"[Run {run.id[:8]} — {run.status}]"
                 summary = result_text[:1000] if result_text else "Task completed."
                 db.add(
                     Message(
-                        task_id=task.conversation_task_id,
+                        thread_id=task.conversation_thread_id,
                         role="assistant",
                         content=f"{run_label}\n{summary}",
                     )
@@ -280,7 +282,7 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 "success": True,
                 "data": {
                     "run_id": run.id,
-                    "task_id": run.task_id,
+                    "task_id": run.thread_id,
                     "status": run.status,
                     "mode": run.mode,
                     "result_summary": run.result_summary,

@@ -22,24 +22,26 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-@router.get("/tasks/{task_id}/working-documents")
+@router.get("/threads/{thread_id}/working-documents")
 async def list_documents(
-    task_id: str,
+    thread_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    docs = db.query(WorkingDocument).filter(WorkingDocument.task_id == task_id).all()
+    docs = (
+        db.query(WorkingDocument).filter(WorkingDocument.thread_id == thread_id).all()
+    )
     return {"documents": [_doc_to_dict(d) for d in docs]}
 
 
-@router.get("/tasks/{task_id}/working-documents/{doc_id}")
+@router.get("/threads/{thread_id}/working-documents/{doc_id}")
 async def get_document(
-    task_id: str,
+    thread_id: str,
     doc_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    doc = _find_doc(db, task_id, doc_id)
+    doc = _find_doc(db, thread_id, doc_id)
     return _doc_to_dict(doc)
 
 
@@ -53,15 +55,15 @@ class PatchRequest(BaseModel):
     version: int
 
 
-@router.patch("/tasks/{task_id}/working-documents/{doc_id}")
+@router.patch("/threads/{thread_id}/working-documents/{doc_id}")
 async def patch_document(
-    task_id: str,
+    thread_id: str,
     doc_id: str,
     body: PatchRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    doc = _find_doc(db, task_id, doc_id)
+    doc = _find_doc(db, thread_id, doc_id)
 
     # Optimistic concurrency check
     if doc.version != body.version:
@@ -106,14 +108,14 @@ async def patch_document(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/tasks/{task_id}/working-documents/{doc_id}/submit")
+@router.post("/threads/{thread_id}/working-documents/{doc_id}/submit")
 async def submit_document(
-    task_id: str,
+    thread_id: str,
     doc_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    doc = _find_doc(db, task_id, doc_id)
+    doc = _find_doc(db, thread_id, doc_id)
 
     if not doc.pending_ops:
         return {"status": "no_changes", "message": "No pending changes to submit."}
@@ -134,14 +136,14 @@ async def submit_document(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/tasks/{task_id}/working-documents/{doc_id}/retry")
+@router.post("/threads/{thread_id}/working-documents/{doc_id}/retry")
 async def retry_sync(
-    task_id: str,
+    thread_id: str,
     doc_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    doc = _find_doc(db, task_id, doc_id)
+    doc = _find_doc(db, thread_id, doc_id)
     if doc.sync_status != "error":
         raise HTTPException(status_code=400, detail="Document is not in error state")
 
@@ -228,7 +230,7 @@ async def create_from_connector(
 
     # Create working document
     doc = WorkingDocument(
-        task_id=None,
+        thread_id=None,
         doc_type=body.doc_type,
         connector_name=body.connector_name,
         sync_mode="auto",
@@ -308,12 +310,12 @@ async def patch_standalone_document(
 # ---------------------------------------------------------------------------
 
 
-def _find_doc(db: Session, task_id: str, doc_id: str) -> WorkingDocument:
+def _find_doc(db: Session, thread_id: str, doc_id: str) -> WorkingDocument:
     doc = (
         db.query(WorkingDocument)
         .filter(
             WorkingDocument.id == doc_id,
-            WorkingDocument.task_id == task_id,
+            WorkingDocument.thread_id == thread_id,
         )
         .first()
     )
@@ -325,7 +327,7 @@ def _find_doc(db: Session, task_id: str, doc_id: str) -> WorkingDocument:
 def _doc_to_dict(doc: WorkingDocument) -> dict:
     return {
         "id": doc.id,
-        "task_id": doc.task_id,
+        "thread_id": doc.thread_id,
         "doc_type": doc.doc_type,
         "connector_name": doc.connector_name,
         "sync_mode": doc.sync_mode,

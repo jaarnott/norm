@@ -7,18 +7,18 @@ import SplitDragHandle from '../layout/SplitDragHandle';
 import DisplayBlockRenderer from '../display/DisplayBlockRenderer';
 import { ConversationView } from '../tasks/TaskDetail';
 import type { FunctionalPageConfig } from './pageRegistry';
-import type { Task, WidgetAction } from '../../types';
+import type { Thread, WidgetAction } from '../../types';
 
 interface FunctionalPageProps {
   config: FunctionalPageConfig;
-  task: Task | null;
+  thread: Thread | null;
   onSend: (message: string) => void;
   loading: boolean;
-  onWidgetAction?: (taskId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
+  onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   activeVenueId?: string | null;
 }
 
-export default function FunctionalPage({ config, task, onSend, loading, onWidgetAction, activeVenueId }: FunctionalPageProps) {
+export default function FunctionalPage({ config, thread, onSend, loading, onWidgetAction, activeVenueId }: FunctionalPageProps) {
   const [input, setInput] = useState('');
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [workingDocId, setWorkingDocId] = useState<string | null>(null);
@@ -71,12 +71,12 @@ export default function FunctionalPage({ config, task, onSend, loading, onWidget
     }
 
     // Navigate to automated task conversation — pass through to page handler
-    if (action.action === 'open_automated_task' && action.params?.conversation_task_id && onWidgetAction) {
-      return onWidgetAction(task?.id || '_nav', action);
+    if (action.action === 'open_automated_task' && action.params?.conversation_thread_id && onWidgetAction) {
+      return onWidgetAction(thread?.id || '_nav', action);
     }
 
-    if (task && onWidgetAction) {
-      return onWidgetAction(task.id, action);
+    if (thread && onWidgetAction) {
+      return onWidgetAction(thread.id, action);
     }
     // No task yet — execute directly via connector
     try {
@@ -88,10 +88,10 @@ export default function FunctionalPage({ config, task, onSend, loading, onWidget
         return await res.json();
       }
     } catch { /* ignore */ }
-  }, [task, onWidgetAction]);
+  }, [thread, onWidgetAction]);
 
-  const messages = task?.conversation || [];
-  const hasConversation = !!task;
+  const messages = thread?.conversation || [];
+  const hasConversation = !!thread;
 
   const inputBar = (
     <div style={{ padding: '12px 24px 24px' }}>
@@ -133,7 +133,7 @@ export default function FunctionalPage({ config, task, onSend, loading, onWidget
         props: config.componentProps,
       }}
       onAction={handleAction}
-      taskId={task?.id}
+      taskId={thread?.id}
     />
   ) : null;
 
@@ -159,7 +159,7 @@ export default function FunctionalPage({ config, task, onSend, loading, onWidget
                 props: {},
               }}
               onAction={handleAction}
-              taskId={task?.id}
+              taskId={thread?.id}
             />
           </div>
         </div>
@@ -231,8 +231,8 @@ export default function FunctionalPage({ config, task, onSend, loading, onWidget
           <div style={{ maxWidth: 768, margin: '0 auto' }}>
             <ConversationView
               messages={messages}
-              onWidgetAction={onWidgetAction && task ? (action) => onWidgetAction(task.id, action) : undefined}
-              taskId={task?.id}
+              onWidgetAction={onWidgetAction && thread ? (action) => onWidgetAction(thread.id, action) : undefined}
+              taskId={thread?.id}
             />
           </div>
         </div>

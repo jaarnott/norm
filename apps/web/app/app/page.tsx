@@ -2,8 +2,8 @@
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import Sidebar from '../components/layout/Sidebar';
-import TaskList from '../components/tasks/TaskList';
-import TaskDetail from '../components/tasks/TaskDetail';
+import ThreadList from '../components/tasks/TaskList';
+import ThreadDetail from '../components/tasks/TaskDetail';
 import RoutingIndicator from '../components/routing/RoutingIndicator';
 import HomePanel from '../components/home/HomePanel';
 import SettingsPanel from '../components/settings/SettingsPanel';
@@ -14,7 +14,7 @@ import { FUNCTIONAL_PAGES } from '../components/pages/pageRegistry';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
 import { PanelLeft as PanelLeftIcon, ArrowLeft } from 'lucide-react';
 import { useBreakpoint } from '../hooks/useBreakpoint';
-import type { Task, WidgetAction, VenueDetail } from '../types';
+import type { Thread, WidgetAction, VenueDetail } from '../types';
 
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null };
 
@@ -22,10 +22,10 @@ export default function Home() {
   const [token, setTokenState] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [threads, setThreads] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeAgent, setActiveAgent] = useState('home');
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'awaiting_approval' | 'awaiting_user_input' | 'completed'>('all');
   const [routing, setRouting] = useState(false);
   const [routingDomain, setRoutingDomain] = useState<string | null>(null);
@@ -60,13 +60,13 @@ export default function Home() {
     }
   }, []);
 
-  // Load tasks when authenticated
+  // Load threads when authenticated
   useEffect(() => {
     if (!token) return;
-    apiFetch('/api/tasks')
+    apiFetch('/api/threads')
       .then(res => res.ok ? res.json() : null)
       .then(data => {
-        if (data?.tasks?.length) setTasks(data.tasks);
+        if (data?.threads?.length) setThreads(data.threads);
       })
       .catch(() => {});
   }, [token]);
@@ -110,70 +110,71 @@ export default function Home() {
     clearToken();
     setTokenState(null);
     setUser(null);
-    setTasks([]);
-    setSelectedTaskId(null);
+    setThreads([]);
+    setSelectedThreadId(null);
     setActiveAgent('home');
   }, []);
 
-  const selectedTask = tasks.find(t => t.id === selectedTaskId) || null;
-  const openTask = tasks.find(t => t.status === 'awaiting_user_input');
+  const selectedThread = threads.find(t => t.id === selectedThreadId) || null;
+  const openThread = threads.find(t => t.status === 'awaiting_user_input');
 
-  // Fetch full task detail when selecting a task that only has summary data
+  // Fetch full thread detail when selecting a thread that only has summary data
   useEffect(() => {
-    if (!selectedTaskId || selectedTaskId.startsWith('_pending_')) return;
-    const task = tasks.find(t => t.id === selectedTaskId);
-    if (!task || task.conversation) return; // already has full data
-    apiFetch(`/api/tasks/${selectedTaskId}`)
+    if (!selectedThreadId || selectedThreadId.startsWith('_pending_')) return;
+    const thread = threads.find(t => t.id === selectedThreadId);
+    if (!thread || thread.conversation) return; // already has full data
+    apiFetch(`/api/threads/${selectedThreadId}`)
       .then(res => res.ok ? res.json() : null)
       .then(full => {
-        if (full) setTasks(prev => prev.map(t => t.id === selectedTaskId ? full : t));
+        if (full) setThreads(prev => prev.map(t => t.id === selectedThreadId ? full : t));
       })
       .catch(() => {});
-  }, [selectedTaskId]);
+  }, [selectedThreadId]);
 
-  // Task counts per agent
-  const taskCounts = useMemo(() => {
+  // Thread counts per agent
+  const threadCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    tasks.forEach(t => {
+    threads.forEach(t => {
       counts[t.domain] = (counts[t.domain] || 0) + 1;
     });
     return counts;
-  }, [tasks]);
+  }, [threads]);
 
   const sendMessage = useCallback(async (messageText: string) => {
     if (!messageText.trim()) return;
 
-    const taskIdForRequest = selectedTaskId;
+    const threadIdForRequest = selectedThreadId;
     setLoading(true);
 
-    // Create an optimistic task so the conversation view appears immediately
+    // Create an optimistic thread so the conversation view appears immediately
     const optimisticId = `_pending_${Date.now()}`;
-    if (!taskIdForRequest) {
-      const optimistic: Task = {
+    if (!threadIdForRequest) {
+      const optimistic: Thread = {
         id: optimisticId,
         domain: 'unknown',
         intent: '',
         title: null,
         message: messageText,
         status: 'in_progress',
+        tags: [],
         created_at: new Date().toISOString(),
         conversation: [{ role: 'user', text: messageText }],
         thinking_steps: [],
       };
-      setTasks(prev => [optimistic, ...prev]);
-      setSelectedTaskId(optimisticId);
+      setThreads(prev => [optimistic, ...prev]);
+      setSelectedThreadId(optimisticId);
     } else {
-      // Existing task — append user message optimistically
-      setTasks(prev => prev.map(t =>
-        t.id === taskIdForRequest
+      // Existing thread — append user message optimistically
+      setThreads(prev => prev.map(t =>
+        t.id === threadIdForRequest
           ? { ...t, conversation: [...(t.conversation || []), { role: 'user', text: messageText }], thinking_steps: ['Working on it\u2026'] }
           : t
       ));
     }
 
-    const currentId = taskIdForRequest || optimisticId;
-    // realTaskId is the confirmed backend ID — used for recovery re-fetches.
-    let realTaskId: string | null = taskIdForRequest;
+    const currentId = threadIdForRequest || optimisticId;
+    // realThreadId is the confirmed backend ID — used for recovery re-fetches.
+    let realThreadId: string | null = threadIdForRequest;
     let streamErrored = false;
     let tokenBuffer = '';
     let streamMode: 'pending' | 'tool' | 'conversation' = 'pending';
@@ -188,7 +189,7 @@ export default function Home() {
         const charsPerFrame = Math.max(1, Math.min(4, Math.floor(backlog / 20)));
         displayedLength = Math.min(displayedLength + charsPerFrame, tokenBuffer.length);
         const visibleText = tokenBuffer.slice(0, displayedLength);
-        setTasks(prev => prev.map(t => {
+        setThreads(prev => prev.map(t => {
           if (t.id !== currentId) return t;
           const conv = t.conversation || [];
           const last = conv[conv.length - 1];
@@ -212,16 +213,16 @@ export default function Home() {
     try {
       await apiStream(
         '/api/messages/stream',
-        taskIdForRequest
-          ? { message: messageText, task_id: taskIdForRequest }
+        threadIdForRequest
+          ? { message: messageText, thread_id: threadIdForRequest }
           : { message: messageText },
         (event) => {
           if (event.type === 'task_created') {
-            // Store the real task ID for recovery — but don't remap the
-            // optimistic task yet to avoid a flash where selectedTask is null.
-            realTaskId = event.task_id as string;
+            // Store the real thread ID for recovery — but don't remap the
+            // optimistic thread yet to avoid a flash where selectedThread is null.
+            realThreadId = event.thread_id as string;
           } else if (event.type === 'routing') {
-            setTasks(prev => prev.map(t =>
+            setThreads(prev => prev.map(t =>
               t.id === currentId ? {
                 ...t,
                 domain: event.domain || t.domain,
@@ -235,7 +236,7 @@ export default function Home() {
             streamMode = 'pending';
             tokenBuffer = '';
             displayedLength = 0;
-            setTasks(prev => prev.map(t => {
+            setThreads(prev => prev.map(t => {
               if (t.id !== currentId) return t;
               return { ...t, conversation: (t.conversation || []).filter(m => m.role !== 'streaming') };
             }));
@@ -245,7 +246,7 @@ export default function Home() {
             streamMode = 'pending';
             tokenBuffer = '';
             displayedLength = 0;
-            setTasks(prev => prev.map(t => {
+            setThreads(prev => prev.map(t => {
               if (t.id !== currentId) return t;
               return {
                 ...t,
@@ -260,7 +261,7 @@ export default function Home() {
               if (tokenBuffer.startsWith(TOOL_PREFIX)) {
                 streamMode = 'tool';
                 const explanation = tokenBuffer.slice(TOOL_PREFIX.length).replace(/^\s+/, '');
-                setTasks(prev => prev.map(t => {
+                setThreads(prev => prev.map(t => {
                   if (t.id !== currentId) return t;
                   return {
                     ...t,
@@ -275,7 +276,7 @@ export default function Home() {
               }
             } else if (streamMode === 'tool') {
               const explanation = tokenBuffer.slice(TOOL_PREFIX.length).replace(/^\s+/, '');
-              setTasks(prev => prev.map(t => {
+              setThreads(prev => prev.map(t => {
                 if (t.id !== currentId) return t;
                 return {
                   ...t,
@@ -288,8 +289,8 @@ export default function Home() {
             }
           } else if (event.type === 'complete') {
             stopTypewriter();
-            const data = event.data as Task;
-            setTasks(prev => {
+            const data = event.data as Thread;
+            setThreads(prev => {
               const idx = prev.findIndex(t => t.id === currentId);
               if (idx >= 0) {
                 const next = [...prev];
@@ -300,11 +301,11 @@ export default function Home() {
               }
               return [data, ...prev];
             });
-            setSelectedTaskId(data.id);
+            setSelectedThreadId(data.id);
             // Backfill full LLM call data (system prompts, etc.) from the detail endpoint
-            apiFetch(`/api/tasks/${data.id}`).then(r => r.ok ? r.json() : null).then(full => {
+            apiFetch(`/api/threads/${data.id}`).then(r => r.ok ? r.json() : null).then(full => {
               if (full) {
-                setTasks(prev => prev.map(t => t.id === data.id ? {
+                setThreads(prev => prev.map(t => t.id === data.id ? {
                   ...t,
                   llm_calls: full.llm_calls ?? t.llm_calls,
                   tool_calls: full.tool_calls ?? t.tool_calls,
@@ -322,23 +323,23 @@ export default function Home() {
         },
       );
 
-      // If the stream errored, try to recover by re-fetching the real task.
-      // realTaskId is set from the task_created event, so this works for both
+      // If the stream errored, try to recover by re-fetching the real thread.
+      // realThreadId is set from the task_created event, so this works for both
       // new conversations and follow-ups.
-      if (streamErrored && realTaskId) {
+      if (streamErrored && realThreadId) {
         try {
-          const res = await apiFetch(`/api/tasks/${realTaskId}`);
+          const res = await apiFetch(`/api/threads/${realThreadId}`);
           if (res.ok) {
-            const freshTask = await res.json();
-            setTasks(prev => prev.map(t => t.id === currentId ? freshTask : t));
-            setSelectedTaskId(freshTask.id);
+            const freshThread = await res.json();
+            setThreads(prev => prev.map(t => t.id === currentId ? freshThread : t));
+            setSelectedThreadId(freshThread.id);
             streamErrored = false;
           }
         } catch (e) { console.error(e); }
       }
 
       if (streamErrored) {
-        setTasks(prev => prev.map(t =>
+        setThreads(prev => prev.map(t =>
           t.id === currentId
             ? {
                 ...t,
@@ -354,23 +355,23 @@ export default function Home() {
       }
     } catch (err) {
       console.error('Failed to send message:', err);
-      if (realTaskId) {
+      if (realThreadId) {
         try {
-          const res = await apiFetch(`/api/tasks/${realTaskId}`);
+          const res = await apiFetch(`/api/threads/${realThreadId}`);
           if (res.ok) {
-            const freshTask = await res.json();
-            setTasks(prev => prev.map(t => t.id === currentId ? freshTask : t));
-            setSelectedTaskId(freshTask.id);
+            const freshThread = await res.json();
+            setThreads(prev => prev.map(t => t.id === currentId ? freshThread : t));
+            setSelectedThreadId(freshThread.id);
           }
         } catch (e) { console.error(e); }
       }
     } finally {
       setLoading(false);
     }
-  }, [selectedTaskId]);
+  }, [selectedThreadId]);
 
   const handleNewChat = useCallback(() => {
-    setSelectedTaskId(null);
+    setSelectedThreadId(null);
     setActivePage(null);
     setActiveAgent('home');
     setMobileView('home');
@@ -378,23 +379,23 @@ export default function Home() {
 
   const handleSelectPage = useCallback((pageId: string) => {
     setActivePage(pageId);
-    setSelectedTaskId(null);
+    setSelectedThreadId(null);
   }, []);
 
-  const handleAction = useCallback(async (taskId: string, action: string) => {
-    // Reload just re-fetches the task detail
+  const handleAction = useCallback(async (threadId: string, action: string) => {
+    // Reload just re-fetches the thread detail
     if (action === 'reload') {
       try {
-        const res = await apiFetch(`/api/tasks/${taskId}`);
+        const res = await apiFetch(`/api/threads/${threadId}`);
         if (res.ok) {
           const updated = await res.json();
-          setTasks(prev => prev.map(t => (t.id === taskId ? updated : t)));
+          setThreads(prev => prev.map(t => (t.id === threadId ? updated : t)));
         }
       } catch { /* ignore */ }
       return;
     }
     try {
-      const res = await apiFetch(`/api/tasks/${taskId}/${action}`, {
+      const res = await apiFetch(`/api/threads/${threadId}/${action}`, {
         method: 'POST',
       });
       if (!res.ok) {
@@ -402,18 +403,18 @@ export default function Home() {
         return;
       }
       const updated = await res.json();
-      setTasks(prev => prev.map(t => (t.id === taskId ? updated : t)));
+      setThreads(prev => prev.map(t => (t.id === threadId ? updated : t)));
     } catch (err) {
       console.error(`Failed to ${action}:`, err);
     }
   }, []);
 
-  const handleWidgetAction = useCallback(async (taskId: string, action: WidgetAction): Promise<Record<string, unknown> | void> => {
-    // Check if a report builder is currently open for this task
+  const handleWidgetAction = useCallback(async (threadId: string, action: WidgetAction): Promise<Record<string, unknown> | void> => {
+    // Check if a report builder is currently open for this thread
     if (action.action === 'get_active_report') {
-      const task = tasks.find(t => t.id === taskId);
-      if (task?.conversation) {
-        for (const msg of [...task.conversation].reverse()) {
+      const thread = threads.find(t => t.id === threadId);
+      if (thread?.conversation) {
+        for (const msg of [...thread.conversation].reverse()) {
           const rb = msg.display_blocks?.find((b: { component: string }) => b.component === 'report_builder');
           if (rb) return { report_id: (rb.data as Record<string, unknown>).report_id };
         }
@@ -421,28 +422,35 @@ export default function Home() {
       return { report_id: null };
     }
 
+    // Handle tool approval/rejection from ToolApprovalCard
+    if (action.action === 'tool_approve' || action.action === 'tool_reject') {
+      const targetAction = action.action === 'tool_approve' ? 'approve' : 'reject';
+      await handleAction(threadId, targetAction);
+      return { ok: true };
+    }
+
     // Navigate to an automated task's conversation
-    if (action.action === 'open_automated_task' && action.params?.conversation_task_id) {
-      const convTaskId = action.params.conversation_task_id as string;
-      // Fetch the task if not already in the list
-      if (!tasks.find(t => t.id === convTaskId)) {
+    if (action.action === 'open_automated_task' && action.params?.conversation_thread_id) {
+      const convThreadId = action.params.conversation_thread_id as string;
+      // Fetch the thread if not already in the list
+      if (!threads.find(t => t.id === convThreadId)) {
         try {
-          const res = await apiFetch(`/api/tasks/${convTaskId}`);
+          const res = await apiFetch(`/api/threads/${convThreadId}`);
           if (res.ok) {
             const full = await res.json();
-            setTasks(prev => [full, ...prev]);
+            setThreads(prev => [full, ...prev]);
           }
         } catch { /* ignore */ }
       }
-      setSelectedTaskId(convTaskId);
+      setSelectedThreadId(convThreadId);
       setActivePage(null);
       return { ok: true };
     }
 
     // Handle report builder open client-side (no backend needed)
     if (action.action === 'open_report_builder' && action.params?.report_id) {
-      setTasks(prev => prev.map(t => {
-        if (t.id !== taskId) return t;
+      setThreads(prev => prev.map(t => {
+        if (t.id !== threadId) return t;
         const msgs = [...(t.conversation || [])];
         const reportBlock = {
           component: 'report_builder',
@@ -468,7 +476,7 @@ export default function Home() {
     }
 
     try {
-      const res = await apiFetch(`/api/tasks/${taskId}/widget-action`, {
+      const res = await apiFetch(`/api/threads/${threadId}/widget-action`, {
         method: 'POST',
         body: JSON.stringify(action),
       });
@@ -479,11 +487,11 @@ export default function Home() {
       const result = await res.json();
 
       if (result.status === 'pending_approval') {
-        // Re-fetch task to show approval UI
-        const taskRes = await apiFetch(`/api/tasks/${taskId}`);
-        if (taskRes.ok) {
-          const updated = await taskRes.json();
-          setTasks(prev => prev.map(t => t.id === taskId ? updated : t));
+        // Re-fetch thread to show approval UI
+        const threadRes = await apiFetch(`/api/threads/${threadId}`);
+        if (threadRes.ok) {
+          const updated = await threadRes.json();
+          setThreads(prev => prev.map(t => t.id === threadId ? updated : t));
         }
       }
 
@@ -491,18 +499,18 @@ export default function Home() {
     } catch (err) {
       console.error('Widget action failed:', err);
     }
-  }, [tasks]);
+  }, [threads]);
 
-  const removeTask = useCallback(async (taskId: string) => {
+  const removeThread = useCallback(async (threadId: string) => {
     try {
-      await apiFetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
+      await apiFetch(`/api/threads/${threadId}`, { method: 'DELETE' });
     } catch (e) { console.error(e); }
-    setTasks(prev => prev.filter(t => t.id !== taskId));
-    if (selectedTaskId === taskId) setSelectedTaskId(null);
-  }, [selectedTaskId]);
+    setThreads(prev => prev.filter(t => t.id !== threadId));
+    if (selectedThreadId === threadId) setSelectedThreadId(null);
+  }, [selectedThreadId]);
 
-  const handleSelectTaskMobile = useCallback((id: string) => {
-    setSelectedTaskId(id);
+  const handleSelectThreadMobile = useCallback((id: string) => {
+    setSelectedThreadId(id);
     setMobileView('detail');
   }, []);
 
@@ -517,7 +525,7 @@ export default function Home() {
 
   const handleMobileBack = useCallback(() => {
     setMobileView('list');
-    setSelectedTaskId(null);
+    setSelectedThreadId(null);
     setActivePage(null);
   }, []);
 
@@ -539,13 +547,13 @@ export default function Home() {
           </div>
         );
       }
-      if (mobileView === 'detail' || mobileView === 'home' && selectedTask) {
+      if (mobileView === 'detail' || mobileView === 'home' && selectedThread) {
         const content = activePage ? (() => {
           const pageConfig = FUNCTIONAL_PAGES.find(p => p.id === activePage);
           if (!pageConfig) return null;
-          return <FunctionalPage config={pageConfig} task={selectedTask} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} />;
-        })() : selectedTask ? (
-          <TaskDetail task={selectedTask} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} loading={loading} openTask={openTask || null} />
+          return <FunctionalPage config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} />;
+        })() : selectedThread ? (
+          <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} loading={loading} openThread={openThread || null} />
         ) : (
           <HomePanel onSend={sendMessage} loading={loading} />
         );
@@ -560,7 +568,7 @@ export default function Home() {
                 <ArrowLeft size={20} strokeWidth={1.75} />
               </button>
               <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#111' }}>
-                {selectedTask?.title || activePage || 'Back'}
+                {selectedThread?.title || activePage || 'Back'}
               </span>
             </div>
             <div style={{ flex: 1, overflow: 'auto' }}>{content}</div>
@@ -571,11 +579,11 @@ export default function Home() {
         return (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingBottom: 0 }}>
             <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
-            <TaskList
-              tasks={tasks}
-              selectedId={selectedTaskId}
-              onSelectTask={handleSelectTaskMobile}
-              onRemoveTask={removeTask}
+            <ThreadList
+              threads={threads}
+              selectedId={selectedThreadId}
+              onSelectThread={handleSelectThreadMobile}
+              onRemoveThread={removeThread}
               activeAgent={activeAgent}
               filter={filter}
               onFilterChange={setFilter}
@@ -599,7 +607,7 @@ export default function Home() {
           <QuotaExceededModal used={quotaExceeded.used} quota={quotaExceeded.quota} onClose={() => setQuotaExceeded(null)} onTopUp={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} onUpgrade={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} />
         )}
         {renderMobileContent()}
-        <Sidebar selected={activeAgent} onSelect={handleSelectAgentMobile} taskCounts={taskCounts} user={user} onLogout={handleLogout} />
+        <Sidebar selected={activeAgent} onSelect={handleSelectAgentMobile} threadCounts={threadCounts} user={user} onLogout={handleLogout} />
       </div>
     );
   }
@@ -620,7 +628,7 @@ export default function Home() {
       <Sidebar
         selected={activeAgent}
         onSelect={setActiveAgent}
-        taskCounts={taskCounts}
+        threadCounts={threadCounts}
         user={user}
         onLogout={handleLogout}
       />
@@ -636,11 +644,11 @@ export default function Home() {
         transition: 'width 0.2s ease, min-width 0.2s ease',
       }}>
         <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
-        <TaskList
-          tasks={tasks}
-          selectedId={selectedTaskId}
-          onSelectTask={setSelectedTaskId}
-          onRemoveTask={removeTask}
+        <ThreadList
+          threads={threads}
+          selectedId={selectedThreadId}
+          onSelectThread={setSelectedThreadId}
+          onRemoveThread={removeThread}
           activeAgent={activeAgent}
           filter={filter}
           onFilterChange={setFilter}
@@ -675,21 +683,21 @@ export default function Home() {
           return (
             <FunctionalPage
               config={pageConfig}
-              task={selectedTask}
+              thread={selectedThread}
               onSend={sendMessage}
               loading={loading}
               onWidgetAction={handleWidgetAction}
               activeVenueId={activeVenueId}
             />
           );
-        })() : selectedTask ? (
-          <TaskDetail
-            task={selectedTask}
+        })() : selectedThread ? (
+          <ThreadDetail
+            thread={selectedThread}
             onAction={handleAction}
             onWidgetAction={handleWidgetAction}
             onSend={sendMessage}
             loading={loading}
-            openTask={openTask || null}
+            openThread={openThread || null}
           />
         ) : (
           <HomePanel

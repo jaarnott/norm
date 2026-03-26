@@ -19,7 +19,7 @@ def send_system_email(
     context: dict,
     db: Session,
     organization_id: str | None = None,
-    task_id: str | None = None,
+    thread_id: str | None = None,
 ) -> str | None:
     """Send a system email via Resend. Returns the email log ID or None on failure."""
     from app.db.models import EmailLog
@@ -29,7 +29,7 @@ def send_system_email(
 
     log = EmailLog(
         organization_id=organization_id,
-        task_id=task_id,
+        thread_id=thread_id,
         sender_type="system",
         sender_email=settings.EMAIL_FROM_ADDRESS,
         to_addresses=to,
@@ -85,7 +85,7 @@ def send_on_behalf_gmail(
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
     organization_id: str | None = None,
-    task_id: str | None = None,
+    thread_id: str | None = None,
 ) -> dict:
     """Send an email from a user's Gmail account via the Gmail API."""
     from app.db.models import ConnectorConfig, EmailLog, User
@@ -133,7 +133,7 @@ def send_on_behalf_gmail(
     # Log the email
     log = EmailLog(
         organization_id=organization_id,
-        task_id=task_id,
+        thread_id=thread_id,
         sender_type="on_behalf",
         sender_email=user.email,
         sender_user_id=user_id,
@@ -189,7 +189,7 @@ def send_on_behalf_outlook(
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
     organization_id: str | None = None,
-    task_id: str | None = None,
+    thread_id: str | None = None,
 ) -> dict:
     """Send an email from a user's Outlook account via Microsoft Graph API."""
     from app.db.models import ConnectorConfig, EmailLog, User
@@ -239,7 +239,7 @@ def send_on_behalf_outlook(
 
     log = EmailLog(
         organization_id=organization_id,
-        task_id=task_id,
+        thread_id=thread_id,
         sender_type="on_behalf",
         sender_email=user.email,
         sender_user_id=user_id,

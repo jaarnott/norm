@@ -2,7 +2,6 @@
 
 import uuid
 
-import pytest
 
 from app.db.models import Report, ReportChart
 
@@ -11,9 +10,13 @@ class TestCreateReport:
     """POST /api/reports"""
 
     def test_create_report(self, client, db_session, admin_user, admin_headers):
-        resp = client.post("/api/reports", json={
-            "title": "Sales Report",
-        }, headers=admin_headers)
+        resp = client.post(
+            "/api/reports",
+            json={
+                "title": "Sales Report",
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["title"] == "Sales Report"
@@ -27,10 +30,14 @@ class TestCreateReport:
         assert resp.json()["title"] == "Untitled Report"
 
     def test_create_report_with_venue(self, client, db_session, admin_headers, venue):
-        resp = client.post("/api/reports", json={
-            "title": "Venue Report",
-            "venue_id": venue.id,
-        }, headers=admin_headers)
+        resp = client.post(
+            "/api/reports",
+            json={
+                "title": "Venue Report",
+                "venue_id": venue.id,
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 200
         assert resp.json()["venue_id"] == venue.id
 
@@ -45,11 +52,13 @@ class TestListReports:
     def test_list_reports(self, client, db_session, admin_user, admin_headers):
         # Create reports
         for i in range(3):
-            db_session.add(Report(
-                id=str(uuid.uuid4()),
-                user_id=admin_user.id,
-                title=f"Report {i}",
-            ))
+            db_session.add(
+                Report(
+                    id=str(uuid.uuid4()),
+                    user_id=admin_user.id,
+                    title=f"Report {i}",
+                )
+            )
         db_session.flush()
 
         resp = client.get("/api/reports", headers=admin_headers)
@@ -59,14 +68,21 @@ class TestListReports:
         assert len(data["reports"]) == 3
 
     def test_list_reports_only_own_reports(
-        self, client, db_session, admin_user, manager_user, manager_headers,
+        self,
+        client,
+        db_session,
+        admin_user,
+        manager_user,
+        manager_headers,
     ):
         # Create report for admin
-        db_session.add(Report(
-            id=str(uuid.uuid4()),
-            user_id=admin_user.id,
-            title="Admin Report",
-        ))
+        db_session.add(
+            Report(
+                id=str(uuid.uuid4()),
+                user_id=admin_user.id,
+                title="Admin Report",
+            )
+        )
         db_session.flush()
 
         # Manager should not see it
@@ -108,10 +124,14 @@ class TestUpdateReport:
         db_session.add(report)
         db_session.flush()
 
-        resp = client.patch(f"/api/reports/{report.id}", json={
-            "title": "New Title",
-            "description": "Updated description",
-        }, headers=admin_headers)
+        resp = client.patch(
+            f"/api/reports/{report.id}",
+            json={
+                "title": "New Title",
+                "description": "Updated description",
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 200
         assert resp.json()["title"] == "New Title"
         assert resp.json()["description"] == "Updated description"
@@ -126,16 +146,24 @@ class TestUpdateReport:
         db_session.flush()
 
         layout = [{"chart_id": "abc", "col": 1, "row": 1, "colSpan": 12, "rowSpan": 8}]
-        resp = client.patch(f"/api/reports/{report.id}", json={
-            "layout": layout,
-        }, headers=admin_headers)
+        resp = client.patch(
+            f"/api/reports/{report.id}",
+            json={
+                "layout": layout,
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 200
         assert resp.json()["layout"] == layout
 
     def test_update_report_not_found_returns_404(self, client, admin_headers):
-        resp = client.patch(f"/api/reports/{uuid.uuid4()}", json={
-            "title": "Nope",
-        }, headers=admin_headers)
+        resp = client.patch(
+            f"/api/reports/{uuid.uuid4()}",
+            json={
+                "title": "Nope",
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 404
 
 
@@ -172,12 +200,16 @@ class TestAddChart:
         db_session.add(report)
         db_session.flush()
 
-        resp = client.post(f"/api/reports/{report.id}/charts", json={
-            "title": "Sales Bar Chart",
-            "chart_type": "bar",
-            "chart_spec": {"x_axis": "month", "y_axis": "revenue"},
-            "data": [{"month": "Jan", "revenue": 1000}],
-        }, headers=admin_headers)
+        resp = client.post(
+            f"/api/reports/{report.id}/charts",
+            json={
+                "title": "Sales Bar Chart",
+                "chart_type": "bar",
+                "chart_spec": {"x_axis": "month", "y_axis": "revenue"},
+                "data": [{"month": "Jan", "revenue": 1000}],
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["charts"]) == 1
@@ -187,13 +219,21 @@ class TestAddChart:
         assert len(data["layout"]) == 1
 
     def test_add_chart_report_not_found_returns_404(self, client, admin_headers):
-        resp = client.post(f"/api/reports/{uuid.uuid4()}/charts", json={
-            "title": "Chart",
-        }, headers=admin_headers)
+        resp = client.post(
+            f"/api/reports/{uuid.uuid4()}/charts",
+            json={
+                "title": "Chart",
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 404
 
     def test_add_chart_missing_title_returns_422(
-        self, client, db_session, admin_user, admin_headers,
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
     ):
         report = Report(
             id=str(uuid.uuid4()),
@@ -203,7 +243,9 @@ class TestAddChart:
         db_session.add(report)
         db_session.flush()
 
-        resp = client.post(f"/api/reports/{report.id}/charts", json={}, headers=admin_headers)
+        resp = client.post(
+            f"/api/reports/{report.id}/charts", json={}, headers=admin_headers
+        )
         assert resp.status_code == 422
 
 
@@ -238,7 +280,9 @@ class TestUpdateChart:
         assert resp.json()["title"] == "New Chart"
         assert resp.json()["chart_type"] == "line"
 
-    def test_update_chart_not_found_returns_404(self, client, db_session, admin_user, admin_headers):
+    def test_update_chart_not_found_returns_404(
+        self, client, db_session, admin_user, admin_headers
+    ):
         report = Report(
             id=str(uuid.uuid4()),
             user_id=admin_user.id,
@@ -285,7 +329,9 @@ class TestRemoveChart:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
-    def test_remove_chart_not_found_returns_404(self, client, db_session, admin_user, admin_headers):
+    def test_remove_chart_not_found_returns_404(
+        self, client, db_session, admin_user, admin_headers
+    ):
         report = Report(
             id=str(uuid.uuid4()),
             user_id=admin_user.id,

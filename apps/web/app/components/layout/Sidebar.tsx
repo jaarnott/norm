@@ -34,12 +34,13 @@ function hasPermission(user: SidebarUser | null | undefined, ...perms: string[])
 interface SidebarProps {
   selected: string;
   onSelect: (id: string) => void;
-  taskCounts: Record<string, number>;
+  threadCounts: Record<string, number>;
   user?: SidebarUser | null;
   onLogout?: () => void;
+  children?: React.ReactNode;
 }
 
-export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout }: SidebarProps) {
+export default function Sidebar({ selected, onSelect, threadCounts, user, onLogout, children }: SidebarProps) {
   const { isMobile } = useBreakpoint();
   const [menuOpen, setMenuOpen] = useState(false);
   const showSettings = hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read');
@@ -49,7 +50,14 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
       <>
         {/* Hamburger button — fixed top-left */}
         <button
-          onClick={() => setMenuOpen(!menuOpen)}
+          onClick={() => {
+            if (menuOpen) {
+              setMenuOpen(false);
+            } else {
+              onSelect('home');
+              setMenuOpen(true);
+            }
+          }}
           aria-label="Toggle menu"
           style={{
             position: 'fixed', top: 10, left: 10, zIndex: 200,
@@ -62,7 +70,7 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
           {menuOpen ? <X size={22} strokeWidth={1.75} /> : <Menu size={22} strokeWidth={1.75} />}
         </button>
 
-        {/* Slide-out menu */}
+        {/* Slide-out panel */}
         {menuOpen && (
           <>
             {/* Backdrop */}
@@ -75,65 +83,67 @@ export default function Sidebar({ selected, onSelect, taskCounts, user, onLogout
             />
             {/* Panel */}
             <div className="safe-bottom" style={{
-              position: 'fixed', top: 0, left: 0, bottom: 0, width: 260,
+              position: 'fixed', top: 0, left: 0, bottom: 0, width: 300,
               backgroundColor: '#faf8f5', borderRight: '1px solid #e2ddd7',
               zIndex: 160, display: 'flex', flexDirection: 'column',
-              padding: '4.5rem 1rem 1rem',
+              paddingTop: '4rem',
             }}>
-              {/* Logo */}
-              <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#a08060', marginBottom: '1.5rem' }}>
-                Norm
-              </div>
-
-              {/* Agent links */}
-              {AGENTS.map((agent) => {
-                const isActive = selected === agent.id;
-                return (
+              {/* Horizontal agent icons */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '0.25rem',
+                padding: '0.5rem 0.75rem', borderBottom: '1px solid #e2ddd7',
+              }}>
+                {AGENTS.map((agent) => {
+                  const isActive = selected === agent.id;
+                  return (
+                    <button
+                      key={agent.id}
+                      data-testid={`sidebar-${agent.id}`}
+                      onClick={() => onSelect(agent.id)}
+                      style={{
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        flex: 1, padding: '0.4rem 0', gap: 2,
+                        border: 'none', borderRadius: 8,
+                        backgroundColor: isActive ? '#f0ebe5' : 'transparent',
+                        cursor: 'pointer', fontFamily: 'inherit',
+                      }}
+                    >
+                      <agent.icon size={20} strokeWidth={1.75} color={isActive ? '#1a1a1a' : '#999'} />
+                      <span style={{ fontSize: '0.6rem', fontWeight: isActive ? 600 : 400, color: isActive ? '#1a1a1a' : '#999' }}>
+                        {agent.label}
+                      </span>
+                    </button>
+                  );
+                })}
+                {showSettings && (
                   <button
-                    key={agent.id}
-                    data-testid={`sidebar-${agent.id}`}
-                    onClick={() => { onSelect(agent.id); setMenuOpen(false); }}
+                    data-testid="sidebar-settings"
+                    onClick={() => { onSelect('settings'); setMenuOpen(false); }}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: '0.75rem',
-                      width: '100%', padding: '0.7rem 0.75rem', marginBottom: 2,
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      flex: 1, padding: '0.4rem 0', gap: 2,
                       border: 'none', borderRadius: 8,
-                      backgroundColor: isActive ? '#f0ebe5' : 'transparent',
+                      backgroundColor: selected === 'settings' ? '#f0ebe5' : 'transparent',
                       cursor: 'pointer', fontFamily: 'inherit',
-                      fontSize: '0.9rem', fontWeight: isActive ? 600 : 400,
-                      color: isActive ? '#1a1a1a' : '#666',
                     }}
                   >
-                    <agent.icon size={20} strokeWidth={1.75} />
-                    {agent.label}
+                    <Settings size={20} strokeWidth={1.75} color={selected === 'settings' ? '#1a1a1a' : '#999'} />
+                    <span style={{ fontSize: '0.6rem', color: selected === 'settings' ? '#1a1a1a' : '#999' }}>Settings</span>
                   </button>
-                );
-              })}
+                )}
+              </div>
 
-              {/* Spacer */}
-              <div style={{ flex: 1 }} />
+              {/* Content area — TaskList rendered by parent via children */}
+              <div style={{ flex: 1, overflow: 'auto' }}>
+                {children}
+              </div>
 
-              {/* Settings */}
-              {showSettings && (
-                <button
-                  data-testid="sidebar-settings"
-                  onClick={() => { onSelect('settings'); setMenuOpen(false); }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: '0.75rem',
-                    width: '100%', padding: '0.7rem 0.75rem', marginBottom: 2,
-                    border: 'none', borderRadius: 8,
-                    backgroundColor: selected === 'settings' ? '#f0ebe5' : 'transparent',
-                    cursor: 'pointer', fontFamily: 'inherit',
-                    fontSize: '0.9rem', color: '#999',
-                  }}
-                >
-                  <Settings size={20} strokeWidth={1.75} />
-                  Settings
-                </button>
-              )}
-
-              {/* User + logout */}
+              {/* User + logout footer */}
               {user && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.75rem' }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: '0.6rem',
+                  padding: '0.6rem 0.75rem', borderTop: '1px solid #e2ddd7',
+                }}>
                   <div style={{
                     width: 28, height: 28, borderRadius: '50%',
                     backgroundColor: user.role === 'admin' ? '#1a1a1a' : '#b8e6cc',

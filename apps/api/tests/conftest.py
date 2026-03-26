@@ -17,17 +17,32 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
 from app.db.models import (
-    Base, User, Organization, OrganizationMembership, Venue,
-    UserVenueAccess, Task, Order, OrderLine, Supplier, Product,
-    ConnectorConfig, ConnectorSpec, AutomatedTask, Report, ReportChart,
-    WorkingDocument, Subscription, TokenUsage, Role,
+    Base,
+    User,
+    Organization,
+    OrganizationMembership,
+    Venue,
+    UserVenueAccess,
+    Thread,
+    Supplier,
+    Product,
 )
 from app.db.engine import get_db
 from app.auth.security import hash_password, create_access_token
 from app.routers import (
-    auth, admin, tasks, venues, organizations, connectors,
-    billing, automated_tasks, reports_crud, working_documents,
-    orders, agents, roles,
+    auth,
+    admin,
+    threads,
+    venues,
+    organizations,
+    connectors,
+    billing,
+    automated_tasks,
+    reports_crud,
+    working_documents,
+    orders,
+    agents,
+    roles,
 )
 
 
@@ -37,7 +52,7 @@ from app.routers import (
 _test_app = FastAPI()
 _test_app.include_router(auth.router, prefix="/api")
 _test_app.include_router(admin.router, prefix="/api")
-_test_app.include_router(tasks.router, prefix="/api")
+_test_app.include_router(threads.router, prefix="/api")
 _test_app.include_router(venues.router, prefix="/api")
 _test_app.include_router(organizations.router, prefix="/api")
 _test_app.include_router(connectors.router, prefix="/api")
@@ -97,6 +112,7 @@ def client(db_session):
 # User helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_user(db_session, *, email=None, role="user", full_name="Test User"):
     """Insert a user directly into the database and return it."""
     user = User(
@@ -151,6 +167,7 @@ def manager_headers(manager_token):
 # Organization, venue, and data helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_organization(db_session, *, name="Test Org", slug=None, plan="starter"):
     """Insert an organization directly into the database."""
     org = Organization(
@@ -177,7 +194,9 @@ def _make_membership(db_session, user, org, role="member"):
     return mem
 
 
-def _make_venue(db_session, *, name="Test Venue", organization_id=None, location="Auckland"):
+def _make_venue(
+    db_session, *, name="Test Venue", organization_id=None, location="Auckland"
+):
     """Insert a venue directly into the database."""
     venue = Venue(
         id=str(uuid.uuid4()),
@@ -202,10 +221,18 @@ def _make_venue_access(db_session, user, venue):
     return access
 
 
-def _make_task(db_session, user, *, domain="procurement", status="awaiting_user_input",
-               intent="place_order", raw_prompt="Order something", venue_id=None):
-    """Insert a task directly into the database."""
-    task = Task(
+def _make_thread(
+    db_session,
+    user,
+    *,
+    domain="procurement",
+    status="awaiting_user_input",
+    intent="place_order",
+    raw_prompt="Order something",
+    venue_id=None,
+):
+    """Insert a thread directly into the database."""
+    thread = Thread(
         id=str(uuid.uuid4()),
         user_id=user.id,
         domain=domain,
@@ -216,9 +243,9 @@ def _make_task(db_session, user, *, domain="procurement", status="awaiting_user_
         extracted_fields={},
         missing_fields=[],
     )
-    db_session.add(task)
+    db_session.add(thread)
     db_session.flush()
-    return task
+    return thread
 
 
 def _make_supplier(db_session, name="Test Supplier"):

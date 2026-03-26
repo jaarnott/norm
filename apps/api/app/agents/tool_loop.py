@@ -14,11 +14,31 @@ from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Message, ToolCall
+from app.db.models import Thread, Message, ToolCall
 
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 10
+
+
+def _human_readable_summary(action: str, connector: str, params: dict | None) -> str:
+    """Return a short human-readable description of a tool call."""
+    params = params or {}
+    if action in ("send_notification", "send_email"):
+        to = params.get("to") or params.get("recipient") or "recipient"
+        template = params.get("template_name") or params.get("subject") or ""
+        label = "email" if action == "send_email" else "notification"
+        return f"Send {label} to {to}" + (f" ({template})" if template else "")
+    if action == "create_order":
+        supplier = params.get("supplier_name") or connector
+        return f"Create purchase order via {supplier}"
+    if action == "create_employee":
+        name = (
+            f"{params.get('firstName', '')} {params.get('lastName', '')}".strip()
+            or "new employee"
+        )
+        return f"Create employee record: {name}"
+    return f"{action.replace('_', ' ').title()} via {connector}"
 
 
 def _ts_step(text: str) -> str:
@@ -54,7 +74,7 @@ def _emit_event(event: dict):
 
 def run_tool_loop(
     message: str,
-    task: Task,
+    task: Thread,
     db: Session,
     system_prompt: str,
     anthropic_tools: list[dict],
@@ -81,7 +101,7 @@ def run_tool_loop(
 
 
 def resume_tool_loop(
-    task: Task,
+    task: Thread,
     db: Session,
     system_prompt: str,
     anthropic_tools: list[dict],
@@ -158,7 +178,7 @@ def resume_tool_loop(
 
 def _execute_loop(
     messages: list[dict],
-    task: Task,
+    task: Thread,
     db: Session,
     system_prompt: str,
     anthropic_tools: list[dict],
@@ -188,7 +208,7 @@ def _execute_loop(
                 messages=messages,
                 tools=anthropic_tools,
                 db=db,
-                task_id=task.id,
+                thread_id=task.id,
                 call_type="tool_use",
             )
         except Exception as exc:
@@ -204,7 +224,7 @@ def _execute_loop(
                 )
                 db.add(
                     Message(
-                        task_id=task.id,
+                        thread_id=task.id,
                         role="assistant",
                         content=text,
                         display_blocks=display_blocks or None,
@@ -228,7 +248,7 @@ def _execute_loop(
             text = _extract_text(response)
             db.add(
                 Message(
-                    task_id=task.id,
+                    thread_id=task.id,
                     role="assistant",
                     content=text,
                     display_blocks=display_blocks or None,
@@ -278,7 +298,7 @@ def _execute_loop(
             for block, connector, action, method in read_only_blocks:
                 tc = ToolCall(
                     id=block.id,
-                    task_id=task.id,
+                    thread_id=task.id,
                     llm_call_id=llm_call_id,
                     iteration=iteration,
                     tool_name=block.name,
@@ -433,7 +453,7 @@ def _execute_loop(
                 if test_mode:
                     tc = ToolCall(
                         id=block.id,
-                        task_id=task.id,
+                        thread_id=task.id,
                         llm_call_id=llm_call_id,
                         iteration=iteration,
                         tool_name=block.name,
@@ -477,7 +497,7 @@ def _execute_loop(
                     # Working document mode: create a doc from input params, skip approval
                     tc = ToolCall(
                         id=block.id,
-                        task_id=task.id,
+                        thread_id=task.id,
                         llm_call_id=llm_call_id,
                         iteration=iteration,
                         tool_name=block.name,
@@ -534,7 +554,7 @@ def _execute_loop(
                     # Standard approval flow (no working document)
                     tc = ToolCall(
                         id=block.id,
-                        task_id=task.id,
+                        thread_id=task.id,
                         llm_call_id=llm_call_id,
                         iteration=iteration,
                         tool_name=block.name,
@@ -598,21 +618,42 @@ def _execute_loop(
                 task.pending_tool_call_ids = [tc.id for tc in pending_writes]
                 task.status = "awaiting_tool_approval"
 
-                # Build a description of what the agent wants to do
-                desc_parts = []
+                # Build structured approval display block
+                tool_call_summaries = []
                 for tc in pending_writes:
-                    desc_parts.append(
-                        f"**{tc.action}** on {tc.connector_name} with: {json.dumps(tc.input_params)}"
+                    tool_call_summaries.append(
+                        {
+                            "id": tc.id,
+                            "action": tc.action,
+                            "connector_name": tc.connector_name,
+                            "method": tc.method,
+                            "summary": _human_readable_summary(
+                                tc.action, tc.connector_name, tc.input_params
+                            ),
+                            "input_params": tc.input_params,
+                        }
                     )
-                approval_text = (
-                    "I'd like to perform the following actions:\n\n"
-                    + "\n".join(f"- {d}" for d in desc_parts)
-                    + "\n\nPlease approve or reject."
+
+                display_blocks.append(
+                    {
+                        "component": "tool_approval",
+                        "data": {
+                            "thread_id": task.id,
+                            "tool_calls": tool_call_summaries,
+                            "status": "pending",
+                        },
+                        "props": {},
+                    }
+                )
+
+                summaries = [s["summary"] for s in tool_call_summaries]
+                approval_text = "I'd like to:\n\n" + "\n".join(
+                    f"- {s}" for s in summaries
                 )
 
                 db.add(
                     Message(
-                        task_id=task.id,
+                        thread_id=task.id,
                         role="assistant",
                         content=approval_text,
                         display_blocks=display_blocks or None,
@@ -653,7 +694,7 @@ def _execute_loop(
                 if len(answer) > 120:
                     db.add(
                         Message(
-                            task_id=task.id,
+                            thread_id=task.id,
                             role="assistant",
                             content=answer,
                             display_blocks=display_blocks or None,
@@ -684,7 +725,7 @@ def _execute_loop(
             text = _extract_text(response)
             db.add(
                 Message(
-                    task_id=task.id,
+                    thread_id=task.id,
                     role="assistant",
                     content=text,
                     display_blocks=display_blocks or None,
@@ -704,7 +745,7 @@ def _execute_loop(
     text = "I've gathered what I can. Let me know if you need anything else or want me to continue."
     db.add(
         Message(
-            task_id=task.id,
+            thread_id=task.id,
             role="assistant",
             content=text,
             display_blocks=display_blocks or None,
@@ -794,7 +835,7 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
     if handler or spec.execution_mode == "internal":
         t0 = time.time()
         try:
-            result = handler(tc.input_params or {}, db, tc.task_id)
+            result = handler(tc.input_params or {}, db, tc.thread_id)
             tc.duration_ms = int((time.time() - t0) * 1000)
             payload = result.get("data")
             # Preserve _chart_props on result_payload so _build_display_block can find them
@@ -857,7 +898,7 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
             params_for_spec,
             credentials,
             db,
-            tc.task_id,
+            tc.thread_id,
             venue_id=resolved_venue_id,
         )
         tc.duration_ms = int((time.time() - t0) * 1000)
@@ -946,7 +987,7 @@ def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
 
 
 def _build_messages(
-    task: Task, new_message: str, context: dict | None = None
+    task: Thread, new_message: str, context: dict | None = None
 ) -> list[dict]:
     """Build the messages list from task conversation history + new message."""
     messages: list[dict] = []
@@ -1212,7 +1253,7 @@ def _extract_text(response) -> str:
 
 def _upsert_working_document(
     db: Session,
-    task_id: str,
+    thread_id: str,
     connector_name: str,
     wd_config: dict,
     result_payload: dict | list,
@@ -1232,11 +1273,11 @@ def _upsert_working_document(
             if f in input_params:
                 external_ref[f] = input_params[f]
 
-    # Look for existing doc with same task + doc_type
+    # Look for existing doc with same thread + doc_type
     doc = (
         db.query(WorkingDocument)
         .filter(
-            WorkingDocument.task_id == task_id,
+            WorkingDocument.thread_id == thread_id,
             WorkingDocument.doc_type == doc_type,
         )
         .first()
@@ -1251,7 +1292,7 @@ def _upsert_working_document(
         doc.version += 1
     else:
         doc = WorkingDocument(
-            task_id=task_id,
+            thread_id=thread_id,
             doc_type=doc_type,
             connector_name=connector_name,
             sync_mode=sync_mode,
@@ -1322,7 +1363,7 @@ def _serialize_block(block) -> dict:
 
 
 def _build_response(
-    task: Task,
+    task: Thread,
     db: Session,
     text: str,
     thinking_steps: list[str] | None = None,
@@ -1332,7 +1373,7 @@ def _build_response(
 
     Returns a lightweight payload suitable for SSE streaming. Heavy debug
     fields (full prompts, raw responses, result payloads) are omitted here
-    and available on demand via GET /tasks/{task_id}.
+    and available on demand via GET /threads/{thread_id}.
     """
     db.refresh(task)
 

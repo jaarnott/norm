@@ -204,13 +204,14 @@ export interface ConversationMessage {
   display_blocks?: DisplayBlock[];
 }
 
-export interface BaseTask {
+export interface BaseThread {
   id: string;
   domain: string;
   intent: string;
   title: string | null;
   message: string;
   status: string;
+  tags: string[];
   created_at: string;
   clarification_question?: string | null;
   conversation?: ConversationMessage[];
@@ -243,7 +244,7 @@ export interface BaseTask {
   } | null;
 }
 
-export interface ProcurementTask extends BaseTask {
+export interface ProcurementThread extends BaseThread {
   domain: 'procurement';
   venue: { id: string; name: string } | null;
   product: { id: string; name: string; unit: string; category: string } | null;
@@ -252,7 +253,7 @@ export interface ProcurementTask extends BaseTask {
   line_summary: string | null;
 }
 
-export interface HrTask extends BaseTask {
+export interface HrThread extends BaseThread {
   domain: 'hr';
   employee_name: string | null;
   venue: { id: string; name: string } | null;
@@ -262,7 +263,7 @@ export interface HrTask extends BaseTask {
   checklist: { item: string; done: boolean }[];
 }
 
-export interface ReportsTask extends BaseTask {
+export interface ReportsThread extends BaseThread {
   domain: 'reports';
   report_type: string | null;
   data_sources: string[];
@@ -282,7 +283,7 @@ export interface ReportsTask extends BaseTask {
   } | null;
 }
 
-export type Task = ProcurementTask | HrTask | ReportsTask | BaseTask;
+export type Thread = ProcurementThread | HrThread | ReportsThread | BaseThread;
 
 export interface AgentBinding {
   connector_name: string;
@@ -320,7 +321,7 @@ export interface AutomatedTask {
   task_config: Record<string, unknown>;
   thread_summary: string | null;
   overrides_next_run: Record<string, unknown> | null;
-  conversation_task_id: string | null;
+  conversation_thread_id: string | null;
   last_run_at: string | null;
   next_run_at: string | null;
   created_at: string;
@@ -330,7 +331,7 @@ export interface AutomatedTask {
 export interface AutomatedTaskRun {
   id: string;
   automated_task_id: string;
-  task_id: string | null;
+  thread_id: string | null;
   status: 'running' | 'success' | 'error';
   mode: 'live' | 'test';
   result_summary: string | null;

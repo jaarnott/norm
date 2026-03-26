@@ -1,7 +1,7 @@
 'use client';
 
-import type { Task } from '../../types';
-import TaskCard from './TaskCard';
+import type { Thread } from '../../types';
+import ThreadCard from './TaskCard';
 import { SquarePen, Search, PanelLeftClose } from 'lucide-react';
 import { FUNCTIONAL_PAGES } from '../pages/pageRegistry';
 
@@ -14,17 +14,17 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'completed', label: 'Completed' },
 ];
 
-function applyFilter(tasks: Task[], filter: FilterKey): Task[] {
-  if (filter === 'all') return tasks;
-  if (filter === 'completed') return tasks.filter(t => t.status === 'submitted' || t.status === 'rejected');
-  return tasks.filter(t => t.status === filter || (filter === 'awaiting_user_input' && t.status === 'needs_clarification'));
+function applyFilter(threads: Thread[], filter: FilterKey): Thread[] {
+  if (filter === 'all') return threads;
+  if (filter === 'completed') return threads.filter(t => t.status === 'submitted' || t.status === 'rejected');
+  return threads.filter(t => t.status === filter || (filter === 'awaiting_user_input' && t.status === 'needs_clarification'));
 }
 
-interface TaskListProps {
-  tasks: Task[];
+interface ThreadListProps {
+  threads: Thread[];
   selectedId: string | null;
-  onSelectTask: (id: string) => void;
-  onRemoveTask: (id: string) => void;
+  onSelectThread: (id: string) => void;
+  onRemoveThread: (id: string) => void;
   activeAgent: string;
   filter: FilterKey;
   onFilterChange: (filter: FilterKey) => void;
@@ -33,9 +33,9 @@ interface TaskListProps {
   onSelectPage?: (pageId: string) => void;
 }
 
-export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage }: TaskListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage }: ThreadListProps) {
   // Filter by agent
-  const agentFiltered = activeAgent === 'home' ? tasks : tasks.filter(t => t.domain === activeAgent);
+  const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => t.domain === activeAgent);
   // Apply status filter
   const filtered = applyFilter(agentFiltered, filter);
 
@@ -176,7 +176,7 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
         })}
         </div>
         <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333', marginBottom: '0.5rem' }}>
-          {activeAgent === 'home' ? 'Recent threads' : `${activeAgent.charAt(0).toUpperCase() + activeAgent.slice(1)} Tasks`}
+          {activeAgent === 'home' ? 'Recent threads' : `${activeAgent.charAt(0).toUpperCase() + activeAgent.slice(1)} Threads`}
         </div>
         {/* Filters */}
         <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
@@ -213,17 +213,17 @@ export default function TaskList({ tasks, selectedId, onSelectTask, onRemoveTask
             fontSize: '0.85rem',
             lineHeight: 1.6,
           }}>
-            No tasks yet. Try asking me to order stock, check a roster, or generate a report.
+            No threads yet. Try asking me to order stock, check a roster, or generate a report.
           </div>
         ) : (
-          filtered.map(task => (
-            <TaskCard
-              key={task.id}
-              data-testid={`task-card-${task.id}`}
-              task={task}
-              isSelected={selectedId === task.id}
-              onClick={() => onSelectTask(task.id)}
-              onRemove={() => onRemoveTask(task.id)}
+          filtered.map(thread => (
+            <ThreadCard
+              key={thread.id}
+              data-testid={`thread-card-${thread.id}`}
+              thread={thread}
+              isSelected={selectedId === thread.id}
+              onClick={() => onSelectThread(thread.id)}
+              onRemove={() => onRemoveThread(thread.id)}
               compact={activeAgent === 'home'}
             />
           ))

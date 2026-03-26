@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.base import BaseDomainAgent
 from app.agents.hr.context import build_hr_context
-from app.db.models import Task, Message, LlmCall
+from app.db.models import Thread, Message, LlmCall
 from app.services.venue_resolver import resolve_venue
 from app.services.hr_service import create_employee_setup, update_employee_setup
 
@@ -26,7 +26,7 @@ class HrAgent(BaseDomainAgent):
         message: str,
         db: Session,
         user_id: str | None = None,
-        task_id: str | None = None,
+        thread_id: str | None = None,
         venue_id: str | None = None,
         venue_name: str | None = None,
         venue_timezone: str | None = None,
@@ -43,7 +43,7 @@ class HrAgent(BaseDomainAgent):
                 message,
                 db,
                 user_id,
-                task_id,
+                thread_id,
                 venue_id=venue_id,
                 venue_name=venue_name,
                 venue_timezone=venue_timezone,
@@ -52,16 +52,16 @@ class HrAgent(BaseDomainAgent):
         # Classic single-shot interpretation (no tools bound)
         ctx = self.build_context(db, user_id)
 
-        # If task_id provided, load it as open task for follow-up
-        if task_id:
+        # If thread_id provided, load it as open task for follow-up
+        if thread_id:
             from app.services.hr_service import _task_to_dict as hr_to_dict
 
-            task = db.query(Task).filter(Task.id == task_id).first()
+            task = db.query(Thread).filter(Thread.id == thread_id).first()
             if task and task.domain == "hr":
                 ctx["open_task"] = hr_to_dict(task)
 
-        # Interpret — pass task_id if this is a follow-up
-        parsed, llm_call_id = self.interpret(message, ctx, db=db, task_id=task_id)
+        # Interpret — pass thread_id if this is a follow-up
+        parsed, llm_call_id = self.interpret(message, ctx, db=db, thread_id=thread_id)
 
         is_followup = parsed.get("is_followup", False)
         extracted = parsed.get("extracted_fields", {})
@@ -80,8 +80,8 @@ class HrAgent(BaseDomainAgent):
         if not extracted.get("venue_name") and candidates.get("venue_candidate"):
             extracted["venue_name"] = candidates["venue_candidate"]
 
-        # Force follow-up if task_id was provided
-        if task_id and ctx.get("open_task"):
+        # Force follow-up if thread_id was provided
+        if thread_id and ctx.get("open_task"):
             is_followup = True
 
         # Follow-up path
@@ -96,11 +96,11 @@ class HrAgent(BaseDomainAgent):
             message, extracted, clarification_question, db, user_id, intent=intent
         )
 
-        # Back-fill task_id on the LLM call record
+        # Back-fill thread_id on the LLM call record
         if llm_call_id and result.get("id"):
             llm_call = db.query(LlmCall).filter(LlmCall.id == llm_call_id).first()
             if llm_call:
-                llm_call.task_id = result["id"]
+                llm_call.thread_id = result["id"]
                 db.commit()
 
         return result
@@ -112,7 +112,7 @@ class HrAgent(BaseDomainAgent):
         open_task: dict,
         db: Session,
     ) -> dict:
-        db.add(Message(task_id=open_task["id"], role="user", content=message))
+        db.add(Message(thread_id=open_task["id"], role="user", content=message))
         db.flush()
 
         venue = None
@@ -157,7 +157,7 @@ class HrAgent(BaseDomainAgent):
 
         # Use LLM clarification question if available
         if clarification_question and task.get("status") == "awaiting_user_input":
-            db_task = db.query(Task).filter(Task.id == task["id"]).first()
+            db_task = db.query(Thread).filter(Thread.id == task["id"]).first()
             if db_task:
                 db_task.clarification_question = clarification_question
                 msgs = list(db_task.messages)

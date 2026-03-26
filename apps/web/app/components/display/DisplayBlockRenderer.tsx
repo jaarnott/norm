@@ -13,6 +13,7 @@ import AutomatedTaskBoard from './AutomatedTaskBoard';
 import Chart from './Chart';
 import ReportBuilder from './ReportBuilder';
 import SavedReportsBoard from './SavedReportsBoard';
+import ToolApprovalCard from './ToolApprovalCard';
 
 export interface DisplayBlockProps {
   data: Record<string, unknown>;
@@ -37,6 +38,7 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   chart: Chart,
   report_builder: ReportBuilder,
   saved_reports_board: SavedReportsBoard,
+  tool_approval: ToolApprovalCard,
 };
 
 interface DisplayBlockRendererProps {

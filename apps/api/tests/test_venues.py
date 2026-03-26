@@ -2,16 +2,18 @@
 
 import uuid
 
-import pytest
-
-from app.db.models import Venue, UserVenueAccess, Organization, OrganizationMembership
-
 
 class TestListVenues:
     """GET /api/venues"""
 
     def test_list_venues_returns_accessible_venues(
-        self, client, db_session, admin_user, admin_headers, venue, admin_venue_access,
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        venue,
+        admin_venue_access,
     ):
         resp = client.get("/api/venues", headers=admin_headers)
         assert resp.status_code == 200
@@ -31,12 +33,21 @@ class TestCreateVenue:
     """POST /api/organizations/{org_id}/venues"""
 
     def test_create_venue_in_org(
-        self, client, db_session, admin_user, admin_headers,
-        organization, admin_org_membership,
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         resp = client.post(
             f"/api/organizations/{organization.id}/venues",
-            json={"name": "New Venue", "location": "Wellington", "timezone": "Pacific/Auckland"},
+            json={
+                "name": "New Venue",
+                "location": "Wellington",
+                "timezone": "Pacific/Auckland",
+            },
             headers=admin_headers,
         )
         assert resp.status_code == 200
@@ -62,7 +73,11 @@ class TestCreateVenue:
         assert resp.status_code in (401, 403)
 
     def test_create_venue_missing_name_returns_422(
-        self, client, admin_headers, organization, admin_org_membership,
+        self,
+        client,
+        admin_headers,
+        organization,
+        admin_org_membership,
     ):
         resp = client.post(
             f"/api/organizations/{organization.id}/venues",
@@ -127,5 +142,7 @@ class TestVenueConnectors:
         assert "connectors" in data
 
     def test_list_venue_connectors_not_found_returns_404(self, client, admin_headers):
-        resp = client.get(f"/api/venues/{uuid.uuid4()}/connectors", headers=admin_headers)
+        resp = client.get(
+            f"/api/venues/{uuid.uuid4()}/connectors", headers=admin_headers
+        )
         assert resp.status_code == 404

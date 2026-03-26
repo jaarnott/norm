@@ -318,7 +318,7 @@ def execute_via_agent(
     extracted_fields: dict,
     credentials: dict,
     db: Session,
-    task_id: str | None = None,
+    thread_id: str | None = None,
 ) -> RenderedRequest:
     """Use an LLM to generate the HTTP request, then inject credentials."""
     from app.interpreter.llm_interpreter import call_llm
@@ -368,7 +368,7 @@ def execute_via_agent(
         system_prompt=_AGENT_EXECUTION_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         db=db,
-        task_id=task_id,
+        thread_id=thread_id,
         call_type="execution",
     )
 
@@ -435,7 +435,7 @@ def execute_spec(
     extracted_fields: dict,
     credentials: dict,
     db: Session,
-    task_id: str | None = None,
+    thread_id: str | None = None,
     venue_id: str | None = None,
 ) -> tuple[ConnectorResult, RenderedRequest]:
     """Execute a connector spec operation. Returns (result, rendered_request)."""
@@ -457,7 +457,7 @@ def execute_spec(
 
     if spec.execution_mode == "agent":
         rendered = execute_via_agent(
-            spec, operation, extracted_fields, credentials, db, task_id
+            spec, operation, extracted_fields, credentials, db, thread_id
         )
     else:
         rendered = render_request(

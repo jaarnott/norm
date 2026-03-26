@@ -62,7 +62,7 @@ class TestRequirePermission:
         db_session.flush()
 
         # tasks:read should pass
-        resp = client.get("/api/tasks", headers=_auth(user))
+        resp = client.get("/api/threads", headers=_auth(user))
         assert resp.status_code == 200
 
     def test_team_member_limited_perms(self, client, db_session):
@@ -86,7 +86,7 @@ class TestRequirePermission:
         """Platform admin (User.role == 'admin') should bypass org permission checks."""
         user = _make_user(db_session, role="admin")
         # No org membership at all
-        resp = client.get("/api/tasks", headers=_auth(user))
+        resp = client.get("/api/threads", headers=_auth(user))
         assert resp.status_code == 200
 
     def test_missing_permission_returns_403(self, client, db_session):
@@ -113,7 +113,7 @@ class TestRequirePermission:
         _make_membership(db_session, user, org)
         # No role_id set
 
-        resp = client.get("/api/tasks", headers=_auth(user))
+        resp = client.get("/api/threads", headers=_auth(user))
         assert resp.status_code == 403
 
     def test_admin_scopes_require_platform_admin(self, client, db_session):

@@ -1,7 +1,7 @@
 """Registry of internal tool handlers.
 
 Internal tools execute against the local database instead of external APIs.
-Each handler receives (input_params, db, task_id) and returns a result dict
+Each handler receives (input_params, db, thread_id) and returns a result dict
 compatible with the standard tool result format:
     {"success": bool, "data": ..., "error": str | None}
 """
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-InternalHandler = Callable[[dict, Session, str | None], dict]
+InternalHandler = Callable[[dict, Session, str | None], dict]  # (params, db, thread_id)
 
 _REGISTRY: dict[tuple[str, str], InternalHandler] = {}
 
@@ -41,7 +41,7 @@ def get_handler(connector_name: str, action: str) -> InternalHandler | None:
 
 
 @register("norm", "get_criteria")
-def _get_criteria(params: dict, db: Session, task_id: str | None) -> dict:
+def _get_criteria(params: dict, db: Session, thread_id: str | None) -> dict:
     """Return hiring criteria filtered by scope and/or position."""
     from app.db.models import HiringCriteria
 
@@ -69,7 +69,7 @@ def _get_criteria(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm_hr", "save_criteria")
-def _save_criteria(params: dict, db: Session, task_id: str | None) -> dict:
+def _save_criteria(params: dict, db: Session, thread_id: str | None) -> dict:
     """Create or update hiring criteria for a scope."""
     from app.db.models import HiringCriteria
 
@@ -165,7 +165,7 @@ def _job_to_dict(job, include_applications: bool = False) -> dict:
 
 
 @register("norm_hr", "get_jobs")
-def _get_jobs(params: dict, db: Session, task_id: str | None) -> dict:
+def _get_jobs(params: dict, db: Session, thread_id: str | None) -> dict:
     """List all jobs with optional status filter."""
     from app.db.models import Job
 
@@ -178,7 +178,7 @@ def _get_jobs(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm_hr", "get_job")
-def _get_job(params: dict, db: Session, task_id: str | None) -> dict:
+def _get_job(params: dict, db: Session, thread_id: str | None) -> dict:
     """Get a single job with its applications and candidate info."""
     from app.db.models import Job
 
@@ -192,7 +192,7 @@ def _get_job(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm_hr", "create_job")
-def _create_job(params: dict, db: Session, task_id: str | None) -> dict:
+def _create_job(params: dict, db: Session, thread_id: str | None) -> dict:
     """Create a new job position."""
     from app.db.models import Job
 
@@ -212,7 +212,7 @@ def _create_job(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm_hr", "update_job")
-def _update_job(params: dict, db: Session, task_id: str | None) -> dict:
+def _update_job(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update a job's fields."""
     from app.db.models import Job
 
@@ -230,7 +230,7 @@ def _update_job(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm_hr", "get_candidate")
-def _get_candidate(params: dict, db: Session, task_id: str | None) -> dict:
+def _get_candidate(params: dict, db: Session, thread_id: str | None) -> dict:
     """Get a candidate with their application details."""
     from app.db.models import Candidate
 
@@ -276,7 +276,7 @@ def _get_candidate(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm_hr", "create_candidate")
-def _create_candidate(params: dict, db: Session, task_id: str | None) -> dict:
+def _create_candidate(params: dict, db: Session, thread_id: str | None) -> dict:
     """Add a candidate to a job."""
     from app.db.models import Candidate, Application
 
@@ -321,7 +321,7 @@ def _create_candidate(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm_hr", "update_application")
-def _update_application(params: dict, db: Session, task_id: str | None) -> dict:
+def _update_application(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update an application's status, score, or notes."""
     from app.db.models import Application
 
@@ -358,7 +358,7 @@ def _update_application(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("bamboohr", "get_applicant_resume")
-def _get_applicant_resume(params: dict, db: Session, task_id: str | None) -> dict:
+def _get_applicant_resume(params: dict, db: Session, thread_id: str | None) -> dict:
     """Fetch an applicant's resume from BambooHR and return as a document block for the LLM."""
     import base64
     import httpx
@@ -428,9 +428,9 @@ def _get_applicant_resume(params: dict, db: Session, task_id: str | None) -> dic
 
 
 @register("gmail", "send_email")
-def _gmail_send_email(params: dict, db: Session, task_id: str | None) -> dict:
+def _gmail_send_email(params: dict, db: Session, thread_id: str | None) -> dict:
     """Send an email from the user's connected Gmail account."""
-    from app.db.models import Task
+    from app.db.models import Thread
     from app.services.email_service import send_on_behalf_gmail
 
     to = params.get("to", "")
@@ -450,8 +450,8 @@ def _gmail_send_email(params: dict, db: Session, task_id: str | None) -> dict:
 
     # Resolve user_id from the task
     user_id = None
-    if task_id:
-        task = db.query(Task).filter(Task.id == task_id).first()
+    if thread_id:
+        task = db.query(Thread).filter(Thread.id == thread_id).first()
         if task:
             user_id = task.user_id
     if not user_id:
@@ -462,14 +462,14 @@ def _gmail_send_email(params: dict, db: Session, task_id: str | None) -> dict:
         }
 
     return send_on_behalf_gmail(
-        user_id, to, subject, body_html, db, cc=cc, bcc=bcc, task_id=task_id
+        user_id, to, subject, body_html, db, cc=cc, bcc=bcc, thread_id=thread_id
     )
 
 
 @register("microsoft_outlook", "send_email")
-def _outlook_send_email(params: dict, db: Session, task_id: str | None) -> dict:
+def _outlook_send_email(params: dict, db: Session, thread_id: str | None) -> dict:
     """Send an email from the user's connected Outlook account."""
-    from app.db.models import Task
+    from app.db.models import Thread
     from app.services.email_service import send_on_behalf_outlook
 
     to = params.get("to", "")
@@ -488,8 +488,8 @@ def _outlook_send_email(params: dict, db: Session, task_id: str | None) -> dict:
         return {"success": False, "data": {}, "error": "to and subject are required"}
 
     user_id = None
-    if task_id:
-        task = db.query(Task).filter(Task.id == task_id).first()
+    if thread_id:
+        task = db.query(Thread).filter(Thread.id == thread_id).first()
         if task:
             user_id = task.user_id
     if not user_id:
@@ -500,12 +500,12 @@ def _outlook_send_email(params: dict, db: Session, task_id: str | None) -> dict:
         }
 
     return send_on_behalf_outlook(
-        user_id, to, subject, body_html, db, cc=cc, bcc=bcc, task_id=task_id
+        user_id, to, subject, body_html, db, cc=cc, bcc=bcc, thread_id=thread_id
     )
 
 
 @register("norm_email", "send_notification")
-def _system_send_notification(params: dict, db: Session, task_id: str | None) -> dict:
+def _system_send_notification(params: dict, db: Session, thread_id: str | None) -> dict:
     """Send a system notification email from noreply@norm.com."""
     from app.services.email_service import send_system_email
 
@@ -530,7 +530,9 @@ def _system_send_notification(params: dict, db: Session, task_id: str | None) ->
         except (json.JSONDecodeError, TypeError):
             template_context = {}
 
-    log_id = send_system_email(template_name, to, template_context, db, task_id=task_id)
+    log_id = send_system_email(
+        template_name, to, template_context, db, thread_id=thread_id
+    )
     from app.db.models import EmailLog
 
     log = db.query(EmailLog).filter(EmailLog.id == log_id).first() if log_id else None
@@ -547,7 +549,7 @@ def _system_send_notification(params: dict, db: Session, task_id: str | None) ->
 
 
 @register("norm", "resolve_dates")
-def _resolve_dates(params: dict, db: Session, task_id: str | None) -> dict:
+def _resolve_dates(params: dict, db: Session, thread_id: str | None) -> dict:
     """Resolve natural language time references into exact ISO 8601 timestamps.
 
     Uses a fast Haiku LLM call with Python-computed date context so the LLM
@@ -627,7 +629,7 @@ Rules:
             user_prompt=query,
             model=settings.DATE_RESOLVER_MODEL,
             db=db,
-            task_id=task_id,
+            thread_id=thread_id,
             call_type="date_resolution",
             max_tokens=4096,
         )
@@ -669,7 +671,7 @@ Rules:
 
 
 @register("norm_reports", "render_chart")
-def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
+def _render_chart(params: dict, db: Session, thread_id: str | None) -> dict:
     """Render a chart by referencing a prior tool call's data.
 
     The LLM specifies which tool call to visualize (by ID) and how to
@@ -690,11 +692,11 @@ def _render_chart(params: dict, db: Session, task_id: str | None) -> dict:
 
     # Fallback: if exact ID not found, find the most recent GET tool call
     # for this task (the LLM sometimes hallucinates the ID)
-    if (not tc or not tc.result_payload) and task_id:
+    if (not tc or not tc.result_payload) and thread_id:
         tc = (
             db.query(ToolCall)
             .filter(
-                ToolCall.task_id == task_id,
+                ToolCall.thread_id == thread_id,
                 ToolCall.method == "GET",
                 ToolCall.status == "executed",
                 ToolCall.connector_name != "norm_reports",  # not another render_chart
@@ -843,7 +845,9 @@ def _find_data_array(payload):
 
 
 @register("norm", "search_tool_result")
-def _handle_search_tool_result(params: dict, db: Session, task_id: str | None) -> dict:
+def _handle_search_tool_result(
+    params: dict, db: Session, thread_id: str | None
+) -> dict:
     """Search through a stored tool call's result payload by keyword."""
     from app.agents.tool_loop import _search_tool_result
 
@@ -878,7 +882,7 @@ def _task_to_dict(t) -> dict:
 
 
 @register("norm", "create_automated_task")
-def _create_automated_task(params: dict, db: Session, task_id: str | None) -> dict:
+def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> dict:
     """Create an automated task (draft) for an agent."""
     from app.db.models import AutomatedTask
 
@@ -893,11 +897,11 @@ def _create_automated_task(params: dict, db: Session, task_id: str | None) -> di
         }
 
     # Resolve user from the parent task
-    from app.db.models import Task as TaskModel
+    from app.db.models import Thread
 
     created_by = None
-    if task_id:
-        parent = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+    if thread_id:
+        parent = db.query(Thread).filter(Thread.id == thread_id).first()
         if parent:
             created_by = parent.user_id
 
@@ -918,7 +922,7 @@ def _create_automated_task(params: dict, db: Session, task_id: str | None) -> di
 
 
 @register("norm", "list_automated_tasks")
-def _list_automated_tasks(params: dict, db: Session, task_id: str | None) -> dict:
+def _list_automated_tasks(params: dict, db: Session, thread_id: str | None) -> dict:
     """List automated tasks, optionally filtered by agent or status."""
     from app.db.models import AutomatedTask
 
@@ -935,7 +939,7 @@ def _list_automated_tasks(params: dict, db: Session, task_id: str | None) -> dic
 
 
 @register("norm", "update_automated_task")
-def _update_automated_task(params: dict, db: Session, task_id: str | None) -> dict:
+def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update an automated task's fields."""
     from app.db.models import AutomatedTask
     from app.services.task_scheduler import schedule_task, unschedule_task
@@ -971,7 +975,7 @@ def _update_automated_task(params: dict, db: Session, task_id: str | None) -> di
 
 
 @register("norm", "run_automated_task")
-def _run_automated_task(params: dict, db: Session, task_id: str | None) -> dict:
+def _run_automated_task(params: dict, db: Session, thread_id: str | None) -> dict:
     """Trigger a manual run of an automated task."""
     from app.services.task_scheduler import execute_task_now
 
@@ -1057,7 +1061,7 @@ def _step_result_preview(step_result: dict) -> dict:
 
 
 def execute_consolidator(
-    config: dict, input_params: dict, db: Session, task_id: str | None
+    config: dict, input_params: dict, db: Session, thread_id: str | None
 ) -> dict:
     """Execute a consolidator config — call sub-tools and aggregate results.
 
@@ -1310,7 +1314,13 @@ def execute_consolidator(
         t0 = time.time()
         try:
             result, rendered = execute_spec(
-                spec, tool_def, step_params, credentials, db, task_id, venue_id=venue_id
+                spec,
+                tool_def,
+                step_params,
+                credentials,
+                db,
+                thread_id,
+                venue_id=venue_id,
             )
             duration_ms = int((time.time() - t0) * 1000)
 
@@ -1465,31 +1475,31 @@ def execute_consolidator(
 # ---------------------------------------------------------------------------
 
 
-def _get_automated_task_for_conversation(task_id: str | None, db: Session):
-    """Look up the AutomatedTask linked to a conversation task_id."""
-    from app.db.models import AutomatedTask, Task
+def _get_automated_task_for_conversation(thread_id: str | None, db: Session):
+    """Look up the AutomatedTask linked to a conversation thread_id."""
+    from app.db.models import AutomatedTask, Thread
 
-    if not task_id:
+    if not thread_id:
         return None
-    task = db.query(Task).filter(Task.id == task_id).first()
+    task = db.query(Thread).filter(Thread.id == thread_id).first()
     if not task:
         return None
     return (
         db.query(AutomatedTask)
-        .filter(AutomatedTask.conversation_task_id == task_id)
+        .filter(AutomatedTask.conversation_thread_id == thread_id)
         .first()
     )
 
 
 @register("norm", "update_task_config")
-def _update_task_config(params: dict, db: Session, task_id: str | None) -> dict:
+def _update_task_config(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update a persistent configuration field on the automated task."""
     key = params.get("key", "")
     value = params.get("value")
     if not key:
         return {"success": False, "data": {}, "error": "key is required"}
 
-    at = _get_automated_task_for_conversation(task_id, db)
+    at = _get_automated_task_for_conversation(thread_id, db)
     if not at:
         return {
             "success": False,
@@ -1509,13 +1519,13 @@ def _update_task_config(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm", "set_override")
-def _set_override(params: dict, db: Session, task_id: str | None) -> dict:
+def _set_override(params: dict, db: Session, thread_id: str | None) -> dict:
     """Set a one-off instruction for the next scheduled run only."""
     instruction = params.get("instruction", "")
     if not instruction:
         return {"success": False, "data": {}, "error": "instruction is required"}
 
-    at = _get_automated_task_for_conversation(task_id, db)
+    at = _get_automated_task_for_conversation(thread_id, db)
     if not at:
         return {
             "success": False,
@@ -1530,13 +1540,13 @@ def _set_override(params: dict, db: Session, task_id: str | None) -> dict:
 
 
 @register("norm", "update_thread_summary")
-def _update_thread_summary(params: dict, db: Session, task_id: str | None) -> dict:
+def _update_thread_summary(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update the rolling summary of key decisions and instructions."""
     summary = params.get("summary", "")
     if not summary:
         return {"success": False, "data": {}, "error": "summary is required"}
 
-    at = _get_automated_task_for_conversation(task_id, db)
+    at = _get_automated_task_for_conversation(thread_id, db)
     if not at:
         return {
             "success": False,

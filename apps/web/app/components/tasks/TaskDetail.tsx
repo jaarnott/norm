@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, memo } from 'react';
 import { Package, UserRound, BarChart3, HelpCircle, Timer, type LucideIcon } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { Task, ProcurementTask, HrTask, ConversationMessage, ToolCallRecord, DisplayBlock, WidgetAction } from '../../types';
+import type { Thread, ProcurementThread, HrThread, ConversationMessage, ToolCallRecord, DisplayBlock, WidgetAction } from '../../types';
 import ActivityTimeline from './ActivityTimeline';
 import DisplayBlockRenderer, { FULL_WIDTH_COMPONENTS } from '../display/DisplayBlockRenderer';
 import SplitDragHandle from '../layout/SplitDragHandle';
@@ -36,8 +36,8 @@ const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
 
 const ss = (s: string) => STATUS_STYLES[s] || { bg: '#e2e3e5', color: '#383d41' };
 
-function getTaskTitle(task: Task): string {
-  return task.title || '';
+function getThreadTitle(thread: Thread): string {
+  return thread.title || '';
 }
 
 // -- Tab types --
@@ -214,7 +214,7 @@ const Btn = ({ label, bg, onClick, 'data-testid': testId }: { label: string; bg:
   </button>
 );
 
-function ProcurementDetails({ task }: { task: ProcurementTask }) {
+function ProcurementDetails({ task }: { task: ProcurementThread }) {
   return (
     <div style={{ marginBottom: '1rem' }}>
       <div style={{
@@ -236,7 +236,7 @@ function ProcurementDetails({ task }: { task: ProcurementTask }) {
   );
 }
 
-function HrDetails({ task }: { task: HrTask }) {
+function HrDetails({ task }: { task: HrThread }) {
   return (
     <div style={{ marginBottom: '1rem' }}>
       <div style={{
@@ -275,15 +275,15 @@ function HrDetails({ task }: { task: HrTask }) {
   );
 }
 
-function DetailsView({ task, onAction }: { task: Task; onAction: (taskId: string, action: string) => void }) {
+function DetailsView({ task, onAction }: { task: Thread; onAction: (threadId: string, action: string) => void }) {
   const isProcurement = task.domain === 'procurement';
   const isHr = task.domain === 'hr';
   const isTerminal = task.status === 'submitted' || task.status === 'rejected';
 
   return (
     <div>
-      {isProcurement && <ProcurementDetails task={task as ProcurementTask} />}
-      {isHr && <HrDetails task={task as HrTask} />}
+      {isProcurement && <ProcurementDetails task={task as ProcurementThread} />}
+      {isHr && <HrDetails task={task as HrThread} />}
 
       {/* Status */}
       <div style={{ marginBottom: '1rem' }}>
@@ -451,7 +451,7 @@ function ToolCallHistory({ toolCalls }: { toolCalls: ToolCallRecord[] }) {
 // -- Conversation extras (thinking, approvals, summary cards) --
 
 function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTerminal }: {
-  task: Task; loading: boolean; onAction: (taskId: string, action: string) => void;
+  task: Thread; loading: boolean; onAction: (threadId: string, action: string) => void;
   isProcurement: boolean; isHr: boolean; isTerminal: boolean;
 }) {
   return (
@@ -459,35 +459,15 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
       {loading && task.thinking_steps && task.thinking_steps.length > 0 && (
         <ThinkingSteps steps={task.thinking_steps} isStreaming={loading} />
       )}
-      {task.status === 'awaiting_tool_approval' && (
-        <div style={{ marginTop: '1rem', border: '1px solid #e8daef', borderRadius: 8, padding: '0.85rem', backgroundColor: '#f9f4fc' }}>
-          {task.tool_calls && task.tool_calls.filter(tc => tc.status === 'pending_approval').length > 0 && (
-            <div style={{ marginBottom: '0.75rem' }}>
-              <div style={{ fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#6c3483', marginBottom: '0.5rem' }}>Pending Tool Calls</div>
-              {task.tool_calls.filter(tc => tc.status === 'pending_approval').map(tc => (
-                <div key={tc.id} style={{ padding: '0.5rem 0.75rem', border: '1px solid #e2e8f0', borderRadius: 6, backgroundColor: '#fff', marginBottom: '0.4rem', fontSize: '0.82rem' }}>
-                  <span style={{ fontWeight: 600 }}>{tc.action}</span>
-                  <span style={{ color: '#888', marginLeft: 6 }}>on {tc.connector_name}</span>
-                  <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#888', backgroundColor: '#f0f0f0', padding: '1px 6px', borderRadius: 3, marginLeft: 8 }}>{tc.method}</span>
-                  {tc.input_params && (<div style={{ fontSize: '0.75rem', color: '#666', marginTop: 4, fontFamily: 'monospace' }}>{JSON.stringify(tc.input_params)}</div>)}
-                </div>
-              ))}
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <Btn data-testid="approve-btn" label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} />
-            <Btn data-testid="reject-btn" label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} />
-          </div>
-        </div>
-      )}
+      {/* Tool approval is now handled inline via ToolApprovalCard display block */}
       {task.tool_calls && task.tool_calls.filter(tc => tc.status === 'executed' || tc.status === 'failed').length > 0 &&
         (() => { try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; } })() && (
         <ToolCallHistory toolCalls={task.tool_calls.filter(tc => tc.status === 'executed' || tc.status === 'failed')} />
       )}
       {(task.status === 'awaiting_approval' || task.status === 'approved') && (
         <div style={{ marginTop: '1rem', border: '1px solid #eee', borderRadius: 8, padding: '0.85rem', backgroundColor: '#fafafa' }}>
-          {isProcurement && (() => { const t = task as ProcurementTask; return (<><DetailRow label="Product" value={t.product?.name || '?'} /><DetailRow label="Quantity" value={`${t.quantity ?? '?'} ${t.product?.unit ?? 'case'}(s)`} /><DetailRow label="Venue" value={t.venue?.name || '?'} />{t.supplier && <DetailRow label="Supplier" value={t.supplier} />}</>); })()}
-          {isHr && (() => { const t = task as HrTask; return (<><DetailRow label="Name" value={t.employee_name || '?'} /><DetailRow label="Role" value={t.role || '?'} /><DetailRow label="Venue" value={t.venue?.name || '?'} /><DetailRow label="Start date" value={t.start_date || '?'} /></>); })()}
+          {isProcurement && (() => { const t = task as ProcurementThread; return (<><DetailRow label="Product" value={t.product?.name || '?'} /><DetailRow label="Quantity" value={`${t.quantity ?? '?'} ${t.product?.unit ?? 'case'}(s)`} /><DetailRow label="Venue" value={t.venue?.name || '?'} />{t.supplier && <DetailRow label="Supplier" value={t.supplier} />}</>); })()}
+          {isHr && (() => { const t = task as HrThread; return (<><DetailRow label="Name" value={t.employee_name || '?'} /><DetailRow label="Role" value={t.role || '?'} /><DetailRow label="Venue" value={t.venue?.name || '?'} /><DetailRow label="Start date" value={t.start_date || '?'} /></>); })()}
           <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
             {task.status === 'awaiting_approval' && (<><Btn data-testid="approve-btn" label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} /><Btn data-testid="reject-btn" label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} /></>)}
             {task.status === 'approved' && (<Btn label={isProcurement ? 'Submit to Supplier' : 'Submit Setup'} bg="#4d65ff" onClick={() => onAction(task.id, 'submit')} />)}
@@ -496,8 +476,8 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
       )}
       {isTerminal && (
         <div style={{ marginTop: '1rem', border: '1px solid #eee', borderRadius: 8, padding: '0.85rem', backgroundColor: '#fafafa' }}>
-          {isProcurement && (() => { const t = task as ProcurementTask; return (<><DetailRow label="Product" value={t.product?.name || '?'} /><DetailRow label="Quantity" value={`${t.quantity ?? '?'} ${t.product?.unit ?? 'case'}(s)`} /><DetailRow label="Venue" value={t.venue?.name || '?'} />{t.supplier && <DetailRow label="Supplier" value={t.supplier} />}</>); })()}
-          {isHr && (() => { const t = task as HrTask; return (<><DetailRow label="Name" value={t.employee_name || '?'} /><DetailRow label="Role" value={t.role || '?'} /><DetailRow label="Venue" value={t.venue?.name || '?'} /><DetailRow label="Start date" value={t.start_date || '?'} /></>); })()}
+          {isProcurement && (() => { const t = task as ProcurementThread; return (<><DetailRow label="Product" value={t.product?.name || '?'} /><DetailRow label="Quantity" value={`${t.quantity ?? '?'} ${t.product?.unit ?? 'case'}(s)`} /><DetailRow label="Venue" value={t.venue?.name || '?'} />{t.supplier && <DetailRow label="Supplier" value={t.supplier} />}</>); })()}
+          {isHr && (() => { const t = task as HrThread; return (<><DetailRow label="Name" value={t.employee_name || '?'} /><DetailRow label="Role" value={t.role || '?'} /><DetailRow label="Venue" value={t.venue?.name || '?'} /><DetailRow label="Start date" value={t.start_date || '?'} /></>); })()}
           {task.status === 'submitted' && task.integration_run ? (
             <div style={{ marginTop: '0.75rem', borderTop: '1px solid #eee', paddingTop: '0.75rem' }}>
               <div style={{ fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: task.integration_run.status === 'success' ? '#28a745' : '#dc3545', marginBottom: '0.4rem' }}>
@@ -592,7 +572,7 @@ function formatAtSchedule(type: string, config: Record<string, unknown>): string
 }
 
 function AutomatedTaskHeader({ at, onUpdate, onRun }: {
-  at: NonNullable<import('../../types').BaseTask['automated_task']>;
+  at: NonNullable<import('../../types').BaseThread['automated_task']>;
   onUpdate: () => void;
   onRun: (prompt: string) => void;
 }) {
@@ -735,23 +715,23 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
   );
 }
 
-interface TaskDetailProps {
-  task: Task;
-  onAction: (taskId: string, action: string) => void;
-  onWidgetAction?: (taskId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
+interface ThreadDetailProps {
+  thread: Thread;
+  onAction: (threadId: string, action: string) => void;
+  onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   onSend: (message: string) => void;
   loading: boolean;
-  openTask: Task | null;
+  openThread: Thread | null;
 }
 
-export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loading, openTask }: TaskDetailProps) {
+export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend, loading, openThread }: ThreadDetailProps) {
   const [activeTab, setActiveTab] = useState<TabKey>('conversation');
-  const dc = getDomainColor(task.domain);
-  const DomainIcon = DOMAIN_ICONS[task.domain] || HelpCircle;
-  const stl = ss(task.status);
-  const isProcurement = task.domain === 'procurement';
-  const isHr = task.domain === 'hr';
-  const isTerminal = task.status === 'submitted' || task.status === 'rejected';
+  const dc = getDomainColor(thread.domain);
+  const DomainIcon = DOMAIN_ICONS[thread.domain] || HelpCircle;
+  const stl = ss(thread.status);
+  const isProcurement = thread.domain === 'procurement';
+  const isHr = thread.domain === 'hr';
+  const isTerminal = thread.status === 'submitted' || thread.status === 'rejected';
 
   // --- Resizable split pane ---
   const { containerRef, topPaneHeight, isDragging, handleDragStart, handleSplitDoubleClick } = useSplitPane('[data-split-header]');
@@ -759,7 +739,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
   // Extract the latest full-width display block.
   // Only show split layout if no newer message has non-full-width display blocks
   // (e.g., automated_task_preview should cancel the split screen from an earlier report_builder)
-  const messages = task.conversation || [];
+  const messages = thread.conversation || [];
   let latestFullWidthBlock: DisplayBlock | null = null;
   let foundNewerInlineBlock = false;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -804,7 +784,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
     </div>
   );
 
-  const inputBar = <InputBar onSend={onSend} loading={loading} highlight={!!openTask} />;
+  const inputBar = <InputBar onSend={onSend} loading={loading} highlight={!!openThread} />;
 
   return (
     <div ref={containerRef} style={{
@@ -826,7 +806,7 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
               fontSize: '0.72rem', fontWeight: 600, color: dc,
               textTransform: 'uppercase', letterSpacing: '0.04em',
             }}>
-              {task.domain}
+              {thread.domain}
             </span>
             <span style={{
               fontSize: '0.65rem', fontWeight: 600,
@@ -834,14 +814,14 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
               backgroundColor: stl.bg, color: stl.color,
               textTransform: 'capitalize', marginLeft: 'auto',
             }}>
-              {task.status.replace(/_/g, ' ')}
+              {thread.status.replace(/_/g, ' ')}
             </span>
           </div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', marginBottom: task.automated_task ? '0.3rem' : '0.6rem' }}>
-            {getTaskTitle(task)}
+          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', marginBottom: thread.automated_task ? '0.3rem' : '0.6rem' }}>
+            {getThreadTitle(thread)}
           </div>
-          {task.automated_task && (
-            <AutomatedTaskHeader at={task.automated_task} onUpdate={() => onAction(task.id, 'reload')} onRun={onSend} />
+          {thread.automated_task && (
+            <AutomatedTaskHeader at={thread.automated_task} onUpdate={() => onAction(thread.id, 'reload')} onRun={onSend} />
           )}
           {tabsRow}
         </div>
@@ -860,8 +840,8 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
             <div style={{ padding: '0.75rem 0.5rem 0.75rem 1.5rem', minHeight: '100%' }}>
               <DisplayBlockRenderer
                 block={latestFullWidthBlock!}
-                onAction={onWidgetAction ? (action) => onWidgetAction(task.id, action) : undefined}
-                taskId={task.id}
+                onAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
+                taskId={thread.id}
               />
             </div>
           </div>
@@ -889,22 +869,22 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
                 <div style={{ maxWidth: 950, margin: '0 auto' }}>
                   <ConversationView
                     messages={messages}
-                    onWidgetAction={onWidgetAction ? (action) => onWidgetAction(task.id, action) : undefined}
-                    taskId={task.id}
+                    onWidgetAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
+                    taskId={thread.id}
                     hideFullWidthBlocks
                   />
             <div style={{ maxWidth: 768, margin: '0 auto' }}>
-              <ConversationExtras task={task} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+              <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
             </div>
                 </div>
               )}
-              {activeTab === 'details' && <DetailsView task={task} onAction={onAction} />}
+              {activeTab === 'details' && <DetailsView task={thread} onAction={onAction} />}
               {activeTab === 'activity' && (
-                <ActivityTimeline messages={messages} createdAt={task.created_at} domain={task.domain}
-                  llmCalls={task.llm_calls}
-                  toolCalls={task.tool_calls}
-                  thinkingSteps={task.thinking_steps}
-                  approval={task.approval} integrationRun={task.integration_run} />
+                <ActivityTimeline messages={messages} createdAt={thread.created_at} domain={thread.domain}
+                  llmCalls={thread.llm_calls}
+                  toolCalls={thread.tool_calls}
+                  thinkingSteps={thread.thinking_steps}
+                  approval={thread.approval} integrationRun={thread.integration_run} />
               )}
             </div>
             {inputBar}
@@ -917,21 +897,21 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
             {activeTab === 'conversation' && (
               <div style={{ maxWidth: 950, margin: '0 auto' }}>
                 <ConversationView messages={messages}
-                  onWidgetAction={onWidgetAction ? (action) => onWidgetAction(task.id, action) : undefined}
-                  taskId={task.id}
+                  onWidgetAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
+                  taskId={thread.id}
                 />
                 <div style={{ maxWidth: 768, margin: '0 auto' }}>
-              <ConversationExtras task={task} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+              <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
             </div>
               </div>
             )}
-            {activeTab === 'details' && <DetailsView task={task} onAction={onAction} />}
+            {activeTab === 'details' && <DetailsView task={thread} onAction={onAction} />}
             {activeTab === 'activity' && (
-              <ActivityTimeline messages={messages} createdAt={task.created_at} domain={task.domain}
-                llmCalls={task.llm_calls}
-                toolCalls={task.tool_calls}
-                thinkingSteps={task.thinking_steps}
-                approval={task.approval} integrationRun={task.integration_run} />
+              <ActivityTimeline messages={messages} createdAt={thread.created_at} domain={thread.domain}
+                llmCalls={thread.llm_calls}
+                toolCalls={thread.tool_calls}
+                thinkingSteps={thread.thinking_steps}
+                approval={thread.approval} integrationRun={thread.integration_run} />
             )}
           </div>
           {inputBar}

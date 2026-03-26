@@ -2,7 +2,7 @@
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task
+from app.db.models import Thread
 from app.services.venue_service import get_user_venues
 
 
@@ -13,8 +13,8 @@ def build_reports_context(db: Session, user_id: str | None = None) -> dict:
     return {"venues": [{"id": v.id, "name": v.name} for v in venues]}
 
 
-def _report_task_to_dict(task: Task) -> dict:
-    """Convert a reports Task to a response dict."""
+def _report_task_to_dict(task: Thread) -> dict:
+    """Convert a reports Thread to a response dict."""
     extracted = task.extracted_fields or {}
 
     # Latest approval

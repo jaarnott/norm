@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Message, HrSetup, Approval
+from app.db.models import Thread, Message, HrSetup, Approval
 from app.connectors.registry import resolve_connector
 from app.services.integration_service import execute_submission_v2
 
@@ -43,7 +43,7 @@ def create_employee_setup(
     if extracted_extra:
         extracted.update(extracted_extra)
 
-    task = Task(
+    task = Thread(
         user_id=user_id,
         intent=intent,
         domain="hr",
@@ -56,12 +56,12 @@ def create_employee_setup(
     db.add(task)
     db.flush()
 
-    db.add(Message(task_id=task.id, role="user", content=message))
+    db.add(Message(thread_id=task.id, role="user", content=message))
     if question:
-        db.add(Message(task_id=task.id, role="assistant", content=question))
+        db.add(Message(thread_id=task.id, role="assistant", content=question))
 
     hr = HrSetup(
-        task_id=task.id,
+        thread_id=task.id,
         employee_name=employee_name,
         role=role,
         venue_id=venue["id"] if venue else None,
@@ -83,7 +83,7 @@ def update_employee_setup(
     role: str | None,
     start_date: str | None,
 ) -> dict | None:
-    task = db.query(Task).filter(Task.id == task_id).first()
+    task = db.query(Thread).filter(Thread.id == task_id).first()
     if not task:
         return None
 
@@ -159,11 +159,11 @@ def update_employee_setup(
     else:
         task.clarification_question = _hr_question(core_missing)
 
-    db.add(Message(task_id=task.id, role="assistant", content=assistant_msg))
+    db.add(Message(thread_id=task.id, role="assistant", content=assistant_msg))
     task.updated_at = datetime.now(timezone.utc)
 
     # Update HR record
-    hr = db.query(HrSetup).filter(HrSetup.task_id == task_id).first()
+    hr = db.query(HrSetup).filter(HrSetup.thread_id == task_id).first()
     if hr:
         hr.employee_name = extracted.get("employee_name")
         hr.role = extracted.get("role")
@@ -179,7 +179,7 @@ def update_employee_setup(
 
 
 def get_task(db: Session, task_id: str) -> dict | None:
-    task = db.query(Task).filter(Task.id == task_id, Task.domain == "hr").first()
+    task = db.query(Thread).filter(Thread.id == task_id, Thread.domain == "hr").first()
     if not task:
         return None
     return _task_to_dict(task)
@@ -190,7 +190,7 @@ def approve_task(db: Session, task_id: str, user=None) -> dict | None:
     if result:
         db.add(
             Approval(
-                task_id=task_id,
+                thread_id=task_id,
                 action="approved",
                 performed_by=user.email if user else "system",
                 user_id=user.id if user else None,
@@ -205,7 +205,7 @@ def reject_task(db: Session, task_id: str, user=None) -> dict | None:
     if result:
         db.add(
             Approval(
-                task_id=task_id,
+                thread_id=task_id,
                 action="rejected",
                 performed_by=user.email if user else "system",
                 user_id=user.id if user else None,
@@ -216,7 +216,7 @@ def reject_task(db: Session, task_id: str, user=None) -> dict | None:
 
 
 def submit_task(db: Session, task_id: str) -> dict | None:
-    task = db.query(Task).filter(Task.id == task_id, Task.domain == "hr").first()
+    task = db.query(Thread).filter(Thread.id == task_id, Thread.domain == "hr").first()
     if not task or task.status != "approved":
         return None
 
@@ -226,7 +226,7 @@ def submit_task(db: Session, task_id: str) -> dict | None:
 
     if run.status == "success":
         task.status = "submitted"
-        hr = db.query(HrSetup).filter(HrSetup.task_id == task_id).first()
+        hr = db.query(HrSetup).filter(HrSetup.thread_id == task_id).first()
         if hr:
             hr.status = "submitted"
     else:
@@ -239,33 +239,33 @@ def submit_task(db: Session, task_id: str) -> dict | None:
 
 
 def list_tasks(db: Session, user_id: str | None = None) -> list[dict]:
-    q = db.query(Task).filter(Task.domain == "hr")
+    q = db.query(Thread).filter(Thread.domain == "hr")
     if user_id:
-        q = q.filter(Task.user_id == user_id)
-    tasks = q.order_by(Task.created_at.desc()).all()
+        q = q.filter(Thread.user_id == user_id)
+    tasks = q.order_by(Thread.created_at.desc()).all()
     return [_task_to_dict(t) for t in tasks]
 
 
 def find_open_task(db: Session, user_id: str | None = None) -> dict | None:
-    q = db.query(Task).filter(
-        Task.domain == "hr",
-        Task.status.in_(["awaiting_user_input", "awaiting_approval"]),
+    q = db.query(Thread).filter(
+        Thread.domain == "hr",
+        Thread.status.in_(["awaiting_user_input", "awaiting_approval"]),
     )
     if user_id:
-        q = q.filter(Task.user_id == user_id)
-    task = q.order_by(Task.created_at.desc()).first()
+        q = q.filter(Thread.user_id == user_id)
+    task = q.order_by(Thread.created_at.desc()).first()
     if not task:
         return None
     return _task_to_dict(task)
 
 
 def _set_status(db: Session, task_id: str, status: str) -> dict | None:
-    task = db.query(Task).filter(Task.id == task_id, Task.domain == "hr").first()
+    task = db.query(Thread).filter(Thread.id == task_id, Thread.domain == "hr").first()
     if not task:
         return None
     task.status = status
     task.updated_at = datetime.now(timezone.utc)
-    hr = db.query(HrSetup).filter(HrSetup.task_id == task_id).first()
+    hr = db.query(HrSetup).filter(HrSetup.thread_id == task_id).first()
     if hr:
         hr.status = status
     db.commit()
@@ -315,7 +315,7 @@ def _build_checklist(extracted: dict) -> list[dict]:
     ]
 
 
-def _task_to_dict(task: Task) -> dict:
+def _task_to_dict(task: Thread) -> dict:
     extracted = task.extracted_fields or {}
     venue = extracted.get("venue")
 

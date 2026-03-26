@@ -83,19 +83,19 @@ export default function AutomatedTaskBoard({ data, onAction }: DisplayBlockProps
   }, [reload]);
 
   const handleOpenTask = useCallback(async (task: AutomatedTask) => {
-    let convTaskId = task.conversation_task_id;
+    let convThreadId = task.conversation_thread_id;
 
-    // If no conversation task yet, create one (lightweight, no LLM call)
-    if (!convTaskId) {
+    // If no conversation thread yet, create one (lightweight, no LLM call)
+    if (!convThreadId) {
       const res = await apiFetch(`/api/automated-tasks/${task.id}/ensure-conversation`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
-        convTaskId = data.conversation_task_id;
+        convThreadId = data.conversation_thread_id;
       }
     }
 
-    if (convTaskId && onAction) {
-      onAction({ connector_name: 'norm', action: 'open_automated_task', params: { conversation_task_id: convTaskId } });
+    if (convThreadId && onAction) {
+      onAction({ connector_name: 'norm', action: 'open_automated_task', params: { conversation_thread_id: convThreadId } });
     }
   }, [onAction]);
 

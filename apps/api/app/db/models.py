@@ -38,7 +38,7 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
-    tasks = relationship("Task", back_populates="user")
+    threads = relationship("Thread", back_populates="user")
     memberships = relationship("OrganizationMembership", back_populates="user")
 
 
@@ -161,8 +161,8 @@ class ProductAlias(Base):
     product = relationship("Product", back_populates="aliases")
 
 
-class Task(Base):
-    __tablename__ = "tasks"
+class Thread(Base):
+    __tablename__ = "threads"
 
     id = Column(String, primary_key=True, default=_uuid)
     session_id = Column(String, index=True)
@@ -185,44 +185,44 @@ class Task(Base):
 
     messages = relationship(
         "Message",
-        back_populates="task",
+        back_populates="thread",
         order_by="Message.created_at",
         cascade="all, delete-orphan",
     )
     order = relationship(
-        "Order", back_populates="task", uselist=False, cascade="all, delete-orphan"
+        "Order", back_populates="thread", uselist=False, cascade="all, delete-orphan"
     )
     hr_setup = relationship(
-        "HrSetup", back_populates="task", uselist=False, cascade="all, delete-orphan"
+        "HrSetup", back_populates="thread", uselist=False, cascade="all, delete-orphan"
     )
     approvals = relationship(
         "Approval",
-        back_populates="task",
+        back_populates="thread",
         order_by="Approval.performed_at",
         cascade="all, delete-orphan",
     )
     integration_runs = relationship(
         "IntegrationRun",
-        back_populates="task",
+        back_populates="thread",
         order_by="IntegrationRun.created_at",
         cascade="all, delete-orphan",
     )
     llm_calls = relationship(
         "LlmCall",
-        back_populates="task",
+        back_populates="thread",
         order_by="LlmCall.created_at",
         cascade="all, delete-orphan",
     )
     tool_calls = relationship(
         "ToolCall",
-        back_populates="task",
+        back_populates="thread",
         order_by="ToolCall.created_at",
         cascade="all, delete-orphan",
     )
     working_documents = relationship(
-        "WorkingDocument", back_populates="task", cascade="all, delete-orphan"
+        "WorkingDocument", back_populates="thread", cascade="all, delete-orphan"
     )
-    user = relationship("User", back_populates="tasks")
+    user = relationship("User", back_populates="threads")
 
     # ── Tag helpers ──────────────────────────────────────────────
     def add_tag(self, tag: str) -> None:
@@ -245,27 +245,27 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
     role = Column(String, nullable=False)  # "user" or "assistant"
     content = Column(Text, nullable=False)
     display_blocks = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
-    task = relationship("Task", back_populates="messages")
+    thread = relationship("Thread", back_populates="messages")
 
 
 class Order(Base):
     __tablename__ = "orders"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
     venue_id = Column(String, ForeignKey("venues.id"))
     supplier_id = Column(String, ForeignKey("suppliers.id"))
     status = Column(String, default="draft")
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    task = relationship("Task", back_populates="order")
+    thread = relationship("Thread", back_populates="order")
     venue = relationship("Venue")
     supplier = relationship("Supplier")
     lines = relationship("OrderLine", back_populates="order")
@@ -288,21 +288,21 @@ class Approval(Base):
     __tablename__ = "approvals"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
     action = Column(String, nullable=False)  # "approved" or "rejected"
     performed_by = Column(String, default="system")
     user_id = Column(String, ForeignKey("users.id"), nullable=True)
     performed_at = Column(DateTime(timezone=True), default=_now)
     notes = Column(Text)
 
-    task = relationship("Task", back_populates="approvals")
+    thread = relationship("Thread", back_populates="approvals")
 
 
 class IntegrationRun(Base):
     __tablename__ = "integration_runs"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
     connector_name = Column(String, nullable=False)
     request_payload = Column(JSON)
     response_payload = Column(JSON)
@@ -316,14 +316,14 @@ class IntegrationRun(Base):
     rendered_request = Column(JSON)  # {method, url, headers, body}
     spec_version = Column(Integer)  # which version of connector spec was used
 
-    task = relationship("Task", back_populates="integration_runs")
+    thread = relationship("Thread", back_populates="integration_runs")
 
 
 class LlmCall(Base):
     __tablename__ = "llm_calls"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=True)
     call_type = Column(
         String, nullable=False
     )  # "routing" | "interpretation" | "execution" | "spec_generation"
@@ -340,7 +340,7 @@ class LlmCall(Base):
     tools_provided = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
-    task = relationship("Task", back_populates="llm_calls")
+    thread = relationship("Thread", back_populates="llm_calls")
 
 
 class ConnectorSpec(Base):
@@ -446,7 +446,7 @@ class ToolCall(Base):
     __tablename__ = "tool_calls"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
     llm_call_id = Column(
         String, ForeignKey("llm_calls.id", ondelete="SET NULL"), nullable=True
     )
@@ -469,14 +469,14 @@ class ToolCall(Base):
     duration_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
-    task = relationship("Task", back_populates="tool_calls")
+    thread = relationship("Thread", back_populates="tool_calls")
 
 
 class WorkingDocument(Base):
     __tablename__ = "working_documents"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=True, index=True)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=True, index=True)
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
     doc_type = Column(String, nullable=False)  # "roster", "order", etc.
     connector_name = Column(String, nullable=False)
@@ -494,14 +494,14 @@ class WorkingDocument(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    task = relationship("Task", back_populates="working_documents")
+    thread = relationship("Thread", back_populates="working_documents")
 
 
 class HrSetup(Base):
     __tablename__ = "hr_setups"
 
     id = Column(String, primary_key=True, default=_uuid)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
     employee_name = Column(String)
     role = Column(String)
     venue_id = Column(String, ForeignKey("venues.id"))
@@ -511,7 +511,7 @@ class HrSetup(Base):
     employment_type = Column(String)
     status = Column(String, default="draft")
 
-    task = relationship("Task", back_populates="hr_setup")
+    thread = relationship("Thread", back_populates="hr_setup")
     venue = relationship("Venue")
 
 
@@ -620,8 +620,8 @@ class AutomatedTask(Base):
     overrides_next_run = Column(
         JSON, nullable=True
     )  # one-off instructions, cleared after execution
-    conversation_task_id = Column(
-        String, ForeignKey("tasks.id"), nullable=True
+    conversation_thread_id = Column(
+        String, ForeignKey("threads.id"), nullable=True
     )  # persistent conversation
 
     runs = relationship(
@@ -631,7 +631,7 @@ class AutomatedTask(Base):
         order_by="AutomatedTaskRun.started_at.desc()",
     )
     creator = relationship("User")
-    conversation_task = relationship("Task", foreign_keys=[conversation_task_id])
+    conversation_thread = relationship("Thread", foreign_keys=[conversation_thread_id])
 
 
 class AutomatedTaskRun(Base):
@@ -639,9 +639,9 @@ class AutomatedTaskRun(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     automated_task_id = Column(String, ForeignKey("automated_tasks.id"), nullable=False)
-    task_id = Column(
-        String, ForeignKey("tasks.id"), nullable=True
-    )  # execution Task record
+    thread_id = Column(
+        String, ForeignKey("threads.id"), nullable=True
+    )  # execution Thread record
     status = Column(String, nullable=False, default="running")  # running|success|error
     mode = Column(String, nullable=False, default="live")  # live|test
     result_summary = Column(Text, nullable=True)
@@ -652,7 +652,7 @@ class AutomatedTaskRun(Base):
     duration_ms = Column(Integer, nullable=True)
 
     automated_task = relationship("AutomatedTask", back_populates="runs")
-    task = relationship("Task", foreign_keys=[task_id])
+    thread = relationship("Thread", foreign_keys=[thread_id])
 
 
 class TokenUsage(Base):
@@ -764,7 +764,7 @@ class ReportChart(Base):
         JSON, nullable=False, default=dict
     )  # {connector, action, params} replayable recipe
     position = Column(Integer, nullable=False, default=0)
-    source_task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
+    source_thread_id = Column(String, ForeignKey("threads.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -833,7 +833,7 @@ class EmailLog(Base):
     id = Column(String, primary_key=True, default=_uuid)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=True)
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
-    task_id = Column(String, ForeignKey("tasks.id"), nullable=True)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=True)
     sender_type = Column(String, nullable=False)  # system|on_behalf
     sender_email = Column(String, nullable=False)
     sender_user_id = Column(String, ForeignKey("users.id"), nullable=True)

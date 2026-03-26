@@ -34,7 +34,7 @@ class AddChartBody(BaseModel):
     chart_spec: dict = {}
     data: list[dict] = []
     script: dict = {}
-    source_task_id: str | None = None
+    source_thread_id: str | None = None
 
 
 class UpdateChartBody(BaseModel):
@@ -72,7 +72,7 @@ def _chart_to_dict(chart: ReportChart) -> dict:
         "data": chart.data,
         "script": chart.script,
         "position": chart.position,
-        "source_task_id": chart.source_task_id,
+        "source_thread_id": chart.source_thread_id,
         "created_at": chart.created_at.isoformat() if chart.created_at else None,
     }
 
@@ -189,7 +189,7 @@ async def add_chart(
         chart_spec=body.chart_spec,
         data=body.data,
         script=body.script,
-        source_task_id=body.source_task_id,
+        source_thread_id=body.source_thread_id,
         position=position,
     )
     db.add(chart)

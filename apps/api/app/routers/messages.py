@@ -16,7 +16,7 @@ router = APIRouter()
 
 class MessageRequest(BaseModel):
     message: str
-    task_id: str | None = None
+    thread_id: str | None = None
     venue_id: str | None = None
 
 
@@ -28,7 +28,11 @@ async def post_message(
 ):
     try:
         return handle_message(
-            req.message, db, user_id=user.id, task_id=req.task_id, venue_id=req.venue_id
+            req.message,
+            db,
+            user_id=user.id,
+            thread_id=req.thread_id,
+            venue_id=req.venue_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -74,7 +78,7 @@ async def post_message_stream(
                     req.message,
                     db,
                     user_id=user.id,
-                    task_id=req.task_id,
+                    thread_id=req.thread_id,
                     venue_id=req.venue_id,
                 )
                 on_event({"type": "complete", "data": result})

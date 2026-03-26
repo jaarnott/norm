@@ -1,7 +1,7 @@
 """Supervisor / Orchestrator
 
 Routes user messages to domain-specialist agents. The supervisor:
-1. Routes to an existing task's agent when task_id is provided
+1. Routes to an existing thread's agent when thread_id is provided
 2. Classifies new messages via the LLM router
 3. Delegates to the appropriate domain agent
 4. Falls back to clarification for unknown domains
@@ -11,7 +11,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Message, LlmCall
+from app.db.models import Thread, Message, LlmCall
 from app.agents.registry import get_agent, registered_domains
 from app.agents.router import classify
 
@@ -22,7 +22,7 @@ def handle_message(
     message: str,
     db: Session,
     user_id: str | None = None,
-    task_id: str | None = None,
+    thread_id: str | None = None,
     venue_id: str | None = None,
 ) -> dict:
     """Process a user message through routing then agent delegation."""
@@ -31,17 +31,17 @@ def handle_message(
 
     check_quota_for_user(db, user_id)
 
-    # Track whether we're continuing a meta/unknown task
-    prior_task = None
+    # Track whether we're continuing a meta/unknown thread
+    prior_thread = None
     venue_name = None
     venue_timezone = None
 
-    # 1. If a specific task_id is provided, route to that task's domain agent
-    if task_id:
-        task = db.query(Task).filter(Task.id == task_id).first()
-        if task:
-            # Load venue from existing task for follow-ups
-            venue_id = task.venue_id
+    # 1. If a specific thread_id is provided, route to that thread's domain agent
+    if thread_id:
+        thread = db.query(Thread).filter(Thread.id == thread_id).first()
+        if thread:
+            # Load venue from existing thread for follow-ups
+            venue_id = thread.venue_id
             venue_name = None
             venue_timezone = None
             if venue_id:
@@ -51,20 +51,20 @@ def handle_message(
                 if venue_obj:
                     venue_name = venue_obj.name
                     venue_timezone = venue_obj.timezone
-            agent = get_agent(task.domain)
+            agent = get_agent(thread.domain)
             if agent:
                 return agent.handle_message(
                     message,
                     db,
                     user_id,
-                    task_id,
+                    thread_id,
                     venue_id=venue_id,
                     venue_name=venue_name,
                     venue_timezone=venue_timezone,
                 )
             # Handle venue clarification follow-ups — resolve venue from reply
             # and re-route the original message
-            if task.intent == "venue_clarification":
+            if thread.intent == "venue_clarification":
                 from app.services.venue_service import resolve_venue_id
                 from app.db.models import Venue
 
@@ -72,11 +72,11 @@ def handle_message(
                 if resolved_id:
                     venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
                     # Add the user's venue reply to the conversation
-                    db.add(Message(task_id=task.id, role="user", content=message))
+                    db.add(Message(thread_id=thread.id, role="user", content=message))
                     db.flush()
                     # Re-route the original message with the resolved venue
-                    original_message = task.raw_prompt or message
-                    prior_task = task
+                    original_message = thread.raw_prompt or message
+                    prior_thread = thread
                     # Fall through to classification with venue set
                     venue_id = resolved_id
                     venue_name = venue_obj.name if venue_obj else message.strip()
@@ -90,19 +90,21 @@ def handle_message(
                     venues = get_user_venues(db)
                     venue_list = ", ".join(v.name for v in venues)
                     reply = f"I couldn't find a venue called '{message.strip()}'. Available venues: {venue_list}"
-                    db.add(Message(task_id=task.id, role="user", content=message))
-                    db.add(Message(task_id=task.id, role="assistant", content=reply))
+                    db.add(Message(thread_id=thread.id, role="user", content=message))
+                    db.add(
+                        Message(thread_id=thread.id, role="assistant", content=reply)
+                    )
                     db.commit()
-                    db.refresh(task)
+                    db.refresh(thread)
                     return {
-                        "id": task.id,
+                        "id": thread.id,
                         "domain": "unknown",
                         "intent": "venue_clarification",
-                        "title": task.title,
+                        "title": thread.title,
                         "message": message,
                         "status": "needs_clarification",
-                        "created_at": task.created_at.isoformat(),
-                        "updated_at": task.updated_at.isoformat(),
+                        "created_at": thread.created_at.isoformat(),
+                        "updated_at": thread.updated_at.isoformat(),
                         "conversation": [
                             {
                                 "role": m.role,
@@ -111,15 +113,15 @@ def handle_message(
                                 if m.created_at
                                 else None,
                             }
-                            for m in sorted(task.messages, key=lambda x: x.created_at)
+                            for m in sorted(thread.messages, key=lambda x: x.created_at)
                         ],
                         "clarification_question": reply,
                     }
 
-            # For meta/unknown tasks: remember the old task so we can
-            # migrate its conversation into whatever task comes next.
-            elif task.domain in ("meta", "unknown"):
-                prior_task = task
+            # For meta/unknown threads: remember the old thread so we can
+            # migrate its conversation into whatever thread comes next.
+            elif thread.domain in ("meta", "unknown"):
+                prior_thread = thread
 
     # 2. Classify the message to a domain (with rich capability descriptions)
     from app.services.agent_config_service import get_all_capabilities_summary
@@ -183,15 +185,15 @@ def handle_message(
     # Handle meta domain — self-description
     if domain == "meta":
         result = _build_capabilities_response(
-            message, caps, db, user_id, prior_task=prior_task
+            message, caps, db, user_id, prior_thread=prior_thread
         )
-        # Back-fill task_id on the routing LLM call
+        # Back-fill thread_id on the routing LLM call
         if routing.get("llm_call_id") and result.get("id"):
             llm_call = (
                 db.query(LlmCall).filter(LlmCall.id == routing["llm_call_id"]).first()
             )
             if llm_call:
-                llm_call.task_id = result["id"]
+                llm_call.thread_id = result["id"]
                 db.commit()
                 result["llm_calls"] = [_llm_call_to_dict(llm_call)]
         return result
@@ -208,21 +210,21 @@ def handle_message(
             venue_timezone=venue_timezone,
         )
 
-        # Set the LLM-generated title on the task
+        # Set the LLM-generated title on the thread
         title = routing.get("title")
         if title and result.get("id"):
-            task_obj = db.query(Task).filter(Task.id == result["id"]).first()
-            if task_obj and not task_obj.title:
-                task_obj.title = title
+            thread_obj = db.query(Thread).filter(Thread.id == result["id"]).first()
+            if thread_obj and not thread_obj.title:
+                thread_obj.title = title
                 db.flush()
             result["title"] = title
 
-        # Migrate prior meta/unknown conversation into the new task
-        if prior_task and result.get("id"):
-            _migrate_prior_task(prior_task, result["id"], db)
+        # Migrate prior meta/unknown conversation into the new thread
+        if prior_thread and result.get("id"):
+            _migrate_prior_thread(prior_thread, result["id"], db)
             # Re-read conversation so the response includes the full history
-            new_task = db.query(Task).filter(Task.id == result["id"]).first()
-            if new_task:
+            new_thread = db.query(Thread).filter(Thread.id == result["id"]).first()
+            if new_thread:
                 result["conversation"] = [
                     {
                         "role": m.role,
@@ -231,16 +233,16 @@ def handle_message(
                         if m.created_at
                         else None,
                     }
-                    for m in sorted(new_task.messages, key=lambda x: x.created_at)
+                    for m in sorted(new_thread.messages, key=lambda x: x.created_at)
                 ]
 
-        # Back-fill task_id on the routing LLM call and include it in the response
+        # Back-fill thread_id on the routing LLM call and include it in the response
         if routing.get("llm_call_id") and result.get("id"):
             llm_call = (
                 db.query(LlmCall).filter(LlmCall.id == routing["llm_call_id"]).first()
             )
             if llm_call:
-                llm_call.task_id = result["id"]
+                llm_call.thread_id = result["id"]
                 db.commit()
 
                 routing_entry = _llm_call_to_dict(llm_call)
@@ -272,22 +274,26 @@ def _llm_call_to_dict(llm_call: LlmCall) -> dict:
     }
 
 
-def _migrate_prior_task(prior_task: Task, new_task_id: str, db: Session) -> None:
-    """Move conversation & LLM calls from a meta/unknown task into the new real task, then delete the old one."""
-    old_task_id = prior_task.id
+def _migrate_prior_thread(
+    prior_thread: Thread, new_thread_id: str, db: Session
+) -> None:
+    """Move conversation & LLM calls from a meta/unknown thread into the new real thread, then delete the old one."""
+    old_thread_id = prior_thread.id
 
     # Re-parent messages and LLM calls via bulk UPDATE (avoids SQLAlchemy
     # relationship cascade conflicts with the subsequent delete).
-    db.query(Message).filter(Message.task_id == old_task_id).update(
-        {Message.task_id: new_task_id}, synchronize_session="fetch"
+    db.query(Message).filter(Message.thread_id == old_thread_id).update(
+        {Message.thread_id: new_thread_id}, synchronize_session="fetch"
     )
-    db.query(LlmCall).filter(LlmCall.task_id == old_task_id).update(
-        {LlmCall.task_id: new_task_id}, synchronize_session="fetch"
+    db.query(LlmCall).filter(LlmCall.thread_id == old_thread_id).update(
+        {LlmCall.thread_id: new_thread_id}, synchronize_session="fetch"
     )
     db.flush()
 
-    # Now safe to delete the orphaned task (no child rows remain)
-    db.query(Task).filter(Task.id == old_task_id).delete(synchronize_session="fetch")
+    # Now safe to delete the orphaned thread (no child rows remain)
+    db.query(Thread).filter(Thread.id == old_thread_id).delete(
+        synchronize_session="fetch"
+    )
     db.commit()
 
 
@@ -296,11 +302,11 @@ def _build_capabilities_response(
     caps: dict,
     db: Session,
     user_id: str | None = None,
-    prior_task: Task | None = None,
+    prior_thread: Thread | None = None,
 ) -> dict:
     """Build a meta response listing all agent capabilities.
 
-    If prior_task is provided, continues that conversation instead of creating a new task.
+    If prior_thread is provided, continues that conversation instead of creating a new thread.
     """
     lines = ["Here's what I can help you with:\n"]
     for slug, info in caps.items():
@@ -318,14 +324,14 @@ def _build_capabilities_response(
     lines.append("\nJust type what you need and I'll route it to the right agent.")
     answer = "\n".join(lines)
 
-    if prior_task:
-        task = prior_task
-        db.add(Message(task_id=task.id, role="user", content=message))
-        db.add(Message(task_id=task.id, role="assistant", content=answer))
+    if prior_thread:
+        thread = prior_thread
+        db.add(Message(thread_id=thread.id, role="user", content=message))
+        db.add(Message(thread_id=thread.id, role="assistant", content=answer))
         db.commit()
-        db.refresh(task)
+        db.refresh(thread)
     else:
-        task = Task(
+        thread = Thread(
             user_id=user_id,
             intent="meta.capabilities",
             domain="meta",
@@ -334,29 +340,29 @@ def _build_capabilities_response(
             extracted_fields={},
             missing_fields=[],
         )
-        db.add(task)
+        db.add(thread)
         db.flush()
-        db.add(Message(task_id=task.id, role="user", content=message))
-        db.add(Message(task_id=task.id, role="assistant", content=answer))
+        db.add(Message(thread_id=thread.id, role="user", content=message))
+        db.add(Message(thread_id=thread.id, role="assistant", content=answer))
         db.commit()
-        db.refresh(task)
+        db.refresh(thread)
 
     return {
-        "id": task.id,
+        "id": thread.id,
         "domain": "meta",
         "intent": "meta.capabilities",
-        "title": task.title,
+        "title": thread.title,
         "message": message,
         "status": "completed",
-        "created_at": task.created_at.isoformat(),
-        "updated_at": task.updated_at.isoformat(),
+        "created_at": thread.created_at.isoformat(),
+        "updated_at": thread.updated_at.isoformat(),
         "conversation": [
             {
                 "role": m.role,
                 "text": m.content,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
-            for m in sorted(task.messages, key=lambda x: x.created_at)
+            for m in sorted(thread.messages, key=lambda x: x.created_at)
         ],
     }
 
@@ -367,7 +373,7 @@ def _create_venue_clarification(
     """Ask the user to specify which venue before proceeding."""
     question = f"Which venue would you like me to check? Available venues: {venue_list}"
 
-    task = Task(
+    thread = Thread(
         user_id=user_id,
         intent="venue_clarification",
         domain="unknown",
@@ -377,23 +383,23 @@ def _create_venue_clarification(
         missing_fields=["venue"],
         clarification_question=question,
     )
-    db.add(task)
+    db.add(thread)
     db.flush()
 
-    db.add(Message(task_id=task.id, role="user", content=message))
-    db.add(Message(task_id=task.id, role="assistant", content=question))
+    db.add(Message(thread_id=thread.id, role="user", content=message))
+    db.add(Message(thread_id=thread.id, role="assistant", content=question))
     db.commit()
-    db.refresh(task)
+    db.refresh(thread)
 
     return {
-        "id": task.id,
+        "id": thread.id,
         "domain": "unknown",
         "intent": "venue_clarification",
-        "title": task.title,
+        "title": thread.title,
         "message": message,
         "status": "needs_clarification",
-        "created_at": task.created_at.isoformat(),
-        "updated_at": task.updated_at.isoformat(),
+        "created_at": thread.created_at.isoformat(),
+        "updated_at": thread.updated_at.isoformat(),
         "conversation": [
             {"role": "user", "text": message},
             {"role": "assistant", "text": question},
@@ -406,7 +412,7 @@ def _create_unknown(message: str, db: Session, user_id: str | None = None) -> di
     """Handle unknown intent."""
     question = "I'm not sure what you need. Try asking me to order stock, set up a new employee, or generate a report."
 
-    task = Task(
+    thread = Thread(
         user_id=user_id,
         intent="unknown",
         domain="unknown",
@@ -416,23 +422,23 @@ def _create_unknown(message: str, db: Session, user_id: str | None = None) -> di
         missing_fields=[],
         clarification_question=question,
     )
-    db.add(task)
+    db.add(thread)
     db.flush()
 
-    db.add(Message(task_id=task.id, role="user", content=message))
-    db.add(Message(task_id=task.id, role="assistant", content=question))
+    db.add(Message(thread_id=thread.id, role="user", content=message))
+    db.add(Message(thread_id=thread.id, role="assistant", content=question))
     db.commit()
-    db.refresh(task)
+    db.refresh(thread)
 
     return {
-        "id": task.id,
+        "id": thread.id,
         "domain": "unknown",
         "intent": "unknown",
-        "title": task.title,
+        "title": thread.title,
         "message": message,
         "status": "needs_clarification",
-        "created_at": task.created_at.isoformat(),
-        "updated_at": task.updated_at.isoformat(),
+        "created_at": thread.created_at.isoformat(),
+        "updated_at": thread.updated_at.isoformat(),
         "conversation": [
             {"role": "user", "text": message},
             {"role": "assistant", "text": question},

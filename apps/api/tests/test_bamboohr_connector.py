@@ -4,7 +4,6 @@ import os
 from unittest.mock import patch, MagicMock
 
 import httpx
-import pytest
 
 
 BAMBOO_ENV = {"BAMBOOHR_SUBDOMAIN": "test", "BAMBOOHR_API_KEY": "fake-key"}
@@ -16,15 +15,18 @@ class TestMapFields:
     @patch.dict(os.environ, BAMBOO_ENV)
     def test_map_fields_full(self):
         from app.connectors.bamboohr import BambooHrConnector
-        result = BambooHrConnector._map_fields({
-            "employee_name": "Sarah Jones",
-            "role": "Bartender",
-            "start_date": "2026-03-20",
-            "email": "sarah@example.com",
-            "phone": "021-555-1234",
-            "venue": "La Zeppa",
-            "employment_type": "Full-time",
-        })
+
+        result = BambooHrConnector._map_fields(
+            {
+                "employee_name": "Sarah Jones",
+                "role": "Bartender",
+                "start_date": "2026-03-20",
+                "email": "sarah@example.com",
+                "phone": "021-555-1234",
+                "venue": "La Zeppa",
+                "employment_type": "Full-time",
+            }
+        )
         assert result == {
             "firstName": "Sarah",
             "lastName": "Jones",
@@ -39,6 +41,7 @@ class TestMapFields:
     @patch.dict(os.environ, BAMBOO_ENV)
     def test_map_fields_single_name(self):
         from app.connectors.bamboohr import BambooHrConnector
+
         result = BambooHrConnector._map_fields({"employee_name": "Madonna"})
         assert result["firstName"] == "Madonna"
         assert result["lastName"] == ""
@@ -46,6 +49,7 @@ class TestMapFields:
     @patch.dict(os.environ, BAMBOO_ENV)
     def test_map_fields_multi_word_name(self):
         from app.connectors.bamboohr import BambooHrConnector
+
         result = BambooHrConnector._map_fields({"employee_name": "Mary Jane Watson"})
         assert result["firstName"] == "Mary Jane"
         assert result["lastName"] == "Watson"
@@ -61,7 +65,9 @@ class TestSubmit:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 201
-        mock_resp.headers = {"Location": "https://api.bamboohr.com/api/gateway.php/test/v1/employees/123"}
+        mock_resp.headers = {
+            "Location": "https://api.bamboohr.com/api/gateway.php/test/v1/employees/123"
+        }
         mock_post.return_value = mock_resp
 
         connector = BambooHrConnector()
@@ -128,5 +134,3 @@ class TestSubmit:
 
         assert result.success is False
         assert "network error" in result.error_message.lower()
-
-

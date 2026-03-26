@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.agents.base import BaseDomainAgent
 from app.agents.reports.context import build_reports_context, _report_task_to_dict
 from app.agents.reports.planner import create_report_plan
-from app.db.models import Task, Message, LlmCall
+from app.db.models import Thread, Message, LlmCall
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class ReportsAgent(BaseDomainAgent):
         message: str,
         db: Session,
         user_id: str | None = None,
-        task_id: str | None = None,
+        thread_id: str | None = None,
         venue_id: str | None = None,
         venue_name: str | None = None,
         venue_timezone: str | None = None,
@@ -42,7 +42,7 @@ class ReportsAgent(BaseDomainAgent):
                 message,
                 db,
                 user_id,
-                task_id,
+                thread_id,
                 venue_id=venue_id,
                 venue_name=venue_name,
                 venue_timezone=venue_timezone,
@@ -51,21 +51,21 @@ class ReportsAgent(BaseDomainAgent):
         # Classic interpretation path (no tools bound)
         ctx = self.build_context(db, user_id)
 
-        # If task_id provided, load it as open task for follow-up
-        if task_id:
-            task = db.query(Task).filter(Task.id == task_id).first()
+        # If thread_id provided, load it as open task for follow-up
+        if thread_id:
+            task = db.query(Thread).filter(Thread.id == thread_id).first()
             if task and task.domain == "reports":
                 ctx["open_task"] = _report_task_to_dict(task)
 
-        # Interpret — pass task_id if this is a follow-up
-        parsed, llm_call_id = self.interpret(message, ctx, db=db, task_id=task_id)
+        # Interpret — pass thread_id if this is a follow-up
+        parsed, llm_call_id = self.interpret(message, ctx, db=db, thread_id=thread_id)
 
         is_followup = parsed.get("is_followup", False)
         extracted = parsed.get("extracted_fields", {})
         clarification_question = parsed.get("clarification_question")
 
-        # Force follow-up if task_id was provided
-        if task_id and ctx.get("open_task"):
+        # Force follow-up if thread_id was provided
+        if thread_id and ctx.get("open_task"):
             is_followup = True
 
         # Follow-up path
@@ -75,11 +75,11 @@ class ReportsAgent(BaseDomainAgent):
         # New report task
         result = self._create(message, extracted, clarification_question, db, user_id)
 
-        # Back-fill task_id on the LLM call record
+        # Back-fill thread_id on the LLM call record
         if llm_call_id and result.get("id"):
             llm_call = db.query(LlmCall).filter(LlmCall.id == llm_call_id).first()
             if llm_call:
-                llm_call.task_id = result["id"]
+                llm_call.thread_id = result["id"]
                 db.commit()
 
         return result
@@ -91,11 +91,11 @@ class ReportsAgent(BaseDomainAgent):
         open_task: dict,
         db: Session,
     ) -> dict:
-        task = db.query(Task).filter(Task.id == open_task["id"]).first()
+        task = db.query(Thread).filter(Thread.id == open_task["id"]).first()
         if not task:
             return open_task
 
-        db.add(Message(task_id=task.id, role="user", content=message))
+        db.add(Message(thread_id=task.id, role="user", content=message))
         db.flush()
 
         # Merge new fields into existing extracted_fields
@@ -117,7 +117,7 @@ class ReportsAgent(BaseDomainAgent):
         task.missing_fields = []
 
         summary = self._format_summary(result)
-        db.add(Message(task_id=task.id, role="assistant", content=summary))
+        db.add(Message(thread_id=task.id, role="assistant", content=summary))
 
         db.commit()
         db.refresh(task)
@@ -152,7 +152,7 @@ class ReportsAgent(BaseDomainAgent):
 
         status = "awaiting_user_input" if missing else "awaiting_approval"
 
-        task = Task(
+        task = Thread(
             user_id=user_id,
             intent="reports.generate",
             domain="reports",
@@ -165,17 +165,17 @@ class ReportsAgent(BaseDomainAgent):
         db.add(task)
         db.flush()
 
-        db.add(Message(task_id=task.id, role="user", content=message))
+        db.add(Message(thread_id=task.id, role="user", content=message))
 
         if missing and clarification_question:
             db.add(
                 Message(
-                    task_id=task.id, role="assistant", content=clarification_question
+                    thread_id=task.id, role="assistant", content=clarification_question
                 )
             )
         else:
             summary = self._format_summary(result)
-            db.add(Message(task_id=task.id, role="assistant", content=summary))
+            db.add(Message(thread_id=task.id, role="assistant", content=summary))
 
         db.commit()
         db.refresh(task)

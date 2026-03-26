@@ -20,7 +20,7 @@ from app.routers import (  # noqa: E402
     venues,
     messages,
     orders,
-    tasks,
+    threads,
     connectors,
     connector_specs,
     auth,
@@ -67,7 +67,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(venues.router, prefix="/api")
 app.include_router(messages.router, prefix="/api")
 app.include_router(orders.router, prefix="/api")
-app.include_router(tasks.router, prefix="/api")
+app.include_router(threads.router, prefix="/api")
 app.include_router(connectors.router, prefix="/api")
 app.include_router(connector_specs.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")

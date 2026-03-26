@@ -92,7 +92,7 @@ def _llm_classify(
             from app.db.models import LlmCall
 
             record = LlmCall(
-                task_id=None,
+                thread_id=None,
                 call_type="routing",
                 model=model,
                 system_prompt=system,
@@ -122,7 +122,7 @@ def _llm_classify(
             from app.db.models import LlmCall
 
             record = LlmCall(
-                task_id=None,
+                thread_id=None,
                 call_type="routing",
                 model=model,
                 system_prompt=system,

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, Message, Order, OrderLine, Approval
+from app.db.models import Thread, Message, Order, OrderLine, Approval
 from app.connectors.registry import resolve_connector
 from app.services.integration_service import execute_submission_v2
 
@@ -34,7 +34,7 @@ def create_draft_order(
     if extracted_extra:
         extracted.update(extracted_extra)
 
-    task = Task(
+    task = Thread(
         user_id=user_id,
         intent=intent,
         domain="procurement",
@@ -48,13 +48,13 @@ def create_draft_order(
     db.flush()
 
     # User message
-    db.add(Message(task_id=task.id, role="user", content=message))
+    db.add(Message(thread_id=task.id, role="user", content=message))
     if question:
-        db.add(Message(task_id=task.id, role="assistant", content=question))
+        db.add(Message(thread_id=task.id, role="assistant", content=question))
 
     # Order
     order = Order(
-        task_id=task.id,
+        thread_id=task.id,
         venue_id=venue["id"] if venue else None,
         supplier_id=product["supplier_id"]
         if product and product.get("supplier_id")
@@ -86,7 +86,7 @@ def update_order(
     venue: dict | None,
     quantity: int | None,
 ) -> dict | None:
-    task = db.query(Task).filter(Task.id == task_id).first()
+    task = db.query(Thread).filter(Thread.id == task_id).first()
     if not task:
         return None
 
@@ -152,11 +152,11 @@ def update_order(
     else:
         task.clarification_question = _procurement_question(missing)
 
-    db.add(Message(task_id=task.id, role="assistant", content=assistant_msg))
+    db.add(Message(thread_id=task.id, role="assistant", content=assistant_msg))
     task.updated_at = datetime.now(timezone.utc)
 
     # Update order record
-    order = db.query(Order).filter(Order.task_id == task_id).first()
+    order = db.query(Order).filter(Order.thread_id == task_id).first()
     if order:
         p = extracted.get("product")
         v = extracted.get("venue")
@@ -190,7 +190,9 @@ def update_order(
 
 def get_order(db: Session, task_id: str) -> dict | None:
     task = (
-        db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+        db.query(Thread)
+        .filter(Thread.id == task_id, Thread.domain == "procurement")
+        .first()
     )
     if not task:
         return None
@@ -202,7 +204,7 @@ def approve_order(db: Session, task_id: str, user=None) -> dict | None:
     if result:
         db.add(
             Approval(
-                task_id=task_id,
+                thread_id=task_id,
                 action="approved",
                 performed_by=user.email if user else "system",
                 user_id=user.id if user else None,
@@ -217,7 +219,7 @@ def reject_order(db: Session, task_id: str, user=None) -> dict | None:
     if result:
         db.add(
             Approval(
-                task_id=task_id,
+                thread_id=task_id,
                 action="rejected",
                 performed_by=user.email if user else "system",
                 user_id=user.id if user else None,
@@ -229,7 +231,9 @@ def reject_order(db: Session, task_id: str, user=None) -> dict | None:
 
 def submit_order(db: Session, task_id: str) -> dict | None:
     task = (
-        db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+        db.query(Thread)
+        .filter(Thread.id == task_id, Thread.domain == "procurement")
+        .first()
     )
     if not task or task.status != "approved":
         return None
@@ -240,7 +244,7 @@ def submit_order(db: Session, task_id: str) -> dict | None:
 
     if run.status == "success":
         task.status = "submitted"
-        order = db.query(Order).filter(Order.task_id == task_id).first()
+        order = db.query(Order).filter(Order.thread_id == task_id).first()
         if order:
             order.status = "submitted"
     else:
@@ -253,21 +257,21 @@ def submit_order(db: Session, task_id: str) -> dict | None:
 
 
 def list_orders(db: Session, user_id: str | None = None) -> list[dict]:
-    q = db.query(Task).filter(Task.domain == "procurement")
+    q = db.query(Thread).filter(Thread.domain == "procurement")
     if user_id:
-        q = q.filter(Task.user_id == user_id)
-    tasks = q.order_by(Task.created_at.desc()).all()
+        q = q.filter(Thread.user_id == user_id)
+    tasks = q.order_by(Thread.created_at.desc()).all()
     return [_task_to_dict(t) for t in tasks]
 
 
 def find_open_order(db: Session, user_id: str | None = None) -> dict | None:
-    q = db.query(Task).filter(
-        Task.domain == "procurement",
-        Task.status.in_(["awaiting_user_input", "awaiting_approval"]),
+    q = db.query(Thread).filter(
+        Thread.domain == "procurement",
+        Thread.status.in_(["awaiting_user_input", "awaiting_approval"]),
     )
     if user_id:
-        q = q.filter(Task.user_id == user_id)
-    task = q.order_by(Task.created_at.desc()).first()
+        q = q.filter(Thread.user_id == user_id)
+    task = q.order_by(Thread.created_at.desc()).first()
     if not task:
         return None
     return _task_to_dict(task)
@@ -275,13 +279,15 @@ def find_open_order(db: Session, user_id: str | None = None) -> dict | None:
 
 def _set_status(db: Session, task_id: str, status: str) -> dict | None:
     task = (
-        db.query(Task).filter(Task.id == task_id, Task.domain == "procurement").first()
+        db.query(Thread)
+        .filter(Thread.id == task_id, Thread.domain == "procurement")
+        .first()
     )
     if not task:
         return None
     task.status = status
     task.updated_at = datetime.now(timezone.utc)
-    order = db.query(Order).filter(Order.task_id == task_id).first()
+    order = db.query(Order).filter(Order.thread_id == task_id).first()
     if order:
         order.status = status
     db.commit()
@@ -315,7 +321,7 @@ def _procurement_question(missing: list[str]) -> str:
     return f"I need a bit more info -- {joined}?"
 
 
-def _task_to_dict(task: Task) -> dict:
+def _task_to_dict(task: Thread) -> dict:
     extracted = task.extracted_fields or {}
     product = extracted.get("product")
     venue = extracted.get("venue")

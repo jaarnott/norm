@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Package, UserRound, BarChart3, HelpCircle, Timer, type LucideIcon } from 'lucide-react';
-import type { Task, ProcurementTask, HrTask } from '../../types';
+import type { Thread, ProcurementThread, HrThread } from '../../types';
 import { colors } from '../../lib/theme';
 
 const DOMAIN_ICONS: Record<string, LucideIcon> = {
@@ -24,28 +24,28 @@ const STATUS_STYLES: Record<string, { bg: string; color: string; label: string }
   submitted: { bg: '#cce5ff', color: '#004085', label: 'Submitted' },
 };
 
-function getTaskTitle(task: Task): string {
-  return task.title || '';
+function getThreadTitle(thread: Thread): string {
+  return thread.title || '';
 }
 
-function getTaskSummary(task: Task): string {
-  if (task.domain === 'procurement') {
-    const t = task as ProcurementTask;
+function getThreadSummary(thread: Thread): string {
+  if (thread.domain === 'procurement') {
+    const t = thread as ProcurementThread;
     const parts: string[] = [];
     if (t.quantity) parts.push(`${t.quantity} case${t.quantity !== 1 ? 's' : ''}`);
     if (t.product?.name) parts.push(t.product.name);
     if (t.venue?.name) parts.push(`\u2014 ${t.venue.name}`);
-    return parts.join(' ') || task.message || 'Procurement request';
+    return parts.join(' ') || thread.message || 'Procurement request';
   }
-  if (task.domain === 'hr') {
-    const t = task as HrTask;
+  if (thread.domain === 'hr') {
+    const t = thread as HrThread;
     const parts: string[] = [];
     if (t.employee_name) parts.push(t.employee_name);
     if (t.role) parts.push(`\u2014 ${t.role}`);
     if (t.venue?.name) parts.push(`\u2014 ${t.venue.name}`);
-    return parts.join(' ') || task.message || 'HR request';
+    return parts.join(' ') || thread.message || 'HR request';
   }
-  return task.message || '';
+  return thread.message || '';
 }
 
 function timeAgo(dateStr: string): string {
@@ -76,8 +76,8 @@ function formatSchedule(type: string, config: Record<string, unknown>): string {
   return labels[type] || type;
 }
 
-interface TaskCardProps {
-  task: Task;
+interface ThreadCardProps {
+  thread: Thread;
   isSelected: boolean;
   onClick: () => void;
   onRemove: () => void;
@@ -85,13 +85,13 @@ interface TaskCardProps {
   'data-testid'?: string;
 }
 
-export default function TaskCard({ task, isSelected, onClick, onRemove, compact, 'data-testid': testId }: TaskCardProps) {
+export default function ThreadCard({ thread, isSelected, onClick, onRemove, compact, 'data-testid': testId }: ThreadCardProps) {
   const [confirming, setConfirming] = useState(false);
-  const dc = getDomainColor(task.domain);
-  const DomainIcon = DOMAIN_ICONS[task.domain] || HelpCircle;
-  const ss = STATUS_STYLES[task.status] || { bg: '#e2e3e5', color: '#383d41', label: task.status.replace(/_/g, ' ') };
-  const isWaiting = task.status === 'awaiting_user_input' || task.status === 'needs_clarification';
-  const isAutomated = !!task.automated_task;
+  const dc = getDomainColor(thread.domain);
+  const DomainIcon = DOMAIN_ICONS[thread.domain] || HelpCircle;
+  const ss = STATUS_STYLES[thread.status] || { bg: '#e2e3e5', color: '#383d41', label: thread.status.replace(/_/g, ' ') };
+  const isWaiting = thread.status === 'awaiting_user_input' || thread.status === 'needs_clarification';
+  const isAutomated = !!thread.automated_task;
 
   if (confirming) {
     return (
@@ -107,7 +107,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
           Remove this thread?
         </div>
         <div style={{ fontSize: '0.82rem', color: '#666', marginBottom: '0.6rem' }}>
-          {getTaskTitle(task)} — {getTaskSummary(task)}
+          {getThreadTitle(thread)} — {getThreadSummary(thread)}
         </div>
         <div style={{ display: 'flex', gap: '0.4rem' }}>
           <button
@@ -178,7 +178,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
           flex: 1, fontSize: '0.85rem', color: '#333',
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>
-          {isAutomated ? (task.automated_task?.title || getTaskTitle(task)) : (getTaskSummary(task) || getTaskTitle(task))}
+          {isAutomated ? (thread.automated_task?.title || getThreadTitle(thread)) : (getThreadSummary(thread) || getThreadTitle(thread))}
         </span>
         <button
           onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
@@ -221,7 +221,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
             textTransform: 'uppercase',
             letterSpacing: '0.03em',
           }}>
-            {task.domain}
+            {thread.domain}
           </span>
           {isAutomated && (
             <span style={{
@@ -235,7 +235,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
           <span style={{ fontSize: '0.72rem', color: '#aaa' }}>
-            {timeAgo(task.created_at)}
+            {timeAgo(thread.created_at)}
           </span>
           <button
             onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
@@ -258,7 +258,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
 
       {/* Title */}
       <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#1a1a1a', marginBottom: '0.2rem' }}>
-        {getTaskTitle(task)}
+        {getThreadTitle(thread)}
       </div>
 
       {/* Summary */}
@@ -270,9 +270,9 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
         overflow: 'hidden',
         textOverflow: 'ellipsis',
       }}>
-        {isAutomated && task.automated_task
-          ? formatSchedule(task.automated_task.schedule_type, task.automated_task.schedule_config)
-          : getTaskSummary(task)
+        {isAutomated && thread.automated_task
+          ? formatSchedule(thread.automated_task.schedule_type, thread.automated_task.schedule_config)
+          : getThreadSummary(thread)
         }
       </div>
 

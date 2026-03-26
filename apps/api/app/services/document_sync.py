@@ -43,7 +43,7 @@ def sync_document(doc_id: str, db: Session) -> None:
             # Create and execute a ToolCall
             tc = ToolCall(
                 id=str(uuid.uuid4()),
-                task_id=doc.task_id,
+                thread_id=doc.thread_id,
                 iteration=0,
                 tool_name=f"{doc.connector_name}__{action}",
                 connector_name=doc.connector_name,

@@ -8,8 +8,8 @@ from app.interpreter.llm_interpreter import _parse_response
 
 # -- Response parsing tests --
 
-class TestResponseParsing:
 
+class TestResponseParsing:
     def test_parses_clean_json(self):
         raw = '{"domain": "procurement", "intent": "procurement.order"}'
         result = _parse_response(raw)

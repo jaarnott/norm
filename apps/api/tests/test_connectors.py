@@ -1,12 +1,10 @@
 """Tests for connector endpoints."""
 
-import sys
 import uuid
 from unittest.mock import patch, MagicMock
 
-import pytest
 
-from app.db.models import ConnectorConfig, ConnectorSpec
+from app.db.models import ConnectorConfig
 
 
 class TestListConnectors:
@@ -30,10 +28,14 @@ class TestUpsertConnector:
     """PUT /api/connectors/{name}"""
 
     def test_save_anthropic_config_as_admin(self, client, db_session, admin_headers):
-        resp = client.put("/api/connectors/anthropic", json={
-            "config": {"api_key": "sk-test-key"},
-            "enabled": True,
-        }, headers=admin_headers)
+        resp = client.put(
+            "/api/connectors/anthropic",
+            json={
+                "config": {"api_key": "sk-test-key"},
+                "enabled": True,
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "anthropic"
@@ -42,43 +44,67 @@ class TestUpsertConnector:
         assert data["config"]["api_key"] != "sk-test-key"
 
     def test_save_connector_as_manager_returns_403(self, client, manager_headers):
-        resp = client.put("/api/connectors/anthropic", json={
-            "config": {"api_key": "sk-test-key"},
-            "enabled": True,
-        }, headers=manager_headers)
+        resp = client.put(
+            "/api/connectors/anthropic",
+            json={
+                "config": {"api_key": "sk-test-key"},
+                "enabled": True,
+            },
+            headers=manager_headers,
+        )
         assert resp.status_code == 403
 
     def test_save_unknown_connector_returns_404(self, client, admin_headers):
-        resp = client.put("/api/connectors/nonexistent", json={
-            "config": {},
-            "enabled": True,
-        }, headers=admin_headers)
+        resp = client.put(
+            "/api/connectors/nonexistent",
+            json={
+                "config": {},
+                "enabled": True,
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 404
 
     def test_save_connector_without_auth_returns_401(self, client):
-        resp = client.put("/api/connectors/anthropic", json={
-            "config": {"api_key": "sk-test"},
-        })
+        resp = client.put(
+            "/api/connectors/anthropic",
+            json={
+                "config": {"api_key": "sk-test"},
+            },
+        )
         assert resp.status_code in (401, 403)
 
     def test_update_existing_config_merges(self, client, db_session, admin_headers):
         # First save
-        client.put("/api/connectors/anthropic", json={
-            "config": {"api_key": "sk-real-key"},
-            "enabled": True,
-        }, headers=admin_headers)
+        client.put(
+            "/api/connectors/anthropic",
+            json={
+                "config": {"api_key": "sk-real-key"},
+                "enabled": True,
+            },
+            headers=admin_headers,
+        )
 
         # Update with redacted key should keep original
-        resp = client.put("/api/connectors/anthropic", json={
-            "config": {"api_key": "••••••••", "interpreter_model": "claude-sonnet-4-20250514"},
-            "enabled": True,
-        }, headers=admin_headers)
+        resp = client.put(
+            "/api/connectors/anthropic",
+            json={
+                "config": {
+                    "api_key": "••••••••",
+                    "interpreter_model": "claude-sonnet-4-20250514",
+                },
+                "enabled": True,
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 200
 
         # Verify the key was preserved (still redacted in response)
-        row = db_session.query(ConnectorConfig).filter(
-            ConnectorConfig.connector_name == "anthropic"
-        ).first()
+        row = (
+            db_session.query(ConnectorConfig)
+            .filter(ConnectorConfig.connector_name == "anthropic")
+            .first()
+        )
         assert row.config["api_key"] == "sk-real-key"
         assert row.config["interpreter_model"] == "claude-sonnet-4-20250514"
 
@@ -88,12 +114,14 @@ class TestToggleConnector:
 
     def test_toggle_connector(self, client, db_session, admin_headers):
         # First create a config
-        db_session.add(ConnectorConfig(
-            id=str(uuid.uuid4()),
-            connector_name="anthropic",
-            config={"api_key": "sk-test"},
-            enabled="true",
-        ))
+        db_session.add(
+            ConnectorConfig(
+                id=str(uuid.uuid4()),
+                connector_name="anthropic",
+                config={"api_key": "sk-test"},
+                enabled="true",
+            )
+        )
         db_session.flush()
 
         resp = client.patch("/api/connectors/anthropic/toggle", headers=admin_headers)
@@ -104,13 +132,17 @@ class TestToggleConnector:
         resp = client.patch("/api/connectors/nonexistent/toggle", headers=admin_headers)
         assert resp.status_code == 404
 
-    def test_toggle_connector_as_manager_returns_403(self, client, db_session, manager_headers):
-        db_session.add(ConnectorConfig(
-            id=str(uuid.uuid4()),
-            connector_name="anthropic",
-            config={},
-            enabled="true",
-        ))
+    def test_toggle_connector_as_manager_returns_403(
+        self, client, db_session, manager_headers
+    ):
+        db_session.add(
+            ConnectorConfig(
+                id=str(uuid.uuid4()),
+                connector_name="anthropic",
+                config={},
+                enabled="true",
+            )
+        )
         db_session.flush()
 
         resp = client.patch("/api/connectors/anthropic/toggle", headers=manager_headers)
@@ -121,12 +153,14 @@ class TestDeleteConnector:
     """DELETE /api/connectors/{name}"""
 
     def test_delete_connector_config(self, client, db_session, admin_headers):
-        db_session.add(ConnectorConfig(
-            id=str(uuid.uuid4()),
-            connector_name="anthropic",
-            config={"api_key": "sk-test"},
-            enabled="true",
-        ))
+        db_session.add(
+            ConnectorConfig(
+                id=str(uuid.uuid4()),
+                connector_name="anthropic",
+                config={"api_key": "sk-test"},
+                enabled="true",
+            )
+        )
         db_session.flush()
 
         resp = client.delete("/api/connectors/anthropic", headers=admin_headers)
@@ -138,12 +172,14 @@ class TestDeleteConnector:
         assert resp.status_code == 404
 
     def test_delete_as_manager_returns_403(self, client, db_session, manager_headers):
-        db_session.add(ConnectorConfig(
-            id=str(uuid.uuid4()),
-            connector_name="anthropic",
-            config={},
-            enabled="true",
-        ))
+        db_session.add(
+            ConnectorConfig(
+                id=str(uuid.uuid4()),
+                connector_name="anthropic",
+                config={},
+                enabled="true",
+            )
+        )
         db_session.flush()
 
         resp = client.delete("/api/connectors/anthropic", headers=manager_headers)
@@ -160,33 +196,50 @@ class TestTestConnector:
         mock_client.models.list.return_value = MagicMock()
 
         with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
-            resp = client.post("/api/connectors/anthropic/test", json={
-                "config": {"api_key": "sk-valid-key"},
-            }, headers=admin_headers)
+            resp = client.post(
+                "/api/connectors/anthropic/test",
+                json={
+                    "config": {"api_key": "sk-valid-key"},
+                },
+                headers=admin_headers,
+            )
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
     def test_test_anthropic_no_key_returns_400(self, client, db_session, admin_headers):
         # Ensure no saved config exists so merged credentials have no api_key
         from app.db.models import ConnectorConfig
+
         db_session.query(ConnectorConfig).filter(
             ConnectorConfig.connector_name == "anthropic"
         ).delete()
         db_session.flush()
 
-        resp = client.post("/api/connectors/anthropic/test", json={
-            "config": {},
-        }, headers=admin_headers)
+        resp = client.post(
+            "/api/connectors/anthropic/test",
+            json={
+                "config": {},
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 400
 
     def test_test_connector_as_manager_returns_403(self, client, manager_headers):
-        resp = client.post("/api/connectors/anthropic/test", json={
-            "config": {"api_key": "sk-test"},
-        }, headers=manager_headers)
+        resp = client.post(
+            "/api/connectors/anthropic/test",
+            json={
+                "config": {"api_key": "sk-test"},
+            },
+            headers=manager_headers,
+        )
         assert resp.status_code == 403
 
     def test_test_unknown_connector_returns_404(self, client, admin_headers):
-        resp = client.post("/api/connectors/nonexistent/test", json={
-            "config": {},
-        }, headers=admin_headers)
+        resp = client.post(
+            "/api/connectors/nonexistent/test",
+            json={
+                "config": {},
+            },
+            headers=admin_headers,
+        )
         assert resp.status_code == 404

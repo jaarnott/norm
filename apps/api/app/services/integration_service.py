@@ -2,17 +2,17 @@ import time
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Task, IntegrationRun
+from app.db.models import Thread, IntegrationRun
 
 
 def execute_submission_v2(
-    db: Session, task: Task, spec, credentials: dict, operation: dict
+    db: Session, task: Thread, spec, credentials: dict, operation: dict
 ) -> IntegrationRun:
     """Execute a spec-driven connector and record the integration run."""
     from app.connectors.spec_executor import execute_spec
 
     run = IntegrationRun(
-        task_id=task.id,
+        thread_id=task.id,
         connector_name=spec.connector_name,
         request_payload=task.extracted_fields,
         status="pending",

@@ -7,7 +7,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
-from app.db.models import AutomatedTask, AutomatedTaskRun, Task, Message, ToolCall, User
+from app.db.models import (
+    AutomatedTask,
+    AutomatedTaskRun,
+    Thread,
+    Message,
+    ToolCall,
+    User,
+)
 from app.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -60,7 +67,7 @@ def _task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dict:
         "task_config": t.task_config or {},
         "thread_summary": t.thread_summary,
         "overrides_next_run": t.overrides_next_run,
-        "conversation_task_id": t.conversation_task_id,
+        "conversation_thread_id": t.conversation_thread_id,
         "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
         "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
         "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -75,7 +82,7 @@ def _run_to_dict(r: AutomatedTaskRun) -> dict:
     d = {
         "id": r.id,
         "automated_task_id": r.automated_task_id,
-        "task_id": r.task_id,
+        "thread_id": r.thread_id,
         "status": r.status,
         "mode": r.mode,
         "result_summary": r.result_summary,
@@ -87,8 +94,8 @@ def _run_to_dict(r: AutomatedTaskRun) -> dict:
         "has_pending_approvals": False,
     }
     # Check if the linked task has pending approvals
-    if r.task_id and r.task:
-        pending = r.task.pending_tool_call_ids
+    if r.thread_id and r.thread:
+        pending = r.thread.pending_tool_call_ids
         d["has_pending_approvals"] = bool(pending and len(pending) > 0)
     return d
 
@@ -301,18 +308,18 @@ async def get_run_detail(
     result = _run_to_dict(run)
 
     # If the run has a linked execution task, include its messages and tool calls
-    if run.task_id:
-        exec_task = db.query(Task).filter(Task.id == run.task_id).first()
-        if exec_task:
+    if run.thread_id:
+        exec_thread = db.query(Thread).filter(Thread.id == run.thread_id).first()
+        if exec_thread:
             messages = (
                 db.query(Message)
-                .filter(Message.task_id == exec_task.id)
+                .filter(Message.thread_id == exec_thread.id)
                 .order_by(Message.created_at)
                 .all()
             )
             tool_calls = (
                 db.query(ToolCall)
-                .filter(ToolCall.task_id == exec_task.id)
+                .filter(ToolCall.thread_id == exec_thread.id)
                 .order_by(ToolCall.created_at)
                 .all()
             )
@@ -334,7 +341,7 @@ async def get_run_detail(
                 }
                 for tc in tool_calls
             ]
-            result["pending_tool_call_ids"] = exec_task.pending_tool_call_ids
+            result["pending_tool_call_ids"] = exec_thread.pending_tool_call_ids
 
     return result
 
@@ -353,7 +360,7 @@ async def get_conversation(
     if not task:
         raise HTTPException(404, "Automated task not found")
 
-    if not task.conversation_task_id:
+    if not task.conversation_thread_id:
         return {
             "messages": [],
             "task_config": task.task_config or {},
@@ -362,7 +369,7 @@ async def get_conversation(
 
     messages = (
         db.query(Message)
-        .filter(Message.task_id == task.conversation_task_id)
+        .filter(Message.thread_id == task.conversation_thread_id)
         .order_by(Message.created_at)
         .all()
     )
@@ -390,12 +397,12 @@ async def ensure_conversation(
 
     conv_task_id = _ensure_conversation_task(task, db)
     # Ensure user_id is set on the conversation task
-    conv_task = db.query(Task).filter(Task.id == conv_task_id).first()
+    conv_task = db.query(Thread).filter(Thread.id == conv_task_id).first()
     if conv_task and not conv_task.user_id:
         conv_task.user_id = user.id
     db.commit()
 
-    return {"conversation_task_id": conv_task_id}
+    return {"conversation_thread_id": conv_task_id}
 
 
 @router.post("/automated-tasks/{task_id}/message")
@@ -423,7 +430,7 @@ async def send_message(
         message=body.message,
         db=db,
         user_id=user.id,
-        task_id=conv_task_id,
+        thread_id=conv_task_id,
     )
 
     return {

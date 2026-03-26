@@ -1,8 +1,7 @@
 """Tests for authentication endpoints: register, login, me."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
 
 from app.db.models import User, Role
 
@@ -33,7 +32,6 @@ class TestRegister:
         We patch the User count query to return 0 so the register endpoint
         treats this as the very first user, regardless of pre-existing data.
         """
-        original_count = db_session.query(User).count
 
         def _patched_count():
             """Return 0 only for the User count check inside register."""
