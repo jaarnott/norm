@@ -250,7 +250,7 @@ def list_tasks(db: Session, user_id: str | None = None) -> list[dict]:
     return [_thread_to_dict(t) for t in tasks]
 
 
-def find_open_task(db: Session, user_id: str | None = None) -> dict | None:
+def find_open_thread(db: Session, user_id: str | None = None) -> dict | None:
     q = db.query(Thread).filter(
         Thread.domain == "hr",
         Thread.status.in_(["awaiting_user_input", "awaiting_approval"]),
