@@ -324,7 +324,7 @@ export default function Home() {
       );
 
       // If the stream errored, try to recover by re-fetching the real thread.
-      // realThreadId is set from the task_created event, so this works for both
+      // realThreadId is set from the thread_created event, so this works for both
       // new conversations and follow-ups.
       if (streamErrored && realThreadId) {
         try {

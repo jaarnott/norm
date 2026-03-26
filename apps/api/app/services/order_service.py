@@ -76,7 +76,7 @@ def create_draft_order(
 
     db.commit()
     db.refresh(task)
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def update_order(
@@ -185,7 +185,7 @@ def update_order(
 
     db.commit()
     db.refresh(task)
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def get_order(db: Session, thread_id: str) -> dict | None:
@@ -196,7 +196,7 @@ def get_order(db: Session, thread_id: str) -> dict | None:
     )
     if not task:
         return None
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def approve_order(db: Session, thread_id: str, user=None) -> dict | None:
@@ -253,7 +253,7 @@ def submit_order(db: Session, thread_id: str) -> dict | None:
     task.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(task)
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def list_orders(db: Session, user_id: str | None = None) -> list[dict]:
@@ -261,7 +261,7 @@ def list_orders(db: Session, user_id: str | None = None) -> list[dict]:
     if user_id:
         q = q.filter(Thread.user_id == user_id)
     tasks = q.order_by(Thread.created_at.desc()).all()
-    return [_task_to_dict(t) for t in tasks]
+    return [_thread_to_dict(t) for t in tasks]
 
 
 def find_open_order(db: Session, user_id: str | None = None) -> dict | None:
@@ -274,7 +274,7 @@ def find_open_order(db: Session, user_id: str | None = None) -> dict | None:
     task = q.order_by(Thread.created_at.desc()).first()
     if not task:
         return None
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def _set_status(db: Session, thread_id: str, status: str) -> dict | None:
@@ -292,7 +292,7 @@ def _set_status(db: Session, thread_id: str, status: str) -> dict | None:
         order.status = status
     db.commit()
     db.refresh(task)
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 # -- helpers --
@@ -321,7 +321,7 @@ def _procurement_question(missing: list[str]) -> str:
     return f"I need a bit more info -- {joined}?"
 
 
-def _task_to_dict(task: Thread) -> dict:
+def _thread_to_dict(task: Thread) -> dict:
     extracted = task.extracted_fields or {}
     product = extracted.get("product")
     venue = extracted.get("venue")

@@ -19,7 +19,7 @@ from app.services.hr_service import (
     reject_hr_thread,
     submit_hr_thread,
 )
-from app.agents.reports.context import _report_task_to_dict
+from app.agents.reports.context import _report_thread_to_dict
 
 router = APIRouter()
 
@@ -66,7 +66,7 @@ def _find(db: Session, thread_id: str) -> tuple[dict | None, str]:
     if thread.domain == "hr":
         return get_hr_thread(db, thread_id), "hr"
     if thread.domain == "reports":
-        return _report_task_to_dict(thread), "reports"
+        return _report_thread_to_dict(thread), "reports"
     return None, ""
 
 
@@ -335,7 +335,7 @@ def _approve_report(db: Session, thread_id: str, user: User | None = None) -> di
     )
     db.commit()
     db.refresh(thread)
-    return _report_task_to_dict(thread)
+    return _report_thread_to_dict(thread)
 
 
 def _reject_report(db: Session, thread_id: str, user: User | None = None) -> dict:
@@ -360,7 +360,7 @@ def _reject_report(db: Session, thread_id: str, user: User | None = None) -> dic
     )
     db.commit()
     db.refresh(thread)
-    return _report_task_to_dict(thread)
+    return _report_thread_to_dict(thread)
 
 
 def _update_approval_display_block(thread: Thread, new_status: str) -> None:

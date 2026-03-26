@@ -865,7 +865,7 @@ def _handle_search_tool_result(
 # ---------------------------------------------------------------------------
 
 
-def _task_to_dict(t) -> dict:
+def _automated_task_to_dict(t) -> dict:
     return {
         "id": t.id,
         "title": t.title,
@@ -918,7 +918,7 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
     db.add(task)
     db.flush()
 
-    return {"success": True, "data": _task_to_dict(task)}
+    return {"success": True, "data": _automated_task_to_dict(task)}
 
 
 @register("norm", "list_automated_tasks")
@@ -935,7 +935,10 @@ def _list_automated_tasks(params: dict, db: Session, thread_id: str | None) -> d
         query = query.filter(AutomatedTask.status == status)
 
     tasks = query.order_by(AutomatedTask.created_at.desc()).all()
-    return {"success": True, "data": {"tasks": [_task_to_dict(t) for t in tasks]}}
+    return {
+        "success": True,
+        "data": {"tasks": [_automated_task_to_dict(t) for t in tasks]},
+    }
 
 
 @register("norm", "update_automated_task")
@@ -975,7 +978,7 @@ def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> 
     else:
         unschedule_task(task.id)
 
-    return {"success": True, "data": _task_to_dict(task)}
+    return {"success": True, "data": _automated_task_to_dict(task)}
 
 
 @register("norm", "run_automated_task")

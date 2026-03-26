@@ -5,7 +5,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agents.base import BaseDomainAgent
-from app.agents.reports.context import build_reports_context, _report_task_to_dict
+from app.agents.reports.context import build_reports_context, _report_thread_to_dict
 from app.agents.reports.planner import create_report_plan
 from app.db.models import Thread, Message, LlmCall
 
@@ -55,7 +55,7 @@ class ReportsAgent(BaseDomainAgent):
         if thread_id:
             task = db.query(Thread).filter(Thread.id == thread_id).first()
             if task and task.domain == "reports":
-                ctx["open_task"] = _report_task_to_dict(task)
+                ctx["open_task"] = _report_thread_to_dict(task)
 
         # Interpret — pass thread_id if this is a follow-up
         parsed, llm_call_id = self.interpret(message, ctx, db=db, thread_id=thread_id)
@@ -121,7 +121,7 @@ class ReportsAgent(BaseDomainAgent):
 
         db.commit()
         db.refresh(task)
-        return _report_task_to_dict(task)
+        return _report_thread_to_dict(task)
 
     def _create(
         self,
@@ -179,7 +179,7 @@ class ReportsAgent(BaseDomainAgent):
 
         db.commit()
         db.refresh(task)
-        return _report_task_to_dict(task)
+        return _report_thread_to_dict(task)
 
     def _execute_plan(self, plan: list[dict], extracted: dict) -> dict:
         """Execute a report plan. Requires connector specs to be bound."""

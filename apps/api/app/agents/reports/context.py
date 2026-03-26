@@ -13,7 +13,7 @@ def build_reports_context(db: Session, user_id: str | None = None) -> dict:
     return {"venues": [{"id": v.id, "name": v.name} for v in venues]}
 
 
-def _report_task_to_dict(task: Thread) -> dict:
+def _report_thread_to_dict(task: Thread) -> dict:
     """Convert a reports Thread to a response dict."""
     extracted = task.extracted_fields or {}
 

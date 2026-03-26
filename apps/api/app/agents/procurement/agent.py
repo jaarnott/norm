@@ -55,7 +55,7 @@ class ProcurementAgent(BaseDomainAgent):
 
         # If thread_id provided, load it as open task for follow-up
         if thread_id:
-            from app.services.order_service import _task_to_dict as order_to_dict
+            from app.services.order_service import _thread_to_dict as order_to_dict
 
             task = db.query(Thread).filter(Thread.id == thread_id).first()
             if task and task.domain == "procurement":

@@ -72,7 +72,7 @@ def create_employee_setup(
 
     db.commit()
     db.refresh(task)
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def update_employee_setup(
@@ -175,7 +175,7 @@ def update_employee_setup(
 
     db.commit()
     db.refresh(task)
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def get_hr_thread(db: Session, thread_id: str) -> dict | None:
@@ -184,7 +184,7 @@ def get_hr_thread(db: Session, thread_id: str) -> dict | None:
     )
     if not task:
         return None
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def approve_hr_thread(db: Session, thread_id: str, user=None) -> dict | None:
@@ -239,7 +239,7 @@ def submit_hr_thread(db: Session, thread_id: str) -> dict | None:
     task.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(task)
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def list_tasks(db: Session, user_id: str | None = None) -> list[dict]:
@@ -247,7 +247,7 @@ def list_tasks(db: Session, user_id: str | None = None) -> list[dict]:
     if user_id:
         q = q.filter(Thread.user_id == user_id)
     tasks = q.order_by(Thread.created_at.desc()).all()
-    return [_task_to_dict(t) for t in tasks]
+    return [_thread_to_dict(t) for t in tasks]
 
 
 def find_open_task(db: Session, user_id: str | None = None) -> dict | None:
@@ -260,7 +260,7 @@ def find_open_task(db: Session, user_id: str | None = None) -> dict | None:
     task = q.order_by(Thread.created_at.desc()).first()
     if not task:
         return None
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 def _set_status(db: Session, thread_id: str, status: str) -> dict | None:
@@ -276,7 +276,7 @@ def _set_status(db: Session, thread_id: str, status: str) -> dict | None:
         hr.status = status
     db.commit()
     db.refresh(task)
-    return _task_to_dict(task)
+    return _thread_to_dict(task)
 
 
 # -- helpers --
@@ -321,7 +321,7 @@ def _build_checklist(extracted: dict) -> list[dict]:
     ]
 
 
-def _task_to_dict(task: Thread) -> dict:
+def _thread_to_dict(task: Thread) -> dict:
     extracted = task.extracted_fields or {}
     venue = extracted.get("venue")
 

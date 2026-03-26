@@ -53,7 +53,7 @@ class MessageBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dict:
+def _automated_task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dict:
     d = {
         "id": t.id,
         "title": t.title,
@@ -128,7 +128,7 @@ async def list_tasks(
     if status:
         query = query.filter(AutomatedTask.status == status)
     tasks = query.order_by(AutomatedTask.created_at.desc()).all()
-    return {"tasks": [_task_to_dict(t) for t in tasks]}
+    return {"tasks": [_automated_task_to_dict(t) for t in tasks]}
 
 
 @router.get("/automated-tasks/{task_id}")
@@ -138,7 +138,7 @@ async def get_task(
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "Automated task not found")
-    return _task_to_dict(task, include_runs=True)
+    return _automated_task_to_dict(task, include_runs=True)
 
 
 @router.post("/automated-tasks")
@@ -159,7 +159,7 @@ async def create_task(
     )
     db.add(task)
     db.commit()
-    return _task_to_dict(task)
+    return _automated_task_to_dict(task)
 
 
 @router.put("/automated-tasks/{task_id}")
@@ -194,7 +194,7 @@ async def update_task(
     else:
         unschedule_task(task.id)
 
-    return _task_to_dict(task)
+    return _automated_task_to_dict(task)
 
 
 @router.post("/automated-tasks/{task_id}/run")
@@ -231,7 +231,7 @@ async def pause_task(
     from app.services.task_scheduler import unschedule_task
 
     unschedule_task(task.id)
-    return _task_to_dict(task)
+    return _automated_task_to_dict(task)
 
 
 @router.post("/automated-tasks/{task_id}/resume")
@@ -247,7 +247,7 @@ async def resume_task(
     from app.services.task_scheduler import schedule_task
 
     schedule_task(task)
-    return _task_to_dict(task)
+    return _automated_task_to_dict(task)
 
 
 @router.delete("/automated-tasks/{task_id}")
@@ -395,14 +395,14 @@ async def ensure_conversation(
 
     from app.services.task_scheduler import _ensure_conversation_task
 
-    conv_task_id = _ensure_conversation_task(task, db)
-    # Ensure user_id is set on the conversation task
-    conv_task = db.query(Thread).filter(Thread.id == conv_task_id).first()
-    if conv_task and not conv_task.user_id:
-        conv_task.user_id = user.id
+    conv_thread_id = _ensure_conversation_task(task, db)
+    # Ensure user_id is set on the conversation thread
+    conv_thread = db.query(Thread).filter(Thread.id == conv_thread_id).first()
+    if conv_thread and not conv_thread.user_id:
+        conv_thread.user_id = user.id
     db.commit()
 
-    return {"conversation_thread_id": conv_task_id}
+    return {"conversation_thread_id": conv_thread_id}
 
 
 @router.post("/automated-tasks/{task_id}/message")
