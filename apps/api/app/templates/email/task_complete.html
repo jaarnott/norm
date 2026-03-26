@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Task Completed</h1>
+<h1>Request Completed</h1>
 <p>Hi {{ user_name }},</p>
-<p>Your task <strong>{{ task_title }}</strong> has been completed.</p>
+<p>Your request <strong>{{ task_title }}</strong> has been completed.</p>
 {% if summary %}
 <p>{{ summary }}</p>
 {% endif %}
-<a href="{{ app_url }}/app" class="btn">View Task</a>
+<a href="{{ app_url }}/app" class="btn">View Thread</a>
 {% endblock %}

@@ -147,7 +147,7 @@ class BaseDomainAgent(ABC):
 
         # Emit the real thread ID immediately so the frontend can recover if
         # the SSE connection drops during a long LLM call.
-        _emit_event({"type": "task_created", "task_id": thread.id})
+        _emit_event({"type": "thread_created", "thread_id": thread.id})
 
         return run_tool_loop(
             message, thread, db, system_prompt, anthropic_tools, context=ctx

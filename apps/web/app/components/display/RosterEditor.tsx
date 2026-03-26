@@ -15,7 +15,7 @@ type ViewMode = 'week' | 'day';
 
 interface VenueOption { id: string; name: string }
 
-export default function RosterEditor({ data, props, onAction, taskId }: DisplayBlockProps) {
+export default function RosterEditor({ data, props, onAction, threadId }: DisplayBlockProps) {
   // Detect working document mode
   const workingDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
 
@@ -36,7 +36,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
 
   // Build working document URL — taskless or task-scoped
   const docUrl = workingDocId
-    ? (taskId ? `/api/tasks/${taskId}/working-documents/${workingDocId}` : `/api/working-documents/${workingDocId}`)
+    ? (threadId ? `/api/threads/${threadId}/working-documents/${workingDocId}` : `/api/working-documents/${workingDocId}`)
     : null;
 
   // Fetch working document data
@@ -196,7 +196,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
   const handleSave = async (formData: ShiftFormData) => {
     setSaving(true);
     try {
-      if (workingDocId && taskId) {
+      if (workingDocId && threadId) {
         if (editingShift) {
           await patchDoc([{
             op: 'update_shift',
@@ -249,7 +249,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
   const handleDelete = async (shift: Shift) => {
     setSaving(true);
     try {
-      if (workingDocId && taskId) {
+      if (workingDocId && threadId) {
         await patchDoc([{ op: 'delete_shift', shift_id: shift.id }]);
       } else if (onAction) {
         await onAction({
@@ -330,7 +330,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
     const firstName = targetRow?.firstName ?? '';
     const lastName = targetRow?.lastName ?? '';
 
-    console.log('[DnD] drop:', { shiftId: shift.id, from: dragData.sourceStaffId, to: targetStaffId, dayChanged, targetDateKey, workingDocId, taskId });
+    console.log('[DnD] drop:', { shiftId: shift.id, from: dragData.sourceStaffId, to: targetStaffId, dayChanged, targetDateKey, workingDocId, threadId });
 
     // Optimistic local update + re-sort by clockinTime
     setShifts(prev => prev.map(s =>
@@ -355,7 +355,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
       patchFields.clockoutTime = newClockOut;
     }
 
-    if (workingDocId && taskId) {
+    if (workingDocId && threadId) {
       await patchDoc([{
         op: 'update_shift',
         shift_id: shift.id,
@@ -371,14 +371,14 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
         },
       });
     }
-  }, [staffRows, workingDocId, taskId, patchDoc, onAction, connectorName, meta.rosterId]);
+  }, [staffRows, workingDocId, threadId, patchDoc, onAction, connectorName, meta.rosterId]);
 
   const handleResizeShift = useCallback(async (shiftId: string, clockinTime: string, clockoutTime: string) => {
     setShifts(prev => prev.map(s =>
       s.id === shiftId ? { ...s, clockinTime, clockoutTime } : s
     ).sort((a, b) => (a.clockinTime || '').localeCompare(b.clockinTime || '')));
 
-    if (workingDocId && taskId) {
+    if (workingDocId && threadId) {
       await patchDoc([{ op: 'update_shift', shift_id: shiftId, fields: { clockinTime, clockoutTime } }]);
     } else if (onAction) {
       const shift = shifts.find(s => s.id === shiftId);
@@ -391,7 +391,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
         },
       });
     }
-  }, [shifts, workingDocId, taskId, patchDoc, onAction, connectorName, meta.rosterId]);
+  }, [shifts, workingDocId, threadId, patchDoc, onAction, connectorName, meta.rosterId]);
 
   const handleCreateShift = useCallback(async (staffId: string, clockinTime: string, clockoutTime: string) => {
     const row = staffRows.find(r => r.id === staffId);
@@ -405,7 +405,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
       roleName: '',
     };
 
-    if (workingDocId && taskId) {
+    if (workingDocId && threadId) {
       await patchDoc([{ op: 'add_shift', fields }]);
     } else if (onAction) {
       await onAction({
@@ -416,7 +416,7 @@ export default function RosterEditor({ data, props, onAction, taskId }: DisplayB
         },
       });
     }
-  }, [staffRows, workingDocId, taskId, patchDoc, onAction, connectorName]);
+  }, [staffRows, workingDocId, threadId, patchDoc, onAction, connectorName]);
 
   if (activeShifts.length === 0 && !addingNew) return null;
 

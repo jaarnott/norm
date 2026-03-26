@@ -18,17 +18,17 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
 
   const toolCalls = (data.tool_calls as ToolCallSummary[]) || [];
   const status = (data.status as string) || 'pending';
-  const taskId = data.task_id as string;
+  const threadId = data.thread_id as string;
 
   const handleApprove = async () => {
     setLoading(true);
-    await onAction?.({ connector_name: '_system', action: 'tool_approve', params: { task_id: taskId } });
+    await onAction?.({ connector_name: '_system', action: 'tool_approve', params: { thread_id: threadId } });
     setLoading(false);
   };
 
   const handleReject = async () => {
     setLoading(true);
-    await onAction?.({ connector_name: '_system', action: 'tool_reject', params: { task_id: taskId } });
+    await onAction?.({ connector_name: '_system', action: 'tool_reject', params: { thread_id: threadId } });
     setLoading(false);
   };
 

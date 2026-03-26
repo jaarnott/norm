@@ -8,7 +8,7 @@ interface Props {
   data: Record<string, unknown>;
   props?: Record<string, unknown>;
   onAction?: (action: WidgetAction) => Promise<Record<string, unknown> | void>;
-  taskId?: string;
+  threadId?: string;
 }
 
 export default function SavedReportsBoard({ onAction }: Props) {

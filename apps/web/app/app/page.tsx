@@ -217,7 +217,7 @@ export default function Home() {
           ? { message: messageText, thread_id: threadIdForRequest }
           : { message: messageText },
         (event) => {
-          if (event.type === 'task_created') {
+          if (event.type === 'thread_created') {
             // Store the real thread ID for recovery — but don't remap the
             // optimistic thread yet to avoid a flash where selectedThread is null.
             realThreadId = event.thread_id as string;

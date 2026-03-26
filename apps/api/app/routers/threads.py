@@ -144,7 +144,7 @@ async def get_all_threads(
 ):
     """Return lightweight thread summaries for the sidebar list.
 
-    Only includes fields needed by TaskCard (id, domain, status, title, etc.).
+    Only includes fields needed by ThreadCard (id, domain, status, title, etc.).
     Full conversation/tool_calls/llm_calls are loaded on demand via GET /threads/{id}.
     """
     from sqlalchemy import or_

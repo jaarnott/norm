@@ -18,7 +18,7 @@ function classifyMessage(msg: ConversationMessage, index: number): {
 
   // Assistant messages — classify by content
   if (text.includes('changed from') || text.includes('updated from') || text.includes('updated and ready'))
-    return { label: 'Task revised', icon: '✏️' };
+    return { label: 'Thread revised', icon: '✏️' };
   if (text.includes('which venue') || text.includes('which location') || text.includes('what venue'))
     return { label: 'Clarification requested: venue', icon: '❓' };
   if (text.includes('which product') || text.includes('what product'))
@@ -396,7 +396,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
     const isApproved = approval.action === 'approved';
     approvalEvents.push({
       type: 'approval' as const,
-      label: isApproved ? 'Task approved' : 'Task rejected',
+      label: isApproved ? 'Thread approved' : 'Thread rejected',
       icon: isApproved ? '✅' : '❌',
       detail: `by ${approval.performed_by}`,
       time: formatTime(approval.performed_at),
@@ -582,7 +582,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
           }
 
           if (evt.type === 'approval') {
-            const isApproved = evt.label === 'Task approved';
+            const isApproved = evt.label === 'Thread approved';
             return (
               <div key={`approval-${i}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.5rem', position: 'relative' }}>
                 <div style={{

@@ -87,7 +87,7 @@ const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string; 
 
 // --- Component ---
 
-export default function PurchaseOrderEditor({ data, props, onAction, taskId }: DisplayBlockProps) {
+export default function PurchaseOrderEditor({ data, props, onAction, threadId }: DisplayBlockProps) {
   const workingDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
 
   const [orderData, setOrderData] = useState<Record<string, unknown> | null>(workingDocId ? null : data);
@@ -108,8 +108,8 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
   const connectorName = (props?.connector_name as string) || '';
 
   useEffect(() => {
-    if (!workingDocId || !taskId) return;
-    apiFetch(`/api/tasks/${taskId}/working-documents/${workingDocId}`)
+    if (!workingDocId || !threadId) return;
+    apiFetch(`/api/threads/${threadId}/working-documents/${workingDocId}`)
       .then(res => res.ok ? res.json() : null)
       .then(doc => {
         if (doc) {
@@ -122,7 +122,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
         }
       })
       .catch(() => {});
-  }, [workingDocId, taskId]);
+  }, [workingDocId, threadId]);
 
   useEffect(() => {
     if (workingDocId) return;
@@ -140,9 +140,9 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
 
   // PATCH working document helper
   const patchDoc = useCallback(async (ops: Record<string, unknown>[]) => {
-    if (!workingDocId || !taskId) return;
+    if (!workingDocId || !threadId) return;
     try {
-      const res = await apiFetch(`/api/tasks/${taskId}/working-documents/${workingDocId}`, {
+      const res = await apiFetch(`/api/threads/${threadId}/working-documents/${workingDocId}`, {
         method: 'PATCH',
         body: JSON.stringify({ ops, version: docVersion }),
       });
@@ -155,7 +155,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
         setLines(parsed.lines);
       }
     } catch (e) { console.error(e); }
-  }, [workingDocId, taskId, docVersion]);
+  }, [workingDocId, threadId, docVersion]);
 
   const handleQtyChange = useCallback((idx: number, qty: number) => {
     setLines(prev => prev.map((l, i) => i === idx ? { ...l, quantity: Math.max(0, qty) } : l));
@@ -196,8 +196,8 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
   const handleSubmit = useCallback(async () => {
     setSaving(true);
     try {
-      if (workingDocId && taskId) {
-        const res = await apiFetch(`/api/tasks/${taskId}/working-documents/${workingDocId}/submit`, { method: 'POST' });
+      if (workingDocId && threadId) {
+        const res = await apiFetch(`/api/threads/${threadId}/working-documents/${workingDocId}/submit`, { method: 'POST' });
         if (res.ok) {
           const result = await res.json();
           setSyncStatus(result.document?.sync_status || 'synced');
@@ -210,7 +210,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, taskId }: D
         });
       }
     } finally { setSaving(false); }
-  }, [workingDocId, taskId, onAction, connectorName, lines]);
+  }, [workingDocId, threadId, onAction, connectorName, lines]);
 
   const handleNotesChange = useCallback((value: string) => {
     setNotes(value);

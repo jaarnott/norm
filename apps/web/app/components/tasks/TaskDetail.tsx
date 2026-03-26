@@ -118,10 +118,10 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
 
 // -- Chat conversation view --
 
-export const ConversationView = memo(function ConversationView({ messages, onWidgetAction, taskId, hideFullWidthBlocks }: {
+export const ConversationView = memo(function ConversationView({ messages, onWidgetAction, threadId, hideFullWidthBlocks }: {
   messages: ConversationMessage[];
   onWidgetAction?: (action: WidgetAction) => Promise<Record<string, unknown> | void>;
-  taskId?: string;
+  threadId?: string;
   hideFullWidthBlocks?: boolean;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -176,7 +176,7 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
                 return (
                   <div style={{ marginBottom: '0.5rem' }}>
                     {blocks.map((block: DisplayBlock, bi: number) => (
-                      <DisplayBlockRenderer key={bi} block={block} onAction={onWidgetAction} taskId={taskId} />
+                      <DisplayBlockRenderer key={bi} block={block} onAction={onWidgetAction} threadId={threadId} />
                     ))}
                   </div>
                 );
@@ -616,7 +616,7 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
     <div style={{ padding: '0.5rem 1.5rem', borderBottom: '1px solid #f3f4f6', backgroundColor: '#fafafa' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
         <Timer size={14} strokeWidth={2} style={{ color: '#9ca3af' }} />
-        <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6b7280' }}>Saved Task</span>
+        <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6b7280' }}>Saved Thread</span>
         <span style={{ fontSize: '0.65rem', fontWeight: 600, padding: '1px 8px', borderRadius: 10, backgroundColor: ats.bg, color: ats.color }}>{at.status}</span>
         <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>{formatAtSchedule(at.schedule_type, at.schedule_config)}</span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.3rem' }}>
@@ -841,7 +841,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
               <DisplayBlockRenderer
                 block={latestFullWidthBlock!}
                 onAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
-                taskId={thread.id}
+                threadId={thread.id}
               />
             </div>
           </div>
@@ -870,7 +870,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
                   <ConversationView
                     messages={messages}
                     onWidgetAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
-                    taskId={thread.id}
+                    threadId={thread.id}
                     hideFullWidthBlocks
                   />
             <div style={{ maxWidth: 768, margin: '0 auto' }}>
@@ -898,7 +898,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
               <div style={{ maxWidth: 950, margin: '0 auto' }}>
                 <ConversationView messages={messages}
                   onWidgetAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
-                  taskId={thread.id}
+                  threadId={thread.id}
                 />
                 <div style={{ maxWidth: 768, margin: '0 auto' }}>
               <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />

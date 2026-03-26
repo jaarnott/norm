@@ -133,7 +133,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
         props: config.componentProps,
       }}
       onAction={handleAction}
-      taskId={thread?.id}
+      threadId={thread?.id}
     />
   ) : null;
 
@@ -159,7 +159,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
                 props: {},
               }}
               onAction={handleAction}
-              taskId={thread?.id}
+              threadId={thread?.id}
             />
           </div>
         </div>
@@ -232,7 +232,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
             <ConversationView
               messages={messages}
               onWidgetAction={onWidgetAction && thread ? (action) => onWidgetAction(thread.id, action) : undefined}
-              taskId={thread?.id}
+              threadId={thread?.id}
             />
           </div>
         </div>

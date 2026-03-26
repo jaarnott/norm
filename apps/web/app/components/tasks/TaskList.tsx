@@ -48,21 +48,21 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
       overflow: 'hidden',
     }}>
       <style>{`
-        .task-list-scroll {
+        .thread-list-scroll {
           scrollbar-width: none;
         }
-        .task-list-scroll:hover {
+        .thread-list-scroll:hover {
           scrollbar-width: thin;
           scrollbar-color: #ddd transparent;
         }
-        .task-list-scroll::-webkit-scrollbar {
+        .thread-list-scroll::-webkit-scrollbar {
           width: 6px;
         }
-        .task-list-scroll::-webkit-scrollbar-thumb {
+        .thread-list-scroll::-webkit-scrollbar-thumb {
           background: transparent;
           border-radius: 3px;
         }
-        .task-list-scroll:hover::-webkit-scrollbar-thumb {
+        .thread-list-scroll:hover::-webkit-scrollbar-thumb {
           background: #ddd;
         }
       `}</style>
@@ -203,7 +203,7 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
         </div>
       </div>
 
-      {/* Task list */}
+      {/* Thread list */}
       <div className="task-list-scroll" style={{ flex: 1, overflowY: 'auto' }}>
         {filtered.length === 0 ? (
           <div style={{

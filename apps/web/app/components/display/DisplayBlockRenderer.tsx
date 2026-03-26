@@ -19,7 +19,7 @@ export interface DisplayBlockProps {
   data: Record<string, unknown>;
   props?: Record<string, unknown>;
   onAction?: (action: WidgetAction) => Promise<Record<string, unknown> | void>;
-  taskId?: string;
+  threadId?: string;
 }
 
 /** Components that render full-width above the conversation instead of inline in chat bubbles */
@@ -44,11 +44,11 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
 interface DisplayBlockRendererProps {
   block: DisplayBlock;
   onAction?: (action: WidgetAction) => Promise<Record<string, unknown> | void>;
-  taskId?: string;
+  threadId?: string;
 }
 
-export default function DisplayBlockRenderer({ block, onAction, taskId }: DisplayBlockRendererProps) {
+export default function DisplayBlockRenderer({ block, onAction, threadId }: DisplayBlockRendererProps) {
   const Component = REGISTRY[block.component];
   if (!Component) return null;
-  return <Component data={block.data} props={block.props} onAction={onAction} taskId={taskId} />;
+  return <Component data={block.data} props={block.props} onAction={onAction} threadId={threadId} />;
 }

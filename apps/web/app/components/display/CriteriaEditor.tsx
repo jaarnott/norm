@@ -35,7 +35,7 @@ function extractCriteria(data: Record<string, unknown>): {
   return { scope, position_name, criteria };
 }
 
-export default function CriteriaEditor({ data, props, onAction, taskId }: DisplayBlockProps) {
+export default function CriteriaEditor({ data, props, onAction, threadId }: DisplayBlockProps) {
   const workingDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
 
   const [docData, setDocData] = useState<Record<string, unknown> | null>(workingDocId ? null : data);
@@ -43,8 +43,8 @@ export default function CriteriaEditor({ data, props, onAction, taskId }: Displa
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!workingDocId || !taskId) return;
-    apiFetch(`/api/tasks/${taskId}/working-documents/${workingDocId}`)
+    if (!workingDocId || !threadId) return;
+    apiFetch(`/api/threads/${threadId}/working-documents/${workingDocId}`)
       .then(res => res.ok ? res.json() : null)
       .then(doc => {
         if (doc) {
@@ -53,7 +53,7 @@ export default function CriteriaEditor({ data, props, onAction, taskId }: Displa
         }
       })
       .catch(() => {});
-  }, [workingDocId, taskId]);
+  }, [workingDocId, threadId]);
 
   useEffect(() => {
     if (workingDocId) return;
@@ -77,9 +77,9 @@ export default function CriteriaEditor({ data, props, onAction, taskId }: Displa
   const title = (props?.title as string) || (parsed.scope === 'position' ? `Criteria: ${parsed.position_name}` : 'Company Criteria');
 
   const patchDoc = useCallback(async (ops: Record<string, unknown>[]) => {
-    if (!workingDocId || !taskId) return;
+    if (!workingDocId || !threadId) return;
     try {
-      const res = await apiFetch(`/api/tasks/${taskId}/working-documents/${workingDocId}`, {
+      const res = await apiFetch(`/api/threads/${threadId}/working-documents/${workingDocId}`, {
         method: 'PATCH',
         body: JSON.stringify({ ops, version: docVersion }),
       });
@@ -90,7 +90,7 @@ export default function CriteriaEditor({ data, props, onAction, taskId }: Displa
         setCriteria(extractCriteria(updated.data).criteria);
       }
     } catch { /* ignore */ }
-  }, [workingDocId, taskId, docVersion]);
+  }, [workingDocId, threadId, docVersion]);
 
   const handleToggleRequired = useCallback((id: string, required: boolean) => {
     setCriteria(prev => prev.map(c => c.id === id ? { ...c, required } : c));

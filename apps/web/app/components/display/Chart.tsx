@@ -54,7 +54,7 @@ interface Props {
   data: { rows?: Record<string, unknown>[]; script?: Record<string, unknown> };
   props?: Partial<ChartSpec> & { field_labels?: Record<string, string> };
   onAction?: (action: { connector_name: string; action: string; params: Record<string, unknown> }) => Promise<Record<string, unknown> | void>;
-  taskId?: string;
+  threadId?: string;
   height?: number;
   hideAddToReport?: boolean;
   onRemove?: () => void;
@@ -63,7 +63,7 @@ interface Props {
   className?: string;
 }
 
-function Chart({ data, props: chartProps, onAction, taskId, height: chartHeight = 280, hideAddToReport, onRemove, fillContainer, hideBorder, className }: Props) {
+function Chart({ data, props: chartProps, onAction, threadId, height: chartHeight = 280, hideAddToReport, onRemove, fillContainer, hideBorder, className }: Props) {
   const [chartType, setChartType] = useState<ChartType>(chartProps?.chart_type || 'bar');
   const [addingToReport, setAddingToReport] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
@@ -176,7 +176,7 @@ function Chart({ data, props: chartProps, onAction, taskId, height: chartHeight 
           chart_spec: { x_axis: chartProps?.x_axis, series: effectiveSeries, orientation: chartProps?.orientation },
           data: rows,
           script: data?.script || {},
-          source_task_id: taskId,
+          source_thread_id: threadId,
         }),
       });
 

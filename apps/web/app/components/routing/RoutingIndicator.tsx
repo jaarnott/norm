@@ -55,7 +55,7 @@ export default function RoutingIndicator({ isVisible, resolvedDomain }: RoutingI
         )}
         {step >= 3 && (
           <span style={{ opacity: step >= 3 ? 1 : 0.3, transition: 'opacity 0.3s' }}>
-            {icon} {domainLabel.charAt(0).toUpperCase() + domainLabel.slice(1)} agent preparing task...
+            {icon} {domainLabel.charAt(0).toUpperCase() + domainLabel.slice(1)} agent preparing thread...
           </span>
         )}
       </div>

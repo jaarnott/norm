@@ -1436,7 +1436,7 @@ def _build_response(
 
     # Only include fields the activity timeline needs — heavy fields
     # (system_prompt, user_prompt, raw_response, tools_provided) are
-    # available via GET /tasks/{id} if the user expands a specific call.
+    # available via GET /threads/{id} if the user expands a specific call.
     llm_calls = [
         {
             "id": lc.id,
