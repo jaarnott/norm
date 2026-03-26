@@ -582,9 +582,7 @@ def _resolve_dates(params: dict, db: Session, task_id: str | None) -> dict:
     # Monday of current week
     days_since_monday = now.weekday()  # 0=Mon
     this_monday = (now - _dt.timedelta(days=days_since_monday)).strftime("%Y-%m-%d")
-    last_monday = (
-        now - _dt.timedelta(days=days_since_monday + 7)
-    ).strftime("%Y-%m-%d")
+    last_monday = (now - _dt.timedelta(days=days_since_monday + 7)).strftime("%Y-%m-%d")
     first_of_month = now.replace(day=1).strftime("%Y-%m-%d")
     if now.month == 1:
         first_of_last_month = now.replace(year=now.year - 1, month=12, day=1).strftime(
