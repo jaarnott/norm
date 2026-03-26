@@ -174,6 +174,7 @@ def _execute_loop(
 
     iteration = start_iteration
     while iteration <= MAX_ITERATIONS:
+        display_blocks_before = len(display_blocks)
         try:
             response, llm_call_id = call_llm_with_tools(
                 system_prompt=system_prompt,
@@ -622,6 +623,34 @@ def _execute_loop(
             )
             if only_searches and not pending_writes:
                 iteration -= 1
+
+            # Display-only tools (e.g. render_chart) don't produce data
+            # the LLM needs.  If the LLM already emitted text alongside
+            # these tool calls, treat as end_turn — skip the extra call.
+            if not pending_writes and reasoning:
+                tool_use_ids = {b.id for b in response.content if b.type == "tool_use"}
+                new_display_blocks = len(display_blocks) - display_blocks_before
+                if tool_use_ids and new_display_blocks == len(tool_use_ids):
+                    db.add(
+                        Message(
+                            task_id=task.id,
+                            role="assistant",
+                            content=reasoning,
+                            display_blocks=display_blocks or None,
+                        )
+                    )
+                    task.status = (
+                        "completed" if task.status == "in_progress" else task.status
+                    )
+                    task.thinking_steps = thinking_steps or None
+                    db.commit()
+                    return _build_response(
+                        task,
+                        db,
+                        reasoning,
+                        thinking_steps=thinking_steps,
+                        display_blocks=display_blocks,
+                    )
 
             # All tools were read-only — feed results back and continue loop
             assistant_content = [_serialize_block(b) for b in response.content]

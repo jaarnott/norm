@@ -90,7 +90,9 @@ CONNECTOR_SPECS: list[dict] = [
                 "action": "render_chart",
                 "method": "GET",
                 "description": (
-                    "Render data as a visual chart by referencing a prior tool call."
+                    "Render data as a visual chart by referencing a prior tool call. "
+                    "Fire-and-forget: call this alongside your final text answer. "
+                    "No result is returned and no further response is needed."
                 ),
                 "required_fields": [
                     "title",
@@ -2170,7 +2172,7 @@ Today's date is {{today}}. Use this date to resolve relative time references lik
 
 ## Formatting
 - If presenting tabular data, use markdown tables.
-- When presenting data from a tool call, use the `render_chart` tool to create a visual chart.
+- When presenting data from a tool call, call `render_chart` to attach a visual chart. Call it in the **same response** as your final text answer — it is fire-and-forget and no result is returned. Do not add any text after calling it; your text response IS the final answer.
 - Keep summaries brief — highlight counts, key facts, and anything unusual.
 - When summarising data across multiple periods, present a comparison table showing each period side by side.
 - For confirmations, use **bold** labels: **Reference**: ORD-12345."""
