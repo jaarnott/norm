@@ -123,10 +123,24 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
   sectionStyle: React.CSSProperties;
   headingStyle: React.CSSProperties;
 }) {
-  const ENVS = ['local', 'testing', 'staging', 'production'] as const;
-  type Env = typeof ENVS[number];
+  const ALL_ENVS = ['local', 'testing', 'staging', 'production'] as const;
+  type Env = typeof ALL_ENVS[number];
 
-  const [sourceEnv, setSourceEnv] = useState<Env>('staging');
+  // Detect current environment from hostname, filter source options
+  const currentEnv: Env = typeof window !== 'undefined'
+    ? window.location.hostname === 'localhost' ? 'local'
+      : window.location.hostname.startsWith('testing.') ? 'testing'
+      : window.location.hostname.startsWith('staging.') ? 'staging'
+      : 'production'
+    : 'local';
+
+  const ENVS = ALL_ENVS.filter(env => {
+    if (env === currentEnv) return false; // can't sync from self
+    if (env === 'local' && currentEnv !== 'local') return false; // local only available locally
+    return true;
+  });
+
+  const [sourceEnv, setSourceEnv] = useState<Env>(ENVS[0] || 'testing');
   const [comparing, setComparing] = useState(false);
   const [applying, setApplying] = useState(false);
   const [reseeding, setReseeding] = useState(false);

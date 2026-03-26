@@ -865,6 +865,18 @@ async def config_fetch_remote(
             f"Valid: {', '.join(ENV_URLS.keys())}",
         )
 
+    # Don't allow fetching from self
+    if body.environment == settings.ENVIRONMENT:
+        raise HTTPException(400, "Cannot fetch config from the current environment")
+
+    # Don't allow "local" unless we're actually running locally
+    if body.environment == "local" and settings.ENVIRONMENT != "local":
+        raise HTTPException(
+            400,
+            "Cannot fetch from 'local' in a deployed environment. "
+            "Use testing/staging/production as source.",
+        )
+
     base_url = ENV_URLS[body.environment]
     url = f"{base_url}/api/admin/config-export"
 
