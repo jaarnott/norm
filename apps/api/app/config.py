@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     LLM_INTERPRETER_MODEL: str = "claude-opus-4-20250514"
     ROUTER_MODEL: str = "claude-haiku-4-5-20251001"
+    DATE_RESOLVER_MODEL: str = "claude-haiku-4-5-20251001"
 
     # ── Stripe / Billing ────────────────────────────────────────────────
     STRIPE_SECRET_KEY: str = ""

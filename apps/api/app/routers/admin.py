@@ -691,7 +691,7 @@ def _compare_binding_fields(db_binding: AgentConnectorBinding, imp: dict) -> lis
 @router.post("/admin/config-import")
 def config_import(
     body: ConfigImportRequest,
-    user: User = Depends(require_permission("admin:system")),
+    user: User = Depends(_require_admin_or_sync_token),
     db: Session = Depends(get_db),
 ):
     """Import selected config items. Skips redacted values."""
@@ -906,6 +906,227 @@ async def config_fetch_remote(
             502,
             f"Failed to reach {body.environment} ({base_url}): {exc}",
         ) from exc
+
+
+# ── Config Push (local → remote) ─────────────────────────────────
+
+
+class ConfigPushRequest(BaseModel):
+    environment: str
+    selections: ConfigImportSelections | None = None
+
+
+@router.post("/admin/config-diff-remote")
+async def config_diff_remote(
+    body: ConfigFetchRemoteRequest,
+    user: User = Depends(require_permission("admin:system")),
+    db: Session = Depends(get_db),
+):
+    """Diff local config against a remote environment (for push mode).
+
+    Fetches the remote config, then diffs local (what we'd push) against
+    remote (current state). Reuses the same diff helpers as config-diff.
+    The diff shows what would change on the remote if we pushed.
+    """
+    if body.environment not in ENV_URLS:
+        raise HTTPException(400, f"Unknown environment: {body.environment}")
+    if body.environment == settings.ENVIRONMENT:
+        raise HTTPException(400, "Cannot diff against self")
+    if not settings.CONFIG_SYNC_SECRET:
+        raise HTTPException(500, "CONFIG_SYNC_SECRET is not configured.")
+
+    # Fetch remote config
+    base_url = ENV_URLS[body.environment]
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{base_url}/api/admin/config-export",
+                headers={"X-Config-Sync-Token": settings.CONFIG_SYNC_SECRET},
+            )
+            resp.raise_for_status()
+            remote_config = resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            502,
+            f"Remote returned {exc.response.status_code}: {exc.response.text[:500]}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"Failed to reach {body.environment}: {exc}") from exc
+
+    # Diff: treat local config as the "import" being applied to "remote" (the DB)
+    # This reuses the existing diff functions which compare db_state vs import_data.
+    # We fake "db_state" as the remote, and "import_data" as local.
+    db_specs_map = {}
+    for s_dict in remote_config.get("connector_specs", []):
+        # Build a lightweight object that _compare_spec_fields can use
+        name = s_dict.get("connector_name")
+        if name:
+            db_specs_map[name] = s_dict
+
+    local_specs = {s.connector_name: s for s in db.query(ConnectorSpec).all()}
+    local_agents = {a.agent_slug: a for a in db.query(AgentConfig).all()}
+    local_bindings_list = db.query(AgentConnectorBinding).all()
+
+    # Use the existing diff functions, but swap perspective:
+    # "db" = remote config (what's already there), "import" = local (what we'd push)
+    local_specs_dicts = {
+        s.connector_name: _spec_to_dict(s) for s in local_specs.values()
+    }
+    local_agents_dicts = {
+        a.agent_slug: _agent_to_dict(a) for a in local_agents.values()
+    }
+    local_bindings_dicts = {
+        (b.agent_slug, b.connector_name): _binding_to_dict(b)
+        for b in local_bindings_list
+    }
+
+    # We need lightweight diff — just reuse the pattern from config_diff
+    # Build remote as "db" objects for the diff functions
+    # Simplest: call config_diff logic by passing local config as the "import"
+    # against the remote data treated as current state
+    result: dict[str, Any] = {}
+
+    # Connector specs diff
+    remote_specs = {
+        s["connector_name"]: s for s in remote_config.get("connector_specs", [])
+    }
+    result["connector_specs"] = _diff_dicts(
+        remote_specs, local_specs_dicts, "connector_name"
+    )
+
+    # Agent configs diff
+    remote_agents = {a["agent_slug"]: a for a in remote_config.get("agent_configs", [])}
+    result["agent_configs"] = _diff_dicts(
+        remote_agents, local_agents_dicts, "agent_slug"
+    )
+
+    # Bindings diff
+    remote_bindings = {
+        (b["agent_slug"], b["connector_name"]): b
+        for b in remote_config.get("agent_bindings", [])
+    }
+    result["agent_bindings"] = _diff_dicts(remote_bindings, local_bindings_dicts, None)
+
+    return result
+
+
+def _diff_dicts(current: dict, incoming: dict, key_field: str | None) -> dict:
+    """Generic dict-level diff. Returns added/modified/removed/unchanged."""
+    added = []
+    modified = []
+    removed = []
+    unchanged = []
+
+    all_keys = set(current.keys()) | set(incoming.keys())
+    for key in sorted(all_keys, key=str):
+        label = (
+            {key_field: key}
+            if key_field
+            else {"agent_slug": key[0], "connector_name": key[1]}
+        )
+        if key not in current:
+            added.append(label)
+        elif key not in incoming:
+            removed.append(label)
+        else:
+            # Simple field comparison
+            cur = current[key]
+            inc = incoming[key]
+            changes = []
+            for field in set(cur.keys()) | set(inc.keys()):
+                if field in ("connector_name", "agent_slug"):
+                    continue
+                old_val = cur.get(field)
+                new_val = inc.get(field)
+                if old_val != new_val:
+                    # Truncate large values for display
+                    old_display = str(old_val)[:100] if old_val else str(old_val)
+                    new_display = str(new_val)[:100] if new_val else str(new_val)
+                    changes.append(
+                        {
+                            "field": field,
+                            "old_value": old_display,
+                            "new_value": new_display,
+                        }
+                    )
+            if changes:
+                modified.append({**label, "changes": changes})
+            else:
+                unchanged.append(label)
+
+    return {
+        "added": added,
+        "modified": modified,
+        "removed": removed,
+        "unchanged": unchanged,
+    }
+
+
+@router.post("/admin/config-push-remote")
+async def config_push_remote(
+    body: ConfigPushRequest,
+    user: User = Depends(require_permission("admin:system")),
+    db: Session = Depends(get_db),
+):
+    """Push local config to a remote environment.
+
+    Exports local config (unredacted) and POSTs it to the remote
+    environment's config-import endpoint using service-to-service auth.
+    """
+    if body.environment not in ENV_URLS:
+        raise HTTPException(400, f"Unknown environment: {body.environment}")
+    if body.environment == settings.ENVIRONMENT:
+        raise HTTPException(400, "Cannot push to self")
+    if body.environment == "local" and settings.ENVIRONMENT != "local":
+        raise HTTPException(400, "Cannot push to 'local' from a deployed environment")
+
+    if not settings.CONFIG_SYNC_SECRET:
+        raise HTTPException(500, "CONFIG_SYNC_SECRET is not configured.")
+
+    # Export local config (unredacted — we're pushing real values)
+    local_specs = [_spec_to_dict(s) for s in db.query(ConnectorSpec).all()]
+    local_agents = [_agent_to_dict(a) for a in db.query(AgentConfig).all()]
+    local_bindings = [
+        _binding_to_dict(b) for b in db.query(AgentConnectorBinding).all()
+    ]
+    local_config = {
+        "connector_specs": local_specs,
+        "agent_configs": local_agents,
+        "agent_bindings": local_bindings,
+    }
+
+    # Build selections — if not provided, push everything
+    if body.selections:
+        selections = body.selections.model_dump()
+    else:
+        selections = {
+            "connector_specs": [s["connector_name"] for s in local_specs],
+            "agent_configs": [a["agent_slug"] for a in local_agents],
+            "agent_bindings": [
+                [b["agent_slug"], b["connector_name"]] for b in local_bindings
+            ],
+        }
+
+    base_url = ENV_URLS[body.environment]
+    import_url = f"{base_url}/api/admin/config-import"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                import_url,
+                json={"config": local_config, "selections": selections},
+                headers={"X-Config-Sync-Token": settings.CONFIG_SYNC_SECRET},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            502,
+            f"Remote import returned {exc.response.status_code}: "
+            f"{exc.response.text[:500]}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"Failed to reach {body.environment}: {exc}") from exc
 
 
 # ── E2E Test Schemas ──────────────────────────────────────────────

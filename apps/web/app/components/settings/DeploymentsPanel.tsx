@@ -164,39 +164,60 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
     }
   }, [feedback, clearFeedback]);
 
+  const isPushMode = currentEnv === 'local';
+
   const handleCompare = async () => {
     setComparing(true);
     setFeedback(null);
     setDiffResult(null);
     setSelected(new Set());
     try {
-      const fetchRes = await apiFetch('/api/admin/config-fetch-remote', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ environment: sourceEnv }),
-      });
-      if (!fetchRes.ok) {
-        const d = await fetchRes.json();
-        setFeedback({ type: 'error', message: d.detail || 'Failed to fetch remote config' });
-        setComparing(false);
-        return;
-      }
-      const configData = await fetchRes.json();
-      setRemoteConfig(configData);
+      if (isPushMode) {
+        // Push mode: diff local against remote
+        const diffRes = await apiFetch('/api/admin/config-diff-remote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ environment: sourceEnv }),
+        });
+        if (!diffRes.ok) {
+          const d = await diffRes.json();
+          setFeedback({ type: 'error', message: d.detail || 'Failed to diff against remote' });
+          setComparing(false);
+          return;
+        }
+        const diff: DiffResult = await diffRes.json();
+        setDiffResult(diff);
+        setRemoteConfig({}); // Push doesn't need remote config stored
+      } else {
+        // Pull mode: fetch remote config then diff against local
+        const fetchRes = await apiFetch('/api/admin/config-fetch-remote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ environment: sourceEnv }),
+        });
+        if (!fetchRes.ok) {
+          const d = await fetchRes.json();
+          setFeedback({ type: 'error', message: d.detail || 'Failed to fetch remote config' });
+          setComparing(false);
+          return;
+        }
+        const configData = await fetchRes.json();
+        setRemoteConfig(configData);
 
-      const diffRes = await apiFetch('/api/admin/config-diff', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(configData),
-      });
-      if (!diffRes.ok) {
-        const d = await diffRes.json();
-        setFeedback({ type: 'error', message: d.detail || 'Failed to compute diff' });
-        setComparing(false);
-        return;
+        const diffRes = await apiFetch('/api/admin/config-diff', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(configData),
+        });
+        if (!diffRes.ok) {
+          const d = await diffRes.json();
+          setFeedback({ type: 'error', message: d.detail || 'Failed to compute diff' });
+          setComparing(false);
+          return;
+        }
+        const diff: DiffResult = await diffRes.json();
+        setDiffResult(diff);
       }
-      const diff: DiffResult = await diffRes.json();
-      setDiffResult(diff);
     } catch (e) {
       setFeedback({ type: 'error', message: String(e) });
     }
@@ -239,7 +260,7 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
   const deselectAll = () => setSelected(new Set());
 
   const handleApply = async () => {
-    if (!remoteConfig || selected.size === 0) return;
+    if (selected.size === 0) return;
     setApplying(true);
     setFeedback(null);
     try {
@@ -248,19 +269,33 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
         const [section, key] = id.split(':');
         if (selectedItems[section]) selectedItems[section].push(key);
       }
-      const res = await apiFetch('/api/admin/config-import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: remoteConfig, selected: selectedItems }),
-      });
+
+      let res: Response;
+      if (isPushMode) {
+        // Push mode: push local config to remote
+        res = await apiFetch('/api/admin/config-push-remote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ environment: sourceEnv, selections: selectedItems }),
+        });
+      } else {
+        // Pull mode: import remote config into local DB
+        res = await apiFetch('/api/admin/config-import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: remoteConfig, selections: selectedItems }),
+        });
+      }
+
       if (res.ok) {
-        setFeedback({ type: 'success', message: 'Selected configuration items applied successfully.' });
+        const verb = isPushMode ? `pushed to ${sourceEnv}` : 'applied locally';
+        setFeedback({ type: 'success', message: `Selected configuration items ${verb} successfully.` });
         setDiffResult(null);
         setRemoteConfig(null);
         setSelected(new Set());
       } else {
         const d = await res.json();
-        setFeedback({ type: 'error', message: d.detail || 'Import failed' });
+        setFeedback({ type: 'error', message: d.detail || (isPushMode ? 'Push failed' : 'Import failed') });
       }
     } catch (e) {
       setFeedback({ type: 'error', message: String(e) });
@@ -454,7 +489,7 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
 
         {/* Source selector + Compare */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-          <label style={{ fontSize: '0.78rem', color: '#a0aec0' }}>Source environment:</label>
+          <label style={{ fontSize: '0.78rem', color: '#a0aec0' }}>{isPushMode ? 'Push to:' : 'Pull from:'}</label>
           <select
             value={sourceEnv}
             onChange={e => setSourceEnv(e.target.value as Env)}
@@ -529,7 +564,7 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
                 }}
               >
                 <Check size={13} />
-                {applying ? 'Applying...' : `Apply Selected (${selected.size})`}
+                {applying ? (isPushMode ? 'Pushing...' : 'Applying...') : `${isPushMode ? 'Push' : 'Apply'} Selected (${selected.size})`}
               </button>
             </div>
           </div>

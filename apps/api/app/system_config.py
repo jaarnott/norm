@@ -77,6 +77,27 @@ CONNECTOR_SPECS: list[dict] = [
                     "summary": "Brief summary of key decisions, preferences, and instructions so far",
                 },
             },
+            {
+                "action": "resolve_dates",
+                "method": "GET",
+                "description": (
+                    "Resolve a natural language time reference into exact ISO 8601 "
+                    "timestamps. Always call this FIRST before any data tool when "
+                    "the user's request involves relative dates (e.g., 'last week', "
+                    "'yesterday', 'every Friday for the last 12 weeks'). Returns "
+                    "one or more time periods with start/end timestamps ready to "
+                    "use in data tool calls."
+                ),
+                "required_fields": ["query"],
+                "optional_fields": ["timezone"],
+                "field_descriptions": {
+                    "query": (
+                        "The natural language time reference to resolve "
+                        "(e.g., 'last week', 'every Friday 5pm-9pm for last 12 weeks', 'March 2026')"
+                    ),
+                    "timezone": "IANA timezone (default: Pacific/Auckland)",
+                },
+            },
         ],
     },
     {
@@ -2168,7 +2189,8 @@ Today's date is {{today}}. Use this date to resolve relative time references lik
 - IMPORTANT: When you are about to call a tool, you MUST start your text response with the prefix "[Tool] " followed by a brief explanation of what you are looking up or doing and why. Example: "[Tool] Looking up staff orders for last week to find Arthur's sales data." Do NOT use the [Tool] prefix when giving your final answer to the user.
 - CRITICAL: You must ONLY present data that was returned by tool calls. NEVER fabricate, invent, extrapolate, or estimate data beyond what the tools returned. If a tool
  returns partial or no data, report exactly what was returned — do not fill in gaps. If you cannot answer the question from the tool results alone, say so clearly and ask for more information. You can explain what information you do have access to
-- A week period is 7:00am Monday to 6:59am Monday unless otherwise stated. When sending date formats use timezone UTC+13
+- IMPORTANT: When a user request involves relative dates or recurring periods (e.g., "last week", "yesterday", "every Friday for 12 weeks", "last month"), ALWAYS call `resolve_dates` first to get exact ISO 8601 timestamps. Then use those timestamps in your data tool calls. Do not calculate dates yourself.
+- A week period is 7:00am Monday to 6:59am Monday. Default timezone is Pacific/Auckland (UTC+13 in NZDT)
 
 ## Formatting
 - If presenting tabular data, use markdown tables.
@@ -2211,6 +2233,11 @@ AGENT_BINDINGS: list[dict] = [
                 "enabled": True,
             },
             {
+                "action": "resolve_dates",
+                "label": "Resolve dates from natural language",
+                "enabled": True,
+            },
+            {
                 "action": "update_task_config",
                 "label": "Update persistent task configuration",
                 "enabled": True,
@@ -2237,6 +2264,11 @@ AGENT_BINDINGS: list[dict] = [
                 "enabled": True,
             },
             {
+                "action": "resolve_dates",
+                "label": "Resolve dates from natural language",
+                "enabled": True,
+            },
+            {
                 "action": "update_task_config",
                 "label": "Update persistent task configuration",
                 "enabled": True,
@@ -2260,6 +2292,11 @@ AGENT_BINDINGS: list[dict] = [
             {
                 "action": "search_tool_result",
                 "label": "Search through a previous tool call's full result by keyword.",
+                "enabled": True,
+            },
+            {
+                "action": "resolve_dates",
+                "label": "Resolve dates from natural language",
                 "enabled": True,
             },
             {

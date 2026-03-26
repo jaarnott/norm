@@ -542,6 +542,139 @@ def _system_send_notification(params: dict, db: Session, task_id: str | None) ->
     }
 
 
+# Date Resolution
+# ---------------------------------------------------------------------------
+
+
+@register("norm", "resolve_dates")
+def _resolve_dates(params: dict, db: Session, task_id: str | None) -> dict:
+    """Resolve natural language time references into exact ISO 8601 timestamps.
+
+    Uses a fast Haiku LLM call with Python-computed date context so the LLM
+    doesn't have to figure out day-of-week math itself.
+    """
+    import datetime as _dt
+    import json as _json
+
+    import zoneinfo
+
+    from app.config import settings
+    from app.interpreter.llm_interpreter import call_llm
+
+    query = params.get("query", "").strip()
+    if not query:
+        return {"success": False, "data": {}, "error": "query is required"}
+
+    tz_name = params.get("timezone", "Pacific/Auckland")
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("Pacific/Auckland")
+        tz_name = "Pacific/Auckland"
+
+    now = _dt.datetime.now(tz)
+    day_name = now.strftime("%A")  # e.g. "Thursday"
+    date_str = now.strftime("%Y-%m-%d")  # e.g. "2026-03-26"
+    utc_offset = now.strftime("%z")  # e.g. "+1300"
+    offset_formatted = f"{utc_offset[:3]}:{utc_offset[3:]}"  # "+13:00"
+
+    # Compute reference dates in Python so Haiku has anchors
+    # Monday of current week
+    days_since_monday = now.weekday()  # 0=Mon
+    this_monday = (now - _dt.timedelta(days=days_since_monday)).strftime("%Y-%m-%d")
+    last_monday = (
+        now - _dt.timedelta(days=days_since_monday + 7)
+    ).strftime("%Y-%m-%d")
+    first_of_month = now.replace(day=1).strftime("%Y-%m-%d")
+    if now.month == 1:
+        first_of_last_month = now.replace(year=now.year - 1, month=12, day=1).strftime(
+            "%Y-%m-%d"
+        )
+    else:
+        first_of_last_month = now.replace(month=now.month - 1, day=1).strftime(
+            "%Y-%m-%d"
+        )
+
+    system_prompt = f"""You are a date resolver for a hospitality platform in New Zealand.
+
+Today is {day_name} {date_str} (timezone: {tz_name}, UTC offset: {offset_formatted}).
+
+Reference dates (computed, use these as anchors):
+- This Monday: {this_monday}
+- Last Monday: {last_monday}
+- First of this month: {first_of_month}
+- First of last month: {first_of_last_month}
+
+Business rules:
+- A business week runs from 7:00am Monday to 6:59am the following Monday.
+- A business day runs from 7:00am to 6:59am the next day.
+- "Last week" means the most recent completed week (last Monday 7am to this Monday 6:59am).
+- "This week" means the current week starting this Monday 7am.
+
+Convert the user's time reference into exact ISO 8601 periods.
+Return ONLY valid JSON — no markdown, no explanation:
+{{"periods": [{{"label": "Mon 16 Mar", "start": "2026-03-16T07:00:00{offset_formatted}", "end": "2026-03-23T06:59:59{offset_formatted}"}}]}}
+
+Rules:
+- All timestamps MUST include the timezone offset ({offset_formatted})
+- For "last week": one period, last Monday 7am to this Monday 6:59am
+- For "last month": one period, 1st 00:00:00 to last day 23:59:59
+- For recurring periods (e.g., "every Friday 5pm-9pm for 12 weeks"): one period per occurrence
+- Order periods chronologically, oldest first
+- Use 24-hour time"""
+
+    try:
+        parsed, _llm_call_id = call_llm(
+            system_prompt=system_prompt,
+            user_prompt=query,
+            model=settings.DATE_RESOLVER_MODEL,
+            db=db,
+            task_id=task_id,
+            call_type="date_resolution",
+            max_tokens=4096,
+        )
+        text = parsed.get("text", "")
+        # Strip markdown fences if present
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1]
+        if text.endswith("```"):
+            text = text.rsplit("```", 1)[0]
+        text = text.strip()
+
+        data = _json.loads(text)
+        periods = data.get("periods", [])
+        if not periods:
+            return {
+                "success": False,
+                "data": {},
+                "error": "No periods resolved from the query",
+            }
+
+        # Validate: parse each timestamp to confirm it's valid ISO 8601
+        for p in periods:
+            try:
+                _dt.datetime.fromisoformat(p["start"])
+                _dt.datetime.fromisoformat(p["end"])
+            except (KeyError, ValueError) as ve:
+                logger.warning("Invalid period in resolve_dates: %s – %s", p, ve)
+
+        return {
+            "success": True,
+            "data": {"periods": periods, "timezone": tz_name},
+        }
+    except _json.JSONDecodeError as e:
+        logger.error("resolve_dates JSON parse error: %s", e)
+        return {
+            "success": False,
+            "data": {},
+            "error": f"Failed to parse date resolution response: {e}",
+        }
+    except Exception as e:
+        logger.error("resolve_dates error: %s", e)
+        return {"success": False, "data": {}, "error": str(e)}
+
+
 # Reports — Chart Rendering
 # ---------------------------------------------------------------------------
 
