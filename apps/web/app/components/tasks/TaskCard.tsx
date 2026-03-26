@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Package, UserRound, BarChart3, HelpCircle, type LucideIcon } from 'lucide-react';
+import { Package, UserRound, BarChart3, HelpCircle, Timer, type LucideIcon } from 'lucide-react';
 import type { Task, ProcurementTask, HrTask } from '../../types';
 import { colors } from '../../lib/theme';
 
@@ -64,6 +64,18 @@ function getDomainColor(domain: string): string {
   return (colors as unknown as Record<string, string>)[domain] || colors.unknown;
 }
 
+function formatSchedule(type: string, config: Record<string, unknown>): string {
+  const hour = config.hour as number | undefined;
+  const minute = config.minute as number | undefined;
+  const time = hour != null ? `${String(hour).padStart(2, '0')}:${String(minute ?? 0).padStart(2, '0')}` : '';
+  const day = config.day_of_week as string | undefined;
+  if (type === 'daily' && time) return `Daily at ${time}`;
+  if (type === 'weekly' && day) return `${day.charAt(0).toUpperCase() + day.slice(1)}s at ${time}`;
+  if (type === 'monthly') return `Day ${config.day_of_month || 1} at ${time}`;
+  const labels: Record<string, string> = { manual: 'Manual', hourly: 'Hourly', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
+  return labels[type] || type;
+}
+
 interface TaskCardProps {
   task: Task;
   isSelected: boolean;
@@ -79,6 +91,7 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
   const DomainIcon = DOMAIN_ICONS[task.domain] || HelpCircle;
   const ss = STATUS_STYLES[task.status] || { bg: '#e2e3e5', color: '#383d41', label: task.status.replace(/_/g, ' ') };
   const isWaiting = task.status === 'awaiting_user_input' || task.status === 'needs_clarification';
+  const isAutomated = !!task.automated_task;
 
   if (confirming) {
     return (
@@ -153,15 +166,19 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
           transition: 'background-color 0.1s',
         }}
       >
-        <span style={{
-          width: 7, height: 7, borderRadius: '50%',
-          backgroundColor: dotColor, flexShrink: 0,
-        }} />
+        {isAutomated ? (
+          <Timer size={12} strokeWidth={2} style={{ color: '#9ca3af', flexShrink: 0 }} />
+        ) : (
+          <span style={{
+            width: 7, height: 7, borderRadius: '50%',
+            backgroundColor: dotColor, flexShrink: 0,
+          }} />
+        )}
         <span style={{
           flex: 1, fontSize: '0.85rem', color: '#333',
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>
-          {getTaskSummary(task) || getTaskTitle(task)}
+          {isAutomated ? (task.automated_task?.title || getTaskTitle(task)) : (getTaskSummary(task) || getTaskTitle(task))}
         </span>
         <button
           onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
@@ -206,6 +223,15 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
           }}>
             {task.domain}
           </span>
+          {isAutomated && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 3,
+              fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af',
+              padding: '1px 6px', borderRadius: 8, backgroundColor: '#f3f4f6',
+            }}>
+              <Timer size={10} strokeWidth={2} /> Saved
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
           <span style={{ fontSize: '0.72rem', color: '#aaa' }}>
@@ -244,7 +270,10 @@ export default function TaskCard({ task, isSelected, onClick, onRemove, compact,
         overflow: 'hidden',
         textOverflow: 'ellipsis',
       }}>
-        {getTaskSummary(task)}
+        {isAutomated && task.automated_task
+          ? formatSchedule(task.automated_task.schedule_type, task.automated_task.schedule_config)
+          : getTaskSummary(task)
+        }
       </div>
 
       {/* Status badge */}

@@ -43,7 +43,10 @@ function formatTime(dateStr?: string | null): string {
   if (!dateStr) return '';
   try {
     const d = new Date(dateStr);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const day = d.getDate();
+    const mon = d.toLocaleString([], { month: 'short' });
+    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return `${day} ${mon} ${time}`;
   } catch {
     return '';
   }

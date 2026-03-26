@@ -595,6 +595,18 @@ class AutomatedTask(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
+    # Structured context for scheduled runs
+    task_config = Column(
+        JSON, nullable=False, default=dict
+    )  # persistent instructions from conversation
+    thread_summary = Column(Text, nullable=True)  # rolling summary of key decisions
+    overrides_next_run = Column(
+        JSON, nullable=True
+    )  # one-off instructions, cleared after execution
+    conversation_task_id = Column(
+        String, ForeignKey("tasks.id"), nullable=True
+    )  # persistent conversation
+
     runs = relationship(
         "AutomatedTaskRun",
         back_populates="automated_task",
@@ -602,6 +614,7 @@ class AutomatedTask(Base):
         order_by="AutomatedTaskRun.started_at.desc()",
     )
     creator = relationship("User")
+    conversation_task = relationship("Task", foreign_keys=[conversation_task_id])
 
 
 class AutomatedTaskRun(Base):
@@ -609,6 +622,9 @@ class AutomatedTaskRun(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     automated_task_id = Column(String, ForeignKey("automated_tasks.id"), nullable=False)
+    task_id = Column(
+        String, ForeignKey("tasks.id"), nullable=True
+    )  # execution Task record
     status = Column(String, nullable=False, default="running")  # running|success|error
     mode = Column(String, nullable=False, default="live")  # live|test
     result_summary = Column(Text, nullable=True)
@@ -619,6 +635,7 @@ class AutomatedTaskRun(Base):
     duration_ms = Column(Integer, nullable=True)
 
     automated_task = relationship("AutomatedTask", back_populates="runs")
+    task = relationship("Task", foreign_keys=[task_id])
 
 
 class TokenUsage(Base):

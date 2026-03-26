@@ -379,6 +379,17 @@ export default function Home() {
   }, []);
 
   const handleAction = useCallback(async (taskId: string, action: string) => {
+    // Reload just re-fetches the task detail
+    if (action === 'reload') {
+      try {
+        const res = await apiFetch(`/api/tasks/${taskId}`);
+        if (res.ok) {
+          const updated = await res.json();
+          setTasks(prev => prev.map(t => (t.id === taskId ? updated : t)));
+        }
+      } catch { /* ignore */ }
+      return;
+    }
     try {
       const res = await apiFetch(`/api/tasks/${taskId}/${action}`, {
         method: 'POST',
@@ -405,6 +416,24 @@ export default function Home() {
         }
       }
       return { report_id: null };
+    }
+
+    // Navigate to an automated task's conversation
+    if (action.action === 'open_automated_task' && action.params?.conversation_task_id) {
+      const convTaskId = action.params.conversation_task_id as string;
+      // Fetch the task if not already in the list
+      if (!tasks.find(t => t.id === convTaskId)) {
+        try {
+          const res = await apiFetch(`/api/tasks/${convTaskId}`);
+          if (res.ok) {
+            const full = await res.json();
+            setTasks(prev => [full, ...prev]);
+          }
+        } catch { /* ignore */ }
+      }
+      setSelectedTaskId(convTaskId);
+      setActivePage(null);
+      return { ok: true };
     }
 
     // Handle report builder open client-side (no backend needed)

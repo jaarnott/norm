@@ -70,6 +70,11 @@ export default function FunctionalPage({ config, task, onSend, loading, onWidget
       return { ok: true };
     }
 
+    // Navigate to automated task conversation — pass through to page handler
+    if (action.action === 'open_automated_task' && action.params?.conversation_task_id && onWidgetAction) {
+      return onWidgetAction(task?.id || '_nav', action);
+    }
+
     if (task && onWidgetAction) {
       return onWidgetAction(task.id, action);
     }

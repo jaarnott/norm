@@ -5,6 +5,7 @@ Started at FastAPI startup, loads active tasks from DB, and runs them
 on their configured schedules.
 """
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -16,6 +17,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 logger = logging.getLogger(__name__)
 
 scheduler = BackgroundScheduler()
+
+# How many recent conversation messages to inject into scheduled runs
+RECENT_MESSAGES_LIMIT = 8
 
 
 def init_scheduler():
@@ -90,6 +94,75 @@ def _execute_automated_task(task_id: str):
     execute_task_now(task_id, mode="live")
 
 
+def _ensure_conversation_task(automated_task, db) -> str:
+    """Ensure the automated task has a persistent conversation Task. Returns its id."""
+    from app.db.models import Task
+
+    if automated_task.conversation_task_id:
+        return automated_task.conversation_task_id
+
+    conv_task = Task(
+        user_id=automated_task.created_by,
+        domain=automated_task.agent_slug,
+        intent=f"{automated_task.agent_slug}.automated_conversation",
+        status="active",
+        raw_prompt=automated_task.prompt,
+        title=automated_task.title,
+        extracted_fields={},
+        missing_fields=[],
+    )
+    db.add(conv_task)
+    db.flush()
+    automated_task.conversation_task_id = conv_task.id
+    db.flush()
+    return conv_task.id
+
+
+def _build_augmented_prompt(automated_task, db) -> str:
+    """Build the prompt for a scheduled run with injected context."""
+    from app.db.models import Message
+
+    parts = [automated_task.prompt]
+
+    # Task configuration
+    config = automated_task.task_config or {}
+    if config:
+        parts.append(f"\n[Task Configuration]\n{json.dumps(config, indent=2)}")
+
+    # Thread summary
+    if automated_task.thread_summary:
+        parts.append(f"\n[Thread Summary]\n{automated_task.thread_summary}")
+
+    # Recent conversation messages
+    if automated_task.conversation_task_id:
+        recent = (
+            db.query(Message)
+            .filter(Message.task_id == automated_task.conversation_task_id)
+            .order_by(Message.created_at.desc())
+            .limit(RECENT_MESSAGES_LIMIT)
+            .all()
+        )
+        if recent:
+            recent.reverse()  # chronological order
+            lines = []
+            for m in recent:
+                prefix = "User" if m.role == "user" else "Assistant"
+                # Truncate long messages in context
+                content = m.content[:500] if len(m.content) > 500 else m.content
+                lines.append(f"{prefix}: {content}")
+            parts.append("\n[Recent Context]\n" + "\n".join(lines))
+
+    # One-time overrides
+    overrides = automated_task.overrides_next_run
+    if overrides:
+        if isinstance(overrides, dict):
+            parts.append(f"\n[One-time Override]\n{json.dumps(overrides, indent=2)}")
+        elif isinstance(overrides, str):
+            parts.append(f"\n[One-time Override]\n{overrides}")
+
+    return "\n".join(parts)
+
+
 def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
     """Execute an automated task immediately. Returns the run result dict.
 
@@ -108,6 +181,9 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
         task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
         if not task:
             return {"success": False, "error": "Automated task not found"}
+
+        # Ensure conversation task exists
+        _ensure_conversation_task(task, db)
 
         # Create run record
         run = AutomatedTaskRun(
@@ -134,26 +210,33 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
 
             ctx = agent.build_context(db)
 
-            # Create temporary Task record for the tool loop
+            # Build augmented prompt with context
+            augmented_prompt = _build_augmented_prompt(task, db)
+
+            # Create execution Task record for the tool loop
             temp_task = Task(
                 user_id=task.created_by,
                 domain=task.agent_slug,
                 intent=f"{task.agent_slug}.automated_task",
                 status="in_progress",
-                raw_prompt=task.prompt,
+                raw_prompt=augmented_prompt,
                 title=f"[Auto] {task.title}",
                 extracted_fields={},
                 missing_fields=[],
             )
             db.add(temp_task)
             db.flush()
-            db.add(Message(task_id=temp_task.id, role="user", content=task.prompt))
+
+            # Link run to execution task
+            run.task_id = temp_task.id
+
+            db.add(Message(task_id=temp_task.id, role="user", content=augmented_prompt))
             db.flush()
 
             # Execute the tool loop
             test_mode = mode == "test"
             result = run_tool_loop(
-                task.prompt,
+                augmented_prompt,
                 temp_task,
                 db,
                 system_prompt,
@@ -174,12 +257,30 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             run.duration_ms = duration_ms
 
             task.last_run_at = datetime.now(timezone.utc)
+
+            # Clear one-time overrides after execution
+            if task.overrides_next_run:
+                task.overrides_next_run = None
+
+            # Post run summary to conversation task
+            if task.conversation_task_id and result_text:
+                run_label = f"[Run {run.id[:8]} — {run.status}]"
+                summary = result_text[:1000] if result_text else "Task completed."
+                db.add(
+                    Message(
+                        task_id=task.conversation_task_id,
+                        role="assistant",
+                        content=f"{run_label}\n{summary}",
+                    )
+                )
+
             db.commit()
 
             return {
                 "success": True,
                 "data": {
                     "run_id": run.id,
+                    "task_id": run.task_id,
                     "status": run.status,
                     "mode": run.mode,
                     "result_summary": run.result_summary,

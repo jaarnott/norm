@@ -1,12 +1,16 @@
 """REST endpoints for automated task management (UI board)."""
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
-from app.db.models import AutomatedTask, AutomatedTaskRun, User
+from app.db.models import AutomatedTask, AutomatedTaskRun, Task, Message, ToolCall, User
 from app.auth.dependencies import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -33,6 +37,15 @@ class RunBody(BaseModel):
     mode: str = "live"
 
 
+class MessageBody(BaseModel):
+    message: str
+
+
+# ---------------------------------------------------------------------------
+# Serialization helpers
+# ---------------------------------------------------------------------------
+
+
 def _task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dict:
     d = {
         "id": t.id,
@@ -44,6 +57,10 @@ def _task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dict:
         "schedule_config": t.schedule_config,
         "status": t.status,
         "created_by": t.created_by,
+        "task_config": t.task_config or {},
+        "thread_summary": t.thread_summary,
+        "overrides_next_run": t.overrides_next_run,
+        "conversation_task_id": t.conversation_task_id,
         "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
         "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
         "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -55,9 +72,10 @@ def _task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dict:
 
 
 def _run_to_dict(r: AutomatedTaskRun) -> dict:
-    return {
+    d = {
         "id": r.id,
         "automated_task_id": r.automated_task_id,
+        "task_id": r.task_id,
         "status": r.status,
         "mode": r.mode,
         "result_summary": r.result_summary,
@@ -66,7 +84,28 @@ def _run_to_dict(r: AutomatedTaskRun) -> dict:
         "started_at": r.started_at.isoformat() if r.started_at else None,
         "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         "duration_ms": r.duration_ms,
+        "has_pending_approvals": False,
     }
+    # Check if the linked task has pending approvals
+    if r.task_id and r.task:
+        pending = r.task.pending_tool_call_ids
+        d["has_pending_approvals"] = bool(pending and len(pending) > 0)
+    return d
+
+
+def _message_to_dict(m: Message) -> dict:
+    return {
+        "id": m.id,
+        "role": m.role,
+        "content": m.content,
+        "display_blocks": m.display_blocks,
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CRUD endpoints
+# ---------------------------------------------------------------------------
 
 
 @router.get("/automated-tasks")
@@ -168,9 +207,7 @@ async def run_task(
         result = execute_task_now(task_id, mode=body.mode, db=db)
         return result
     except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).exception("Automated task run failed")
+        logger.exception("Automated task run failed")
         return {"success": False, "error": str(exc)}
 
 
@@ -223,6 +260,11 @@ async def delete_task(
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Runs
+# ---------------------------------------------------------------------------
+
+
 @router.get("/automated-tasks/{task_id}/runs")
 async def list_runs(
     task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
@@ -235,3 +277,136 @@ async def list_runs(
         .all()
     )
     return {"runs": [_run_to_dict(r) for r in runs]}
+
+
+@router.get("/automated-tasks/{task_id}/runs/{run_id}")
+async def get_run_detail(
+    task_id: str,
+    run_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get full detail for a specific run including its Task messages and tool calls."""
+    run = (
+        db.query(AutomatedTaskRun)
+        .filter(
+            AutomatedTaskRun.id == run_id,
+            AutomatedTaskRun.automated_task_id == task_id,
+        )
+        .first()
+    )
+    if not run:
+        raise HTTPException(404, "Run not found")
+
+    result = _run_to_dict(run)
+
+    # If the run has a linked execution task, include its messages and tool calls
+    if run.task_id:
+        exec_task = db.query(Task).filter(Task.id == run.task_id).first()
+        if exec_task:
+            messages = (
+                db.query(Message)
+                .filter(Message.task_id == exec_task.id)
+                .order_by(Message.created_at)
+                .all()
+            )
+            tool_calls = (
+                db.query(ToolCall)
+                .filter(ToolCall.task_id == exec_task.id)
+                .order_by(ToolCall.created_at)
+                .all()
+            )
+            result["messages"] = [_message_to_dict(m) for m in messages]
+            result["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "tool_name": tc.tool_name,
+                    "connector_name": tc.connector_name,
+                    "action": tc.action,
+                    "method": tc.method,
+                    "status": tc.status,
+                    "input_params": tc.input_params,
+                    "result_payload": tc.result_payload,
+                    "slimmed_content": tc.slimmed_content,
+                    "error_message": tc.error_message,
+                    "duration_ms": tc.duration_ms,
+                    "created_at": tc.created_at.isoformat() if tc.created_at else None,
+                }
+                for tc in tool_calls
+            ]
+            result["pending_tool_call_ids"] = exec_task.pending_tool_call_ids
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Conversation — chat with an automated task
+# ---------------------------------------------------------------------------
+
+
+@router.get("/automated-tasks/{task_id}/conversation")
+async def get_conversation(
+    task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    """Load the conversation thread for an automated task."""
+    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
+    if not task:
+        raise HTTPException(404, "Automated task not found")
+
+    if not task.conversation_task_id:
+        return {
+            "messages": [],
+            "task_config": task.task_config or {},
+            "thread_summary": task.thread_summary,
+        }
+
+    messages = (
+        db.query(Message)
+        .filter(Message.task_id == task.conversation_task_id)
+        .order_by(Message.created_at)
+        .all()
+    )
+
+    return {
+        "messages": [_message_to_dict(m) for m in messages],
+        "task_config": task.task_config or {},
+        "thread_summary": task.thread_summary,
+        "overrides_next_run": task.overrides_next_run,
+    }
+
+
+@router.post("/automated-tasks/{task_id}/message")
+async def send_message(
+    task_id: str,
+    body: MessageBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Send a user message to the automated task's conversation."""
+    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
+    if not task:
+        raise HTTPException(404, "Automated task not found")
+
+    # Ensure conversation task exists
+    from app.services.task_scheduler import _ensure_conversation_task
+
+    conv_task_id = _ensure_conversation_task(task, db)
+    db.commit()
+
+    # Route through the supervisor to get a full agent response
+    from app.services.supervisor import handle_message
+
+    result = handle_message(
+        message=body.message,
+        db=db,
+        user_id=user.id,
+        task_id=conv_task_id,
+    )
+
+    return {
+        "success": True,
+        "message": result.get("message", ""),
+        "display_blocks": result.get("display_blocks"),
+        "task_config": task.task_config or {},
+        "thread_summary": task.thread_summary,
+    }

@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_SECRET: str = ""
     APP_URL: str = "https://bettercallnorm.com"
 
+    # ── Config sync (cross-environment) ──────────────────────────────────
+    CONFIG_SYNC_SECRET: str = ""  # Shared secret for service-to-service config fetch
+
     # ── Observability (Phase 4) ─────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: Literal["json", "console"] = "console"

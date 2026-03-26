@@ -15,11 +15,13 @@ from app.services.agent_config_service import (
     delete_connector_binding,
     get_all_capabilities_summary,
 )
-from app.system_config import AGENT_CONFIGS
 
 router = APIRouter()
 
-KNOWN_SLUGS = [a["agent_slug"] for a in AGENT_CONFIGS]
+
+def _get_known_slugs(db: Session) -> list[str]:
+    """Load known agent slugs from the database (not code)."""
+    return [r[0] for r in db.query(AgentConfig.agent_slug).all()]
 
 
 def _merge_capabilities(binding_caps: list[dict], spec_tools: list[dict]) -> list[dict]:
@@ -129,7 +131,7 @@ async def list_agents(
         )
 
     agents = []
-    for slug in KNOWN_SLUGS:
+    for slug in _get_known_slugs(db):
         agents.append(
             _agent_to_dict(
                 slug, configs.get(slug), bindings_by_slug.get(slug, []), specs_by_name
@@ -152,7 +154,7 @@ async def get_agent(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in KNOWN_SLUGS:
+    if slug not in _get_known_slugs(db):
         raise HTTPException(404, f"Unknown agent: {slug}")
     config = db.query(AgentConfig).filter(AgentConfig.agent_slug == slug).first()
     bindings = get_connector_bindings(slug, db)
@@ -173,7 +175,7 @@ async def update_agent(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in KNOWN_SLUGS:
+    if slug not in _get_known_slugs(db):
         raise HTTPException(404, f"Unknown agent: {slug}")
     row = update_agent_config(
         slug,
@@ -194,7 +196,7 @@ async def reset_agent_prompt(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in KNOWN_SLUGS:
+    if slug not in _get_known_slugs(db):
         raise HTTPException(404, f"Unknown agent: {slug}")
     row = reset_prompt(slug, db)
     db.commit()
@@ -209,7 +211,7 @@ async def list_bindings(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in KNOWN_SLUGS:
+    if slug not in _get_known_slugs(db):
         raise HTTPException(404, f"Unknown agent: {slug}")
     return {"bindings": get_connector_bindings(slug, db)}
 
@@ -227,7 +229,7 @@ async def upsert_binding(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in KNOWN_SLUGS:
+    if slug not in _get_known_slugs(db):
         raise HTTPException(404, f"Unknown agent: {slug}")
     row = upsert_connector_binding(slug, connector, body.capabilities, body.enabled, db)
     db.commit()
@@ -254,7 +256,7 @@ async def remove_binding(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in KNOWN_SLUGS:
+    if slug not in _get_known_slugs(db):
         raise HTTPException(404, f"Unknown agent: {slug}")
     deleted = delete_connector_binding(slug, connector, db)
     if not deleted:

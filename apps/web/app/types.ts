@@ -229,6 +229,18 @@ export interface BaseTask {
     performed_by: string;
     performed_at: string;
   } | null;
+  automated_task?: {
+    id: string;
+    title: string;
+    description: string | null;
+    schedule_type: string;
+    schedule_config: Record<string, unknown>;
+    status: string;
+    prompt: string;
+    task_config: Record<string, unknown>;
+    thread_summary: string | null;
+    last_run_at: string | null;
+  } | null;
 }
 
 export interface ProcurementTask extends BaseTask {
@@ -305,6 +317,10 @@ export interface AutomatedTask {
   schedule_config: Record<string, unknown>;
   status: 'active' | 'paused' | 'draft';
   created_by: string | null;
+  task_config: Record<string, unknown>;
+  thread_summary: string | null;
+  overrides_next_run: Record<string, unknown> | null;
+  conversation_task_id: string | null;
   last_run_at: string | null;
   next_run_at: string | null;
   created_at: string;
@@ -314,14 +330,41 @@ export interface AutomatedTask {
 export interface AutomatedTaskRun {
   id: string;
   automated_task_id: string;
+  task_id: string | null;
   status: 'running' | 'success' | 'error';
   mode: 'live' | 'test';
   result_summary: string | null;
   tool_calls_count: number;
   error_message: string | null;
+  has_pending_approvals: boolean;
   started_at: string;
   completed_at: string | null;
   duration_ms: number | null;
+}
+
+export interface AutomatedTaskRunDetail extends AutomatedTaskRun {
+  messages?: Array<{
+    id: string;
+    role: string;
+    content: string;
+    display_blocks: unknown[] | null;
+    created_at: string;
+  }>;
+  tool_calls?: Array<{
+    id: string;
+    tool_name: string;
+    connector_name: string;
+    action: string;
+    method: string;
+    status: string;
+    input_params: Record<string, unknown>;
+    result_payload: unknown;
+    slimmed_content: string | null;
+    error_message: string | null;
+    duration_ms: number | null;
+    created_at: string;
+  }>;
+  pending_tool_call_ids?: string[] | null;
 }
 
 export interface Organization {

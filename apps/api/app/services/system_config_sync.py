@@ -46,8 +46,31 @@ def _resolve_settings(obj):
 # ---------------------------------------------------------------------------
 
 
+def seed_if_empty(db: Session) -> None:
+    """Only seed system config if the DB has no specs and no agents.
+
+    This runs on every startup but is a no-op for existing environments.
+    Only a completely fresh database (first deploy) gets seeded.
+    """
+    spec_count = db.query(ConnectorSpec).count()
+    agent_count = db.query(AgentConfig).count()
+    if spec_count > 0 or agent_count > 0:
+        log.info(
+            "System config exists (%d specs, %d agents) — skipping seed",
+            spec_count,
+            agent_count,
+        )
+        return
+    log.info("Empty DB detected — seeding system configuration from code")
+    sync_system_config(db)
+
+
 def sync_system_config(db: Session) -> None:
-    """Run all system-config sync steps inside the given session."""
+    """Run all system-config sync steps inside the given session.
+
+    This is the full sync — it overwrites specs and merges bindings.
+    Called by seed_if_empty (first deploy) or manually via config-reseed API.
+    """
     _sync_connector_specs(db)
     _sync_agent_configs(db)
     _sync_agent_bindings(db)

@@ -24,13 +24,41 @@ from app.agents.reports.context import _report_task_to_dict
 router = APIRouter()
 
 
+def _get_automated_task_meta(db: Session, conversation_task_id: str) -> dict | None:
+    """Return automated task metadata for a conversation task, or None."""
+    from app.db.models import AutomatedTask as AT
+
+    at = db.query(AT).filter(AT.conversation_task_id == conversation_task_id).first()
+    if not at:
+        return None
+    return {
+        "id": at.id,
+        "title": at.title,
+        "description": at.description,
+        "schedule_type": at.schedule_type,
+        "schedule_config": at.schedule_config or {},
+        "status": at.status,
+        "prompt": at.prompt,
+        "task_config": at.task_config or {},
+        "thread_summary": at.thread_summary,
+        "last_run_at": at.last_run_at.isoformat() if at.last_run_at else None,
+    }
+
+
 def _find(db: Session, task_id: str) -> tuple[dict | None, str]:
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         return None, ""
-    # Tool-loop tasks use a generic dict format
-    if task.intent and task.intent.endswith(".tool_use"):
-        return _tool_use_task_to_dict(task), task.domain
+    # Tool-loop tasks and automated conversation tasks use a generic dict format
+    if task.intent and (
+        task.intent.endswith(".tool_use")
+        or task.intent.endswith(".automated_conversation")
+    ):
+        d = _tool_use_task_to_dict(task)
+        # Attach automated task metadata if this is a conversation task
+        if task.intent.endswith(".automated_conversation"):
+            d["automated_task"] = _get_automated_task_meta(db, task.id)
+        return d, task.domain
     if task.domain == "procurement":
         return get_order(db, task_id), "procurement"
     if task.domain == "hr":
@@ -117,16 +145,22 @@ async def get_all_tasks(
     Only includes fields needed by TaskCard (id, domain, status, title, etc.).
     Full conversation/tool_calls/llm_calls are loaded on demand via GET /tasks/{id}.
     """
+    from sqlalchemy import or_
+
     tasks = (
         db.query(Task)
-        .filter(Task.user_id == user.id)
+        .filter(
+            Task.user_id == user.id,
+            # Exclude automated task execution runs — only show conversation tasks
+            or_(Task.intent.is_(None), ~Task.intent.like("%.automated_task")),
+        )
         .order_by(Task.created_at.desc())
         .all()
     )
-    return {"tasks": [_task_summary(t) for t in tasks]}
+    return {"tasks": [_task_summary(t, db) for t in tasks]}
 
 
-def _task_summary(task: Task) -> dict:
+def _task_summary(task: Task, db: Session | None = None) -> dict:
     """Lightweight serialisation — no relationships loaded."""
     extracted = task.extracted_fields or {}
     venue = extracted.get("venue")
@@ -168,6 +202,10 @@ def _task_summary(task: Task) -> dict:
         summary["start_date"] = extracted.get("start_date")
     elif task.domain == "reports":
         summary["report_type"] = extracted.get("report_type")
+
+    # Automated task metadata
+    if db and task.intent and task.intent.endswith(".automated_conversation"):
+        summary["automated_task"] = _get_automated_task_meta(db, task.id)
 
     return summary
 

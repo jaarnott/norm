@@ -770,6 +770,15 @@ def _create_automated_task(params: dict, db: Session, task_id: str | None) -> di
             "error": "title, prompt, and agent_slug are required",
         }
 
+    # Resolve user from the parent task
+    from app.db.models import Task as TaskModel
+
+    created_by = None
+    if task_id:
+        parent = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+        if parent:
+            created_by = parent.user_id
+
     task = AutomatedTask(
         title=title,
         description=params.get("description"),
@@ -778,6 +787,7 @@ def _create_automated_task(params: dict, db: Session, task_id: str | None) -> di
         schedule_type=params.get("schedule_type", "manual"),
         schedule_config=params.get("schedule_config") or {},
         status="draft",
+        created_by=created_by,
     )
     db.add(task)
     db.flush()
@@ -1326,3 +1336,93 @@ def execute_consolidator(
         "data": step_results,
         "_steps": step_meta,
     }
+
+
+# ---------------------------------------------------------------------------
+# Automated Task Config Handlers
+# ---------------------------------------------------------------------------
+
+
+def _get_automated_task_for_conversation(task_id: str | None, db: Session):
+    """Look up the AutomatedTask linked to a conversation task_id."""
+    from app.db.models import AutomatedTask, Task
+
+    if not task_id:
+        return None
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        return None
+    return (
+        db.query(AutomatedTask)
+        .filter(AutomatedTask.conversation_task_id == task_id)
+        .first()
+    )
+
+
+@register("norm", "update_task_config")
+def _update_task_config(params: dict, db: Session, task_id: str | None) -> dict:
+    """Update a persistent configuration field on the automated task."""
+    key = params.get("key", "")
+    value = params.get("value")
+    if not key:
+        return {"success": False, "data": {}, "error": "key is required"}
+
+    at = _get_automated_task_for_conversation(task_id, db)
+    if not at:
+        return {
+            "success": False,
+            "data": {},
+            "error": "No automated task found for this conversation",
+        }
+
+    config = dict(at.task_config or {})
+    if value is None:
+        config.pop(key, None)
+    else:
+        config[key] = value
+    at.task_config = config
+    db.flush()
+
+    return {"success": True, "data": {"task_config": config}}
+
+
+@register("norm", "set_override")
+def _set_override(params: dict, db: Session, task_id: str | None) -> dict:
+    """Set a one-off instruction for the next scheduled run only."""
+    instruction = params.get("instruction", "")
+    if not instruction:
+        return {"success": False, "data": {}, "error": "instruction is required"}
+
+    at = _get_automated_task_for_conversation(task_id, db)
+    if not at:
+        return {
+            "success": False,
+            "data": {},
+            "error": "No automated task found for this conversation",
+        }
+
+    at.overrides_next_run = {"instruction": instruction}
+    db.flush()
+
+    return {"success": True, "data": {"overrides_next_run": at.overrides_next_run}}
+
+
+@register("norm", "update_thread_summary")
+def _update_thread_summary(params: dict, db: Session, task_id: str | None) -> dict:
+    """Update the rolling summary of key decisions and instructions."""
+    summary = params.get("summary", "")
+    if not summary:
+        return {"success": False, "data": {}, "error": "summary is required"}
+
+    at = _get_automated_task_for_conversation(task_id, db)
+    if not at:
+        return {
+            "success": False,
+            "data": {},
+            "error": "No automated task found for this conversation",
+        }
+
+    at.thread_summary = summary
+    db.flush()
+
+    return {"success": True, "data": {"thread_summary": summary}}

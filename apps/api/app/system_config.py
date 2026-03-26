@@ -37,6 +37,46 @@ CONNECTOR_SPECS: list[dict] = [
                     "fields": "Optional: comma-separated field names to return. Omit for all fields.",
                 },
             },
+            {
+                "action": "update_task_config",
+                "method": "GET",
+                "description": (
+                    "Update a persistent configuration field on this automated task. "
+                    "Use when the user wants to permanently change how the task behaves "
+                    "(e.g., 'always include weather', 'focus on anomalies'). "
+                    "Set value to null to remove a key."
+                ),
+                "required_fields": ["key", "value"],
+                "field_descriptions": {
+                    "key": "Configuration key name (e.g., 'include_weather', 'output_style', 'focus')",
+                    "value": "Value to set (string, number, boolean, array, or null to remove)",
+                },
+            },
+            {
+                "action": "set_override",
+                "method": "GET",
+                "description": (
+                    "Set a one-off instruction for the next scheduled run only. "
+                    "The override is automatically cleared after that run completes. "
+                    "Use when the user says 'next time also do X' or 'for the next run, skip Y'."
+                ),
+                "required_fields": ["instruction"],
+                "field_descriptions": {
+                    "instruction": "The one-off instruction to apply on the next scheduled run",
+                },
+            },
+            {
+                "action": "update_thread_summary",
+                "method": "GET",
+                "description": (
+                    "Update the rolling summary of key decisions and instructions for this task. "
+                    "Use after a meaningful conversation to capture the current state of understanding."
+                ),
+                "required_fields": ["summary"],
+                "field_descriptions": {
+                    "summary": "Brief summary of key decisions, preferences, and instructions so far",
+                },
+            },
         ],
     },
     {
@@ -2168,6 +2208,21 @@ AGENT_BINDINGS: list[dict] = [
                 "label": "Search through a previous tool call's full result by keyword.",
                 "enabled": True,
             },
+            {
+                "action": "update_task_config",
+                "label": "Update persistent task configuration",
+                "enabled": True,
+            },
+            {
+                "action": "set_override",
+                "label": "Set one-off instruction for next run",
+                "enabled": True,
+            },
+            {
+                "action": "update_thread_summary",
+                "label": "Update rolling thread summary",
+                "enabled": True,
+            },
         ],
     },
     {
@@ -2179,6 +2234,21 @@ AGENT_BINDINGS: list[dict] = [
                 "label": "Search through a previous tool call's full result by keyword.",
                 "enabled": True,
             },
+            {
+                "action": "update_task_config",
+                "label": "Update persistent task configuration",
+                "enabled": True,
+            },
+            {
+                "action": "set_override",
+                "label": "Set one-off instruction for next run",
+                "enabled": True,
+            },
+            {
+                "action": "update_thread_summary",
+                "label": "Update rolling thread summary",
+                "enabled": True,
+            },
         ],
     },
     {
@@ -2188,6 +2258,21 @@ AGENT_BINDINGS: list[dict] = [
             {
                 "action": "search_tool_result",
                 "label": "Search through a previous tool call's full result by keyword.",
+                "enabled": True,
+            },
+            {
+                "action": "update_task_config",
+                "label": "Update persistent task configuration",
+                "enabled": True,
+            },
+            {
+                "action": "set_override",
+                "label": "Set one-off instruction for next run",
+                "enabled": True,
+            },
+            {
+                "action": "update_thread_summary",
+                "label": "Update rolling thread summary",
                 "enabled": True,
             },
         ],

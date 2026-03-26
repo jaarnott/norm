@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, memo } from 'react';
-import { Package, UserRound, BarChart3, HelpCircle, type LucideIcon } from 'lucide-react';
+import { Package, UserRound, BarChart3, HelpCircle, Timer, type LucideIcon } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Task, ProcurementTask, HrTask, ConversationMessage, ToolCallRecord, DisplayBlock, WidgetAction } from '../../types';
@@ -565,6 +565,177 @@ const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend
   );
 });
 
+// ---------------------------------------------------------------------------
+// Automated Task Config Header
+// ---------------------------------------------------------------------------
+
+const SCHEDULE_LABELS: Record<string, string> = { manual: 'Manual', hourly: 'Hourly', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
+const AT_STATUS: Record<string, { bg: string; color: string }> = {
+  active: { bg: '#d1fae5', color: '#065f46' },
+  paused: { bg: '#fef3c7', color: '#92400e' },
+  draft: { bg: '#f3f4f6', color: '#6b7280' },
+};
+const DAYS_OF_WEEK = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+function formatAtSchedule(type: string, config: Record<string, unknown>): string {
+  const hour = config.hour as number | undefined;
+  const minute = config.minute as number | undefined;
+  const time = hour != null ? `${String(hour).padStart(2, '0')}:${String(minute ?? 0).padStart(2, '0')}` : '';
+  const day = config.day_of_week as string | undefined;
+  if (type === 'daily' && time) return `Daily at ${time}`;
+  if (type === 'weekly' && day) return `${day.charAt(0).toUpperCase() + day.slice(1)}s at ${time}`;
+  if (type === 'monthly') return `Day ${config.day_of_month || 1} at ${time}`;
+  return SCHEDULE_LABELS[type] || type;
+}
+
+function AutomatedTaskHeader({ at, onUpdate }: {
+  at: NonNullable<import('../../types').BaseTask['automated_task']>;
+  onUpdate: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    prompt: at.prompt,
+    schedule_type: at.schedule_type,
+    schedule_config: { ...at.schedule_config },
+  });
+  const [saving, setSaving] = useState(false);
+
+  const ats = AT_STATUS[at.status] || AT_STATUS.draft;
+
+  const handleRun = async () => {
+    setRunning(true);
+    try {
+      await (await import('../../lib/api')).apiFetch(`/api/automated-tasks/${at.id}/run`, { method: 'POST', body: JSON.stringify({ mode: 'live' }) });
+      onUpdate();
+    } finally { setRunning(false); }
+  };
+
+  const handleToggle = async () => {
+    setToggling(true);
+    try {
+      const endpoint = at.status === 'active' ? 'pause' : 'resume';
+      await (await import('../../lib/api')).apiFetch(`/api/automated-tasks/${at.id}/${endpoint}`, { method: 'POST' });
+      onUpdate();
+    } finally { setToggling(false); }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await (await import('../../lib/api')).apiFetch(`/api/automated-tasks/${at.id}`, {
+        method: 'PUT', body: JSON.stringify(form),
+      });
+      setEditing(false);
+      onUpdate();
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ padding: '0.5rem 1.5rem', borderBottom: '1px solid #f3f4f6', backgroundColor: '#fafafa' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <Timer size={14} strokeWidth={2} style={{ color: '#9ca3af' }} />
+        <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6b7280' }}>Saved Task</span>
+        <span style={{ fontSize: '0.65rem', fontWeight: 600, padding: '1px 8px', borderRadius: 10, backgroundColor: ats.bg, color: ats.color }}>{at.status}</span>
+        <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>{formatAtSchedule(at.schedule_type, at.schedule_config)}</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.3rem' }}>
+          <button onClick={handleRun} disabled={running} style={{
+            padding: '3px 10px', fontSize: '0.68rem', fontWeight: 600,
+            border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff',
+            cursor: running ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+          }}>{running ? '...' : 'Run Now'}</button>
+          <button onClick={handleToggle} disabled={toggling} style={{
+            padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
+            border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#6b7280',
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>{at.status === 'active' ? 'Pause' : 'Activate'}</button>
+          <button onClick={() => setExpanded(!expanded)} style={{
+            padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
+            border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: expanded ? '#f3f4f6' : '#fff', color: '#6b7280',
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>Settings</button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: '0.5rem', fontSize: '0.78rem' }}>
+          {!editing ? (
+            <>
+              <div style={{ marginBottom: '0.4rem' }}>
+                <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Prompt</span>
+                <div style={{ padding: '0.4rem 0.5rem', backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, marginTop: 2, whiteSpace: 'pre-wrap', color: '#374151', lineHeight: 1.5 }}>
+                  {at.prompt}
+                </div>
+              </div>
+              {at.task_config && Object.keys(at.task_config).length > 0 && (
+                <div style={{ marginBottom: '0.4rem' }}>
+                  <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Config</span>
+                  <pre style={{ padding: '0.4rem 0.5rem', backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, marginTop: 2, fontSize: '0.72rem', margin: 0, overflow: 'auto' }}>
+                    {JSON.stringify(at.task_config, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {at.thread_summary && (
+                <div style={{ marginBottom: '0.4rem' }}>
+                  <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Summary</span>
+                  <div style={{ padding: '0.4rem 0.5rem', backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, marginTop: 2, color: '#374151' }}>
+                    {at.thread_summary}
+                  </div>
+                </div>
+              )}
+              <button onClick={() => { setForm({ prompt: at.prompt, schedule_type: at.schedule_type, schedule_config: { ...at.schedule_config } }); setEditing(true); }} style={{
+                padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
+                border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#374151',
+                cursor: 'pointer', fontFamily: 'inherit', marginTop: '0.3rem',
+              }}>Edit</button>
+            </>
+          ) : (
+            <>
+              <div style={{ marginBottom: '0.4rem' }}>
+                <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Prompt</span>
+                <textarea
+                  value={form.prompt}
+                  onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))}
+                  rows={4}
+                  style={{ width: '100%', padding: '6px 10px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6, resize: 'vertical', marginTop: 2, boxSizing: 'border-box' }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Schedule</span>
+                <select value={form.schedule_type} onChange={e => setForm(f => ({ ...f, schedule_type: e.target.value }))} style={{ padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+                  {Object.entries(SCHEDULE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+                {['daily', 'weekly', 'monthly'].includes(form.schedule_type) && (
+                  <input type="time" value={`${String((form.schedule_config.hour as number) ?? 9).padStart(2, '0')}:${String((form.schedule_config.minute as number) ?? 0).padStart(2, '0')}`} onChange={e => { const [h, m] = e.target.value.split(':').map(Number); setForm(f => ({ ...f, schedule_config: { ...f.schedule_config, hour: h, minute: m } })); }} style={{ padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6 }} />
+                )}
+                {form.schedule_type === 'weekly' && (
+                  <select value={(form.schedule_config.day_of_week as string) || 'monday'} onChange={e => setForm(f => ({ ...f, schedule_config: { ...f.schedule_config, day_of_week: e.target.value } }))} style={{ padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6, textTransform: 'capitalize' }}>
+                    {DAYS_OF_WEEK.map(d => <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>)}
+                  </select>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '0.3rem' }}>
+                <button onClick={handleSave} disabled={saving} style={{
+                  padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600,
+                  border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff',
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}>{saving ? 'Saving...' : 'Save'}</button>
+                <button onClick={() => setEditing(false)} style={{
+                  padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
+                  border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#6b7280',
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}>Cancel</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface TaskDetailProps {
   task: Task;
   onAction: (taskId: string, action: string) => void;
@@ -667,9 +838,12 @@ export default function TaskDetail({ task, onAction, onWidgetAction, onSend, loa
               {task.status.replace(/_/g, ' ')}
             </span>
           </div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', marginBottom: '0.6rem' }}>
+          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', marginBottom: task.automated_task ? '0.3rem' : '0.6rem' }}>
             {getTaskTitle(task)}
           </div>
+          {task.automated_task && (
+            <AutomatedTaskHeader at={task.automated_task} onUpdate={() => onAction(task.id, 'reload')} />
+          )}
           {tabsRow}
         </div>
       )}

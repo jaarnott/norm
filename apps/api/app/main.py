@@ -98,24 +98,26 @@ def _stop_scheduler() -> None:
 
 
 @app.on_event("startup")
-def _sync_system_config() -> None:
-    """Sync declarative system configuration (connector specs, agents, bindings).
+def _seed_system_config_if_empty() -> None:
+    """Seed system configuration only on first deploy (empty DB).
 
-    Runs on every startup so that code-defined system config is always
-    reflected in the database.  User customizations (credentials, custom
-    prompts, enabled toggles) are preserved.
+    DB is the source of truth for connector specs, agent configs, and
+    bindings. Code definitions in system_config.py are only used to
+    populate a fresh database. After that, all changes are made via
+    the Settings UI or config-import API.
     """
     import logging
+
     from app.db.engine import SessionLocal
-    from app.services.system_config_sync import sync_system_config
+    from app.services.system_config_sync import seed_if_empty
 
     log = logging.getLogger(__name__)
     db = SessionLocal()
     try:
-        sync_system_config(db)
+        seed_if_empty(db)
     except Exception:
         db.rollback()
-        log.exception("Failed to sync system configuration")
+        log.exception("Failed to seed system configuration")
     finally:
         db.close()
 
