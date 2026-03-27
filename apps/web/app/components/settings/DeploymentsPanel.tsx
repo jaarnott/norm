@@ -107,6 +107,31 @@ function diffBadgeStyle(status: DiffStatus): { bg: string; color: string } {
   }
 }
 
+/** Transform backend diff format {added:[], modified:[], removed:[], unchanged:[]} into flat DiffItem[]. */
+function normalizeDiffSection(section: DiffItem[] | Record<string, unknown[]>): DiffItem[] {
+  if (Array.isArray(section)) return section;
+  const items: DiffItem[] = [];
+  for (const status of ['added', 'modified', 'removed', 'unchanged'] as DiffStatus[]) {
+    const arr = (section as Record<string, unknown[]>)[status];
+    if (Array.isArray(arr)) {
+      for (const item of arr) {
+        const raw = item as Record<string, unknown>;
+        const key = (raw.connector_name || raw.agent_slug || `${raw.agent_slug}:${raw.connector_name}`) as string;
+        items.push({ key, status, changes: raw.changes as FieldChange[] | undefined });
+      }
+    }
+  }
+  return items;
+}
+
+function normalizeDiffResult(raw: Record<string, unknown>): DiffResult {
+  return {
+    connector_specs: normalizeDiffSection(raw.connector_specs as DiffItem[] | Record<string, unknown[]>),
+    agent_configs: normalizeDiffSection(raw.agent_configs as DiffItem[] | Record<string, unknown[]>),
+    agent_bindings: normalizeDiffSection(raw.agent_bindings as DiffItem[] | Record<string, unknown[]>),
+  };
+}
+
 function diffSummary(items: DiffItem[]): string {
   const added = items.filter(i => i.status === 'added').length;
   const modified = items.filter(i => i.status === 'modified').length;
@@ -183,7 +208,7 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
           setComparing(false);
           return;
         }
-        const diff: DiffResult = await diffRes.json();
+        const diff = normalizeDiffResult(await diffRes.json());
         setDiffResult(diff);
         setRemoteConfig({}); // Push doesn't need remote config stored
       } else {
@@ -213,7 +238,7 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
           setComparing(false);
           return;
         }
-        const diff: DiffResult = await diffRes.json();
+        const diff = normalizeDiffResult(await diffRes.json());
         setDiffResult(diff);
       }
     } catch (e) {
@@ -353,7 +378,7 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
               const itemId = `${sectionKey}:${item.key}`;
               const isSelectable = item.status === 'added' || item.status === 'modified';
               return (
-                <div key={item.key} style={{ padding: '6px 0', borderBottom: '1px solid #1a1a2e' }}>
+                <div key={`${item.status}:${item.key}`} style={{ padding: '6px 0', borderBottom: '1px solid #1a1a2e' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {isSelectable && (
                       <input
