@@ -8,16 +8,26 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
-def _collect_tools(domain: str, db: Session, user_id: str | None = None) -> list[dict]:
+def _collect_tools(
+    domain: str,
+    db: Session,
+    user_id: str | None = None,
+    config_db: Session | None = None,
+) -> list[dict]:
     """Collect all enabled tools from connector specs bound to a domain agent.
 
     Returns a list of dicts with keys: action, connector, required_fields,
     field_mapping, method, description.
+
+    config_db is used for AgentConnectorBinding and ConnectorSpec queries.
+    db is used for ConnectorConfig (credentials) queries.
     """
     from app.db.models import AgentConnectorBinding, ConnectorConfig, ConnectorSpec
 
+    _cdb = config_db or db
+
     bindings = (
-        db.query(AgentConnectorBinding)
+        _cdb.query(AgentConnectorBinding)
         .filter(
             AgentConnectorBinding.agent_slug == domain,
             AgentConnectorBinding.enabled == True,  # noqa: E712
@@ -31,7 +41,7 @@ def _collect_tools(domain: str, db: Session, user_id: str | None = None) -> list
     tools: list[dict] = []
     for binding in bindings:
         spec = (
-            db.query(ConnectorSpec)
+            _cdb.query(ConnectorSpec)
             .filter(
                 ConnectorSpec.connector_name == binding.connector_name,
             )
@@ -102,20 +112,23 @@ def _collect_tools(domain: str, db: Session, user_id: str | None = None) -> list
     return tools
 
 
-def build_dynamic_prompt(domain: str, db: Session) -> str | None:
+def build_dynamic_prompt(
+    domain: str, db: Session, config_db: Session | None = None
+) -> str | None:
     """Return the DB-stored system prompt if connector specs are bound.
 
     Returns None if no connector specs are bound, signalling the caller to
     use the DB-stored prompt directly via agent_config_service.
     """
-    tools = _collect_tools(domain, db)
+    _cdb = config_db or db
+    tools = _collect_tools(domain, db, config_db=_cdb)
     if not tools:
         return None
 
     # Tools are bound — return the DB prompt (the admin manages it in Settings)
     from app.services.agent_config_service import get_system_prompt
 
-    return get_system_prompt(domain, db) or None
+    return get_system_prompt(domain, _cdb) or None
 
 
 def build_tool_definitions(
@@ -124,6 +137,7 @@ def build_tool_definitions(
     active_venue_name: str | None = None,
     venue_timezone: str | None = None,
     user_id: str | None = None,
+    config_db: Session | None = None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
@@ -132,7 +146,8 @@ def build_tool_definitions(
 
     Returns ("", []) if no tools are bound.
     """
-    tools = _collect_tools(domain, db, user_id=user_id)
+    _cdb = config_db or db
+    tools = _collect_tools(domain, db, user_id=user_id, config_db=_cdb)
     if not tools:
         return "", []
 
@@ -140,7 +155,7 @@ def build_tool_definitions(
     # prompt in the Settings UI. Supports {{today}} placeholder.
     from app.services.agent_config_service import get_system_prompt
 
-    system_prompt = get_system_prompt(domain, db)
+    system_prompt = get_system_prompt(domain, _cdb)
     if not system_prompt:
         system_prompt = (
             f"You are the {domain} agent for Norm, a hospitality operations platform."

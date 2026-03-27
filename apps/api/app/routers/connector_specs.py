@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db, SessionLocal
+from app.db.engine import get_db, get_config_db, get_config_db_rw, SessionLocal
 from app.db.models import ConnectorSpec, ConnectorConfig, User
 from app.auth.dependencies import get_current_user, require_permission
 
@@ -122,21 +122,21 @@ def _spec_to_dict(spec: ConnectorSpec) -> dict:
 
 @router.get("")
 async def list_specs(
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    specs = db.query(ConnectorSpec).order_by(ConnectorSpec.connector_name).all()
+    specs = config_db.query(ConnectorSpec).order_by(ConnectorSpec.connector_name).all()
     return {"specs": [_spec_to_dict(s) for s in specs]}
 
 
 @router.post("", status_code=201)
 async def create_spec(
     body: ConnectorSpecCreate,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
 ):
     existing = (
-        db.query(ConnectorSpec)
+        config_db.query(ConnectorSpec)
         .filter(ConnectorSpec.connector_name == body.connector_name)
         .first()
     )
@@ -159,19 +159,23 @@ async def create_spec(
         test_request=body.test_request,
         enabled=body.enabled,
     )
-    db.add(spec)
-    db.commit()
-    db.refresh(spec)
+    config_db.add(spec)
+    config_db.commit()
+    config_db.refresh(spec)
     return _spec_to_dict(spec)
 
 
 @router.get("/{name}")
 async def get_spec(
     name: str,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
     if not spec:
         raise HTTPException(404, f"Spec not found: {name}")
     return _spec_to_dict(spec)
@@ -181,10 +185,14 @@ async def get_spec(
 async def update_spec(
     name: str,
     body: ConnectorSpecUpdate,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
 ):
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
     if not spec:
         raise HTTPException(404, f"Spec not found: {name}")
 
@@ -193,22 +201,26 @@ async def update_spec(
         setattr(spec, key, value)
 
     spec.version = spec.version + 1
-    db.commit()
-    db.refresh(spec)
+    config_db.commit()
+    config_db.refresh(spec)
     return _spec_to_dict(spec)
 
 
 @router.delete("/{name}")
 async def delete_spec(
     name: str,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
 ):
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
     if not spec:
         raise HTTPException(404, f"Spec not found: {name}")
-    db.delete(spec)
-    db.commit()
+    config_db.delete(spec)
+    config_db.commit()
     return {"deleted": True}
 
 
@@ -217,12 +229,17 @@ async def dry_run(
     name: str,
     body: DryRunBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("admin:system")),
 ):
     """Render a template with sample fields — returns the HTTP request without executing it."""
     from app.connectors.spec_executor import render_request
 
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
     if not spec:
         raise HTTPException(404, f"Spec not found: {name}")
 
@@ -268,12 +285,17 @@ async def test_spec(
     name: str,
     body: DryRunBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("admin:system")),
 ):
     """Execute a test request against the real API."""
     from app.connectors.spec_executor import execute_spec
 
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
     if not spec:
         raise HTTPException(404, f"Spec not found: {name}")
 
@@ -334,7 +356,6 @@ async def test_spec(
 async def preview_transform(
     name: str,
     body: TransformPreviewBody,
-    db: Session = Depends(get_db),
     user: User = Depends(require_permission("admin:system")),
 ):
     """Preview a response transform on a sample payload."""
@@ -357,6 +378,7 @@ async def generate_spec(
     from app.services.spec_generator import generate_connector_spec
 
     try:
+        # db is used here for secrets lookup, not config queries
         result = generate_connector_spec(body.api_docs, db)
         return result
     except Exception as exc:
@@ -389,9 +411,9 @@ class AutoBuildConsolidatorBody(BaseModel):
     max_iterations: int = 3
 
 
-def _build_tools_context(db: Session) -> str:
+def _build_tools_context(config_db: Session) -> str:
     """Build a text listing of all available connector tools for AI prompts."""
-    specs = db.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()  # noqa: E712
+    specs = config_db.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()  # noqa: E712
     tools_context = []
     for spec in specs:
         if spec.execution_mode == "internal":
@@ -447,6 +469,7 @@ def _parse_ai_json(raw: str) -> dict:
 async def generate_consolidator(
     body: GenerateConsolidatorBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("admin:system")),
 ):
     """Use AI to generate a consolidator config from a natural language description."""
@@ -457,7 +480,7 @@ async def generate_consolidator(
     if not api_key:
         raise HTTPException(400, "Anthropic API key required")
 
-    tools_text = _build_tools_context(db)
+    tools_text = _build_tools_context(config_db)
 
     prompt = f"""You are a tool configuration assistant. Given a user's description of what they want, generate a consolidator config JSON.
 
@@ -488,6 +511,7 @@ Return ONLY valid JSON, no markdown fences."""
 async def edit_consolidator(
     body: EditConsolidatorBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("admin:system")),
 ):
     """Use AI to edit an existing consolidator config based on a natural language instruction."""
@@ -499,7 +523,7 @@ async def edit_consolidator(
     if not api_key:
         raise HTTPException(400, "Anthropic API key required")
 
-    tools_text = _build_tools_context(db)
+    tools_text = _build_tools_context(config_db)
     current_json = json_mod.dumps(body.current_tool, indent=2)
 
     prompt = f"""You are a tool configuration assistant. You are editing an existing consolidator tool config.
@@ -574,6 +598,7 @@ async def test_consolidator(
 async def auto_build_consolidator(
     body: AutoBuildConsolidatorBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("admin:system")),
 ):
     """Autonomous loop: generate/fix a consolidator config, test it, iterate until it works."""
@@ -596,7 +621,7 @@ async def auto_build_consolidator(
         raise HTTPException(400, "Anthropic API key required")
 
     client = anthropic.Anthropic(api_key=api_key)
-    tools_text = _build_tools_context(db)
+    tools_text = _build_tools_context(config_db)
     iteration_log: list[dict] = []
     max_iter = min(body.max_iterations, 5)
 
@@ -807,11 +832,12 @@ _SAVE_TOOL = {
 }
 
 
-def _build_connector_tools(db) -> list[dict]:
+def _build_connector_tools(db, config_db=None) -> list[dict]:
     """Build Anthropic tool schemas for all enabled connector specs, with venue injection."""
     from app.db.models import Venue
 
-    specs = db.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()  # noqa: E712
+    _cdb = config_db or db
+    specs = _cdb.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()  # noqa: E712
 
     # Build venue lookup: connector_name -> list of venue names with configs
     venue_map: dict[str, list[str]] = {}
@@ -905,7 +931,11 @@ async def consolidator_chat(
             import anthropic
 
             log = logging.getLogger("consolidator.chat")
+            from app.db.engine import _ConfigSessionLocal
+
+            _config_factory = _ConfigSessionLocal or SessionLocal
             db = SessionLocal()
+            config_db = _config_factory()
             try:
                 api_key = get_api_key("anthropic", "api_key", db)
                 if not api_key:
@@ -913,7 +943,7 @@ async def consolidator_chat(
                     return
 
                 # Build real connector tools for the LLM
-                connector_tools = _build_connector_tools(db)
+                connector_tools = _build_connector_tools(db, config_db)
                 tools = [_SAVE_TOOL] + connector_tools
                 log.info(
                     "Consolidator chat: %d connector tools available",
@@ -1032,7 +1062,7 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
 
                         connector_name, action = parts
                         spec = (
-                            db.query(ConnectorSpec)
+                            config_db.query(ConnectorSpec)
                             .filter(ConnectorSpec.connector_name == connector_name)
                             .first()
                         )
@@ -1231,6 +1261,7 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                 log.error("Consolidator chat error: %s", exc, exc_info=True)
                 on_event({"type": "error", "message": str(exc)})
             finally:
+                config_db.close()
                 db.close()
 
         bg = asyncio.ensure_future(asyncio.to_thread(run))

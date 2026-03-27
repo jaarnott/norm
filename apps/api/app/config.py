@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["local", "testing", "staging", "production"] = "local"
     DATABASE_URL: str = "postgresql://norm:norm@localhost:5432/norm"
     DATABASE_READ_URL: str = ""  # Read replica URL; empty = use primary for reads
+    CONFIG_DATABASE_URL: str = ""  # Shared config DB; empty = use primary DB
     JWT_SECRET: str = "dev-secret-change-in-production"
     CORS_ALLOWED_ORIGINS: str = "*"  # comma-separated list; "*" for dev only
 
@@ -56,9 +57,6 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_ID: str = ""
     MICROSOFT_CLIENT_SECRET: str = ""
     APP_URL: str = "https://bettercallnorm.com"
-
-    # ── Config sync (cross-environment) ──────────────────────────────────
-    CONFIG_SYNC_SECRET: str = ""  # Shared secret for service-to-service config fetch
 
     # ── Observability (Phase 4) ─────────────────────────────────────────
     LOG_LEVEL: str = "INFO"

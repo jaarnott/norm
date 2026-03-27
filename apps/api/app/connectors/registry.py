@@ -38,7 +38,9 @@ def get_connector(domain: str, db: Session) -> BaseConnector:
 # ---------------------------------------------------------------------------
 
 
-def resolve_connector(domain: str, action: str, db: Session) -> tuple:
+def resolve_connector(
+    domain: str, action: str, db: Session, config_db: Session | None = None
+) -> tuple:
     """Resolve a connector spec for a domain + action.
 
     Iterates ALL enabled bindings for this domain so that multiple
@@ -46,12 +48,17 @@ def resolve_connector(domain: str, action: str, db: Session) -> tuple:
 
     Returns (ConnectorSpec, credentials_dict, operation_dict).
     Raises ValueError if no matching spec/action is found.
+
+    config_db is used for ConnectorSpec and AgentConnectorBinding queries.
+    db is used for ConnectorConfig (credentials) queries.
     """
     from app.db.models import ConnectorSpec, ConnectorConfig, AgentConnectorBinding
 
+    _cdb = config_db or db
+
     # Get ALL enabled bindings for this domain
     bindings = (
-        db.query(AgentConnectorBinding)
+        _cdb.query(AgentConnectorBinding)
         .filter(
             AgentConnectorBinding.agent_slug == domain,
             AgentConnectorBinding.enabled == True,  # noqa: E712
@@ -62,7 +69,7 @@ def resolve_connector(domain: str, action: str, db: Session) -> tuple:
     # For each binding, load the ConnectorSpec and check if it has this action
     for binding in bindings:
         spec = (
-            db.query(ConnectorSpec)
+            _cdb.query(ConnectorSpec)
             .filter(
                 ConnectorSpec.connector_name == binding.connector_name,
                 ConnectorSpec.enabled == True,  # noqa: E712

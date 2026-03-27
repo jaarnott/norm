@@ -343,35 +343,14 @@ class LlmCall(Base):
     thread = relationship("Thread", back_populates="llm_calls")
 
 
-class ConnectorSpec(Base):
-    __tablename__ = "connector_specs"
-
-    id = Column(String, primary_key=True, default=_uuid)
-    connector_name = Column(String, unique=True, nullable=False)
-    display_name = Column(String, nullable=False)
-    category = Column(String)  # "hr", "procurement"
-    execution_mode = Column(
-        String, nullable=False, default="template"
-    )  # "template" | "agent"
-    auth_type = Column(
-        String, nullable=False
-    )  # "bearer" | "api_key_header" | "basic" | "oauth2"
-    auth_config = Column(JSON, nullable=False, default=dict)
-    base_url_template = Column(String)  # Jinja2 template
-    tools = Column(JSON, nullable=False, default=list)
-    api_documentation = Column(Text)  # for agent mode
-    example_requests = Column(JSON, nullable=False, default=list)
-    credential_fields = Column(JSON, nullable=False, default=list)
-    oauth_config = Column(
-        JSON, nullable=True
-    )  # {authorize_url, token_url, scopes, client_id, client_secret}
-    test_request = Column(
-        JSON, nullable=True
-    )  # {method, path_template, headers, success_status_codes}
-    version = Column(Integer, nullable=False, default=1)
-    enabled = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), default=_now)
-    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+# Config models live in config_models.py (may be in a separate DB).
+# Re-exported here for backwards compatibility.
+from app.db.config_models import (  # noqa: F401, E402
+    ConnectorSpec,
+    AgentConfig,
+    AgentConnectorBinding,
+    SystemSecret,
+)
 
 
 class OAuthState(Base):
@@ -412,34 +391,6 @@ class ConnectorConfig(Base):
 
     venue = relationship("Venue")
     user = relationship("User")
-
-
-class AgentConfig(Base):
-    __tablename__ = "agent_configs"
-
-    id = Column(String, primary_key=True, default=_uuid)
-    agent_slug = Column(String, unique=True, nullable=False)
-    display_name = Column(String, nullable=False)
-    system_prompt = Column(Text, nullable=True)
-    description = Column(Text, nullable=True)
-    enabled = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), default=_now)
-    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
-
-
-class AgentConnectorBinding(Base):
-    __tablename__ = "agent_connector_bindings"
-    __table_args__ = (
-        UniqueConstraint("agent_slug", "connector_name", name="uq_agent_connector"),
-    )
-
-    id = Column(String, primary_key=True, default=_uuid)
-    agent_slug = Column(String, nullable=False)
-    connector_name = Column(String, nullable=False)
-    capabilities = Column(JSON, nullable=False, default=list)
-    enabled = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), default=_now)
-    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
 class ToolCall(Base):

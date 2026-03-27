@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db
+from app.db.engine import get_config_db, get_config_db_rw
 from app.db.models import AgentConfig, AgentConnectorBinding, ConnectorSpec, User
 from app.auth.dependencies import get_current_user, require_permission
 from app.services.agent_config_service import (
@@ -19,9 +19,9 @@ from app.services.agent_config_service import (
 router = APIRouter()
 
 
-def _get_known_slugs(db: Session) -> list[str]:
+def _get_known_slugs(config_db: Session) -> list[str]:
     """Load known agent slugs from the database (not code)."""
-    return [r[0] for r in db.query(AgentConfig.agent_slug).all()]
+    return [r[0] for r in config_db.query(AgentConfig.agent_slug).all()]
 
 
 def _merge_capabilities(binding_caps: list[dict], spec_tools: list[dict]) -> list[dict]:
@@ -113,12 +113,12 @@ def _agent_to_dict(
 
 @router.get("/agents")
 async def list_agents(
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    configs = {r.agent_slug: r for r in db.query(AgentConfig).all()}
-    all_bindings = db.query(AgentConnectorBinding).all()
-    specs_by_name = {s.connector_name: s for s in db.query(ConnectorSpec).all()}
+    configs = {r.agent_slug: r for r in config_db.query(AgentConfig).all()}
+    all_bindings = config_db.query(AgentConnectorBinding).all()
+    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectorSpec).all()}
 
     bindings_by_slug: dict[str, list[dict]] = {}
     for b in all_bindings:
@@ -131,7 +131,7 @@ async def list_agents(
         )
 
     agents = []
-    for slug in _get_known_slugs(db):
+    for slug in _get_known_slugs(config_db):
         agents.append(
             _agent_to_dict(
                 slug, configs.get(slug), bindings_by_slug.get(slug, []), specs_by_name
@@ -142,23 +142,23 @@ async def list_agents(
 
 @router.get("/agents/capabilities")
 async def capabilities_summary(
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    return get_all_capabilities_summary(db)
+    return get_all_capabilities_summary(config_db)
 
 
 @router.get("/agents/{slug}")
 async def get_agent(
     slug: str,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in _get_known_slugs(db):
+    if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
-    config = db.query(AgentConfig).filter(AgentConfig.agent_slug == slug).first()
-    bindings = get_connector_bindings(slug, db)
-    specs_by_name = {s.connector_name: s for s in db.query(ConnectorSpec).all()}
+    config = config_db.query(AgentConfig).filter(AgentConfig.agent_slug == slug).first()
+    bindings = get_connector_bindings(slug, config_db)
+    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectorSpec).all()}
     return _agent_to_dict(slug, config, bindings, specs_by_name)
 
 
@@ -172,48 +172,48 @@ class AgentUpdateBody(BaseModel):
 async def update_agent(
     slug: str,
     body: AgentUpdateBody,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in _get_known_slugs(db):
+    if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
     row = update_agent_config(
         slug,
-        db,
+        config_db,
         system_prompt=body.system_prompt,
         description=body.description,
         display_name=body.display_name,
     )
-    db.commit()
-    bindings = get_connector_bindings(slug, db)
-    specs_by_name = {s.connector_name: s for s in db.query(ConnectorSpec).all()}
+    config_db.commit()
+    bindings = get_connector_bindings(slug, config_db)
+    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectorSpec).all()}
     return _agent_to_dict(slug, row, bindings, specs_by_name)
 
 
 @router.post("/agents/{slug}/reset-prompt")
 async def reset_agent_prompt(
     slug: str,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in _get_known_slugs(db):
+    if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
-    row = reset_prompt(slug, db)
-    db.commit()
-    bindings = get_connector_bindings(slug, db)
-    specs_by_name = {s.connector_name: s for s in db.query(ConnectorSpec).all()}
+    row = reset_prompt(slug, config_db)
+    config_db.commit()
+    bindings = get_connector_bindings(slug, config_db)
+    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectorSpec).all()}
     return _agent_to_dict(slug, row, bindings, specs_by_name)
 
 
 @router.get("/agents/{slug}/bindings")
 async def list_bindings(
     slug: str,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in _get_known_slugs(db):
+    if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
-    return {"bindings": get_connector_bindings(slug, db)}
+    return {"bindings": get_connector_bindings(slug, config_db)}
 
 
 class BindingBody(BaseModel):
@@ -226,15 +226,17 @@ async def upsert_binding(
     slug: str,
     connector: str,
     body: BindingBody,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in _get_known_slugs(db):
+    if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
-    row = upsert_connector_binding(slug, connector, body.capabilities, body.enabled, db)
-    db.commit()
+    row = upsert_connector_binding(
+        slug, connector, body.capabilities, body.enabled, config_db
+    )
+    config_db.commit()
     spec = (
-        db.query(ConnectorSpec)
+        config_db.query(ConnectorSpec)
         .filter(ConnectorSpec.connector_name == connector)
         .first()
     )
@@ -253,13 +255,13 @@ async def upsert_binding(
 async def remove_binding(
     slug: str,
     connector: str,
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("settings:agents")),
 ):
-    if slug not in _get_known_slugs(db):
+    if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
-    deleted = delete_connector_binding(slug, connector, db)
+    deleted = delete_connector_binding(slug, connector, config_db)
     if not deleted:
         raise HTTPException(404, f"No binding for {slug}/{connector}")
-    db.commit()
+    config_db.commit()
     return {"deleted": True}

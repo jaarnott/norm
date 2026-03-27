@@ -55,7 +55,7 @@ class BaseDomainAgent(ABC):
         """Build domain-specific context for interpretation."""
         ...
 
-    def get_system_prompt(self, db: Session) -> str:
+    def get_system_prompt(self, db: Session, config_db: Session | None = None) -> str:
         """Return the domain-specific system prompt for interpretation.
 
         Priority:
@@ -64,13 +64,14 @@ class BaseDomainAgent(ABC):
         """
         from app.agents.prompt_builder import build_dynamic_prompt
 
-        dynamic = build_dynamic_prompt(self.domain, db)
+        _cdb = config_db or db
+        dynamic = build_dynamic_prompt(self.domain, db, config_db=_cdb)
         if dynamic:
             return dynamic
 
         from app.services.agent_config_service import get_system_prompt as get_db_prompt
 
-        return get_db_prompt(self.domain, db)
+        return get_db_prompt(self.domain, _cdb)
 
     def get_tool_definitions(
         self,
@@ -78,6 +79,7 @@ class BaseDomainAgent(ABC):
         active_venue_name: str | None = None,
         venue_timezone: str | None = None,
         user_id: str | None = None,
+        config_db: Session | None = None,
     ) -> tuple[str, list[dict]]:
         """Return (system_prompt, anthropic_tools) for the agentic tool loop.
 
@@ -92,6 +94,7 @@ class BaseDomainAgent(ABC):
             active_venue_name=active_venue_name,
             venue_timezone=venue_timezone,
             user_id=user_id,
+            config_db=config_db,
         )
 
     def handle_message_with_tools(

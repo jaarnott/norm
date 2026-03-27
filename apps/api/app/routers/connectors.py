@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db
+from app.db.engine import get_db, get_config_db
 from app.db.models import ConnectorConfig, ConnectorSpec, User
 from app.auth.dependencies import get_current_user, require_permission
 
@@ -69,6 +69,7 @@ def _redact_config(
 async def list_connectors(
     venue_id: str | None = None,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     # Filter configs by venue_id (None = platform/global configs)
@@ -93,7 +94,7 @@ async def list_connectors(
         )
 
     # Spec-driven connectors from the DB
-    specs = db.query(ConnectorSpec).all()
+    specs = config_db.query(ConnectorSpec).all()
     seen = {c["name"] for c in result}
     for spec in specs:
         if spec.connector_name not in seen:
@@ -132,13 +133,16 @@ async def upsert_connector(
     name: str,
     body: ConnectorConfigBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("settings:connectors")),
 ):
     meta = next((c for c in PLATFORM_CONNECTORS if c["name"] == name), None)
     if not meta:
         # Check if it's a spec-driven connector
         spec = (
-            db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+            config_db.query(ConnectorSpec)
+            .filter(ConnectorSpec.connector_name == name)
+            .first()
         )
         if not spec:
             raise HTTPException(404, f"Unknown connector: {name}")
@@ -221,6 +225,7 @@ async def test_connector(
     name: str,
     body: TestBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("settings:connectors")),
 ):
     if name == "anthropic":
@@ -249,7 +254,11 @@ async def test_connector(
             return {"success": False, "error": f"Connection error: {exc}"}
 
     # Spec-driven connectors: use the test_request from the spec
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
     if not spec:
         raise HTTPException(404, f"Unknown connector: {name}")
 
@@ -314,6 +323,7 @@ async def execute_connector_action(
     action: str,
     body: ExecuteBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Execute a connector tool directly (no LLM, no task)."""
@@ -326,7 +336,11 @@ async def execute_connector_action(
         db.commit()
         return result
 
-    spec = db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == name).first()
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
     if not spec:
         raise HTTPException(404, f"Connector not found: {name}")
 

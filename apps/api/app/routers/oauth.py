@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db
+from app.db.engine import get_db, get_config_db
 from app.db.models import ConnectorSpec, ConnectorConfig, User
 from app.auth.dependencies import get_current_user, require_role
 from app.services.oauth_service import build_authorize_url, exchange_code
@@ -36,11 +36,12 @@ async def oauth_authorize(
     request: Request,
     venue_id: str | None = None,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_role("admin")),
 ):
     """Start the OAuth flow. Returns the authorization URL to redirect the user to."""
     spec = (
-        db.query(ConnectorSpec)
+        config_db.query(ConnectorSpec)
         .filter(
             ConnectorSpec.connector_name == connector,
             ConnectorSpec.auth_type == "oauth2",
@@ -75,6 +76,7 @@ async def oauth_callback(
     state: str,
     request: Request,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
 ):
     """Handle the OAuth provider redirect. Exchanges code for tokens.
 
@@ -92,7 +94,7 @@ async def oauth_callback(
     connector_name = oauth_state.connector_name
     oauth_state_user_id = oauth_state.user_id
     spec = (
-        db.query(ConnectorSpec)
+        config_db.query(ConnectorSpec)
         .filter(ConnectorSpec.connector_name == connector_name)
         .first()
     )

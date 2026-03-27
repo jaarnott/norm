@@ -789,13 +789,16 @@ def _execute_tool_call_in_thread(tc_id: str, event_callback) -> tuple[str, dict]
         thread_db.close()
 
 
-def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
+def _execute_tool_call(
+    tc: ToolCall, db: Session, config_db: Session | None = None
+) -> dict:
     """Execute a tool call against the connector spec and record the result."""
     from app.db.models import ConnectorSpec
     from app.connectors.spec_executor import execute_spec
 
+    _cdb = config_db or db
     spec = (
-        db.query(ConnectorSpec)
+        _cdb.query(ConnectorSpec)
         .filter(
             ConnectorSpec.connector_name == tc.connector_name,
         )
@@ -1321,12 +1324,15 @@ def _upsert_working_document(
     return doc
 
 
-def _find_tool_def(connector_name: str, action: str, db: Session) -> dict | None:
+def _find_tool_def(
+    connector_name: str, action: str, db: Session, config_db: Session | None = None
+) -> dict | None:
     """Look up a tool definition from the ConnectorSpec in the database."""
     from app.db.models import ConnectorSpec
 
+    _cdb = config_db or db
     spec = (
-        db.query(ConnectorSpec)
+        _cdb.query(ConnectorSpec)
         .filter(ConnectorSpec.connector_name == connector_name)
         .first()
     )

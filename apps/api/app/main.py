@@ -84,6 +84,48 @@ app.include_router(email.router, prefix="/api")
 
 
 @app.on_event("startup")
+def _load_system_secrets() -> None:
+    """Load system secrets from config DB and override settings attributes."""
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    LOADABLE_SECRETS = [
+        "ANTHROPIC_API_KEY",
+        "JWT_SECRET",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "RESEND_API_KEY",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "MICROSOFT_CLIENT_ID",
+        "MICROSOFT_CLIENT_SECRET",
+    ]
+
+    try:
+        from app.db.engine import _ConfigSessionLocal, SessionLocal
+        from app.db.models import SystemSecret
+
+        factory = _ConfigSessionLocal or SessionLocal
+        db = factory()
+        try:
+            secrets = db.query(SystemSecret).all()
+            loaded = 0
+            for secret in secrets:
+                if secret.key in LOADABLE_SECRETS and secret.value:
+                    setattr(settings, secret.key, secret.value)
+                    loaded += 1
+            if loaded:
+                log.info("Loaded %d system secrets from config DB", loaded)
+        finally:
+            db.close()
+    except Exception:
+        log.warning(
+            "Could not load system secrets from config DB — falling back to env vars"
+        )
+
+
+@app.on_event("startup")
 def _start_scheduler() -> None:
     from app.services.task_scheduler import init_scheduler
 

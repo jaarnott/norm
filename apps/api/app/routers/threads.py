@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db
+from app.db.engine import get_db, get_config_db
 from app.db.models import Thread, Approval, ToolCall, User
 from app.auth.dependencies import get_current_user, require_permission
 from app.services.order_service import (
@@ -246,12 +246,13 @@ async def get_thread_detail(
 async def approve(
     thread_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     # Check if this is a tool-approval request
     raw_thread = db.query(Thread).filter(Thread.id == thread_id).first()
     if raw_thread and raw_thread.status == "awaiting_tool_approval":
-        return _approve_tool_calls(db, raw_thread, user)
+        return _approve_tool_calls(db, raw_thread, user, config_db=config_db)
 
     thread, domain = _find(db, thread_id)
     if not thread:
@@ -269,12 +270,13 @@ async def approve(
 async def reject(
     thread_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     # Check if this is a tool-rejection request
     raw_thread = db.query(Thread).filter(Thread.id == thread_id).first()
     if raw_thread and raw_thread.status == "awaiting_tool_approval":
-        return _reject_tool_calls(db, raw_thread, user)
+        return _reject_tool_calls(db, raw_thread, user, config_db=config_db)
 
     thread, domain = _find(db, thread_id)
     if not thread:
@@ -380,7 +382,9 @@ def _update_approval_display_block(thread: Thread, new_status: str) -> None:
                 flag_modified(msg, "display_blocks")
 
 
-def _approve_tool_calls(db: Session, thread: Thread, user: User) -> dict:
+def _approve_tool_calls(
+    db: Session, thread: Thread, user: User, config_db: Session | None = None
+) -> dict:
     """Approve pending write tool calls and resume the agentic loop."""
     from app.agents.tool_loop import resume_tool_loop
     from app.agents.prompt_builder import build_tool_definitions
@@ -406,12 +410,14 @@ def _approve_tool_calls(db: Session, thread: Thread, user: User) -> dict:
 
     # Resume the loop
     system_prompt, anthropic_tools = build_tool_definitions(
-        thread.domain, db, user_id=user.id
+        thread.domain, db, user_id=user.id, config_db=config_db
     )
     return resume_tool_loop(thread, db, system_prompt, anthropic_tools)
 
 
-def _reject_tool_calls(db: Session, thread: Thread, user: User) -> dict:
+def _reject_tool_calls(
+    db: Session, thread: Thread, user: User, config_db: Session | None = None
+) -> dict:
     """Reject pending write tool calls and resume the loop (tool results will say 'rejected')."""
     from app.agents.tool_loop import resume_tool_loop
     from app.agents.prompt_builder import build_tool_definitions
@@ -437,7 +443,7 @@ def _reject_tool_calls(db: Session, thread: Thread, user: User) -> dict:
 
     # Resume the loop — the tool results will contain rejection messages
     system_prompt, anthropic_tools = build_tool_definitions(
-        thread.domain, db, user_id=user.id
+        thread.domain, db, user_id=user.id, config_db=config_db
     )
     return resume_tool_loop(thread, db, system_prompt, anthropic_tools)
 
@@ -458,6 +464,7 @@ async def widget_action(
     thread_id: str,
     body: WidgetActionRequest,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Execute a tool call initiated from an interactive widget."""
@@ -476,7 +483,7 @@ async def widget_action(
         )
 
     # Look up the tool definition
-    tool_def = _find_tool_def(body.connector_name, body.action, db)
+    tool_def = _find_tool_def(body.connector_name, body.action, db, config_db=config_db)
     if not tool_def:
         raise HTTPException(
             status_code=404,
