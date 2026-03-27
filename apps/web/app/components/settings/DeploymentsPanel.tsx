@@ -116,7 +116,9 @@ function normalizeDiffSection(section: DiffItem[] | Record<string, unknown[]>): 
     if (Array.isArray(arr)) {
       for (const item of arr) {
         const raw = item as Record<string, unknown>;
-        const key = (raw.connector_name || raw.agent_slug || `${raw.agent_slug}:${raw.connector_name}`) as string;
+        const key = (raw.agent_slug && raw.connector_name)
+          ? `${raw.agent_slug}:${raw.connector_name}`
+          : (raw.connector_name || raw.agent_slug || 'unknown') as string;
         items.push({ key, status, changes: raw.changes as FieldChange[] | undefined });
       }
     }
