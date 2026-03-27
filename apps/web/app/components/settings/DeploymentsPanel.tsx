@@ -289,11 +289,25 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
     setApplying(true);
     setFeedback(null);
     try {
-      const selectedItems: Record<string, string[]> = { connector_specs: [], agent_configs: [], agent_bindings: [] };
+      const selectedSpecs: string[] = [];
+      const selectedAgents: string[] = [];
+      const selectedBindings: string[][] = [];
       for (const id of selected) {
-        const [section, key] = id.split(':');
-        if (selectedItems[section]) selectedItems[section].push(key);
+        const colonIdx = id.indexOf(':');
+        const section = id.substring(0, colonIdx);
+        const key = id.substring(colonIdx + 1);
+        if (section === 'connector_specs') selectedSpecs.push(key);
+        else if (section === 'agent_configs') selectedAgents.push(key);
+        else if (section === 'agent_bindings') {
+          const parts = key.split(':');
+          selectedBindings.push(parts);
+        }
       }
+      const selectedItems = {
+        connector_specs: selectedSpecs,
+        agent_configs: selectedAgents,
+        agent_bindings: selectedBindings,
+      };
 
       let res: Response;
       if (isPushMode) {
@@ -320,7 +334,13 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
         setSelected(new Set());
       } else {
         const d = await res.json();
-        setFeedback({ type: 'error', message: d.detail || (isPushMode ? 'Push failed' : 'Import failed') });
+        const detail = d.detail;
+        const msg = typeof detail === 'string'
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((e: Record<string, unknown>) => e.msg || JSON.stringify(e)).join('; ')
+            : (isPushMode ? 'Push failed' : 'Import failed');
+        setFeedback({ type: 'error', message: msg });
       }
     } catch (e) {
       setFeedback({ type: 'error', message: String(e) });
