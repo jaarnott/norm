@@ -128,7 +128,7 @@ function ConfigurationSync({ sectionStyle, headingStyle }: {
 
   // Detect current environment from hostname, filter source options
   const currentEnv: Env = typeof window !== 'undefined'
-    ? window.location.hostname === 'localhost' ? 'local'
+    ? (window.location.hostname === 'localhost' || window.location.hostname.includes('.app.github.dev')) ? 'local'
       : window.location.hostname.startsWith('testing.') ? 'testing'
       : window.location.hostname.startsWith('staging.') ? 'staging'
       : 'production'
