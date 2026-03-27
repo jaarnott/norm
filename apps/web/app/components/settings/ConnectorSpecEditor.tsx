@@ -214,6 +214,27 @@ function findArray(payload: unknown): unknown[] | null {
   return null;
 }
 
+/** Parse "output_name|round:2" into [name, options]. */
+function parseFieldDest(dest: string): [string, Record<string, string>] {
+  const pipeIdx = dest.indexOf('|');
+  if (pipeIdx < 0) return [dest, {}];
+  const name = dest.slice(0, pipeIdx);
+  const opts: Record<string, string> = {};
+  for (const part of dest.slice(pipeIdx + 1).split('|')) {
+    const ci = part.indexOf(':');
+    if (ci >= 0) opts[part.slice(0, ci).trim()] = part.slice(ci + 1).trim();
+  }
+  return [name, opts];
+}
+
+function applyFieldOptions(value: unknown, opts: Record<string, string>): unknown {
+  if ('round' in opts && typeof value === 'number') {
+    const dp = parseInt(opts.round, 10);
+    return dp > 0 ? parseFloat(value.toFixed(dp)) : Math.round(value);
+  }
+  return value;
+}
+
 function transformItem(
   item: Record<string, unknown>,
   fields: Record<string, string>,
@@ -235,9 +256,10 @@ function transformItem(
 
   // Base object from regular fields
   const base: Record<string, unknown> = {};
-  for (const [src, dest] of Object.entries(regular)) {
+  for (const [src, destRaw] of Object.entries(regular)) {
+    const [dest, opts] = parseFieldDest(destRaw);
     const val = resolveDotPath(item, src);
-    if (val !== undefined) base[dest] = val;
+    if (val !== undefined) base[dest] = applyFieldOptions(val, opts);
   }
 
   // Array fields
@@ -248,9 +270,10 @@ function transformItem(
       .filter(el => el && typeof el === 'object')
       .map(el => {
         const row: Record<string, unknown> = {};
-        for (const [subSrc, subDest] of Object.entries(subFields)) {
+        for (const [subSrc, subDestRaw] of Object.entries(subFields)) {
+          const [subDest, subOpts] = parseFieldDest(subDestRaw);
           const val = resolveDotPath(el as Record<string, unknown>, subSrc);
-          if (val !== undefined) row[subDest] = val;
+          if (val !== undefined) row[subDest] = applyFieldOptions(val, subOpts);
         }
         return row;
       })
@@ -381,11 +404,31 @@ function FieldMappingEditor({
   };
 
   const renderFieldRow = (src: string, dest: string, indent: number) => {
+    // Parse pipe-separated options: "output_name|round:2|tz|dow" → name + options
+    const pipeIdx = dest.indexOf('|');
+    const destName = pipeIdx >= 0 ? dest.slice(0, pipeIdx) : dest;
+    const optionStr = pipeIdx >= 0 ? dest.slice(pipeIdx + 1) : '';
+    const roundMatch = optionStr.match(/round:(\d+)/);
+    const roundVal = roundMatch ? roundMatch[1] : '';
+    const hasTz = /\btz\b/.test(optionStr);
+    const hasDow = /\bdow\b/.test(optionStr);
+    const dtVal = hasTz && hasDow ? 'tz+dow' : hasTz ? 'tz' : hasDow ? 'dow' : '';
+
     const included = dest !== '';
     const leaf = src.includes('[].') ? src.split('[].').pop() || src : (src.split('.').pop() || src);
+
+    const rebuildDest = (name: string, round: string, dt: string) => {
+      if (!name) return '';
+      const parts = [name];
+      if (round) parts.push(`round:${round}`);
+      if (dt === 'tz' || dt === 'tz+dow') parts.push('tz');
+      if (dt === 'dow' || dt === 'tz+dow') parts.push('dow');
+      return parts.join('|');
+    };
+
     return (
       <div key={src} style={{
-        display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: 6, marginBottom: 2,
+        display: 'grid', gridTemplateColumns: 'auto 1fr 1fr auto auto', gap: 6, marginBottom: 2,
         paddingLeft: indent, opacity: included ? 1 : 0.4,
       }}>
         <label style={{ display: 'flex', alignItems: 'center', width: 20, justifyContent: 'center' }}>
@@ -403,12 +446,44 @@ function FieldMappingEditor({
           </span>
         </div>
         <input
-          value={dest}
-          onChange={e => updateField(src, src, e.target.value)}
+          value={destName}
+          onChange={e => updateField(src, src, rebuildDest(e.target.value, roundVal, dtVal))}
           placeholder="(excluded)"
           disabled={!included}
           style={{ ...inputStyle, fontSize: '0.78rem', opacity: included ? 1 : 0.5 }}
         />
+        <select
+          value={roundVal}
+          onChange={e => updateField(src, src, rebuildDest(destName || leaf, e.target.value, dtVal))}
+          disabled={!included}
+          style={{
+            width: 48, fontSize: '0.68rem', padding: '2px 2px', border: '1px solid #e2ddd7',
+            borderRadius: 4, backgroundColor: '#fff', color: roundVal ? '#333' : '#bbb',
+            fontFamily: 'inherit', opacity: included ? 1 : 0.4, cursor: included ? 'pointer' : 'default',
+          }}
+        >
+          <option value="">dp</option>
+          <option value="0">0dp</option>
+          <option value="1">1dp</option>
+          <option value="2">2dp</option>
+          <option value="3">3dp</option>
+          <option value="4">4dp</option>
+        </select>
+        <select
+          value={dtVal}
+          onChange={e => updateField(src, src, rebuildDest(destName || leaf, roundVal, e.target.value))}
+          disabled={!included}
+          style={{
+            width: 62, fontSize: '0.68rem', padding: '2px 2px', border: '1px solid #e2ddd7',
+            borderRadius: 4, backgroundColor: '#fff', color: dtVal ? '#333' : '#bbb',
+            fontFamily: 'inherit', opacity: included ? 1 : 0.4, cursor: included ? 'pointer' : 'default',
+          }}
+        >
+          <option value="">date</option>
+          <option value="tz">tz</option>
+          <option value="dow">dow</option>
+          <option value="tz+dow">tz+dow</option>
+        </select>
       </div>
     );
   };
@@ -418,10 +493,11 @@ function FieldMappingEditor({
       <div style={{ fontSize: '0.7rem', color: '#999', marginBottom: 4 }}>
         Fetch a sample response to generate field mappings. Toggle fields to include/exclude, and edit output names.
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: '0 6px', marginBottom: 4 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr auto', gap: '0 6px', marginBottom: 4 }}>
         <div style={{ width: 20 }} />
         <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.03em', padding: '0 2px' }}>Source Field</div>
         <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.03em', padding: '0 2px' }}>Output Name</div>
+        <div style={{ width: 48, fontSize: '0.65rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.03em', textAlign: 'center' }}>Round</div>
       </div>
 
       {/* Top-level fields */}

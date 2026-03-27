@@ -8,7 +8,32 @@ Supports:
 - Nested object access: {"supplier.name": "supplier_name"}
 - Array sub-field mapping: {"lines[].stockCode": "stock_code"}
 - Flattening arrays into parent: flatten=["lines"] produces one row per array item
+- Timezone normalization: convert all ISO datetime strings to venue timezone
 """
+
+import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# Matches ISO 8601 datetime strings with timezone offset (e.g., 2026-03-26T22:10:00+00:00)
+_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)$"
+)
+
+
+def normalize_timezones(obj, target_tz: ZoneInfo):
+    """Recursively find ISO datetime strings and convert to target timezone."""
+    if isinstance(obj, dict):
+        return {k: normalize_timezones(v, target_tz) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [normalize_timezones(item, target_tz) for item in obj]
+    if isinstance(obj, str) and _ISO_DATETIME_RE.match(obj):
+        try:
+            dt = datetime.fromisoformat(obj.replace("Z", "+00:00"))
+            return dt.astimezone(target_tz).isoformat()
+        except (ValueError, TypeError):
+            return obj
+    return obj
 
 
 def _resolve_dot_path(obj: dict, path: str):
@@ -47,10 +72,57 @@ def _find_array(payload: dict | list) -> tuple[list | None, str | None]:
     return None, None
 
 
+def _parse_field_dest(dest_str: str) -> tuple[str, dict[str, str]]:
+    """Parse ``'output_name|round:2|tz|dow'`` into ``('output_name', {'round': '2', 'tz': '', 'dow': ''})``."""
+    parts = dest_str.split("|")
+    name = parts[0]
+    options: dict[str, str] = {}
+    for part in parts[1:]:
+        if ":" in part:
+            k, v = part.split(":", 1)
+            options[k.strip()] = v.strip()
+        elif part.strip():
+            options[part.strip()] = ""
+    return name, options
+
+
+def _apply_field_options(
+    value, options: dict[str, str], venue_tz: "ZoneInfo | None" = None
+):
+    """Apply per-field options (rounding, timezone normalization) to a resolved value."""
+    if "round" in options and isinstance(value, (int, float)):
+        dp = int(options["round"])
+        value = round(value, dp) if dp > 0 else int(round(value, 0))
+    if (
+        "tz" in options
+        and isinstance(value, str)
+        and venue_tz
+        and _ISO_DATETIME_RE.match(value)
+    ):
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            value = dt.astimezone(venue_tz).isoformat()
+        except (ValueError, TypeError):
+            pass
+    return value
+
+
+def _get_day_of_week(value) -> str | None:
+    """Extract day-of-week from an ISO datetime string."""
+    if isinstance(value, str) and _ISO_DATETIME_RE.match(value):
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return dt.strftime("%A")  # "Tuesday"
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
 def _transform_item(
     item: dict,
     fields: dict[str, str],
     flatten: list[str] | None = None,
+    venue_tz: "ZoneInfo | None" = None,
 ) -> list[dict] | dict:
     """Transform a single item using the field mapping.
 
@@ -75,10 +147,16 @@ def _transform_item(
 
     # Build base object from regular fields
     base: dict = {}
-    for src, dest in regular.items():
+    for src, dest_raw in regular.items():
+        dest, opts = _parse_field_dest(dest_raw)
         val = _resolve_dot_path(item, src)
         if val is not None:
-            base[dest] = val
+            base[dest] = _apply_field_options(val, opts, venue_tz=venue_tz)
+            # Add day-of-week sibling field if requested
+            if "dow" in opts:
+                dow = _get_day_of_week(base[dest])
+                if dow:
+                    base[f"{dest}_dayOfWeek"] = dow
 
     # Process array fields
     for arr_name, sub_fields in array_fields.items():
@@ -91,10 +169,17 @@ def _transform_item(
             if not isinstance(sub_item, dict):
                 continue
             row: dict = {}
-            for sub_src, sub_dest in sub_fields.items():
+            for sub_src, sub_dest_raw in sub_fields.items():
+                sub_dest, sub_opts = _parse_field_dest(sub_dest_raw)
                 val = _resolve_dot_path(sub_item, sub_src)
                 if val is not None:
-                    row[sub_dest] = val
+                    row[sub_dest] = _apply_field_options(
+                        val, sub_opts, venue_tz=venue_tz
+                    )
+                    if "dow" in sub_opts:
+                        dow = _get_day_of_week(row[sub_dest])
+                        if dow:
+                            row[f"{sub_dest}_dayOfWeek"] = dow
             if row:
                 transformed_arr.append(row)
 
@@ -147,6 +232,7 @@ def _evaluate_filters(item: dict, filters: list[dict]) -> bool:
 def apply_response_transform(
     payload: dict | list,
     transform_config: dict,
+    venue_timezone: str | None = None,
 ) -> dict | list:
     """Transform a tool result payload using the response_transform config.
 
@@ -154,10 +240,11 @@ def apply_response_transform(
         payload: Raw API response (dict or list).
         transform_config: {
             "enabled": bool,
-            "fields": {"source.path": "output_name", "arr[].field": "name"},
+            "fields": {"source.path": "output_name|tz|dow", "arr[].field": "name"},
             "flatten": ["arr_name"],
             "filters": [{"field": "...", "operator": "...", "value": "..."}]
         }
+        venue_timezone: IANA timezone name for tz/dow field options (e.g., "Pacific/Auckland").
 
     Returns the transformed payload. Raw data is not modified in-place.
     """
@@ -171,6 +258,14 @@ def apply_response_transform(
     flatten = transform_config.get("flatten") or []
     filters = transform_config.get("filters") or []
 
+    # Resolve venue timezone for tz/dow field options
+    venue_tz = None
+    if venue_timezone:
+        try:
+            venue_tz = ZoneInfo(venue_timezone)
+        except Exception:
+            pass
+
     data, wrapper_key = _find_array(payload)
 
     if data is not None and len(data) > 0 and isinstance(data[0], dict):
@@ -181,7 +276,7 @@ def apply_response_transform(
         # Array of objects — transform each item
         transformed_items: list[dict] = []
         for item in data:
-            result = _transform_item(item, fields, flatten)
+            result = _transform_item(item, fields, flatten, venue_tz=venue_tz)
             if isinstance(result, list):
                 transformed_items.extend(result)  # flattened
             else:
@@ -204,9 +299,11 @@ def apply_response_transform(
     # Single object or non-standard structure
     if isinstance(payload, dict):
         if "data" in payload and isinstance(payload["data"], dict):
-            result = _transform_item(payload["data"], fields, flatten)
+            result = _transform_item(
+                payload["data"], fields, flatten, venue_tz=venue_tz
+            )
             return {**payload, "data": result}
-        result = _transform_item(payload, fields, flatten)
+        result = _transform_item(payload, fields, flatten, venue_tz=venue_tz)
         return result
 
     return payload

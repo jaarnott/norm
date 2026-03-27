@@ -227,6 +227,12 @@ def accept_invite(body: AcceptInviteRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(400, "User not found")
 
+    if user.is_active:
+        raise HTTPException(
+            400,
+            "This invite has already been used. Please log in instead.",
+        )
+
     user.full_name = body.full_name
     user.hashed_password = hash_password(body.password)
     user.is_active = True

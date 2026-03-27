@@ -642,17 +642,36 @@ Rules:
                 "error": "No periods resolved from the query",
             }
 
-        # Validate: parse each timestamp to confirm it's valid ISO 8601
+        # Validate and fix labels with Python-computed day names
         for p in periods:
             try:
-                _dt.datetime.fromisoformat(p["start"])
+                start = _dt.datetime.fromisoformat(p["start"])
                 _dt.datetime.fromisoformat(p["end"])
+                # Override Haiku-generated label with correct Python-computed one
+                p["label"] = start.strftime("%A %d %b")  # e.g., "Monday 23 Mar"
             except (KeyError, ValueError) as ve:
                 logger.warning("Invalid period in resolve_dates: %s – %s", p, ve)
 
+        # Build date-to-day lookup so the LLM can reference correct day names
+        date_ref: dict[str, str] = {}
+        for p in periods:
+            try:
+                s = _dt.datetime.fromisoformat(p["start"]).date()
+                e = _dt.datetime.fromisoformat(p["end"]).date()
+                d = s
+                while d <= e:
+                    date_ref[d.isoformat()] = d.strftime("%A")
+                    d += _dt.timedelta(days=1)
+            except (KeyError, ValueError):
+                pass
+
         return {
             "success": True,
-            "data": {"periods": periods, "timezone": tz_name},
+            "data": {
+                "periods": periods,
+                "timezone": tz_name,
+                "date_reference": date_ref,
+            },
         }
     except _json.JSONDecodeError as e:
         logger.error("resolve_dates JSON parse error: %s", e)

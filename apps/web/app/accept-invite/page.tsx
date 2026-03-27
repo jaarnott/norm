@@ -14,6 +14,7 @@ function AcceptInviteForm() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [alreadyUsed, setAlreadyUsed] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +39,12 @@ function AcceptInviteForm() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.detail || `Error ${res.status}`);
+        const detail = data.detail || `Error ${res.status}`;
+        if (detail.includes('already been used')) {
+          setAlreadyUsed(true);
+        } else {
+          setError(detail);
+        }
         return;
       }
 
@@ -81,7 +87,26 @@ function AcceptInviteForm() {
           <div style={{ fontSize: '0.85rem', color: '#888' }}>Set up your account</div>
         </div>
 
-        {success ? (
+        {alreadyUsed ? (
+          <div style={{ textAlign: 'center' }}>
+            <div style={{
+              fontSize: '0.85rem', color: '#856404', backgroundColor: '#fff3cd',
+              padding: '12px 16px', borderRadius: 8, marginBottom: '1.25rem',
+            }}>
+              This invite has already been used. Your account is set up.
+            </div>
+            <a
+              href="/app"
+              style={{
+                display: 'inline-block', padding: '10px 2rem', fontSize: '0.9rem',
+                fontWeight: 600, border: 'none', borderRadius: 8,
+                backgroundColor: '#c4a882', color: '#fff', textDecoration: 'none',
+              }}
+            >
+              Go to Login
+            </a>
+          </div>
+        ) : success ? (
           <div style={{
             fontSize: '0.85rem', color: '#28a745', backgroundColor: '#d4edda',
             padding: '12px 16px', borderRadius: 8, textAlign: 'center',

@@ -151,7 +151,8 @@ def build_tool_definitions(
         tz = (
             ZoneInfo(venue_timezone) if venue_timezone else ZoneInfo("Pacific/Auckland")
         )
-        today_str = datetime.datetime.now(tz).strftime("%Y-%m-%d")
+        now_local = datetime.datetime.now(tz)
+        today_str = f"{now_local.strftime('%A')} {now_local.strftime('%Y-%m-%d')}"
     except Exception:
         today_str = datetime.date.today().isoformat()
     system_prompt = system_prompt.replace("{{today}}", today_str)

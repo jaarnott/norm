@@ -398,8 +398,9 @@ def _execute_loop(
                     summary_fields=summary_fields,
                     search_available=search_available,
                 )
-                # Store what the LLM actually sees for the activity timeline
-                tc.slimmed_content = slimmed
+                # Only store slimmed_content if actual slimming occurred
+                raw_serialized = json.dumps(result)
+                tc.slimmed_content = slimmed if slimmed != raw_serialized else None
                 db.flush()
                 if doc_block:
                     read_only_tool_results[block.id] = {
@@ -908,6 +909,16 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
 
         # Apply response transform BEFORE storing — the DB stores only transformed data
         payload = result.response_payload
+
+        # Resolve venue timezone for datetime field options (|tz, |dow)
+        venue_tz_name = None
+        if resolved_venue_id:
+            from app.db.models import Venue
+
+            venue_obj = db.query(Venue).filter(Venue.id == resolved_venue_id).first()
+            if venue_obj and venue_obj.timezone:
+                venue_tz_name = venue_obj.timezone
+
         if tool_def:
             transform_config = tool_def.get("response_transform")
             if transform_config and transform_config.get("enabled"):
@@ -918,7 +929,9 @@ def _execute_tool_call(tc: ToolCall, db: Session) -> dict:
                     if isinstance(payload, list)
                     else (payload if isinstance(payload, dict) else {"data": payload})
                 )
-                transformed = apply_response_transform(wrapped, transform_config)
+                transformed = apply_response_transform(
+                    wrapped, transform_config, venue_timezone=venue_tz_name
+                )
                 payload = (
                     transformed.get("data", transformed)
                     if isinstance(transformed, dict)
