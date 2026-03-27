@@ -156,9 +156,11 @@ def resume_tool_loop(
     if tool_results_content:
         messages.append({"role": "user", "content": tool_results_content})
 
-    # Clear pending state
+    # Clear pending state and reset status
     task.pending_tool_call_ids = None
     task.agent_loop_state = None
+    task.status = "in_progress"
+    task.remove_tag("approval_required")
     db.flush()
 
     return _execute_loop(

@@ -13,15 +13,9 @@ const DOMAIN_ICONS: Record<string, LucideIcon> = {
 
 const STATUS_STYLES: Record<string, { bg: string; color: string; label: string }> = {
   awaiting_approval: { bg: '#fff3cd', color: '#856404', label: 'Awaiting approval' },
-  awaiting_tool_approval: { bg: '#e8daef', color: '#6c3483', label: 'Tool approval needed' },
+  awaiting_tool_approval: { bg: '#e8daef', color: '#6c3483', label: 'Approval needed' },
   awaiting_user_input: { bg: '#f5f0ea', color: '#8a7356', label: 'Needs input' },
-  needs_clarification: { bg: '#f8d7da', color: '#721c24', label: 'Needs input' },
-  needs_information: { bg: '#f8d7da', color: '#721c24', label: 'Needs input' },
-  in_progress: { bg: '#d1ecf1', color: '#0c5460', label: 'Working' },
-  completed: { bg: '#d4edda', color: '#155724', label: 'Completed' },
-  approved: { bg: '#d4edda', color: '#155724', label: 'Approved' },
-  rejected: { bg: '#e2e3e5', color: '#383d41', label: 'Rejected' },
-  submitted: { bg: '#cce5ff', color: '#004085', label: 'Submitted' },
+  needs_clarification: { bg: '#f5f0ea', color: '#8a7356', label: 'Needs input' },
 };
 
 function getThreadTitle(thread: Thread): string {
@@ -276,7 +270,8 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
         }
       </div>
 
-      {/* Status badge */}
+      {/* Status badge — only show when user action is needed */}
+      {['awaiting_approval', 'awaiting_tool_approval', 'awaiting_user_input', 'needs_clarification'].includes(thread.status) && (
       <span style={{
         fontSize: '0.72rem',
         fontWeight: 600,
@@ -288,6 +283,7 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
       }}>
         {ss.label}
       </span>
+      )}
     </div>
   );
 }

@@ -25,13 +25,7 @@ const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
   awaiting_approval: { bg: '#fff3cd', color: '#856404' },
   awaiting_tool_approval: { bg: '#e8daef', color: '#6c3483' },
   awaiting_user_input: { bg: '#f5f0ea', color: '#8a7356' },
-  needs_clarification: { bg: '#f8d7da', color: '#721c24' },
-  needs_information: { bg: '#f8d7da', color: '#721c24' },
-  in_progress: { bg: '#d1ecf1', color: '#0c5460' },
-  completed: { bg: '#d4edda', color: '#155724' },
-  approved: { bg: '#d4edda', color: '#155724' },
-  rejected: { bg: '#e2e3e5', color: '#383d41' },
-  submitted: { bg: '#cce5ff', color: '#004085' },
+  needs_clarification: { bg: '#f5f0ea', color: '#8a7356' },
 };
 
 const ss = (s: string) => STATUS_STYLES[s] || { bg: '#e2e3e5', color: '#383d41' };
@@ -145,47 +139,46 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
         const isUser = m.role === 'user';
         const hasDisplayBlocks = !isUser && m.display_blocks && m.display_blocks.length > 0;
         const hasTable = !isUser && /\|.+\|/.test(m.text);
-        const wideContent = hasDisplayBlocks || hasTable;
+        const displayBlocks = (!isUser && m.display_blocks && m.display_blocks.length > 0)
+          ? (hideFullWidthBlocks
+              ? m.display_blocks.filter(b => !FULL_WIDTH_COMPONENTS.has(b.component))
+              : m.display_blocks)
+          : [];
+
         return (
-          <div
-            key={i}
-            style={{
-              maxWidth: hasDisplayBlocks ? 950 : 768,
+          <div key={i} style={{ maxWidth: 768, margin: '0 auto', width: '100%' }}>
+            {/* Display blocks render full-width within 950px */}
+            {displayBlocks.length > 0 && (
+              <div style={{ marginBottom: '0.5rem' }}>
+                {displayBlocks.map((block: DisplayBlock, bi: number) => (
+                  <DisplayBlockRenderer key={bi} block={block} onAction={onWidgetAction} threadId={threadId} />
+                ))}
+              </div>
+            )}
+            {/* Message text constrained to 768px, centered within 950 */}
+            <div style={{
+              maxWidth: 768,
               margin: '0 auto',
-              width: '100%',
               display: 'flex',
               justifyContent: isUser ? 'flex-end' : 'flex-start',
-            }}
-          >
-            <div style={{
-              maxWidth: isUser ? '80%' : wideContent ? '100%' : '90%',
-              padding: '0.75rem 1rem',
-              borderRadius: isUser ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-              backgroundColor: isUser ? '#f5f0ea' : 'transparent',
-              color: '#333',
-              fontSize: '1rem',
-              lineHeight: 1.6,
-              wordBreak: 'break-word',
-              whiteSpace: isUser ? 'pre-wrap' : undefined,
             }}>
-              {!isUser && m.display_blocks && m.display_blocks.length > 0 && (() => {
-                const blocks = hideFullWidthBlocks
-                  ? m.display_blocks.filter(b => !FULL_WIDTH_COMPONENTS.has(b.component))
-                  : m.display_blocks;
-                if (blocks.length === 0) return null;
-                return (
-                  <div style={{ marginBottom: '0.5rem' }}>
-                    {blocks.map((block: DisplayBlock, bi: number) => (
-                      <DisplayBlockRenderer key={bi} block={block} onAction={onWidgetAction} threadId={threadId} />
-                    ))}
+              <div style={{
+                maxWidth: isUser ? '80%' : hasTable ? '100%' : '90%',
+                padding: isUser ? '0.75rem 1rem' : '0.75rem 0',
+                borderRadius: isUser ? '18px 18px 4px 18px' : 0,
+                backgroundColor: isUser ? '#f5f0ea' : 'transparent',
+                color: '#333',
+                fontSize: '1rem',
+                lineHeight: 1.6,
+                wordBreak: 'break-word',
+                whiteSpace: isUser ? 'pre-wrap' : undefined,
+              }}>
+                {isUser ? m.text : (
+                  <div className="markdown-message">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
                   </div>
-                );
-              })()}
-              {isUser ? m.text : (
-                <div className="markdown-message">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         );
@@ -866,17 +859,17 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
             {tabsRow}
             <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
               {activeTab === 'conversation' && (
-                <div style={{ maxWidth: 950, margin: '0 auto' }}>
+                <>
                   <ConversationView
                     messages={messages}
                     onWidgetAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
                     threadId={thread.id}
                     hideFullWidthBlocks
                   />
-            <div style={{ maxWidth: 768, margin: '0 auto' }}>
-              <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
-            </div>
-                </div>
+                  <div style={{ maxWidth: 768, margin: '0 auto' }}>
+                    <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+                  </div>
+                </>
               )}
               {activeTab === 'details' && <DetailsView task={thread} onAction={onAction} />}
               {activeTab === 'activity' && (
@@ -895,15 +888,15 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
           {/* Non-split: tab content + input */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
             {activeTab === 'conversation' && (
-              <div style={{ maxWidth: 950, margin: '0 auto' }}>
+              <>
                 <ConversationView messages={messages}
                   onWidgetAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
                   threadId={thread.id}
                 />
                 <div style={{ maxWidth: 768, margin: '0 auto' }}>
-              <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
-            </div>
-              </div>
+                  <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+                </div>
+              </>
             )}
             {activeTab === 'details' && <DetailsView task={thread} onAction={onAction} />}
             {activeTab === 'activity' && (

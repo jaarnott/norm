@@ -207,9 +207,20 @@ The search uses fuzzy matching so it handles misspellings and partial matches. I
     has_outlook = any(t["connector"] == "microsoft_outlook" for t in tools)
 
     if has_system_email or has_gmail or has_outlook:
-        from app.db.models import ConnectorConfig as CC
+        from app.db.models import ConnectorConfig as CC, User as UserModel
+
+        # Look up the current user's email
+        current_user_email = None
+        if user_id:
+            u = db.query(UserModel).filter(UserModel.id == user_id).first()
+            if u:
+                current_user_email = u.email
 
         email_lines = ["\n\n## Email Capabilities"]
+        if current_user_email:
+            email_lines.append(
+                f"The current user's email address is **{current_user_email}**. Use this when they ask to send something to themselves or 'to me'."
+            )
         if has_system_email:
             email_lines.append(
                 "- **System email** (`norm_email__send_notification`): Send notifications from the platform (e.g., task results, alerts, reports). Uses a template system."
@@ -311,15 +322,15 @@ Other available venues:
         else:
             system_prompt += f"""
 
-## Venue Context
+## Venues
 The user has access to multiple venues:
 {venue_detail}
 
-When querying data, include the venue name in the "venue" parameter of each tool call.
+- Always include the venue name in the "venue" parameter of each tool call
 - If the user specifies a venue, use that venue name exactly
-- If the user doesn't specify and there are multiple venues, ask which one they mean
+- If the user asks about "all venues" or wants to compare venues, make tool calls for each relevant venue in parallel
+- If the request clearly needs a venue but none is specified, ask which one
 - Only call tools for venues that have the relevant connector configured
-- If the user asks about a venue with no connectors, tell them it needs to be set up in Settings > Venues
 - For cross-venue queries, only include venues that have the relevant connector
 """
 

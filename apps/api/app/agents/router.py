@@ -51,7 +51,7 @@ def _llm_classify(
     if len(venues) > 1:
         venue_names = [v.name for v in venues]
         system += f"\n\nAvailable venues: {', '.join(venue_names)}"
-        system += '\nInclude "venue" in your JSON response with the venue name if the user mentions or implies a specific venue. Use null if no venue is mentioned or it is ambiguous.'
+        system += '\nInclude "venue" in your JSON response: the venue name if the user mentions a specific venue, "all" if they want data across all venues or to compare venues, or null if no venue context is mentioned.'
 
     from app.config import settings
     from app.services.secrets import get_api_key as _get_config

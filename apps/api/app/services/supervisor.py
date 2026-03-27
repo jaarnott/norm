@@ -158,16 +158,15 @@ def handle_message(
             venue_timezone = venues[0].timezone
         elif len(venues) > 1:
             router_venue = routing.get("venue")
-            if router_venue:
+            if router_venue and router_venue != "all":
                 resolved_id = resolve_venue_id(router_venue, db)
                 if resolved_id:
                     venue_id = resolved_id
                     venue_name = router_venue
                     venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
                     venue_timezone = venue_obj.timezone if venue_obj else None
-            if not venue_id and domain not in ("meta", "unknown"):
-                venue_list = ", ".join(v.name for v in venues)
-                return _create_venue_clarification(message, venue_list, db, user_id)
+            # "all" or no specific venue → agent gets all venues in its prompt
+            # and can make tool calls per venue or ask for clarification itself
 
     # Emit routing event so the frontend knows which agent was selected
     from app.agents.tool_loop import _emit_event
