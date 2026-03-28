@@ -44,7 +44,10 @@ function formatCurrency(n: number): string {
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' });
+  const day = d.toLocaleDateString('en-NZ', { weekday: 'long' });
+  const rest = d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' });
+  const time = d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${day}, ${rest} ${time}`;
 }
 
 function statusBadge(status: string): { bg: string; text: string } {
@@ -209,12 +212,11 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
             <thead>
               <tr>
-                <th style={thStyle}>Order #</th>
+                <th style={thStyle}>Date</th>
                 <th style={thStyle}>Supplier</th>
                 <th style={thStyle}>Ordered By</th>
                 <th style={thStyle}>Status</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Total</th>
-                <th style={thStyle}>Date</th>
               </tr>
             </thead>
             <tbody>
@@ -223,7 +225,7 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
                 const isExpanded = expandedId === order.id;
                 return (
                   <tr key={order.id} onClick={() => toggleRow(order)} style={{ cursor: 'pointer' }}>
-                    <td colSpan={6} style={{ padding: 0 }}>
+                    <td colSpan={5} style={{ padding: 0 }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                         <tbody>
                           <tr
@@ -231,7 +233,7 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
                             onMouseEnter={e => { if (!isExpanded) (e.currentTarget as HTMLElement).style.backgroundColor = colors.pageBg; }}
                             onMouseLeave={e => { if (!isExpanded) (e.currentTarget as HTMLElement).style.backgroundColor = ''; }}
                           >
-                            <td style={{ ...tdStyle, fontWeight: 500 }}>{order.orderNumber}</td>
+                            <td style={tdStyle}>{formatDate(order.createdAt)}</td>
                             <td style={tdStyle}>{order.supplierName}</td>
                             <td style={tdStyle}>{order.orderedBy}</td>
                             <td style={tdStyle}>
@@ -243,11 +245,10 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
                               </span>
                             </td>
                             <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 500 }}>{formatCurrency(order.total)}</td>
-                            <td style={tdStyle}>{formatDate(order.createdAt)}</td>
                           </tr>
                           {isExpanded && (
                             <tr>
-                              <td colSpan={6} style={{ padding: '8px 12px 16px 24px', backgroundColor: colors.selectedBg, borderBottom: `1px solid ${colors.borderLight}` }}>
+                              <td colSpan={5} style={{ padding: '8px 12px 16px 24px', backgroundColor: colors.selectedBg, borderBottom: `1px solid ${colors.borderLight}` }}>
                                 {detailLoading && <div style={{ fontSize: '0.78rem', color: colors.textMuted, padding: '8px 0' }}>Loading order lines...</div>}
                                 {detailError && <div style={{ fontSize: '0.78rem', color: colors.error, padding: '8px 0' }}>{detailError}</div>}
                                 {!detailLoading && !detailError && detailLines.length === 0 && (
