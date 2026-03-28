@@ -212,9 +212,9 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600, tableLayout: 'fixed' }}>
             <thead>
               <tr>
-                <th style={{ ...thStyle, width: 200 }}>Date</th>
+                <th style={{ ...thStyle, width: 220 }}>Date</th>
                 <th style={thStyle}>Supplier</th>
-                <th style={{ ...thStyle, width: 150 }}>Ordered By</th>
+                <th style={{ ...thStyle, width: 200 }}>Ordered By</th>
                 <th style={{ ...thStyle, width: 150 }}>Status</th>
                 <th style={{ ...thStyle, width: 150, textAlign: 'right' }}>Total</th>
               </tr>
