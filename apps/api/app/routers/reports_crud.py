@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db
+from app.db.engine import get_db, get_config_db
 from app.db.models import Report, ReportChart, User
 from app.auth.dependencies import get_current_user
 
@@ -298,6 +298,7 @@ async def remove_chart(
 async def refresh_report(
     report_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Re-run all chart scripts and update with fresh data."""
@@ -315,7 +316,7 @@ async def refresh_report(
             continue
         try:
             spec = (
-                db.query(ConnectorSpec)
+                config_db.query(ConnectorSpec)
                 .filter(
                     ConnectorSpec.connector_name == script["connector"],
                 )

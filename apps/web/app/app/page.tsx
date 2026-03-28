@@ -525,7 +525,7 @@ export default function Home() {
   }, []);
 
   const handleMobileBack = useCallback(() => {
-    setMobileView('list');
+    setMobileView('home');
     setSelectedThreadId(null);
     setActivePage(null);
   }, []);
@@ -538,17 +538,19 @@ export default function Home() {
     return <LoginForm onSuccess={handleAuthSuccess} />;
   }
 
-  // Mobile layout: full-screen views, no overlay sidebar
+  // Mobile layout: conversation-first with hamburger for thread list
   if (isMobile) {
     const showSettings = user && (user.role === 'admin' || user.permissions?.some(p =>
       ['settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read'].includes(p)
     ));
 
-    // Detail / settings views — show back arrow header
-    if (mobileView === 'detail' || mobileView === 'settings' || (mobileView === 'home' && selectedThread)) {
-      const content = mobileView === 'settings' ? (
-        <SettingsPanel />
-      ) : activePage ? (() => {
+    const mobileQuotaModal = quotaExceeded && (
+      <QuotaExceededModal used={quotaExceeded.used} quota={quotaExceeded.quota} onClose={() => setQuotaExceeded(null)} onTopUp={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} onUpgrade={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} />
+    );
+
+    // Thread detail view — back goes to home (conversation)
+    if (mobileView === 'detail') {
+      const content = mobileView === 'detail' && activePage ? (() => {
         const pageConfig = FUNCTIONAL_PAGES.find(p => p.id === activePage);
         if (!pageConfig) return null;
         return <FunctionalPage config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} />;
@@ -560,11 +562,9 @@ export default function Home() {
 
       return (
         <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
-          {quotaExceeded && (
-            <QuotaExceededModal used={quotaExceeded.used} quota={quotaExceeded.quota} onClose={() => setQuotaExceeded(null)} onTopUp={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} onUpgrade={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} />
-          )}
+          {mobileQuotaModal}
           <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem', borderBottom: '1px solid #e2ddd7', backgroundColor: '#faf8f5' }}>
-            <button onClick={handleMobileBack} style={{
+            <button onClick={() => { setMobileView('home'); setSelectedThreadId(null); setActivePage(null); }} style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
               backgroundColor: 'transparent', cursor: 'pointer',
@@ -572,7 +572,7 @@ export default function Home() {
               <ArrowLeft size={20} strokeWidth={1.75} />
             </button>
             <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#111' }}>
-              {mobileView === 'settings' ? 'Settings' : selectedThread?.title || activePage || 'Back'}
+              {selectedThread?.title || activePage || 'Back'}
             </span>
           </div>
           <div style={{ flex: 1, overflow: 'auto' }}>{content}</div>
@@ -580,103 +580,154 @@ export default function Home() {
       );
     }
 
-    // List view (default) — agent icons at top, thread list, user footer
-    return (
-      <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden', backgroundColor: '#faf8f5' }}>
-        {quotaExceeded && (
-          <QuotaExceededModal used={quotaExceeded.used} quota={quotaExceeded.quota} onClose={() => setQuotaExceeded(null)} onTopUp={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} onUpgrade={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} />
-        )}
+    // Settings view — back goes to home
+    if (mobileView === 'settings') {
+      return (
+        <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+          {mobileQuotaModal}
+          <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem', borderBottom: '1px solid #e2ddd7', backgroundColor: '#faf8f5' }}>
+            <button onClick={() => { setMobileView('home'); setActiveAgent('home'); }} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
+              backgroundColor: 'transparent', cursor: 'pointer',
+            }}>
+              <ArrowLeft size={20} strokeWidth={1.75} />
+            </button>
+            <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#111' }}>Settings</span>
+          </div>
+          <div style={{ flex: 1, overflow: 'auto' }}><SettingsPanel /></div>
+        </div>
+      );
+    }
 
-        {/* Agent icon bar */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '0.25rem',
-          padding: '0.6rem 0.75rem', borderBottom: '1px solid #e2ddd7',
-        }}>
-          {AGENTS.map((agent) => {
-            const isActive = activeAgent === agent.id;
-            return (
+    // List view (hamburger destination) — agent icons + thread list + user footer
+    if (mobileView === 'list') {
+      return (
+        <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden', backgroundColor: '#faf8f5' }}>
+          {mobileQuotaModal}
+
+          {/* Header: hamburger + logo, then agent icons row below */}
+          <div style={{ borderBottom: '1px solid #e2ddd7' }}>
+            <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem 0.75rem' }}>
+              <button onClick={() => setMobileView('home')} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
+                backgroundColor: 'transparent', cursor: 'pointer',
+              }}>
+                <Menu size={22} strokeWidth={1.75} />
+              </button>
+              <span style={{ fontSize: '1rem', fontWeight: 700, color: '#a08060' }}>Norm</span>
+            </div>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '0.25rem',
+              padding: '0.4rem 0.75rem',
+            }}>
+              {AGENTS.map((agent) => {
+                const isActive = activeAgent === agent.id;
+                return (
+                  <button
+                    key={agent.id}
+                    data-testid={`sidebar-${agent.id}`}
+                    onClick={() => setActiveAgent(agent.id)}
+                    style={{
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      flex: 1, padding: '0.4rem 0', gap: 2,
+                      border: 'none', borderRadius: 8,
+                      backgroundColor: isActive ? '#f0ebe5' : 'transparent',
+                      cursor: 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    <agent.icon size={20} strokeWidth={1.75} color={isActive ? '#1a1a1a' : '#999'} />
+                    <span style={{ fontSize: '0.6rem', fontWeight: isActive ? 600 : 400, color: isActive ? '#1a1a1a' : '#999' }}>
+                      {agent.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Thread list */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
+            <ThreadList
+              threads={threads}
+              selectedId={selectedThreadId}
+              onSelectThread={handleSelectThreadMobile}
+              onRemoveThread={removeThread}
+              activeAgent={activeAgent}
+              filter={filter}
+              onFilterChange={setFilter}
+              onNewChat={() => { handleNewChat(); setMobileView('home'); }}
+              onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
+            />
+          </div>
+
+          {/* User footer */}
+          {user && (
+            <div className="safe-bottom" style={{
+              display: 'flex', alignItems: 'center', gap: '0.6rem',
+              padding: '0.6rem 0.75rem', borderTop: '1px solid #e2ddd7',
+            }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: '50%',
+                backgroundColor: user.role === 'admin' ? '#1a1a1a' : '#b8e6cc',
+                color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '0.65rem', fontWeight: 700,
+              }}>
+                {user.full_name.charAt(0).toUpperCase()}
+              </div>
+              <span style={{ fontSize: '0.8rem', color: '#666', flex: 1 }}>{user.full_name}</span>
+              {showSettings && (
+                <button
+                  data-testid="sidebar-settings"
+                  onClick={() => { setActiveAgent('settings'); setMobileView('settings'); }}
+                  title="Settings"
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    minWidth: 36, minHeight: 36, border: 'none', borderRadius: 6,
+                    backgroundColor: 'transparent', cursor: 'pointer', color: '#bbb',
+                  }}
+                >
+                  <Settings size={18} strokeWidth={1.75} />
+                </button>
+              )}
               <button
-                key={agent.id}
-                data-testid={`sidebar-${agent.id}`}
-                onClick={() => setActiveAgent(agent.id)}
+                data-testid="sidebar-logout"
+                onClick={handleLogout}
+                title="Sign out"
                 style={{
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                  flex: 1, padding: '0.4rem 0', gap: 2,
-                  border: 'none', borderRadius: 8,
-                  backgroundColor: isActive ? '#f0ebe5' : 'transparent',
-                  cursor: 'pointer', fontFamily: 'inherit',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  minWidth: 36, minHeight: 36, border: 'none', borderRadius: 6,
+                  backgroundColor: 'transparent', cursor: 'pointer', color: '#bbb',
                 }}
               >
-                <agent.icon size={20} strokeWidth={1.75} color={isActive ? '#1a1a1a' : '#999'} />
-                <span style={{ fontSize: '0.6rem', fontWeight: isActive ? 600 : 400, color: isActive ? '#1a1a1a' : '#999' }}>
-                  {agent.label}
-                </span>
+                <LogOut size={16} strokeWidth={1.75} />
               </button>
-            );
-          })}
-          {showSettings && (
-            <button
-              data-testid="sidebar-settings"
-              onClick={() => { setActiveAgent('settings'); setMobileView('settings'); }}
-              style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                flex: 1, padding: '0.4rem 0', gap: 2,
-                border: 'none', borderRadius: 8,
-                backgroundColor: activeAgent === 'settings' ? '#f0ebe5' : 'transparent',
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}
-            >
-              <Settings size={20} strokeWidth={1.75} color={activeAgent === 'settings' ? '#1a1a1a' : '#999'} />
-              <span style={{ fontSize: '0.6rem', color: activeAgent === 'settings' ? '#1a1a1a' : '#999' }}>Settings</span>
-            </button>
+            </div>
           )}
         </div>
+      );
+    }
 
-        {/* Thread list */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
-          <ThreadList
-            threads={threads}
-            selectedId={selectedThreadId}
-            onSelectThread={handleSelectThreadMobile}
-            onRemoveThread={removeThread}
-            activeAgent={activeAgent}
-            filter={filter}
-            onFilterChange={setFilter}
-            onNewChat={handleNewChat}
-            onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
-          />
-        </div>
-
-        {/* User footer */}
-        {user && (
-          <div className="safe-bottom" style={{
-            display: 'flex', alignItems: 'center', gap: '0.6rem',
-            padding: '0.6rem 0.75rem', borderTop: '1px solid #e2ddd7',
+    // Home view (default) — conversation with hamburger button
+    return (
+      <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+        {mobileQuotaModal}
+        {/* Hamburger header */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem', backgroundColor: '#faf8f5' }}>
+          <button onClick={() => setMobileView('list')} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
+            backgroundColor: 'transparent', cursor: 'pointer',
           }}>
-            <div style={{
-              width: 28, height: 28, borderRadius: '50%',
-              backgroundColor: user.role === 'admin' ? '#1a1a1a' : '#b8e6cc',
-              color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '0.65rem', fontWeight: 700,
-            }}>
-              {user.full_name.charAt(0).toUpperCase()}
-            </div>
-            <span style={{ fontSize: '0.8rem', color: '#666', flex: 1 }}>{user.full_name}</span>
-            <button
-              data-testid="sidebar-logout"
-              onClick={handleLogout}
-              title="Sign out"
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                minWidth: 36, minHeight: 36, border: 'none', borderRadius: 6,
-                backgroundColor: 'transparent', cursor: 'pointer', color: '#bbb',
-              }}
-            >
-              <LogOut size={16} strokeWidth={1.75} />
-            </button>
-          </div>
-        )}
+            <Menu size={22} strokeWidth={1.75} />
+          </button>
+          <span style={{ fontSize: '1rem', fontWeight: 700, color: '#a08060' }}>Norm</span>
+        </div>
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <HomePanel onSend={sendMessage} loading={loading} />
+        </div>
       </div>
     );
   }

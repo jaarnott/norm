@@ -101,7 +101,16 @@ gcloud run services update norm-api-production \
 
 - All config in `apps/api/app/config.py` (Pydantic BaseSettings)
 - Secrets stored in GCP Secret Manager, injected as env vars to Cloud Run
-- System connector specs and agent configs defined in `apps/api/app/services/system_config.py` — synced to DB on every startup
+
+### Centralized Config Database
+
+All environments share a single config database for system-level configuration:
+
+- **Setting**: `CONFIG_DATABASE_URL` in `apps/api/app/config.py`
+- **Production**: Shared Cloud SQL instance `norm-config` in the `norm-production-491101` project
+- **Tables**: `connector_specs`, `agent_configs`, `agent_connector_bindings`, `system_secrets`
+- **Behavior**: All environments (local, testing, staging, production) read from the same config DB
+- **Secrets**: Loaded at startup via `_load_system_secrets()` and injected into the application environment
 
 ## Testing
 
@@ -129,7 +138,7 @@ pnpm exec tsc --noEmit          # TypeScript check
 | Area | Files |
 |---|---|
 | Auth | `app/auth/dependencies.py`, `app/auth/permissions.py`, `app/auth/security.py` |
-| Config | `app/config.py`, `app/services/system_config.py` |
+| Config | `app/config.py`, `app/db/config_models.py` |
 | Agents | `app/agents/base.py`, `app/agents/tool_loop.py`, `app/agents/router.py` |
 | LLM | `app/interpreter/llm_interpreter.py` |
 | Email | `app/services/email_service.py`, `app/templates/email/` |

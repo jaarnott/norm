@@ -52,3 +52,10 @@ html { height: 100dvh; height: 100%; }
 .markdown-message blockquote {
   border-left: 3px solid #ddd; margin: 0.4em 0; padding-left: 0.75em; color: #666;
 }
+@media (max-width: 767px) {
+  .markdown-message table {
+    display: block; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    font-size: 0.75em;
+  }
+  .markdown-message th, .markdown-message td { white-space: nowrap; padding: 0.3em 0.5em; }
+}

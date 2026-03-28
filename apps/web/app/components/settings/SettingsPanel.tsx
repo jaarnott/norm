@@ -9,6 +9,7 @@ import EmailTab from './EmailTab';
 import DeploymentsPanel from './DeploymentsPanel';
 import TestsPanel from './TestsPanel';
 import RolesPanel from './RolesPanel';
+import SecretsPanel from './SecretsPanel';
 import { getStoredUser } from '../../lib/api';
 import type { User } from '../../types';
 
@@ -933,7 +934,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles';
+type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -953,6 +954,7 @@ export default function SettingsPanel() {
   const showDeployments = isAdmin;
   const showTests = isAdmin;
   const showRoles = hasSettingsPermission(storedUser, 'org:roles', 'org:members');
+  const showSecrets = isAdmin;
 
   // Fetch org ID for billing tab
   useEffect(() => {
@@ -1255,6 +1257,7 @@ export default function SettingsPanel() {
         {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
         {showTests && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
         {showRoles && <button data-testid="settings-tab-roles" onClick={() => setActiveTab('roles')} style={tabStyle('roles')}>Roles</button>}
+        {showSecrets && <button data-testid="settings-tab-secrets" onClick={() => setActiveTab('secrets')} style={tabStyle('secrets')}>Secrets</button>}
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '1.5rem' }}>
@@ -1847,6 +1850,9 @@ export default function SettingsPanel() {
 
         {/* ============ ROLES TAB ============ */}
         {activeTab === 'roles' && orgId && <RolesPanel orgId={orgId} />}
+
+        {/* ============ SECRETS TAB ============ */}
+        {activeTab === 'secrets' && <SecretsPanel />}
       </div>
     </div>
   );

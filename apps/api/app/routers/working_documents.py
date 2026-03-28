@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.db.engine import get_db
+from app.db.engine import get_db, get_config_db
 from app.db.models import WorkingDocument, User
 from app.auth.dependencies import get_current_user
 
@@ -172,6 +172,7 @@ class FromConnectorRequest(BaseModel):
 async def create_from_connector(
     body: FromConnectorRequest,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Fetch data from a connector and create a working document (no task required).
@@ -193,7 +194,7 @@ async def create_from_connector(
         from app.connectors.spec_executor import execute_spec
 
         spec = (
-            db.query(ConnectorSpec)
+            config_db.query(ConnectorSpec)
             .filter(ConnectorSpec.connector_name == body.connector_name)
             .first()
         )
