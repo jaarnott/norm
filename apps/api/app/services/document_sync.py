@@ -15,9 +15,7 @@ from app.db.models import WorkingDocument, ToolCall
 logger = logging.getLogger(__name__)
 
 
-def _get_mapping(
-    op_type: str, doc: WorkingDocument, db: Session
-) -> dict | None:
+def _get_mapping(op_type: str, doc: WorkingDocument, db: Session) -> dict | None:
     """Look up the operation mapping from the connector spec."""
     from app.db.config_models import ConnectorSpec
 
