@@ -749,7 +749,7 @@ function ResponseTransformSection({
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.78rem', color: '#555' }}>
           <input
             type="checkbox"
-            checked={transform.enabled}
+            checked={!!transform.enabled}
             onChange={e => setTransform({ enabled: e.target.checked })}
           />
           {transform.enabled ? 'Enabled' : 'Disabled'}
