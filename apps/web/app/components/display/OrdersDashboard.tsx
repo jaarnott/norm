@@ -176,7 +176,7 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
     <div>
       {/* Header with venue selector */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: colors.textPrimary }}>Purchase Orders</span>
+        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: colors.textPrimary }}>Orders</span>
         {venues.length > 1 && (
           <select
             value={selectedVenue || ''}
