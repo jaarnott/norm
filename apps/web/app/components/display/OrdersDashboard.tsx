@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch } from '../../lib/api';
 import { colors } from '../../lib/theme';
@@ -224,31 +224,29 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
                 const badge = statusBadge(order.status);
                 const isExpanded = expandedId === order.id;
                 return (
-                  <tr key={order.id} onClick={() => toggleRow(order)} style={{ cursor: 'pointer' }}>
-                    <td colSpan={5} style={{ padding: 0 }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                        <tbody>
-                          <tr
-                            style={{ backgroundColor: isExpanded ? colors.selectedBg : undefined }}
-                            onMouseEnter={e => { if (!isExpanded) (e.currentTarget as HTMLElement).style.backgroundColor = colors.pageBg; }}
-                            onMouseLeave={e => { if (!isExpanded) (e.currentTarget as HTMLElement).style.backgroundColor = ''; }}
-                          >
-                            <td style={tdStyle}>{formatDate(order.createdAt)}</td>
-                            <td style={tdStyle}>{order.supplierName}</td>
-                            <td style={tdStyle}>{order.orderedBy}</td>
-                            <td style={tdStyle}>
-                              <span style={{
-                                display: 'inline-block', padding: '2px 8px', borderRadius: 10,
-                                fontSize: '0.7rem', fontWeight: 500, backgroundColor: badge.bg, color: badge.text,
-                              }}>
-                                {order.status}
-                              </span>
-                            </td>
-                            <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 500 }}>{formatCurrency(order.total)}</td>
-                          </tr>
-                          {isExpanded && (
-                            <tr>
-                              <td colSpan={5} style={{ padding: '8px 12px 16px 24px', backgroundColor: colors.selectedBg, borderBottom: `1px solid ${colors.borderLight}` }}>
+                  <React.Fragment key={order.id}>
+                    <tr
+                      onClick={() => toggleRow(order)}
+                      style={{ cursor: 'pointer', backgroundColor: isExpanded ? colors.selectedBg : undefined }}
+                      onMouseEnter={e => { if (!isExpanded) (e.currentTarget as HTMLElement).style.backgroundColor = colors.pageBg; }}
+                      onMouseLeave={e => { if (!isExpanded) (e.currentTarget as HTMLElement).style.backgroundColor = ''; }}
+                    >
+                      <td style={tdStyle}>{formatDate(order.createdAt)}</td>
+                      <td style={tdStyle}>{order.supplierName}</td>
+                      <td style={tdStyle}>{order.orderedBy}</td>
+                      <td style={tdStyle}>
+                        <span style={{
+                          display: 'inline-block', padding: '2px 8px', borderRadius: 10,
+                          fontSize: '0.7rem', fontWeight: 500, backgroundColor: badge.bg, color: badge.text,
+                        }}>
+                          {order.status}
+                        </span>
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 500 }}>{formatCurrency(order.total)}</td>
+                    </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={5} style={{ padding: '8px 12px 16px 24px', backgroundColor: colors.selectedBg, borderBottom: `1px solid ${colors.borderLight}` }}>
                                 {detailLoading && <div style={{ fontSize: '0.78rem', color: colors.textMuted, padding: '8px 0' }}>Loading order lines...</div>}
                                 {detailError && <div style={{ fontSize: '0.78rem', color: colors.error, padding: '8px 0' }}>{detailError}</div>}
                                 {!detailLoading && !detailError && detailLines.length === 0 && (
@@ -281,13 +279,10 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
                                     </tbody>
                                   </table>
                                 )}
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
