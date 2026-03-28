@@ -46,8 +46,8 @@ function formatDate(iso: string): string {
   const d = new Date(iso);
   const day = d.toLocaleDateString('en-NZ', { weekday: 'long' });
   const rest = d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' });
-  const time = d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit', hour12: false });
-  return `${day}, ${rest} ${time}`;
+  const time = d.toLocaleTimeString('en-NZ', { hour: 'numeric', minute: '2-digit', hour12: true });
+  return `${day}, ${rest}, ${time}`;
 }
 
 function statusBadge(status: string): { bg: string; text: string } {
@@ -212,9 +212,9 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600, tableLayout: 'fixed' }}>
             <thead>
               <tr>
-                <th style={{ ...thStyle, width: 220 }}>Date</th>
+                <th style={{ ...thStyle, width: 250 }}>Date</th>
                 <th style={thStyle}>Supplier</th>
-                <th style={{ ...thStyle, width: 200 }}>Ordered By</th>
+                <th style={{ ...thStyle, width: 220 }}>Ordered By</th>
                 <th style={{ ...thStyle, width: 150 }}>Status</th>
                 <th style={{ ...thStyle, width: 150, textAlign: 'right' }}>Total</th>
               </tr>
