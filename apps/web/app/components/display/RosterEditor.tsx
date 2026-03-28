@@ -58,26 +58,27 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       .catch(() => {});
   }, [docUrl]);
 
-  const rosterLoadingRef = useRef(false);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   // Fetch venues and auto-load roster for first venue
   useEffect(() => {
+    if (initialLoadDone) return;
     apiFetch('/api/venues')
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (d?.venues && d.venues.length > 0) {
           setVenues(d.venues);
           // Auto-select and load first venue if none provided
-          if (!selectedVenue && !(props?.activeVenueId) && !rosterLoadingRef.current) {
+          if (!selectedVenue && !(props?.activeVenueId)) {
             const firstId = d.venues[0].id;
             setSelectedVenue(firstId);
-            rosterLoadingRef.current = true;
-            handleVenueChange(firstId).finally(() => { rosterLoadingRef.current = false; });
+            setInitialLoadDone(true);
+            handleVenueChange(firstId);
           }
         }
       })
       .catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialLoadDone]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reload roster for a different venue
   const handleVenueChange = useCallback(async (venueId: string) => {
@@ -526,6 +527,15 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       }}
     >{label}</button>
   );
+
+  // Show loading state while initial roster loads
+  if (shifts.length === 0 && !initialLoadDone && !workingDocId) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, color: '#999', fontSize: '0.85rem' }}>
+        Loading roster...
+      </div>
+    );
+  }
 
   return (
     <div>
