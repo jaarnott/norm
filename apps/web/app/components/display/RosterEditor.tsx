@@ -147,10 +147,66 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
 
   // Default selected date for day view
   const effectiveDate = selectedDate || days[0] || new Date();
+  const [loadingWeek, setLoadingWeek] = useState(false);
 
   const dateRange = days.length >= 2
     ? `${days[0].toLocaleDateString('en-NZ', { month: 'short', day: 'numeric' })} – ${days[days.length - 1].toLocaleDateString('en-NZ', { month: 'short', day: 'numeric', year: 'numeric' })}`
     : '';
+
+  // Load roster for a specific week (Monday start)
+  const loadWeek = useCallback(async (monday: Date) => {
+    const venueId = selectedVenue || (props?.activeVenueId as string);
+    if (!venueId) return;
+    setLoadingWeek(true);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 0);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}+13:00`;
+    try {
+      const res = await apiFetch('/api/working-documents/from-connector', {
+        method: 'POST',
+        body: JSON.stringify({
+          connector_name: 'loadedhub',
+          action: 'get_roster',
+          params: { start_datetime: fmt(monday), end_datetime: fmt(sunday), venue_id: venueId },
+          doc_type: 'roster',
+          venue_id: venueId,
+        }),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        setDocData(result.data);
+        setShifts(extractShifts(result.data));
+        setMeta(extractRosterMeta(result.data));
+        if (result.id) {
+          setCurrentDocId(result.id);
+          setDocVersion(result.version || 1);
+          setSyncStatus(result.sync_status || 'synced');
+        }
+      }
+    } catch { /* ignore */ }
+    setLoadingWeek(false);
+  }, [selectedVenue, props?.activeVenueId]);
+
+  // Navigate weeks
+  const goWeek = useCallback((direction: number) => {
+    const current = days[0] || new Date();
+    const next = new Date(current);
+    next.setDate(current.getDate() + direction * 7);
+    next.setHours(0, 0, 0, 0);
+    loadWeek(next);
+  }, [days, loadWeek]);
+
+  // Jump to a specific date's week
+  const goToDate = useCallback((dateStr: string) => {
+    const d = new Date(dateStr);
+    const day = d.getDay();
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+    monday.setHours(0, 0, 0, 0);
+    loadWeek(monday);
+  }, [loadWeek]);
 
   // Navigation for day view
   const dayIndex = days.findIndex(d => dateKey(d) === dateKey(effectiveDate));
@@ -483,8 +539,30 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
           </select>
         )}
 
-        {viewMode === 'week' && dateRange && (
-          <span style={{ fontSize: '0.82rem', color: '#888' }}>{dateRange}</span>
+        {viewMode === 'week' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+            <button onClick={() => goWeek(-1)} disabled={loadingWeek} style={{
+              border: 'none', background: 'none', cursor: loadingWeek ? 'default' : 'pointer',
+              fontSize: '1rem', color: loadingWeek ? '#ddd' : '#555', padding: '0 4px', fontFamily: 'inherit',
+            }}>&lsaquo;</button>
+            <label style={{ cursor: 'pointer', position: 'relative' }}>
+              <span style={{ fontSize: '0.82rem', color: loadingWeek ? '#bbb' : '#555', fontWeight: 500 }}>
+                {loadingWeek ? 'Loading...' : dateRange || 'Select week'}
+              </span>
+              <input
+                type="date"
+                onChange={e => { if (e.target.value) goToDate(e.target.value); }}
+                style={{
+                  position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+                  opacity: 0, cursor: 'pointer',
+                }}
+              />
+            </label>
+            <button onClick={() => goWeek(1)} disabled={loadingWeek} style={{
+              border: 'none', background: 'none', cursor: loadingWeek ? 'default' : 'pointer',
+              fontSize: '1rem', color: loadingWeek ? '#ddd' : '#555', padding: '0 4px', fontFamily: 'inherit',
+            }}>&rsaquo;</button>
+          </div>
         )}
 
         {viewMode === 'day' && (
