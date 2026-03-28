@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, type LucideIcon } from 'lucide-react';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -69,18 +69,6 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
       connector: 'norm',
       action: 'list_automated_tasks',
       defaultParams: () => ({ agent_slug: 'hr' }),
-    },
-  },
-  {
-    id: 'orders',
-    label: 'Orders',
-    icon: ShoppingCart,
-    agent: 'procurement',
-    component: 'orders_page',
-    loadAction: {
-      connector: '_none',
-      action: '_none',
-      defaultParams: () => ({}),
     },
   },
   {

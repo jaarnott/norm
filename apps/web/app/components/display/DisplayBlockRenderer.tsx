@@ -3,7 +3,6 @@
 import type { DisplayBlock, WidgetAction } from '../../types';
 import GenericTable from './GenericTable';
 import RosterTable from './RosterTable';
-import PurchaseOrder from './PurchaseOrder';
 import RosterEditor from './RosterEditor';
 import PurchaseOrderEditor from './PurchaseOrderEditor';
 import CriteriaEditor from './CriteriaEditor';
@@ -13,7 +12,6 @@ import AutomatedTaskBoard from './AutomatedTaskBoard';
 import Chart from './Chart';
 import ReportBuilder from './ReportBuilder';
 import SavedReportsBoard from './SavedReportsBoard';
-import OrdersPage from './OrdersPage';
 import ToolApprovalCard from './ToolApprovalCard';
 
 export interface DisplayBlockProps {
@@ -24,12 +22,11 @@ export interface DisplayBlockProps {
 }
 
 /** Components that render full-width above the conversation instead of inline in chat bubbles */
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_page']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder']);
 
 const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   generic_table: GenericTable,
   roster_table: RosterTable,
-  purchase_order: PurchaseOrder,
   purchase_order_editor: PurchaseOrderEditor,
   roster_editor: RosterEditor,
   criteria_editor: CriteriaEditor,
@@ -39,7 +36,6 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   chart: Chart,
   report_builder: ReportBuilder,
   saved_reports_board: SavedReportsBoard,
-  orders_page: OrdersPage,
   tool_approval: ToolApprovalCard,
 };
 
