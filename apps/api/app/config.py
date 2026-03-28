@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["local", "testing", "staging", "production"] = "local"
     DATABASE_URL: str = "postgresql://norm:norm@localhost:5432/norm"
     DATABASE_READ_URL: str = ""  # Read replica URL; empty = use primary for reads
-    CONFIG_DATABASE_URL: str = ""  # Shared config DB; empty = use primary DB
+    CONFIG_DATABASE_URL: str = ""  # Shared config DB; REQUIRED in all environments
     JWT_SECRET: str = "dev-secret-change-in-production"
     CORS_ALLOWED_ORIGINS: str = "*"  # comma-separated list; "*" for dev only
 

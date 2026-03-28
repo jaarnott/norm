@@ -1,7 +1,11 @@
-from sqlalchemy import create_engine
+import logging
+
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
+
+log = logging.getLogger(__name__)
 
 # ── Primary (read-write) engine ──────────────────────────────────
 engine = create_engine(
@@ -43,7 +47,6 @@ def get_read_db():
     """FastAPI dependency that yields a read-only DB session.
 
     Falls back to the primary engine if no read replica is configured.
-    Use this for GET endpoints that don't need to write.
     """
     factory = _ReadSessionLocal or SessionLocal
     db = factory()
@@ -53,30 +56,48 @@ def get_read_db():
         db.close()
 
 
-# ── Config database engine (shared across environments) ────────
-_config_engine = None
-_ConfigSessionLocal = None
+# ── Config database engine (REQUIRED — shared across environments) ──
+# The config DB holds connector specs, agent configs, bindings, and
+# system secrets. All environments MUST connect to the same config DB.
+# There is NO fallback — if the config DB is unreachable, the app
+# should fail clearly rather than silently using stale local data.
 
-if settings.CONFIG_DATABASE_URL:
-    _config_engine = create_engine(
-        settings.CONFIG_DATABASE_URL,
-        pool_size=5,
-        max_overflow=10,
-        pool_timeout=30,
-        pool_recycle=1800,
-        pool_pre_ping=True,
+if not settings.CONFIG_DATABASE_URL:
+    raise RuntimeError(
+        "CONFIG_DATABASE_URL is required. Set it in .env (local) or "
+        "Secret Manager (cloud). All environments must connect to the "
+        "shared config database."
     )
-    _ConfigSessionLocal = sessionmaker(bind=_config_engine)
+
+_config_engine = create_engine(
+    settings.CONFIG_DATABASE_URL,
+    pool_size=5,
+    max_overflow=10,
+    pool_timeout=10,
+    pool_recycle=1800,
+    pool_pre_ping=True,
+)
+
+# Test connectivity at import time — fail fast if unreachable
+try:
+    with _config_engine.connect() as _conn:
+        _conn.execute(text("SELECT 1"))
+    log.info("Config DB connected")
+except Exception as exc:
+    raise RuntimeError(
+        f"Config DB unreachable at {settings.CONFIG_DATABASE_URL[:40]}... — "
+        f"check CONFIG_DATABASE_URL in .env: {exc}"
+    ) from exc
+
+_ConfigSessionLocal = sessionmaker(bind=_config_engine)
 
 
 def get_config_db():
     """FastAPI dependency that yields a config DB session (read-only by convention).
 
-    Falls back to the primary engine if CONFIG_DATABASE_URL is not set.
-    Use this for reading ConnectorSpec, AgentConfig, AgentConnectorBinding, SystemSecret.
+    Uses the shared config database. No fallback — fails if not connected.
     """
-    factory = _ConfigSessionLocal or SessionLocal
-    db = factory()
+    db = _ConfigSessionLocal()
     try:
         yield db
     finally:
@@ -86,11 +107,9 @@ def get_config_db():
 def get_config_db_rw():
     """FastAPI dependency that yields a config DB session for writes.
 
-    Same as get_config_db() but signals intent to write. Falls back to primary.
-    Use this for admin endpoints that modify config tables.
+    Uses the shared config database. No fallback — fails if not connected.
     """
-    factory = _ConfigSessionLocal or SessionLocal
-    db = factory()
+    db = _ConfigSessionLocal()
     try:
         yield db
     finally:
