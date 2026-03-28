@@ -37,11 +37,11 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       setLoadingData(false);
       return;
     }
-    // Don't load external connector data without a venue selected
+    // For external connectors without a venue, let the component handle it
+    // (components like RosterEditor have their own venue selector)
     if (!activeVenueId && config.loadAction.connector !== 'norm') {
       setLoadingData(false);
-      setData(null);
-      setLoadError(null);
+      // Don't block — pass null data so the component can show its own venue selector
       return;
     }
     setLoadingData(true);
@@ -139,13 +139,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     </div>
   );
 
-  const noVenueSelected = !activeVenueId && config.loadAction.connector !== 'norm' && config.loadAction.connector !== '_none';
-
-  const componentBlock = noVenueSelected ? (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, color: '#999', fontSize: '0.9rem' }}>
-      Select a venue to load {config.label.toLowerCase()}
-    </div>
-  ) : (data || config.loadAction.connector === '_none') ? (
+  const componentBlock = (data || config.loadAction.connector === '_none' || (!activeVenueId && config.loadAction.connector !== 'norm')) ? (
     <DisplayBlockRenderer
       block={{
         component: config.component,

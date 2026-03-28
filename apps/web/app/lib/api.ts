@@ -1,10 +1,4 @@
-// In production, API calls go to the same origin (load balancer routes /api/*).
-// In development, bypass the Next.js rewrite proxy (which has a ~30s timeout)
-// and call the API server directly to support slow external API calls.
-const API = typeof window !== 'undefined'
-  && (window.location.hostname === 'localhost' || window.location.hostname.includes('.app.github.dev'))
-  ? 'http://localhost:8000'
-  : '';
+const API = '';
 
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null;

@@ -58,6 +58,8 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       .catch(() => {});
   }, [docUrl]);
 
+  const [autoSelectVenue, setAutoSelectVenue] = useState<string | null>(null);
+
   // Fetch venues for venue selector
   useEffect(() => {
     apiFetch('/api/venues')
@@ -65,10 +67,15 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       .then(d => {
         if (d?.venues && d.venues.length > 0) {
           setVenues(d.venues);
+          // Auto-select first venue if none provided
+          if (!selectedVenue && !(props?.activeVenueId)) {
+            setSelectedVenue(d.venues[0].id);
+            setAutoSelectVenue(d.venues[0].id);
+          }
         }
       })
       .catch(() => {});
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reload roster for a different venue
   const handleVenueChange = useCallback(async (venueId: string) => {
@@ -110,6 +117,14 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       }
     } catch (e) { console.error('Venue change failed:', e); }
   }, []);
+
+  // Auto-load roster when venue is auto-selected
+  useEffect(() => {
+    if (autoSelectVenue && !workingDocId) {
+      handleVenueChange(autoSelectVenue);
+      setAutoSelectVenue(null);
+    }
+  }, [autoSelectVenue, handleVenueChange, workingDocId]);
 
   // Fallback: update from props data (non-working-document mode)
   useEffect(() => {
