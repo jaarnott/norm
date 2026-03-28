@@ -13,6 +13,8 @@ const eslintConfig = defineConfig([
       "react-hooks/refs": "warn",
       // Allow unescaped quotes in JSX text
       "react/no-unescaped-entities": "warn",
+      // React Compiler memoization — warn only for complex useMemo patterns
+      "react-hooks/preserve-manual-memoization": "warn",
     },
   },
   // Override default ignores of eslint-config-next.
