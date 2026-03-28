@@ -59,6 +59,7 @@ class ConnectorSpecCreate(BaseModel):
     credential_fields: list[dict] = []
     oauth_config: dict | None = None
     test_request: dict | None = None
+    operation_mappings: list[dict] | None = None
     enabled: bool = True
 
 
@@ -75,6 +76,7 @@ class ConnectorSpecUpdate(BaseModel):
     credential_fields: list[dict] | None = None
     oauth_config: dict | None = None
     test_request: dict | None = None
+    operation_mappings: list[dict] | None = None
     enabled: bool | None = None
 
 
@@ -108,6 +110,7 @@ def _spec_to_dict(spec: ConnectorSpec) -> dict:
         "credential_fields": spec.credential_fields,
         "oauth_config": spec.oauth_config,
         "test_request": spec.test_request,
+        "operation_mappings": spec.operation_mappings,
         "version": spec.version,
         "enabled": spec.enabled,
         "created_at": spec.created_at.isoformat() if spec.created_at else None,
@@ -157,6 +160,7 @@ async def create_spec(
         credential_fields=body.credential_fields,
         oauth_config=body.oauth_config,
         test_request=body.test_request,
+        operation_mappings=body.operation_mappings,
         enabled=body.enabled,
     )
     config_db.add(spec)

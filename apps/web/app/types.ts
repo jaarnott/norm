@@ -138,6 +138,16 @@ export interface TestRequest {
   timeout_seconds: number;
 }
 
+export interface OperationMapping {
+  operation: string;
+  doc_type: string;
+  target_action: string;
+  method: string;
+  field_mapping: Record<string, string>;
+  ref_fields?: Record<string, string>;
+  id_field?: string | null;
+}
+
 export interface ConnectorSpecFull extends ConnectorSpecSummary {
   auth_config: Record<string, unknown>;
   base_url_template: string | null;
@@ -147,6 +157,7 @@ export interface ConnectorSpecFull extends ConnectorSpecSummary {
   credential_fields: { key: string; label: string; secret: boolean }[];
   oauth_config: OAuthConfig | null;
   test_request: TestRequest | null;
+  operation_mappings: OperationMapping[] | null;
 }
 
 // --- LLM Call types ---

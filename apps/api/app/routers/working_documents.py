@@ -166,6 +166,7 @@ class FromConnectorRequest(BaseModel):
     action: str
     params: dict = {}
     doc_type: str = "generic"
+    venue_id: str | None = None
 
 
 @router.post("/working-documents/from-connector")
@@ -209,14 +210,15 @@ async def create_from_connector(
         if not tool_def:
             raise HTTPException(404, f"Tool not found: {body.action}")
 
-        config_row = (
-            db.query(ConnectorConfig)
-            .filter(
-                ConnectorConfig.connector_name == body.connector_name,
-                ConnectorConfig.enabled == "true",
-            )
-            .first()
+        config_query = db.query(ConnectorConfig).filter(
+            ConnectorConfig.connector_name == body.connector_name,
+            ConnectorConfig.enabled == "true",
         )
+        if body.venue_id:
+            config_query = config_query.filter(
+                ConnectorConfig.venue_id == body.venue_id
+            )
+        config_row = config_query.first()
         if not config_row:
             raise HTTPException(
                 400, f"No credentials configured for {body.connector_name}"

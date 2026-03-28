@@ -1,4 +1,8 @@
-"""Background sync for working documents — pushes pending ops to external systems."""
+"""Background sync for working documents — pushes pending ops to external systems.
+
+Operation-to-connector mappings are read from ConnectorSpec.operation_mappings
+instead of being hardcoded, so new connectors can be configured via the UI.
+"""
 
 import logging
 import uuid
@@ -9,6 +13,49 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.db.models import WorkingDocument, ToolCall
 
 logger = logging.getLogger(__name__)
+
+
+def _get_mapping(
+    op_type: str, doc: WorkingDocument, db: Session
+) -> dict | None:
+    """Look up the operation mapping from the connector spec."""
+    from app.db.config_models import ConnectorSpec
+
+    spec = (
+        db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == doc.connector_name)
+        .first()
+    )
+    if not spec or not spec.operation_mappings:
+        return None
+    for m in spec.operation_mappings:
+        if m.get("operation") == op_type and m.get("doc_type") == doc.doc_type:
+            return m
+    return None
+
+
+def _build_params(op: dict, doc: WorkingDocument, mapping: dict) -> dict:
+    """Build tool params from an operation using the configured field mapping."""
+    fields = op.get("fields", op.get("data", {}))
+    ref = doc.external_ref or {}
+    params: dict = {}
+
+    # Apply field_mapping: maps operation field names to tool param names
+    for op_field, tool_param in mapping.get("field_mapping", {}).items():
+        if op_field in fields:
+            params[tool_param] = fields[op_field]
+
+    # Apply ref_fields: pull values from external_ref for fields not in the op
+    for tool_param, ref_key in mapping.get("ref_fields", {}).items():
+        if tool_param not in params or not params[tool_param]:
+            params[tool_param] = ref.get(ref_key, "")
+
+    # Apply id_field: pull the entity ID from the op root (e.g., shift_id)
+    id_field = mapping.get("id_field")
+    if id_field:
+        params[id_field] = op.get(id_field, op.get("shift_id", ""))
+
+    return params
 
 
 def sync_document(doc_id: str, db: Session) -> None:
@@ -32,23 +79,27 @@ def sync_document(doc_id: str, db: Session) -> None:
     try:
         for op in doc.pending_ops:
             op_type = op.get("op", "")
-            action = _op_to_action(op_type)
-            if not action:
+            mapping = _get_mapping(op_type, doc, db)
+            if not mapping:
+                logger.warning(
+                    "No mapping for op %r on connector %s (doc_type=%s)",
+                    op_type,
+                    doc.connector_name,
+                    doc.doc_type,
+                )
                 processed += 1
                 continue
 
-            # Build params from the op
-            params = _op_to_params(op, doc)
+            params = _build_params(op, doc, mapping)
 
-            # Create and execute a ToolCall
             tc = ToolCall(
                 id=str(uuid.uuid4()),
                 thread_id=doc.thread_id,
                 iteration=0,
-                tool_name=f"{doc.connector_name}__{action}",
+                tool_name=f"{doc.connector_name}__{mapping['target_action']}",
                 connector_name=doc.connector_name,
-                action=action,
-                method=_action_method(action),
+                action=mapping["target_action"],
+                method=mapping.get("method", "POST"),
                 input_params=params,
                 status="executed",
             )
@@ -59,7 +110,8 @@ def sync_document(doc_id: str, db: Session) -> None:
 
             if tc.status == "failed":
                 raise Exception(
-                    f"Sync op failed: {action} — {tc.error_message or result.get('error')}"
+                    f"Sync op failed: {mapping['target_action']} — "
+                    f"{tc.error_message or result.get('error')}"
                 )
 
             processed += 1
@@ -80,66 +132,3 @@ def sync_document(doc_id: str, db: Session) -> None:
         doc.sync_error = str(e)
         db.commit()
         logger.error("Sync failed for doc %s after %d ops: %s", doc_id, processed, e)
-
-
-def _op_to_action(op_type: str) -> str | None:
-    """Map an op type to a connector tool action."""
-    mapping = {
-        "update_shift": "update_shift",
-        "add_shift": "create_shift",
-        "delete_shift": "delete_shift",
-        "submit_order": "create_order",
-    }
-    return mapping.get(op_type)
-
-
-def _op_to_params(op: dict, doc: WorkingDocument) -> dict:
-    """Build tool input params from an op."""
-    op_type = op.get("op", "")
-    ref = doc.external_ref or {}
-
-    if op_type == "update_shift":
-        fields = op.get("fields", {})
-        return {
-            "shift_id": op.get("shift_id", ""),
-            "roster_id": fields.get("rosterId", ref.get("roster_id", "")),
-            "staff_member_id": fields.get("staffMemberId", ""),
-            "role_id": fields.get("roleId", ""),
-            "clockin_time": fields.get("clockinTime", ""),
-            "clockout_time": fields.get("clockoutTime", ""),
-        }
-    elif op_type == "add_shift":
-        fields = op.get("fields", {})
-        return {
-            "roster_id": fields.get("rosterId", ref.get("roster_id", "")),
-            "staff_member_id": fields.get("staffMemberId", ""),
-            "role_id": fields.get("roleId", ""),
-            "clockin_time": fields.get("clockinTime", ""),
-            "clockout_time": fields.get("clockoutTime", ""),
-        }
-    elif op_type == "delete_shift":
-        fields = op.get("fields", {})
-        return {
-            "shift_id": op.get("shift_id", ""),
-            "roster_id": fields.get("rosterId", ref.get("roster_id", "")),
-            "staff_member_id": fields.get("staffMemberId", ""),
-            "role_id": fields.get("roleId", ""),
-            "clockin_time": fields.get("clockinTime", ""),
-            "clockout_time": fields.get("clockoutTime", ""),
-        }
-    elif op_type == "submit_order":
-        # Submit the full order data from the document
-        order_data = op.get("data", {})
-        return {
-            "product_name": order_data.get("product_name", ""),
-            "venue_name": order_data.get("venue_name", ref.get("venue_name", "")),
-            "quantity": str(order_data.get("quantity", "")),
-        }
-    return {}
-
-
-def _action_method(action: str) -> str:
-    """Return the HTTP method for a tool action."""
-    if action in ("create_shift", "create_order"):
-        return "POST"
-    return "PUT"  # update_shift and delete_shift use PUT on LoadedHub

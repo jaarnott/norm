@@ -13,6 +13,7 @@ import AutomatedTaskBoard from './AutomatedTaskBoard';
 import Chart from './Chart';
 import ReportBuilder from './ReportBuilder';
 import SavedReportsBoard from './SavedReportsBoard';
+import OrdersPage from './OrdersPage';
 import ToolApprovalCard from './ToolApprovalCard';
 
 export interface DisplayBlockProps {
@@ -23,7 +24,7 @@ export interface DisplayBlockProps {
 }
 
 /** Components that render full-width above the conversation instead of inline in chat bubbles */
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_page']);
 
 const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   generic_table: GenericTable,
@@ -38,6 +39,7 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   chart: Chart,
   report_builder: ReportBuilder,
   saved_reports_board: SavedReportsBoard,
+  orders_page: OrdersPage,
   tool_approval: ToolApprovalCard,
 };
 

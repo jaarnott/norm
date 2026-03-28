@@ -10,6 +10,7 @@ import DeploymentsPanel from './DeploymentsPanel';
 import TestsPanel from './TestsPanel';
 import RolesPanel from './RolesPanel';
 import SecretsPanel from './SecretsPanel';
+import ComponentsPanel from './ComponentsPanel';
 import { getStoredUser } from '../../lib/api';
 import type { User } from '../../types';
 
@@ -934,7 +935,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'specs' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
+type SettingsTab = 'connectors' | 'agents' | 'specs' | 'components' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -954,6 +955,7 @@ export default function SettingsPanel() {
   const showDeployments = isAdmin;
   const showTests = isAdmin;
   const showRoles = hasSettingsPermission(storedUser, 'org:roles', 'org:members');
+  const showComponents = isAdmin;
   const showSecrets = isAdmin;
 
   // Fetch org ID for billing tab
@@ -1254,6 +1256,7 @@ export default function SettingsPanel() {
         {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
         {showAgents && <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>}
         {showSpecs && <button data-testid="settings-tab-specs" onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>}
+        {showComponents && <button data-testid="settings-tab-components" onClick={() => setActiveTab('components')} style={tabStyle('components')}>Components</button>}
         {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
         {showTests && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
         {showRoles && <button data-testid="settings-tab-roles" onClick={() => setActiveTab('roles')} style={tabStyle('roles')}>Roles</button>}
@@ -1852,6 +1855,7 @@ export default function SettingsPanel() {
         {activeTab === 'roles' && orgId && <RolesPanel orgId={orgId} />}
 
         {/* ============ SECRETS TAB ============ */}
+        {activeTab === 'components' && <ComponentsPanel />}
         {activeTab === 'secrets' && <SecretsPanel />}
       </div>
     </div>

@@ -130,7 +130,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       block={{
         component: config.component,
         data: data || {},
-        props: config.componentProps,
+        props: { ...config.componentProps, activeVenueId },
       }}
       onAction={handleAction}
       threadId={thread?.id}

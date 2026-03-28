@@ -27,6 +27,7 @@ from app.db.models import (
     Supplier,
     Product,
 )
+from app.db.config_models import ConfigBase
 from app.db.engine import get_db
 from app.auth.security import hash_password, create_access_token
 from app.routers import (
@@ -75,6 +76,7 @@ _engine = create_engine(settings.DATABASE_URL)
 def _setup_tables():
     """Ensure all tables exist before the test suite runs."""
     Base.metadata.create_all(bind=_engine)
+    ConfigBase.metadata.create_all(bind=_engine)
     yield
 
 

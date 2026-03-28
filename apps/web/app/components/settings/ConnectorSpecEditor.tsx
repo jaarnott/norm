@@ -50,6 +50,7 @@ const EMPTY_SPEC: ConnectorSpecFull = {
   credential_fields: [],
   oauth_config: null,
   test_request: null,
+  operation_mappings: null,
   created_at: '',
   updated_at: null,
 };
@@ -2777,6 +2778,123 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
           </div>
         </div>
       )}
+
+      {/* Operation Mappings (Document Sync) */}
+      <div style={sectionStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+          <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Operation Mappings</h4>
+          <button
+            onClick={() => update('operation_mappings', [
+              ...(form.operation_mappings || []),
+              { operation: '', doc_type: '', target_action: '', method: 'POST', field_mapping: {}, ref_fields: {}, id_field: null },
+            ])}
+            style={{
+              padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
+              backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            + Add Mapping
+          </button>
+        </div>
+        <p style={{ color: '#999', fontSize: '0.75rem', margin: '0 0 0.75rem', lineHeight: 1.5 }}>
+          Maps UI operations (e.g. add_shift, delete_shift) to connector tool actions for document sync.
+        </p>
+        {(form.operation_mappings || []).length === 0 ? (
+          <p style={{ color: '#bbb', fontSize: '0.78rem', fontStyle: 'italic', margin: 0 }}>No mappings configured.</p>
+        ) : (
+          (form.operation_mappings || []).map((mapping, mi) => {
+            const toolActions = form.tools.map(t => t.action);
+            const updateMapping = (field: string, value: unknown) => {
+              const updated = [...(form.operation_mappings || [])];
+              updated[mi] = { ...updated[mi], [field]: value };
+              update('operation_mappings', updated);
+            };
+            const removeMapping = () => {
+              update('operation_mappings', (form.operation_mappings || []).filter((_, i) => i !== mi));
+            };
+            const fmEntries = Object.entries(mapping.field_mapping || {});
+            const refEntries = Object.entries(mapping.ref_fields || {});
+            return (
+              <div key={mi} style={{ border: '1px solid #e8e4de', borderRadius: 8, padding: '0.75rem', marginBottom: '0.5rem', backgroundColor: '#fafafa' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 6, marginBottom: '0.5rem' }}>
+                  <input value={mapping.operation} onChange={e => updateMapping('operation', e.target.value)} placeholder="operation (e.g. add_shift)" style={{ ...inputStyle, fontSize: '0.78rem' }} />
+                  <input value={mapping.doc_type} onChange={e => updateMapping('doc_type', e.target.value)} placeholder="doc_type (e.g. roster)" style={{ ...inputStyle, fontSize: '0.78rem' }} />
+                  <select value={mapping.target_action} onChange={e => updateMapping('target_action', e.target.value)} style={{ ...inputStyle, fontSize: '0.78rem' }}>
+                    <option value="">Select action...</option>
+                    {toolActions.map(a => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                  <select value={mapping.method} onChange={e => updateMapping('method', e.target.value)} style={{ ...inputStyle, fontSize: '0.78rem', width: 70 }}>
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="DELETE">DELETE</option>
+                  </select>
+                  <button onClick={removeMapping} title="Remove" style={{ border: 'none', background: 'none', color: '#e53e3e', cursor: 'pointer', fontSize: '0.85rem', padding: '0 4px' }}>&#10005;</button>
+                </div>
+                {/* Field mapping */}
+                <div style={{ marginBottom: '0.4rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Field Mapping</span>
+                    <button onClick={() => updateMapping('field_mapping', { ...mapping.field_mapping, '': '' })} style={{ border: 'none', background: 'none', fontSize: '0.68rem', color: '#999', cursor: 'pointer' }}>+ field</button>
+                  </div>
+                  {fmEntries.map(([k, v], fi) => (
+                    <div key={fi} style={{ display: 'grid', gridTemplateColumns: '1fr 8px 1fr auto', gap: 4, alignItems: 'center', marginTop: 2 }}>
+                      <input value={k} onChange={e => {
+                        const entries = Object.entries(mapping.field_mapping || {});
+                        entries[fi] = [e.target.value, v];
+                        updateMapping('field_mapping', Object.fromEntries(entries));
+                      }} placeholder="op field" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace' }} />
+                      <span style={{ textAlign: 'center', color: '#ccc', fontSize: '0.7rem' }}>→</span>
+                      <input value={v} onChange={e => {
+                        const entries = Object.entries(mapping.field_mapping || {});
+                        entries[fi] = [k, e.target.value];
+                        updateMapping('field_mapping', Object.fromEntries(entries));
+                      }} placeholder="tool param" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace' }} />
+                      <button onClick={() => {
+                        const next = { ...mapping.field_mapping };
+                        delete next[k];
+                        updateMapping('field_mapping', next);
+                      }} style={{ border: 'none', background: 'none', color: '#ccc', cursor: 'pointer', fontSize: '0.75rem' }}>&#10005;</button>
+                    </div>
+                  ))}
+                </div>
+                {/* Ref fields */}
+                <div style={{ marginBottom: '0.4rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Ref Fields (from external_ref)</span>
+                    <button onClick={() => updateMapping('ref_fields', { ...(mapping.ref_fields || {}), '': '' })} style={{ border: 'none', background: 'none', fontSize: '0.68rem', color: '#999', cursor: 'pointer' }}>+ ref</button>
+                  </div>
+                  {refEntries.map(([k, v], ri) => (
+                    <div key={ri} style={{ display: 'grid', gridTemplateColumns: '1fr 8px 1fr auto', gap: 4, alignItems: 'center', marginTop: 2 }}>
+                      <input value={k} onChange={e => {
+                        const entries = Object.entries(mapping.ref_fields || {});
+                        entries[ri] = [e.target.value, v];
+                        updateMapping('ref_fields', Object.fromEntries(entries));
+                      }} placeholder="tool param" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace' }} />
+                      <span style={{ textAlign: 'center', color: '#ccc', fontSize: '0.7rem' }}>→</span>
+                      <input value={v} onChange={e => {
+                        const entries = Object.entries(mapping.ref_fields || {});
+                        entries[ri] = [k, e.target.value];
+                        updateMapping('ref_fields', Object.fromEntries(entries));
+                      }} placeholder="ref key" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace' }} />
+                      <button onClick={() => {
+                        const next = { ...(mapping.ref_fields || {}) };
+                        delete next[k];
+                        updateMapping('ref_fields', next);
+                      }} style={{ border: 'none', background: 'none', color: '#ccc', cursor: 'pointer', fontSize: '0.75rem' }}>&#10005;</button>
+                    </div>
+                  ))}
+                </div>
+                {/* ID field */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>ID Field</span>
+                  <input value={mapping.id_field || ''} onChange={e => updateMapping('id_field', e.target.value || null)} placeholder="e.g. shift_id" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace', width: 140 }} />
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
 
       {/* Save / Cancel */}
       <div style={{ display: 'flex', gap: 8 }}>

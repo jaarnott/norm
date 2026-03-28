@@ -57,6 +57,7 @@ class ConnectorSpec(ConfigBase):
     credential_fields = Column(JSON, nullable=False, default=list)
     oauth_config = Column(JSON, nullable=True)
     test_request = Column(JSON, nullable=True)
+    operation_mappings = Column(JSON, nullable=True)
     version = Column(Integer, nullable=False, default=1)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)

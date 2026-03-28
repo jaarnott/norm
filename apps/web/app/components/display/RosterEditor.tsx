@@ -17,9 +17,11 @@ interface VenueOption { id: string; name: string }
 
 export default function RosterEditor({ data, props, onAction, threadId }: DisplayBlockProps) {
   // Detect working document mode
-  const workingDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
+  const initialDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
+  const [currentDocId, setCurrentDocId] = useState<string | undefined>(initialDocId);
+  const workingDocId = currentDocId;
 
-  const [docData, setDocData] = useState<Record<string, unknown> | null>(workingDocId ? null : data);
+  const [docData, setDocData] = useState<Record<string, unknown> | null>(initialDocId ? null : data);
   const [venues, setVenues] = useState<VenueOption[]>([]);
   const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
   const [docVersion, setDocVersion] = useState<number>(1);
@@ -99,8 +101,14 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         setDocData(result.data);
         setShifts(extractShifts(result.data));
         setMeta(extractRosterMeta(result.data));
+        // Update working doc reference for patch operations
+        if (result.id) {
+          setCurrentDocId(result.id);
+          setDocVersion(result.version || 1);
+          setSyncStatus(result.sync_status || 'synced');
+        }
       }
-    } catch { /* ignore */ }
+    } catch (e) { console.error('Venue change failed:', e); }
   }, []);
 
   // Fallback: update from props data (non-working-document mode)
@@ -197,15 +205,21 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     setSaving(true);
     try {
       if (workingDocId && threadId) {
+        // Find the role name from the staff's existing shifts or the editing shift
+        const roleName = editingShift?.roleName || shifts.find(s => s.roleId === formData.role_id)?.roleName || '';
         if (editingShift) {
           await patchDoc([{
             op: 'update_shift',
             shift_id: editingShift.id,
             fields: {
+              rosterId: editingShift.rosterId || meta.rosterId,
               staffMemberId: formData.staff_member_id,
               roleId: formData.role_id,
+              roleName,
               clockinTime: formData.clockin_time,
               clockoutTime: formData.clockout_time,
+              venueId: editingShift.venueId || '',
+              hourlyRate: editingShift.hourlyRate ?? editingShift.adjustedHourlyRate ?? 0,
             },
           }]);
         } else {
@@ -215,6 +229,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
               rosterId: meta.rosterId,
               staffMemberId: formData.staff_member_id,
               roleId: formData.role_id,
+              roleName,
               clockinTime: formData.clockin_time,
               clockoutTime: formData.clockout_time,
             },
@@ -345,15 +360,18 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         : s
     ).sort((a, b) => (a.clockinTime || '').localeCompare(b.clockinTime || '')));
 
-    const patchFields: Record<string, string> = {
+    const patchFields: Record<string, unknown> = {
       staffMemberId: targetStaffId,
       staffMemberFirstName: firstName,
       staffMemberLastName: lastName,
+      rosterId: shift.rosterId || meta.rosterId,
+      roleId: shift.roleId || '',
+      roleName: shift.roleName || '',
+      venueId: shift.venueId || '',
+      hourlyRate: shift.hourlyRate ?? shift.adjustedHourlyRate ?? 0,
+      clockinTime: dayChanged ? newClockIn : (shift.clockinTime || ''),
+      clockoutTime: dayChanged ? newClockOut : (shift.clockoutTime || ''),
     };
-    if (dayChanged) {
-      patchFields.clockinTime = newClockIn;
-      patchFields.clockoutTime = newClockOut;
-    }
 
     if (workingDocId && threadId) {
       await patchDoc([{
@@ -379,7 +397,16 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     ).sort((a, b) => (a.clockinTime || '').localeCompare(b.clockinTime || '')));
 
     if (workingDocId && threadId) {
-      await patchDoc([{ op: 'update_shift', shift_id: shiftId, fields: { clockinTime, clockoutTime } }]);
+      const shift = shifts.find(s => s.id === shiftId);
+      await patchDoc([{ op: 'update_shift', shift_id: shiftId, fields: {
+        clockinTime, clockoutTime,
+        rosterId: shift?.rosterId || meta.rosterId,
+        staffMemberId: shift?.staffMemberId || '',
+        roleId: shift?.roleId || '',
+        roleName: shift?.roleName || '',
+        venueId: shift?.venueId || '',
+        hourlyRate: shift?.hourlyRate ?? (shift as Record<string, unknown>)?.adjustedHourlyRate ?? 0,
+      } }]);
     } else if (onAction) {
       const shift = shifts.find(s => s.id === shiftId);
       await onAction({
