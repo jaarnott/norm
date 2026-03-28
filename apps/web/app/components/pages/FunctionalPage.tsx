@@ -32,19 +32,13 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
 
   // Load data on mount — create a working document so edits sync in background
   useEffect(() => {
-    // Skip data load for self-loading components
-    if (config.loadAction.connector === '_none' || config.selfLoading) {
-      setLoadingData(false);
-      return;
-    }
-    // For external connectors without a venue, let the component handle it
-    if (!activeVenueId && config.loadAction.connector !== 'norm') {
+    // Skip data load for self-loading components (e.g., SavedReportsBoard)
+    if (config.loadAction.connector === '_none') {
       setLoadingData(false);
       return;
     }
     setLoadingData(true);
     setLoadError(null);
-    setData(null);
     const params = config.loadAction.defaultParams();
     apiFetch('/api/working-documents/from-connector', {
       method: 'POST',
@@ -73,7 +67,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       })
       .catch(err => setLoadError(err.message))
       .finally(() => setLoadingData(false));
-  }, [config.id, activeVenueId]);
+  }, [config.id]);
 
   const handleAction = useCallback(async (action: WidgetAction): Promise<Record<string, unknown> | void> => {
     // Handle report builder open locally
@@ -137,7 +131,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     </div>
   );
 
-  const componentBlock = (data || config.loadAction.connector === '_none' || config.selfLoading) ? (
+  const componentBlock = (data || config.loadAction.connector === '_none') ? (
     <DisplayBlockRenderer
       block={{
         component: config.component,

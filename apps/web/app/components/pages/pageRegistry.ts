@@ -12,7 +12,6 @@ export interface FunctionalPageConfig {
     defaultParams: () => Record<string, unknown>;
   };
   componentProps?: Record<string, unknown>;
-  selfLoading?: boolean; // Component handles its own data loading (skip FunctionalPage from-connector call)
 }
 
 function getCurrentWeekRange(): { start_datetime: string; end_datetime: string } {
@@ -41,7 +40,6 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     icon: Calendar,
     agent: 'hr',
     component: 'roster_editor',
-    selfLoading: true,
     loadAction: {
       connector: 'loadedhub',
       action: 'get_roster',

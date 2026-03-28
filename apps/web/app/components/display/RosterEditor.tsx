@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
@@ -58,27 +58,17 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       .catch(() => {});
   }, [docUrl]);
 
-  const [initialLoadDone, setInitialLoadDone] = useState(false);
-
-  // Fetch venues and auto-load roster for first venue
+  // Fetch venues for venue selector
   useEffect(() => {
-    if (initialLoadDone) return;
     apiFetch('/api/venues')
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (d?.venues && d.venues.length > 0) {
           setVenues(d.venues);
-          // Auto-select and load first venue if none provided
-          if (!selectedVenue && !(props?.activeVenueId)) {
-            const firstId = d.venues[0].id;
-            setSelectedVenue(firstId);
-            setInitialLoadDone(true);
-            handleVenueChange(firstId);
-          }
         }
       })
       .catch(() => {});
-  }, [initialLoadDone]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // Reload roster for a different venue
   const handleVenueChange = useCallback(async (venueId: string) => {
@@ -527,15 +517,6 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       }}
     >{label}</button>
   );
-
-  // Show loading state while initial roster loads
-  if (shifts.length === 0 && !initialLoadDone && !workingDocId) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, color: '#999', fontSize: '0.85rem' }}>
-        Loading roster...
-      </div>
-    );
-  }
 
   return (
     <div>
