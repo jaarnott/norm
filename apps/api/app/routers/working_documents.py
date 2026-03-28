@@ -236,6 +236,7 @@ async def create_from_connector(
         thread_id=None,
         doc_type=body.doc_type,
         connector_name=body.connector_name,
+        venue_id=body.venue_id,
         sync_mode="auto",
         data=data,
         external_ref=body.params or None,

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
@@ -58,19 +58,21 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       .catch(() => {});
   }, [docUrl]);
 
-  const [autoSelectVenue, setAutoSelectVenue] = useState<string | null>(null);
+  const rosterLoadingRef = useRef(false);
 
-  // Fetch venues for venue selector
+  // Fetch venues and auto-load roster for first venue
   useEffect(() => {
     apiFetch('/api/venues')
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (d?.venues && d.venues.length > 0) {
           setVenues(d.venues);
-          // Auto-select first venue if none provided
-          if (!selectedVenue && !(props?.activeVenueId)) {
-            setSelectedVenue(d.venues[0].id);
-            setAutoSelectVenue(d.venues[0].id);
+          // Auto-select and load first venue if none provided
+          if (!selectedVenue && !(props?.activeVenueId) && !rosterLoadingRef.current) {
+            const firstId = d.venues[0].id;
+            setSelectedVenue(firstId);
+            rosterLoadingRef.current = true;
+            handleVenueChange(firstId).finally(() => { rosterLoadingRef.current = false; });
           }
         }
       })
@@ -117,14 +119,6 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       }
     } catch (e) { console.error('Venue change failed:', e); }
   }, []);
-
-  // Auto-load roster when venue is auto-selected
-  useEffect(() => {
-    if (autoSelectVenue && !workingDocId) {
-      handleVenueChange(autoSelectVenue);
-      setAutoSelectVenue(null);
-    }
-  }, [autoSelectVenue, handleVenueChange, workingDocId]);
 
   // Fallback: update from props data (non-working-document mode)
   useEffect(() => {

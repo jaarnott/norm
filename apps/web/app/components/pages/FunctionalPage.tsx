@@ -32,16 +32,14 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
 
   // Load data on mount — create a working document so edits sync in background
   useEffect(() => {
-    // Skip data load for self-loading components (e.g., SavedReportsBoard)
-    if (config.loadAction.connector === '_none') {
+    // Skip data load for self-loading components
+    if (config.loadAction.connector === '_none' || config.selfLoading) {
       setLoadingData(false);
       return;
     }
     // For external connectors without a venue, let the component handle it
-    // (components like RosterEditor have their own venue selector)
     if (!activeVenueId && config.loadAction.connector !== 'norm') {
       setLoadingData(false);
-      // Don't block — pass null data so the component can show its own venue selector
       return;
     }
     setLoadingData(true);
@@ -139,7 +137,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     </div>
   );
 
-  const componentBlock = (data || config.loadAction.connector === '_none' || (!activeVenueId && config.loadAction.connector !== 'norm')) ? (
+  const componentBlock = (data || config.loadAction.connector === '_none' || config.selfLoading) ? (
     <DisplayBlockRenderer
       block={{
         component: config.component,
