@@ -209,14 +209,14 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
 
       {!loading && sortedOrders.length > 0 && (
         <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600, tableLayout: 'fixed' }}>
             <thead>
               <tr>
-                <th style={thStyle}>Date</th>
+                <th style={{ ...thStyle, width: 150 }}>Date</th>
                 <th style={thStyle}>Supplier</th>
-                <th style={thStyle}>Ordered By</th>
-                <th style={thStyle}>Status</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>Total</th>
+                <th style={{ ...thStyle, width: 150 }}>Ordered By</th>
+                <th style={{ ...thStyle, width: 150 }}>Status</th>
+                <th style={{ ...thStyle, width: 150, textAlign: 'right' }}>Total</th>
               </tr>
             </thead>
             <tbody>
