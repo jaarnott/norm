@@ -37,8 +37,16 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       setLoadingData(false);
       return;
     }
+    // Don't load external connector data without a venue selected
+    if (!activeVenueId && config.loadAction.connector !== 'norm') {
+      setLoadingData(false);
+      setData(null);
+      setLoadError(null);
+      return;
+    }
     setLoadingData(true);
     setLoadError(null);
+    setData(null);
     const params = config.loadAction.defaultParams();
     apiFetch('/api/working-documents/from-connector', {
       method: 'POST',
@@ -51,17 +59,23 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       }),
     })
       .then(async res => {
-        const result = await res.json();
-        if (res.ok) {
-          setWorkingDocId(result.id);
-          setData({ working_document_id: result.id, ...result.data });
-        } else {
-          setLoadError(result.error || result.detail || 'Failed to load data');
+        if (!res.ok) {
+          const text = await res.text();
+          try {
+            const d = JSON.parse(text);
+            setLoadError(d.error || d.detail || `Failed to load data (${res.status})`);
+          } catch {
+            setLoadError(`Failed to load data (${res.status})`);
+          }
+          return;
         }
+        const result = await res.json();
+        setWorkingDocId(result.id);
+        setData({ working_document_id: result.id, ...result.data });
       })
       .catch(err => setLoadError(err.message))
       .finally(() => setLoadingData(false));
-  }, [config.id]);
+  }, [config.id, activeVenueId]);
 
   const handleAction = useCallback(async (action: WidgetAction): Promise<Record<string, unknown> | void> => {
     // Handle report builder open locally
@@ -125,7 +139,13 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     </div>
   );
 
-  const componentBlock = (data || config.loadAction.connector === '_none') ? (
+  const noVenueSelected = !activeVenueId && config.loadAction.connector !== 'norm' && config.loadAction.connector !== '_none';
+
+  const componentBlock = noVenueSelected ? (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, color: '#999', fontSize: '0.9rem' }}>
+      Select a venue to load {config.label.toLowerCase()}
+    </div>
+  ) : (data || config.loadAction.connector === '_none') ? (
     <DisplayBlockRenderer
       block={{
         component: config.component,
