@@ -741,26 +741,11 @@ def _render_chart(params: dict, db: Session, thread_id: str | None) -> dict:
             "error": f"Tool call not found or has no data: {source_id}",
         }
 
-    # Extract the data array from the tool call's result
+    # Extract the data array from the tool call's result.
+    # The result_payload is already transformed (transforms are applied during
+    # tool execution in the tool loop) — do NOT re-apply transforms here.
     payload = tc.result_payload
     rows = _find_data_array(payload)
-
-    # Apply response_transform if configured on the source tool
-    from app.agents.tool_loop import _find_tool_def
-    from app.db.engine import _ConfigSessionLocal
-
-    _cdb = _ConfigSessionLocal()
-    try:
-        tool_def = _find_tool_def(tc.connector_name, tc.action, db, config_db=_cdb)
-    finally:
-        _cdb.close()
-    if tool_def:
-        transform_config = tool_def.get("response_transform")
-        if transform_config and transform_config.get("enabled"):
-            from app.connectors.response_transform import apply_response_transform
-
-            transformed = apply_response_transform(payload, transform_config)
-            rows = _find_data_array(transformed)
 
     # Build replayable script from the source tool call
     script = {
