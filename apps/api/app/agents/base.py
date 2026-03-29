@@ -65,14 +65,15 @@ class BaseDomainAgent(ABC):
         """
         from app.agents.prompt_builder import build_dynamic_prompt
 
-        _cdb = config_db or db
-        dynamic = build_dynamic_prompt(self.domain, db, config_db=_cdb)
+        if config_db is None:
+            raise RuntimeError("config_db is required — check call chain")
+        dynamic = build_dynamic_prompt(self.domain, db, config_db=config_db)
         if dynamic:
             return dynamic
 
         from app.services.agent_config_service import get_system_prompt as get_db_prompt
 
-        return get_db_prompt(self.domain, _cdb)
+        return get_db_prompt(self.domain, config_db)
 
     def get_tool_definitions(
         self,
@@ -107,6 +108,7 @@ class BaseDomainAgent(ABC):
         venue_id: str | None = None,
         venue_name: str | None = None,
         venue_timezone: str | None = None,
+        config_db: Session | None = None,
     ) -> dict:
         """Process a message using the agentic tool loop.
 
@@ -119,6 +121,7 @@ class BaseDomainAgent(ABC):
             active_venue_name=venue_name,
             venue_timezone=venue_timezone,
             user_id=user_id,
+            config_db=config_db,
         )
         ctx = self.build_context(db, user_id)
 
@@ -154,7 +157,13 @@ class BaseDomainAgent(ABC):
         _emit_event({"type": "thread_created", "thread_id": thread.id})
 
         return run_tool_loop(
-            message, thread, db, system_prompt, anthropic_tools, context=ctx
+            message,
+            thread,
+            db,
+            system_prompt,
+            anthropic_tools,
+            context=ctx,
+            config_db=config_db,
         )
 
     def interpret(

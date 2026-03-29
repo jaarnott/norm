@@ -840,7 +840,11 @@ def _build_connector_tools(db, config_db=None) -> list[dict]:
     """Build Anthropic tool schemas for all enabled connector specs, with venue injection."""
     from app.db.models import Venue
 
-    _cdb = config_db or db
+    _cdb = config_db
+    if _cdb is None:
+        raise RuntimeError(
+            "config_db is required — check that config_db is passed through the call chain"
+        )
     specs = _cdb.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()  # noqa: E712
 
     # Build venue lookup: connector_name -> list of venue names with configs

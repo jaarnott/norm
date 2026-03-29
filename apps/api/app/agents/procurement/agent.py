@@ -39,6 +39,7 @@ class ProcurementAgent(BaseDomainAgent):
             active_venue_name=venue_name,
             venue_timezone=venue_timezone,
             user_id=user_id,
+            config_db=config_db,
         )
         if anthropic_tools:
             return self.handle_message_with_tools(
@@ -49,6 +50,7 @@ class ProcurementAgent(BaseDomainAgent):
                 venue_id=venue_id,
                 venue_name=venue_name,
                 venue_timezone=venue_timezone,
+                config_db=config_db,
             )
 
         # Classic single-shot interpretation (no tools bound)

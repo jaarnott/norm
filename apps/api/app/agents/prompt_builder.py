@@ -24,7 +24,11 @@ def _collect_tools(
     """
     from app.db.models import AgentConnectorBinding, ConnectorConfig, ConnectorSpec
 
-    _cdb = config_db or db
+    _cdb = config_db
+    if _cdb is None:
+        raise RuntimeError(
+            "config_db is required — check that config_db is passed through the call chain"
+        )
 
     bindings = (
         _cdb.query(AgentConnectorBinding)
@@ -120,7 +124,11 @@ def build_dynamic_prompt(
     Returns None if no connector specs are bound, signalling the caller to
     use the DB-stored prompt directly via agent_config_service.
     """
-    _cdb = config_db or db
+    _cdb = config_db
+    if _cdb is None:
+        raise RuntimeError(
+            "config_db is required — check that config_db is passed through the call chain"
+        )
     tools = _collect_tools(domain, db, config_db=_cdb)
     if not tools:
         return None
@@ -146,7 +154,11 @@ def build_tool_definitions(
 
     Returns ("", []) if no tools are bound.
     """
-    _cdb = config_db or db
+    _cdb = config_db
+    if _cdb is None:
+        raise RuntimeError(
+            "config_db is required — check that config_db is passed through the call chain"
+        )
     tools = _collect_tools(domain, db, user_id=user_id, config_db=_cdb)
     if not tools:
         return "", []

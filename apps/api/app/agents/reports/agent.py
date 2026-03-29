@@ -37,6 +37,7 @@ class ReportsAgent(BaseDomainAgent):
             active_venue_name=venue_name,
             venue_timezone=venue_timezone,
             user_id=user_id,
+            config_db=config_db,
         )
         if anthropic_tools:
             return self.handle_message_with_tools(
@@ -47,6 +48,7 @@ class ReportsAgent(BaseDomainAgent):
                 venue_id=venue_id,
                 venue_name=venue_name,
                 venue_timezone=venue_timezone,
+                config_db=config_db,
             )
 
         # Classic interpretation path (no tools bound)

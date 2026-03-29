@@ -54,7 +54,11 @@ def resolve_connector(
     """
     from app.db.models import ConnectorSpec, ConnectorConfig, AgentConnectorBinding
 
-    _cdb = config_db or db
+    _cdb = config_db
+    if _cdb is None:
+        raise RuntimeError(
+            "config_db is required — check that config_db is passed through the call chain"
+        )
 
     # Get ALL enabled bindings for this domain
     bindings = (

@@ -80,6 +80,7 @@ def run_tool_loop(
     anthropic_tools: list[dict],
     context: dict | None = None,
     test_mode: bool = False,
+    config_db: Session | None = None,
 ) -> dict:
     """Run the agentic tool loop for a user message.
 
@@ -97,6 +98,7 @@ def run_tool_loop(
         anthropic_tools,
         start_iteration=1,
         test_mode=test_mode,
+        config_db=config_db,
     )
 
 
@@ -105,6 +107,7 @@ def resume_tool_loop(
     db: Session,
     system_prompt: str,
     anthropic_tools: list[dict],
+    config_db: Session | None = None,
 ) -> dict:
     """Resume the tool loop after write-tool approval.
 
@@ -131,7 +134,7 @@ def resume_tool_loop(
 
         if tc.status == "approved":
             # Execute the approved write tool (transform applied inside _execute_tool_call)
-            result = _execute_tool_call(tc, db)
+            result = _execute_tool_call(tc, db, config_db=config_db)
             tool_results_content.append(
                 {
                     "type": "tool_result",
@@ -170,6 +173,7 @@ def resume_tool_loop(
         system_prompt,
         anthropic_tools,
         start_iteration=iteration + 1,
+        config_db=config_db,
     )
 
 
@@ -186,6 +190,7 @@ def _execute_loop(
     anthropic_tools: list[dict],
     start_iteration: int = 1,
     test_mode: bool = False,
+    config_db: Session | None = None,
 ) -> dict:
     """Run the agentic loop up to MAX_ITERATIONS."""
     from app.interpreter.llm_interpreter import call_llm_with_tools
@@ -368,7 +373,9 @@ def _execute_loop(
                 # Single tool — execute directly, no threading overhead
                 block, connector, action, method = read_only_blocks[0]
                 tc = read_only_tcs[block.id]
-                execution_results[block.id] = _execute_tool_call(tc, db)
+                execution_results[block.id] = _execute_tool_call(
+                    tc, db, config_db=config_db
+                )
 
             # --- Phase D: Post-process read-only results ---
             read_only_tool_results: dict[str, dict] = {}
@@ -388,7 +395,7 @@ def _execute_loop(
                     flag_modified(tc, "result_payload")
                     db.flush()
 
-                tool_def = _find_tool_def(connector, action, db)
+                tool_def = _find_tool_def(connector, action, db, config_db=config_db)
                 summary_fields = tool_def.get("summary_fields") if tool_def else None
 
                 # Transform already applied in _execute_tool_call — just slim for LLM context
@@ -493,7 +500,7 @@ def _execute_loop(
                     )
                     continue
 
-                tool_def = _find_tool_def(connector, action, db)
+                tool_def = _find_tool_def(connector, action, db, config_db=config_db)
                 wd_config = tool_def.get("working_document") if tool_def else None
 
                 if wd_config:
@@ -796,7 +803,11 @@ def _execute_tool_call(
     from app.db.models import ConnectorSpec
     from app.connectors.spec_executor import execute_spec
 
-    _cdb = config_db or db
+    _cdb = config_db
+    if _cdb is None:
+        raise RuntimeError(
+            "config_db is required — check that config_db is passed through the call chain"
+        )
     spec = (
         _cdb.query(ConnectorSpec)
         .filter(
@@ -1330,7 +1341,11 @@ def _find_tool_def(
     """Look up a tool definition from the ConnectorSpec in the database."""
     from app.db.models import ConnectorSpec
 
-    _cdb = config_db or db
+    _cdb = config_db
+    if _cdb is None:
+        raise RuntimeError(
+            "config_db is required — check that config_db is passed through the call chain"
+        )
     spec = (
         _cdb.query(ConnectorSpec)
         .filter(ConnectorSpec.connector_name == connector_name)
