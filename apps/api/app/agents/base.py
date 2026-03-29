@@ -29,6 +29,7 @@ class BaseDomainAgent(ABC):
         venue_id: str | None = None,
         venue_name: str | None = None,
         venue_timezone: str | None = None,
+        config_db: Session | None = None,
     ) -> dict:
         """Process a new user message for this domain.
 

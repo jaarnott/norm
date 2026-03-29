@@ -30,6 +30,7 @@ class HrAgent(BaseDomainAgent):
         venue_id: str | None = None,
         venue_name: str | None = None,
         venue_timezone: str | None = None,
+        config_db: Session | None = None,
     ) -> dict:
         # Try the agentic tool loop first (if tools are bound)
         system_prompt, anthropic_tools = self.get_tool_definitions(
