@@ -18,12 +18,15 @@ logger = logging.getLogger(__name__)
 def _get_mapping(op_type: str, doc: WorkingDocument, db: Session) -> dict | None:
     """Look up the operation mapping from the connector spec."""
     from app.db.config_models import ConnectorSpec
+    from app.db.engine import _ConfigSessionLocal
 
+    _cdb = _ConfigSessionLocal()
     spec = (
-        db.query(ConnectorSpec)
+        _cdb.query(ConnectorSpec)
         .filter(ConnectorSpec.connector_name == doc.connector_name)
         .first()
     )
+    _cdb.close()
     if not spec or not spec.operation_mappings:
         return None
     for m in spec.operation_mappings:

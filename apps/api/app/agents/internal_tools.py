@@ -747,8 +747,13 @@ def _render_chart(params: dict, db: Session, thread_id: str | None) -> dict:
 
     # Apply response_transform if configured on the source tool
     from app.agents.tool_loop import _find_tool_def
+    from app.db.engine import _ConfigSessionLocal
 
-    tool_def = _find_tool_def(tc.connector_name, tc.action, db)
+    _cdb = _ConfigSessionLocal()
+    try:
+        tool_def = _find_tool_def(tc.connector_name, tc.action, db, config_db=_cdb)
+    finally:
+        _cdb.close()
     if tool_def:
         transform_config = tool_def.get("response_transform")
         if transform_config and transform_config.get("enabled"):
@@ -1277,12 +1282,16 @@ def execute_consolidator(
             )
             continue
 
-        # Look up spec and tool def
+        # Look up spec and tool def (from config DB)
+        from app.db.engine import _ConfigSessionLocal as _CfgSL
+
+        _cfg = _CfgSL()
         spec = (
-            db.query(ConnectorSpec)
+            _cfg.query(ConnectorSpec)
             .filter(ConnectorSpec.connector_name == connector_name)
             .first()
         )
+        _cfg.close()
         if not spec:
             step_results[step_id] = {"error": f"Connector not found: {connector_name}"}
             step_meta.append(
