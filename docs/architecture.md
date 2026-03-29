@@ -236,6 +236,196 @@ A consolidator is a meta-tool that chains multiple API calls together. It's conf
 
 ---
 
+## 9. Working Documents
+
+Working documents are an edit/sync layer between frontend components and external APIs. They enable interactive editing (roster shifts, order lines, hiring criteria) with optimistic concurrency and background sync.
+
+**How it works:**
+1. A tool call creates a working document with data from an external API
+2. The frontend component receives a `working_document_id` instead of raw data
+3. User edits create **operations** (add_shift, update_line, delete_item)
+4. Operations are sent via PATCH with a version number (optimistic locking)
+5. The backend resolves operations to connector API calls via **operation mappings**
+6. Sync happens either automatically (`sync_mode: "auto"`) or on user submit (`sync_mode: "submit"`)
+
+**Sync states:** `synced` → `dirty` → `syncing` → `synced` (or `error`)
+
+**Version conflict:** If the frontend sends `version: 5` but the DB has `version: 6`, the PATCH returns 409 Conflict.
+
+**Example:** User drags a shift in the RosterEditor → PATCH with `{op: "update_shift", shift_id: "...", fields: {clockin_time: "..."}}` → backend maps to LoadedHub `update_shift` API call → sync status updates to `synced`.
+
+**Key files:**
+- `app/routers/working_documents.py` — CRUD + PATCH + submit endpoints
+- `app/services/document_sync.py` — resolves operations to connector calls
+- `app/db/models.py` — WorkingDocument model (data, version, sync_status, pending_ops)
+
+---
+
+## 10. Prompt Builder
+
+The prompt builder dynamically constructs the system prompt for each agent based on its connector bindings, available tools, venue context, and timezone. No hardcoded prompts — everything is built from configuration.
+
+**What it builds:**
+1. Loads the agent's system prompt from the config DB (AgentConfig.system_prompt)
+2. Collects all enabled tools from bound connectors (AgentConnectorBinding → ConnectorSpec.tools)
+3. Injects venue context (name, timezone, today's date)
+4. Formats tool descriptions for the Anthropic API's tool-use format
+5. Adds domain-specific instructions (date handling rules, formatting guidelines)
+
+**Gate logic:** A tool is only included if:
+- The agent has a binding to the connector
+- The capability for that action is enabled in the binding
+- The connector has credentials configured for the venue (external connectors only)
+
+**Example:** The ReportsAgent prompt is built from: base prompt (from config DB) + LoadedHub tools (get_sales_data, get_roster, etc.) + norm_reports tools (render_chart) + norm tools (resolve_dates, search_tool_result) + venue context ("La Zeppa, timezone Pacific/Auckland, today is Monday 29 Mar 2026").
+
+**Key file:** `app/agents/prompt_builder.py` — `build_dynamic_prompt()`, `build_tool_definitions()`
+
+---
+
+## 11. Config Database
+
+All system configuration lives in a dedicated shared Cloud SQL instance (`norm-config`) that all environments read from. Edit a connector spec or agent prompt once — it's immediately available in testing, staging, and production.
+
+**What's in the config DB:**
+
+| Table | Content |
+|---|---|
+| `connector_specs` | Tool definitions, auth types, OAuth config, response transforms |
+| `agent_configs` | Agent system prompts, display names, descriptions |
+| `agent_connector_bindings` | Which agents can use which connectors, with per-capability enable/disable |
+| `system_secrets` | API keys, OAuth credentials, JWT secret (loaded at startup) |
+
+**What's NOT in the config DB (stays in per-environment DB):**
+- Threads, messages, users, organizations, venues
+- ConnectorConfig (per-venue credentials, OAuth tokens)
+- Roles, permissions, approvals, orders
+
+**No fallback:** If the config DB is unreachable, the API fails at startup with a clear error. There is no silent fallback to the local database — this prevents stale config from being used accidentally.
+
+**Key files:**
+- `app/db/config_models.py` — ConfigBase + ConnectorSpec, AgentConfig, AgentConnectorBinding, SystemSecret
+- `app/db/engine.py` — `get_config_db()`, `get_config_db_rw()`, startup connectivity test
+- `app/config.py` — `CONFIG_DATABASE_URL` setting
+
+---
+
+## 12. Automated Tasks (Saved Threads)
+
+Automated tasks are threads that can be saved and re-run on a schedule. A user creates a conversation (e.g. "generate a daily sales report for Bessie"), saves it as a task, and it runs automatically via APScheduler.
+
+**How it works:**
+1. User creates a normal thread via conversation
+2. User clicks "Save as Task" → creates an AutomatedTask record with the prompt, schedule, and agent
+3. APScheduler triggers the task on the cron schedule
+4. The scheduler creates a new conversation thread and runs the agent with the saved prompt
+5. Results are stored as a normal thread conversation
+
+**Task states:** `active` (running on schedule), `paused` (user paused), `draft` (not yet scheduled)
+
+**Schedule format:** Cron expressions (e.g. `0 8 * * 1-5` = 8am weekdays)
+
+**Example:** "Bessie Morning Sales Check" — runs daily at 8am, calls the ReportsAgent with "Generate a sales report for Bessie & Engineers for yesterday", emails the result.
+
+**Key files:**
+- `app/db/models.py` — AutomatedTask, AutomatedTaskRun models
+- `app/services/task_scheduler.py` — APScheduler integration, `schedule_task()`, `execute_task_now()`
+- `app/routers/automated_tasks.py` — CRUD + run/pause/resume endpoints
+- `app/agents/internal_tools.py` — `create_automated_task`, `list_automated_tasks`, `toggle_automated_task`
+
+---
+
+## 13. Auth & Permissions
+
+Two-tier authorization: **platform admin** (system-wide) and **organization roles** (per-org, granular).
+
+### Platform admin
+`User.role = "admin"` — set on the first user to register. Has full access to everything: deployments, system config, connector specs, E2E tests. Bypasses all org permission checks.
+
+### Organization roles
+Stored in the `roles` table with a JSON `permissions` array. Each user's org membership links to a role.
+
+**Standard roles:**
+
+| Role | Key permissions |
+|---|---|
+| **Owner** | Everything in the org (23 scopes) |
+| **Manager** | Everything except billing and custom roles |
+| **Team Member** | Read + create tasks only |
+| **Payroll Admin** | HR + roster read/write |
+
+**Custom roles:** Managers/Owners can create custom roles with any combination of the 23 permission scopes across 8 categories (Tasks, Orders, Roster, HR, Reports, Billing, Organization, Settings).
+
+**How it's enforced:**
+- FastAPI dependency: `require_permission("tasks:read")` checks the user's org role
+- Platform admin scopes (`admin:deployments`, `admin:tests`, `admin:system`) checked via `User.role == "admin"`
+- Frontend hides UI elements based on `user.permissions` from `/auth/me`
+
+**Key files:**
+- `app/auth/permissions.py` — 23 scopes, standard role definitions, permission groups
+- `app/auth/dependencies.py` — `require_permission()`, `require_role()`
+- `app/routers/roles.py` — role CRUD + member assignment
+
+---
+
+## 14. SSE Streaming
+
+Messages are processed via Server-Sent Events (SSE) so the frontend shows real-time progress: routing decisions, thinking steps, tool executions, and the final response.
+
+**How it works:**
+1. Frontend calls `POST /api/messages/stream`
+2. Backend returns `StreamingResponse` with `text/event-stream`
+3. Processing runs in a background thread (`asyncio.to_thread`)
+4. Events are pushed via a queue: `on_event({"type": "...", ...})`
+5. Frontend reads events and updates the UI progressively
+
+**Event types:**
+
+| Event | When | Frontend action |
+|---|---|---|
+| `routing` | Supervisor classified the domain | Show "Routed to reports agent" |
+| `thinking` | Agent is reasoning | Show thinking step in timeline |
+| `tool_call_start` | Tool execution begins | Show "Fetching sales data..." |
+| `tool_call_complete` | Tool finished | Show result summary |
+| `display_block` | Tool produced a visual | Render chart/table/editor |
+| `thread_created` | New thread created | Update thread list |
+| `complete` | Final response ready | Show the message + display blocks |
+| `error` | Something failed | Show error message |
+| `quota_exceeded` | Token limit hit | Show upgrade prompt |
+
+**Key files:**
+- `app/routers/messages.py` — `post_message_stream()` endpoint
+- `app/agents/tool_loop.py` — `_emit_event()`, `set_event_callback()`
+- `apps/web/app/lib/api.ts` — `apiStream()` client-side SSE reader
+
+---
+
+## 15. Display Blocks
+
+Display blocks are the mechanism for rendering rich UI from tool results. They bridge the backend tool loop and the frontend component registry.
+
+**Lifecycle:**
+1. A tool definition sets `display_component: "chart"` in the ConnectorSpec
+2. The tool executes and returns data (e.g. sales figures)
+3. `_build_display_block()` in the tool loop creates: `{component: "chart", data: {...}, props: {...}}`
+4. The block is attached to the assistant message's `display_blocks` array
+5. The frontend's `DisplayBlockRenderer` looks up "chart" in the REGISTRY → renders `<Chart data={...} />`
+
+**Two rendering modes:**
+- **Inline blocks** — rendered inside chat message bubbles (chart, table, task preview)
+- **Full-width blocks** — rendered above the conversation in a split pane (roster_editor, report_builder, orders_dashboard)
+
+**Working document blocks:** Instead of passing raw data, the block passes `{working_document_id: "..."}`. The component fetches the document and subscribes to changes.
+
+**Dynamic props:** Tools can pass runtime configuration via `_chart_props` in the result payload — these get merged into the block's `props`.
+
+**Key files:**
+- `app/agents/tool_loop.py` — `_build_display_block()` (line ~1362)
+- `apps/web/app/components/display/DisplayBlockRenderer.tsx` — REGISTRY, FULL_WIDTH_COMPONENTS
+- `apps/web/app/components/tasks/ThreadDetail.tsx` — renders blocks in conversation + split pane
+
+---
+
 ## Data Flow Summary
 
 ```
@@ -268,4 +458,9 @@ User message
 | **Transforms** | `app/connectors/response_transform.py` |
 | **Prompt Builder** | `app/agents/prompt_builder.py` |
 | **Components** | `apps/web/app/components/display/DisplayBlockRenderer.tsx`, `apps/web/app/components/pages/` |
+| **Working Documents** | `app/routers/working_documents.py`, `app/services/document_sync.py` |
 | **Config DB** | `app/db/config_models.py`, `app/db/engine.py` (get_config_db) |
+| **Automated Tasks** | `app/services/task_scheduler.py`, `app/routers/automated_tasks.py` |
+| **Auth & Permissions** | `app/auth/permissions.py`, `app/auth/dependencies.py`, `app/routers/roles.py` |
+| **SSE Streaming** | `app/routers/messages.py`, `apps/web/app/lib/api.ts` (apiStream) |
+| **Display Blocks** | `app/agents/tool_loop.py` (_build_display_block), `DisplayBlockRenderer.tsx` |
