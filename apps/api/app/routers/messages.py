@@ -108,6 +108,7 @@ async def post_message_stream(
                     )
                 else:
                     import logging
+
                     logging.getLogger(__name__).exception("Stream error: %s", exc)
                     on_event({"type": "error", "message": str(exc)})
             finally:
