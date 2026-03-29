@@ -2,14 +2,14 @@
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import Sidebar from '../components/layout/Sidebar';
-import ThreadList from '../components/tasks/ThreadList';
-import ThreadDetail from '../components/tasks/ThreadDetail';
+import ThreadList from '../components/threads/ThreadList';
+import ThreadDetail from '../components/threads/ThreadDetail';
 import RoutingIndicator from '../components/routing/RoutingIndicator';
 import HomePanel from '../components/home/HomePanel';
 import SettingsPanel from '../components/settings/SettingsPanel';
 import LoginForm from '../components/auth/LoginForm';
 import FunctionalPage from '../components/pages/FunctionalPage';
-import QuotaExceededModal from '../components/display/QuotaExceededModal';
+import QuotaExceededModal from '../components/layout/QuotaExceededModal';
 import { FUNCTIONAL_PAGES } from '../components/pages/pageRegistry';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
 import { PanelLeft as PanelLeftIcon, ArrowLeft, Menu, Settings, LogOut } from 'lucide-react';

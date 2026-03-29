@@ -5,7 +5,7 @@ import { apiFetch } from '../../lib/api';
 import { useSplitPane } from '../../hooks/useSplitPane';
 import SplitDragHandle from '../layout/SplitDragHandle';
 import DisplayBlockRenderer from '../display/DisplayBlockRenderer';
-import { ConversationView } from '../tasks/ThreadDetail';
+import { ConversationView } from '../threads/ThreadDetail';
 import type { FunctionalPageConfig } from './pageRegistry';
 import type { Thread, WidgetAction } from '../../types';
 
