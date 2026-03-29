@@ -12,28 +12,39 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
-def classify(message: str, domains: list[str], db: Session | None = None) -> dict:
+def classify(
+    message: str,
+    domains: list[str],
+    db: Session | None = None,
+    config_db: Session | None = None,
+) -> dict:
     """Classify a message into a domain.
 
     Returns {"domain": str, "confidence": float, "llm_call_id": str | None}.
+    db = main DB (for credentials), config_db = config DB (for agent prompts).
     """
     from app.services.secrets import get_api_key
 
     api_key = get_api_key("anthropic", "api_key", db) or ""
-    return _llm_classify(message, domains, api_key, db)
+    return _llm_classify(message, domains, api_key, db=db, config_db=config_db)
 
 
 def _llm_classify(
-    message: str, domains: list[str], api_key: str, db: Session | None = None
+    message: str,
+    domains: list[str],
+    api_key: str,
+    db: Session | None = None,
+    config_db: Session | None = None,
 ) -> dict:
     import anthropic
 
-    if not db:
+    _cdb = config_db or db
+    if not _cdb:
         raise RuntimeError("Router requires a DB session to load its system prompt")
 
     from app.services.agent_config_service import get_system_prompt
 
-    prompt_template = get_system_prompt("router", db)
+    prompt_template = get_system_prompt("router", _cdb)
     if not prompt_template:
         raise RuntimeError(
             "Router system prompt is not configured. Set it in Settings > Router."
