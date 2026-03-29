@@ -778,15 +778,16 @@ def _execute_tool_call_in_thread(tc_id: str, event_callback) -> tuple[str, dict]
 
     Returns (tc_id, result_dict).
     """
-    from app.db.engine import SessionLocal
+    from app.db.engine import SessionLocal, _ConfigSessionLocal
 
     set_event_callback(event_callback)
     thread_db = SessionLocal()
+    thread_config_db = _ConfigSessionLocal()
     try:
         tc = thread_db.query(ToolCall).filter(ToolCall.id == tc_id).first()
         if not tc:
             return (tc_id, {"error": f"ToolCall not found: {tc_id}"})
-        result = _execute_tool_call(tc, thread_db)
+        result = _execute_tool_call(tc, thread_db, config_db=thread_config_db)
         thread_db.commit()
         return (tc_id, result)
     except Exception as exc:
@@ -794,6 +795,7 @@ def _execute_tool_call_in_thread(tc_id: str, event_callback) -> tuple[str, dict]
         return (tc_id, {"error": str(exc)})
     finally:
         thread_db.close()
+        thread_config_db.close()
 
 
 def _execute_tool_call(

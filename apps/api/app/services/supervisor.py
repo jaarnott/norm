@@ -150,7 +150,7 @@ def handle_message(
         "meta: ONLY when the user asks a general question about the whole system's capabilities without mentioning a specific domain (e.g. 'what can you do?', 'help'). If they mention a specific area like HR, procurement, or reports, route to that domain instead."
     )
 
-    routing = classify(message, domain_descs, db=db)
+    routing = classify(message, domain_descs, db=_cdb)
     domain = routing["domain"]
 
     # Resolve venue (skip if already resolved from venue clarification follow-up)
