@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db, SessionLocal
+from app.db.engine import get_db, get_config_db, SessionLocal, _ConfigSessionLocal
 from app.db.models import User
 from app.auth.dependencies import get_current_user
 from app.services.supervisor import handle_message
@@ -24,12 +24,14 @@ class MessageRequest(BaseModel):
 async def post_message(
     req: MessageRequest,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     try:
         return handle_message(
             req.message,
             db,
+            config_db=config_db,
             user_id=user.id,
             thread_id=req.thread_id,
             venue_id=req.venue_id,
@@ -73,10 +75,12 @@ async def post_message_stream(
 
             set_event_callback(on_event)
             db = SessionLocal()
+            config_db = _ConfigSessionLocal()
             try:
                 result = handle_message(
                     req.message,
                     db,
+                    config_db=config_db,
                     user_id=user.id,
                     thread_id=req.thread_id,
                     venue_id=req.venue_id,
@@ -106,6 +110,7 @@ async def post_message_stream(
                     on_event({"type": "error", "message": str(exc)})
             finally:
                 db.close()
+                config_db.close()
 
         bg = asyncio.ensure_future(asyncio.to_thread(run))
         try:

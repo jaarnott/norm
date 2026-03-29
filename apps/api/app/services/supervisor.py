@@ -21,11 +21,14 @@ logger = logging.getLogger(__name__)
 def handle_message(
     message: str,
     db: Session,
+    config_db: Session | None = None,
     user_id: str | None = None,
     thread_id: str | None = None,
     venue_id: str | None = None,
 ) -> dict:
     """Process a user message through routing then agent delegation."""
+    _cdb = config_db or db  # Use config DB for agent/connector lookups
+
     # Quota gate — block before any LLM call if tokens exhausted
     from app.services.billing_service import check_quota_for_user
 
@@ -61,6 +64,7 @@ def handle_message(
                     venue_id=venue_id,
                     venue_name=venue_name,
                     venue_timezone=venue_timezone,
+                    config_db=_cdb,
                 )
             # Handle venue clarification follow-ups — resolve venue from reply
             # and re-route the original message
@@ -126,7 +130,7 @@ def handle_message(
     # 2. Classify the message to a domain (with rich capability descriptions)
     from app.services.agent_config_service import get_all_capabilities_summary
 
-    caps = get_all_capabilities_summary(db)
+    caps = get_all_capabilities_summary(_cdb)
     domains = registered_domains()
     domain_descs = []
     for slug in domains:
@@ -207,6 +211,7 @@ def handle_message(
             venue_id=venue_id,
             venue_name=venue_name,
             venue_timezone=venue_timezone,
+            config_db=_cdb,
         )
 
         # Set the LLM-generated title on the thread
