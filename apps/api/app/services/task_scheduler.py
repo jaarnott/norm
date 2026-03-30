@@ -5,7 +5,6 @@ Started at FastAPI startup, loads active tasks from DB, and runs them
 on their configured schedules.
 """
 
-import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -17,9 +16,6 @@ from apscheduler.triggers.interval import IntervalTrigger
 logger = logging.getLogger(__name__)
 
 scheduler = BackgroundScheduler()
-
-# How many recent conversation messages to inject into scheduled runs
-RECENT_MESSAGES_LIMIT = 8
 
 
 def init_scheduler():
@@ -118,49 +114,22 @@ def _ensure_conversation_task(automated_task, db) -> str:
     return conv_thread.id
 
 
-def _build_augmented_prompt(automated_task, db) -> str:
-    """Build the prompt for a scheduled run with injected context."""
-    from app.db.models import Message
+def _build_task_context(automated_task, agent_context: dict) -> dict:
+    """Build context dict for an automated task run, merging agent context with task extras."""
+    ctx = dict(agent_context)
 
-    parts = [automated_task.prompt]
-
-    # Task configuration
     config = automated_task.task_config or {}
     if config:
-        parts.append(f"\n[Task Configuration]\n{json.dumps(config, indent=2)}")
+        ctx["task_configuration"] = config
 
-    # Thread summary
     if automated_task.thread_summary:
-        parts.append(f"\n[Thread Summary]\n{automated_task.thread_summary}")
+        ctx["thread_summary"] = automated_task.thread_summary
 
-    # Recent conversation messages
-    if automated_task.conversation_thread_id:
-        recent = (
-            db.query(Message)
-            .filter(Message.thread_id == automated_task.conversation_thread_id)
-            .order_by(Message.created_at.desc())
-            .limit(RECENT_MESSAGES_LIMIT)
-            .all()
-        )
-        if recent:
-            recent.reverse()  # chronological order
-            lines = []
-            for m in recent:
-                prefix = "User" if m.role == "user" else "Assistant"
-                # Truncate long messages in context
-                content = m.content[:500] if len(m.content) > 500 else m.content
-                lines.append(f"{prefix}: {content}")
-            parts.append("\n[Recent Context]\n" + "\n".join(lines))
-
-    # One-time overrides
     overrides = automated_task.overrides_next_run
     if overrides:
-        if isinstance(overrides, dict):
-            parts.append(f"\n[One-time Override]\n{json.dumps(overrides, indent=2)}")
-        elif isinstance(overrides, str):
-            parts.append(f"\n[One-time Override]\n{overrides}")
+        ctx["one_time_override"] = overrides
 
-    return "\n".join(parts)
+    return ctx
 
 
 def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
@@ -209,17 +178,42 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 system_prompt = f"You are the {task.agent_slug} agent for Norm."
 
             ctx = agent.build_context(db)
+            at_context = _build_task_context(task, ctx)
 
-            # Build augmented prompt with context
-            augmented_prompt = _build_augmented_prompt(task, db)
+            # Load conversation history from persistent thread
+            conv_messages = []
+            conv_thread = None
+            if task.conversation_thread_id:
+                conv_thread = (
+                    db.query(Thread)
+                    .filter(Thread.id == task.conversation_thread_id)
+                    .first()
+                )
+                conv_messages = (
+                    db.query(Message)
+                    .filter(Message.thread_id == task.conversation_thread_id)
+                    .order_by(Message.created_at)
+                    .all()
+                )
 
-            # Create execution Task record for the tool loop
+            # Build messages using unified context builder
+            from app.agents.context_builder import build_conversation_messages
+
+            messages = build_conversation_messages(
+                conv_messages,
+                task.prompt,
+                context=at_context,
+                thread=conv_thread,
+                db=db,
+            )
+
+            # Create execution Thread for run isolation (tool calls + details)
             temp_task = Thread(
                 user_id=task.created_by,
                 domain=task.agent_slug,
                 intent=f"{task.agent_slug}.automated_task",
                 status="in_progress",
-                raw_prompt=augmented_prompt,
+                raw_prompt=task.prompt,
                 title=f"[Auto] {task.title}",
                 extracted_fields={},
                 missing_fields=[],
@@ -230,21 +224,20 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             # Link run to execution task
             run.thread_id = temp_task.id
 
-            db.add(
-                Message(thread_id=temp_task.id, role="user", content=augmented_prompt)
-            )
+            db.add(Message(thread_id=temp_task.id, role="user", content=task.prompt))
             db.flush()
 
-            # Execute the tool loop
+            # Execute the tool loop with pre-built messages
             test_mode = mode == "test"
             result = run_tool_loop(
-                augmented_prompt,
+                task.prompt,
                 temp_task,
                 db,
                 system_prompt,
                 anthropic_tools,
-                context=ctx,
+                context=at_context,
                 test_mode=test_mode,
+                messages_override=messages,
             )
 
             # Extract result

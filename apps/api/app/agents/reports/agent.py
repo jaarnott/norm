@@ -30,6 +30,7 @@ class ReportsAgent(BaseDomainAgent):
         venue_name: str | None = None,
         venue_timezone: str | None = None,
         config_db: Session | None = None,
+        page_context: dict | None = None,
     ) -> dict:
         # Try the agentic tool loop first (if tools are bound)
         system_prompt, anthropic_tools = self.get_tool_definitions(
@@ -38,6 +39,7 @@ class ReportsAgent(BaseDomainAgent):
             venue_timezone=venue_timezone,
             user_id=user_id,
             config_db=config_db,
+            page_context=page_context,
         )
         if anthropic_tools:
             return self.handle_message_with_tools(
@@ -49,6 +51,7 @@ class ReportsAgent(BaseDomainAgent):
                 venue_name=venue_name,
                 venue_timezone=venue_timezone,
                 config_db=config_db,
+                page_context=page_context,
             )
 
         # Classic interpretation path (no tools bound)

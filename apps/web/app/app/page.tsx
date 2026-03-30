@@ -141,7 +141,7 @@ export default function Home() {
     return counts;
   }, [threads]);
 
-  const sendMessage = useCallback(async (messageText: string) => {
+  const sendMessage = useCallback(async (messageText: string, pageContext?: { page_id: string; agent: string }) => {
     if (!messageText.trim()) return;
 
     const threadIdForRequest = selectedThreadId;
@@ -212,11 +212,13 @@ export default function Home() {
     };
 
     try {
+      const body: Record<string, unknown> = { message: messageText };
+      if (threadIdForRequest) body.thread_id = threadIdForRequest;
+      if (pageContext) body.page_context = pageContext;
+
       await apiStream(
         '/api/messages/stream',
-        threadIdForRequest
-          ? { message: messageText, thread_id: threadIdForRequest }
-          : { message: messageText },
+        body,
         (event) => {
           if (event.type === 'thread_created') {
             // Store the real thread ID for recovery — but don't remap the

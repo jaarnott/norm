@@ -81,14 +81,16 @@ def run_tool_loop(
     context: dict | None = None,
     test_mode: bool = False,
     config_db: Session | None = None,
+    messages_override: list[dict] | None = None,
 ) -> dict:
     """Run the agentic tool loop for a user message.
 
     Returns a result dict suitable for the API response.
     If test_mode=True, write tools (POST/PUT/DELETE) are simulated.
+    If messages_override is provided, use it instead of building from task history.
     """
     # Build initial messages list from conversation history
-    messages = _build_messages(task, message, context)
+    messages = messages_override or _build_messages(task, message, context, db=db)
 
     return _execute_loop(
         messages,
@@ -1018,30 +1020,18 @@ def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
 
 
 def _build_messages(
-    task: Thread, new_message: str, context: dict | None = None
+    task: Thread, new_message: str, context: dict | None = None, db=None
 ) -> list[dict]:
     """Build the messages list from task conversation history + new message."""
-    messages: list[dict] = []
+    from app.agents.context_builder import build_conversation_messages
 
-    # Include existing conversation (excluding the very latest user msg we're about to add)
-    for msg in sorted(task.messages, key=lambda m: m.created_at):
-        messages.append({"role": msg.role, "content": msg.content})
-
-    # Add context if provided
-    content = new_message
-    if context:
-        context_parts = []
-        for key, value in context.items():
-            if key == "open_task":
-                continue
-            if value:
-                label = key.upper().replace("_", " ")
-                context_parts.append(f"{label}: {json.dumps(value)}")
-        if context_parts:
-            content = new_message + "\n\n[Context]\n" + "\n".join(context_parts)
-
-    messages.append({"role": "user", "content": content})
-    return messages
+    return build_conversation_messages(
+        list(task.messages),
+        new_message,
+        context=context,
+        thread=task,
+        db=db,
+    )
 
 
 def _build_tool_meta(anthropic_tools: list[dict], db: Session) -> dict:

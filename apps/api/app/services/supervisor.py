@@ -25,6 +25,7 @@ def handle_message(
     user_id: str | None = None,
     thread_id: str | None = None,
     venue_id: str | None = None,
+    page_context: dict | None = None,
 ) -> dict:
     """Process a user message through routing then agent delegation."""
     _cdb = config_db
@@ -131,27 +132,36 @@ def handle_message(
             elif thread.domain in ("meta", "unknown"):
                 prior_thread = thread
 
-    # 2. Classify the message to a domain (with rich capability descriptions)
+    # 2. Classify the message to a domain
     from app.services.agent_config_service import get_all_capabilities_summary
 
     caps = get_all_capabilities_summary(_cdb)
-    domains = registered_domains()
-    domain_descs = []
-    for slug in domains:
-        info = caps.get(slug, {})
-        desc = info.get("description", slug)
-        actions = ", ".join(
-            c["label"] for c in info.get("capabilities", []) if c.get("enabled", True)
-        )
-        line = f"{slug}: {desc}" + (f" (can: {actions})" if actions else "")
-        domain_descs.append(line)
-    # Add meta domain — only for broad "what can you do" with no specific domain
-    domain_descs.append(
-        "meta: ONLY when the user asks a general question about the whole system's capabilities without mentioning a specific domain (e.g. 'what can you do?', 'help'). If they mention a specific area like HR, procurement, or reports, route to that domain instead."
-    )
 
-    routing = classify(message, domain_descs, db=db, config_db=_cdb)
-    domain = routing["domain"]
+    # Skip LLM routing when page_context tells us which agent to use
+    if page_context and not thread_id:
+        domain = page_context["agent"]
+        routing = {"domain": domain, "title": None, "venue": None, "llm_call_id": None}
+        logger.info("Skipped LLM routing — page_context directed to %s", domain)
+    else:
+        domains = registered_domains()
+        domain_descs = []
+        for slug in domains:
+            info = caps.get(slug, {})
+            desc = info.get("description", slug)
+            actions = ", ".join(
+                c["label"]
+                for c in info.get("capabilities", [])
+                if c.get("enabled", True)
+            )
+            line = f"{slug}: {desc}" + (f" (can: {actions})" if actions else "")
+            domain_descs.append(line)
+        # Add meta domain — only for broad "what can you do" with no specific domain
+        domain_descs.append(
+            "meta: ONLY when the user asks a general question about the whole system's capabilities without mentioning a specific domain (e.g. 'what can you do?', 'help'). If they mention a specific area like HR, procurement, or reports, route to that domain instead."
+        )
+
+        routing = classify(message, domain_descs, db=db, config_db=_cdb)
+        domain = routing["domain"]
 
     # Resolve venue (skip if already resolved from venue clarification follow-up)
     if not venue_id:
@@ -216,6 +226,7 @@ def handle_message(
             venue_name=venue_name,
             venue_timezone=venue_timezone,
             config_db=_cdb,
+            page_context=page_context,
         )
 
         # Set the LLM-generated title on the thread

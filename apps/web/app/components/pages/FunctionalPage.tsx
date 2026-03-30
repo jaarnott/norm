@@ -12,7 +12,7 @@ import type { Thread, WidgetAction } from '../../types';
 interface FunctionalPageProps {
   config: FunctionalPageConfig;
   thread: Thread | null;
-  onSend: (message: string) => void;
+  onSend: (message: string, pageContext?: { page_id: string; agent: string }) => void;
   loading: boolean;
   onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   activeVenueId?: string | null;
@@ -101,14 +101,14 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
 
   const inputBar = (
     <div style={{ padding: '12px 24px 24px' }}>
-      <form onSubmit={e => { e.preventDefault(); if (input.trim()) { onSend(input); setInput(''); } }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
+      <form onSubmit={e => { e.preventDefault(); if (input.trim()) { onSend(input, { page_id: config.id, agent: config.agent }); setInput(''); } }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
         <textarea
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              if (input.trim()) { onSend(input); setInput(''); }
+              if (input.trim()) { onSend(input, { page_id: config.id, agent: config.agent }); setInput(''); }
             }
           }}
           placeholder="Message Norm..."

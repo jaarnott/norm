@@ -14,10 +14,16 @@ from app.services.supervisor import handle_message
 router = APIRouter()
 
 
+class PageContext(BaseModel):
+    page_id: str
+    agent: str
+
+
 class MessageRequest(BaseModel):
     message: str
     thread_id: str | None = None
     venue_id: str | None = None
+    page_context: PageContext | None = None
 
 
 @router.post("/messages")
@@ -35,6 +41,7 @@ async def post_message(
             user_id=user.id,
             thread_id=req.thread_id,
             venue_id=req.venue_id,
+            page_context=req.page_context.model_dump() if req.page_context else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -84,6 +91,9 @@ async def post_message_stream(
                     user_id=user.id,
                     thread_id=req.thread_id,
                     venue_id=req.venue_id,
+                    page_context=req.page_context.model_dump()
+                    if req.page_context
+                    else None,
                 )
                 on_event({"type": "complete", "data": result})
             except Exception as exc:

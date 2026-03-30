@@ -3,21 +3,21 @@ project_id  = "norm-production-491101"
 region      = "australia-southeast1"
 domain      = "bettercallnorm.com"
 
-# Database — production grade, HA
-db_tier             = "db-custom-4-15360"
-db_ha_enabled       = true
-db_backup_retention = 30
-db_disk_size            = 200
-db_read_replica_enabled = true
-db_cross_region_backup  = "australia-southeast2"
+# Database — right-sized for early stage, scale up when needed
+db_tier             = "db-custom-1-3840"
+db_ha_enabled       = false
+db_backup_retention = 7
+db_disk_size            = 20
+db_read_replica_enabled = false
+db_cross_region_backup  = ""
 
-# Cloud Run — always warm
-cloudrun_api_min    = 1
-cloudrun_api_max    = 10
-cloudrun_web_min    = 1
-cloudrun_web_max    = 5
-cloudrun_api_cpu    = "2"
-cloudrun_api_memory = "2Gi"
+# Cloud Run — scale to zero, right-sized for early stage
+cloudrun_api_min    = 0
+cloudrun_api_max    = 3
+cloudrun_web_min    = 0
+cloudrun_web_max    = 2
+cloudrun_api_cpu    = "1"
+cloudrun_api_memory = "1Gi"
 cloudrun_web_cpu    = "1"
 cloudrun_web_memory = "512Mi"
 

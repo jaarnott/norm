@@ -142,29 +142,26 @@ Rendered inside chat messages. Small, read-only visualizations.
 | `chart` | Bar, line, pie charts (via Recharts) |
 | `automated_task_preview` | Single scheduled task card |
 | `tool_approval` | Approve/reject pending tool calls |
+| `purchase_order_editor` | Order form with line items (supports working doc edits) |
+| `criteria_editor` | Hiring criteria checklist (supports working doc edits) |
 
-### b. Full-width split pane (above conversation)
-Rendered in the top half of a split view, with the conversation below. These are interactive editors.
+### b. Functional pages
 
-| Component | What it shows |
-|---|---|
-| `roster_editor` | Week/day roster with drag-drop shifts |
-| `hiring_board` | Jobs + candidate applications |
-| `orders_dashboard` | Purchase order list with expandable line items |
-| `report_builder` | Grid-based dashboard with editable charts |
-| `purchase_order_editor` | Order form with line items |
-| `criteria_editor` | Hiring criteria checklist |
+Functional pages are full-width components accessed via sidebar navigation. Each page has a conversation input — when the user types, the page enters a **split-pane** layout (component on top, conversation below). The message includes **page context** so the LLM knows what the user is viewing, and the supervisor skips LLM routing (saving ~500ms) by routing directly to the page's agent.
 
-### c. Functional pages (standalone)
-Full-page components accessed via sidebar navigation, not from conversation.
+| Page | Agent | Component | Data source |
+|---|---|---|---|
+| Roster | hr | `roster_editor` | LoadedHub `get_roster` |
+| Hiring | hr | `hiring_board` | BambooHR `get_jobs` |
+| Orders | procurement | `orders_dashboard` | LoadedHub `get_purchase_orders_summary` |
+| Reports | reports | `saved_reports_board` | Self-loading |
+| Tasks (×3) | hr/procurement/reports | `automated_task_board` | Norm `list_automated_tasks` |
 
-| Page | Sidebar location | What it shows |
-|---|---|---|
-| Roster | HR → Roster | Week roster editor (loads from LoadedHub) |
-| Hiring | HR → Hiring | Job board (loads from BambooHR) |
-| Orders | Procurement → Orders | Purchase order dashboard (loads from LoadedHub) |
-| Reports | Reports → Reports | Saved report list |
-| Tasks (×3) | Each agent → Tasks | Automated task board |
+**Page context flow:**
+1. User types on a functional page
+2. Frontend sends `page_context: { page_id, agent }` with the message
+3. Supervisor uses `page_context.agent` directly instead of calling the LLM router
+4. Agent's system prompt includes "The user is currently viewing the **Roster** page"
 
 **How display blocks are created:**
 1. A tool definition in the ConnectorSpec can set `display_component: "chart"`
@@ -312,14 +309,21 @@ All system configuration lives in a dedicated shared Cloud SQL instance (`norm-c
 
 ## 12. Automated Tasks (Saved Threads)
 
-Automated tasks are threads that can be saved and re-run on a schedule. A user creates a conversation (e.g. "generate a daily sales report for Bessie"), saves it as a task, and it runs automatically via APScheduler.
+Automated tasks are prompts that run on a schedule via APScheduler. They are created through conversation — the user asks an agent (e.g. "set up a daily sales report for Bessie") and the LLM calls the `create_automated_task` internal tool. There is no "Save as Task" button in the UI.
 
 **How it works:**
-1. User creates a normal thread via conversation
-2. User clicks "Save as Task" → creates an AutomatedTask record with the prompt, schedule, and agent
+1. User asks an agent to create a scheduled task → LLM calls `create_automated_task` → creates an AutomatedTask record as a **draft**
+2. User tests the draft, then activates it
 3. APScheduler triggers the task on the cron schedule
-4. The scheduler creates a new conversation thread and runs the agent with the saved prompt
-5. Results are stored as a normal thread conversation
+4. Each run creates a **new execution thread** containing the full tool calls and results for that run
+5. A run summary is posted to the task's **persistent conversation thread** (created once, reused across all runs)
+6. The persistent conversation thread is visible in the thread list — users can also type into it directly
+
+**Two threads per task:**
+- **Conversation thread** (`conversation_thread_id`) — persistent, accumulates run summaries and user messages across all executions
+- **Execution thread** (`AutomatedTaskRun.thread_id`) — new per run, contains the full tool calls and details for that specific execution
+
+**Conversation context:** Each run gets the last N messages from the conversation thread as proper Anthropic message pairs (using the same unified context builder as normal threads), plus task configuration and thread summary. This gives the agent awareness of previous runs and any user instructions.
 
 **Task states:** `active` (running on schedule), `paused` (user paused), `draft` (not yet scheduled)
 
@@ -330,6 +334,7 @@ Automated tasks are threads that can be saved and re-run on a schedule. A user c
 **Key files:**
 - `app/db/models.py` — AutomatedTask, AutomatedTaskRun models
 - `app/services/task_scheduler.py` — APScheduler integration, `schedule_task()`, `execute_task_now()`
+- `app/agents/context_builder.py` — unified conversation context builder (shared with normal threads)
 - `app/routers/automated_tasks.py` — CRUD + run/pause/resume endpoints
 - `app/agents/internal_tools.py` — `create_automated_task`, `list_automated_tasks`, `toggle_automated_task`
 
@@ -413,7 +418,7 @@ Display blocks are the mechanism for rendering rich UI from tool results. They b
 
 **Two rendering modes:**
 - **Inline blocks** — rendered inside chat message bubbles (chart, table, task preview)
-- **Full-width blocks** — rendered above the conversation in a split pane (roster_editor, report_builder, orders_dashboard)
+- **Full-width blocks** — rendered in functional pages' split pane (roster_editor, report_builder, orders_dashboard)
 
 **Working document blocks:** Instead of passing raw data, the block passes `{working_document_id: "..."}`. The component fetches the document and subscribes to changes.
 
@@ -431,7 +436,8 @@ Display blocks are the mechanism for rendering rich UI from tool results. They b
 ```
 User message
   → Supervisor (routing)
-    → Router LLM (classify domain)
+    → Page context provided? → Skip router, use page's agent directly
+    → Otherwise → Router LLM (classify domain)
     → Agent (reports/procurement/hr)
       → Tool Loop (up to 10 iterations)
         → Internal tool (@register handler)

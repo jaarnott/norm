@@ -146,6 +146,7 @@ def build_tool_definitions(
     venue_timezone: str | None = None,
     user_id: str | None = None,
     config_db: Session | None = None,
+    page_context: dict | None = None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
@@ -360,6 +361,25 @@ The user has access to multiple venues:
 - If the request clearly needs a venue but none is specified, ask which one
 - Only call tools for venues that have the relevant connector configured
 - For cross-venue queries, only include venues that have the relevant connector
+"""
+
+    # Add page context so the agent knows what the user is viewing
+    if page_context:
+        _page_labels = {
+            "roster": "Roster",
+            "hiring": "Hiring",
+            "orders": "Orders",
+            "saved-reports": "Saved Reports",
+            "tasks-hr": "HR Automated Tasks",
+            "tasks-procurement": "Procurement Automated Tasks",
+            "tasks-reports": "Reports Automated Tasks",
+        }
+        page_label = _page_labels.get(page_context["page_id"], page_context["page_id"])
+        system_prompt += f"""
+
+## Current Page Context
+The user is currently viewing the **{page_label}** page.
+Their question likely relates to what they see on this page. Prioritize answers relevant to this context.
 """
 
     # Always add parallel tool-use guidance
