@@ -382,7 +382,7 @@ function extractLeafPaths(obj: Record<string, unknown>, prefix = '', siblingItem
     const path = prefix ? `${prefix}.${key}` : key;
     if (Array.isArray(val)) {
       // Collect all elements of this array across siblings to find one with data
-      let allElements: Record<string, unknown>[] = [];
+      const allElements: Record<string, unknown>[] = [];
       // From current item
       for (const el of val) {
         if (el && typeof el === 'object' && !Array.isArray(el)) allElements.push(el as Record<string, unknown>);
