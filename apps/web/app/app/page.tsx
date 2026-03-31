@@ -164,6 +164,7 @@ export default function Home() {
       };
       setThreads(prev => [optimistic, ...prev]);
       setSelectedThreadId(optimisticId);
+      setMobileView('detail');
     } else {
       // Existing thread — append user message optimistically
       setThreads(prev => prev.map(t =>

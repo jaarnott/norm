@@ -1155,26 +1155,38 @@ def _slim_tool_result(
     )
 
 
-def _unwrap_array(payload: dict | list) -> list | None:
-    """Find the searchable array in a tool result, trying common key names.
+def _unwrap_array(payload: dict | list, max_depth: int = 8) -> list | None:
+    """Find the largest array of dicts in a tool result by recursing into nested structures.
 
-    Handles both flat structures ({"data": [...]}) and nested ones
-    ({"data": {"lines": [...]}}) which are common in API responses.
+    Handles flat ({"data": [...]}), nested ({"data": {"lines": [...]}}),
+    and deeply nested consolidator results ({"data": {"step_name": {"data": [{rosteredShifts: [...]}]}}}).
+    Also recurses into list items to find large arrays nested inside single-item wrappers.
     """
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        for key in ("data", "lines", "items", "results"):
-            val = payload.get(key)
-            if isinstance(val, list):
-                return val
-            # If 'data' is a dict, look inside it for arrays
-            if key == "data" and isinstance(val, dict):
-                for inner_key in ("lines", "items", "results", "data"):
-                    inner = val.get(inner_key)
-                    if isinstance(inner, list):
-                        return inner
-    return None
+    if max_depth <= 0:
+        return None
+    if isinstance(payload, list) and len(payload) > 0 and isinstance(payload[0], dict):
+        # This is an array of dicts — but check if items contain larger nested arrays
+        best: list | None = payload
+        for item in payload[:3]:  # only check first few items
+            nested = _unwrap_array(item, max_depth - 1)
+            if nested and len(nested) > len(best):
+                best = nested
+        return best
+    if not isinstance(payload, dict):
+        return None
+
+    best = None
+    for val in payload.values():
+        if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
+            # Found an array of dicts — but recurse into it to find larger nested arrays
+            candidate = _unwrap_array(val, max_depth - 1)
+            if candidate and (best is None or len(candidate) > len(best)):
+                best = candidate
+        elif isinstance(val, dict):
+            nested = _unwrap_array(val, max_depth - 1)
+            if nested and (best is None or len(nested) > len(best)):
+                best = nested
+    return best
 
 
 def _bigram_similarity(a: str, b: str) -> float:

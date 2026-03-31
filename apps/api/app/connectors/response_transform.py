@@ -123,6 +123,7 @@ def _transform_item(
     fields: dict[str, str],
     flatten: list[str] | None = None,
     venue_tz: "ZoneInfo | None" = None,
+    nested_filters: dict[str, list[dict]] | None = None,
 ) -> list[dict] | dict:
     """Transform a single item using the field mapping.
 
@@ -176,6 +177,15 @@ def _transform_item(
         # Remove direct entries that have nested sub-field mappings
         for inner_arr in nested:
             direct.pop(inner_arr, None)
+
+        # Apply nested filters for this array (e.g., rosteredShifts[].datestampDeleted is_empty)
+        arr_filters = (nested_filters or {}).get(arr_name, [])
+        if arr_filters:
+            arr_data = [
+                si
+                for si in arr_data
+                if isinstance(si, dict) and _evaluate_filters(si, arr_filters)
+            ]
 
         transformed_arr = []
         for sub_item in arr_data:
@@ -291,7 +301,18 @@ def apply_response_transform(
         return payload
 
     flatten = transform_config.get("flatten") or []
-    filters = transform_config.get("filters") or []
+    all_filters = transform_config.get("filters") or []
+
+    # Separate top-level filters from nested array filters (e.g., rosteredShifts[].field)
+    top_filters: list[dict] = []
+    nested_filters: dict[str, list[dict]] = {}  # {arr_name: [filter_dicts]}
+    for f in all_filters:
+        field = f.get("field", "")
+        if "[]." in field:
+            arr_name, sub_field = field.split("[].", 1)
+            nested_filters.setdefault(arr_name, []).append({**f, "field": sub_field})
+        else:
+            top_filters.append(f)
 
     # Resolve venue timezone for tz/dow field options
     venue_tz = None
@@ -304,14 +325,16 @@ def apply_response_transform(
     data, wrapper_key = _find_array(payload)
 
     if data is not None and len(data) > 0 and isinstance(data[0], dict):
-        # Apply row-level filters before field mapping
-        if filters:
-            data = [item for item in data if _evaluate_filters(item, filters)]
+        # Apply top-level row filters before field mapping
+        if top_filters:
+            data = [item for item in data if _evaluate_filters(item, top_filters)]
 
         # Array of objects — transform each item
         transformed_items: list[dict] = []
         for item in data:
-            result = _transform_item(item, fields, flatten, venue_tz=venue_tz)
+            result = _transform_item(
+                item, fields, flatten, venue_tz=venue_tz, nested_filters=nested_filters
+            )
             if isinstance(result, list):
                 transformed_items.extend(result)  # flattened
             else:
@@ -335,10 +358,16 @@ def apply_response_transform(
     if isinstance(payload, dict):
         if "data" in payload and isinstance(payload["data"], dict):
             result = _transform_item(
-                payload["data"], fields, flatten, venue_tz=venue_tz
+                payload["data"],
+                fields,
+                flatten,
+                venue_tz=venue_tz,
+                nested_filters=nested_filters,
             )
             return {**payload, "data": result}
-        result = _transform_item(payload, fields, flatten, venue_tz=venue_tz)
+        result = _transform_item(
+            payload, fields, flatten, venue_tz=venue_tz, nested_filters=nested_filters
+        )
         return result
 
     return payload
