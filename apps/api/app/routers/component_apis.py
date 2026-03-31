@@ -218,8 +218,13 @@ def _render_request(
     parts = urlsplit(url)
     if parts.query:
         url = urlunsplit(
-            (parts.scheme, parts.netloc, parts.path,
-             parts.query.replace("+", "%2B"), parts.fragment)
+            (
+                parts.scheme,
+                parts.netloc,
+                parts.path,
+                parts.query.replace("+", "%2B"),
+                parts.fragment,
+            )
         )
 
     # Render body
@@ -362,9 +367,7 @@ async def execute_component_api(
         .first()
     )
     if not cfg:
-        raise HTTPException(
-            404, f"No config for {component_key}/{action_name}"
-        )
+        raise HTTPException(404, f"No config for {component_key}/{action_name}")
 
     # 2. Find connector credentials
     cred_query = db.query(ConnectorConfig).filter(
@@ -376,7 +379,8 @@ async def execute_component_api(
     cred_row = cred_query.first()
     if not cred_row:
         raise HTTPException(
-            400, f"No credentials for {cfg.connector_name}"
+            400,
+            f"No credentials for {cfg.connector_name}"
             + (f" (venue {body.venue_id})" if body.venue_id else ""),
         )
     credentials = cred_row.config or {}
@@ -391,7 +395,10 @@ async def execute_component_api(
         raise HTTPException(404, f"Connector spec not found: {cfg.connector_name}")
 
     # 4. Render URL from path_template
-    template_ctx = {"creds": credentials, **(body.params if isinstance(body.params, dict) else {})}
+    template_ctx = {
+        "creds": credentials,
+        **(body.params if isinstance(body.params, dict) else {}),
+    }
     try:
         url = _jinja_env.from_string(cfg.path_template).render(**template_ctx).strip()
     except Exception as e:
@@ -490,9 +497,7 @@ async def execute_component_api(
     return {"data": data, "status_code": resp.status_code}
 
 
-def _apply_response_mapping(
-    data: dict | list, mapping: dict[str, str]
-) -> dict | list:
+def _apply_response_mapping(data: dict | list, mapping: dict[str, str]) -> dict | list:
     """Remap field names in response data using the configured mapping.
 
     mapping is {"componentFieldName": "apiFieldName"} — the reverse lookup
@@ -522,9 +527,12 @@ def _apply_response_mapping(
         # Check for common wrapper keys
         for wrapper_key in ("data", "items", "results"):
             if wrapper_key in data and isinstance(data[wrapper_key], list):
-                return {**data, wrapper_key: [
-                    _remap_item(item) if isinstance(item, dict) else item
-                    for item in data[wrapper_key]
-                ]}
+                return {
+                    **data,
+                    wrapper_key: [
+                        _remap_item(item) if isinstance(item, dict) else item
+                        for item in data[wrapper_key]
+                    ],
+                }
         return _remap_item(data)
     return data
