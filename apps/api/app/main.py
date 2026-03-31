@@ -35,6 +35,7 @@ from app.routers import (  # noqa: E402
     admin,
     roles,
     email,
+    component_apis,
 )
 
 app = FastAPI(
@@ -81,6 +82,7 @@ app.include_router(reports_crud.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(roles.router, prefix="/api")
 app.include_router(email.router, prefix="/api")
+app.include_router(component_apis.router, prefix="/api")
 
 
 @app.on_event("startup")

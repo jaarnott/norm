@@ -121,3 +121,24 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
 
   return res;
 }
+
+/**
+ * Call a component API endpoint directly (bypasses the LLM tool system).
+ * Components use this for data loading and write operations.
+ */
+export async function callComponentApi(
+  componentKey: string,
+  actionName: string,
+  params: Record<string, unknown> | unknown[] = {},
+  venueId?: string,
+): Promise<{ data: unknown; status_code: number; error?: boolean }> {
+  const res = await apiFetch(`/api/component-api/${componentKey}/${actionName}`, {
+    method: 'POST',
+    body: JSON.stringify({ venue_id: venueId, params }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+    throw new Error(body.detail || `Component API error: ${res.status}`);
+  }
+  return res.json();
+}

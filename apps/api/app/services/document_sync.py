@@ -1,7 +1,7 @@
 """Background sync for working documents — pushes pending ops to external systems.
 
-Operation-to-connector mappings are read from ConnectorSpec.operation_mappings
-instead of being hardcoded, so new connectors can be configured via the UI.
+Operation-to-connector mappings are read from ComponentApiConfig records,
+configured via the Components panel in Settings.
 """
 
 import logging
@@ -16,23 +16,42 @@ logger = logging.getLogger(__name__)
 
 
 def _get_mapping(op_type: str, doc: WorkingDocument, db: Session) -> dict | None:
-    """Look up the operation mapping from the connector spec."""
-    from app.db.config_models import ConnectorSpec
+    """Look up the operation mapping from component_api_configs."""
+    from app.db.config_models import ComponentApiConfig
     from app.db.engine import _ConfigSessionLocal
 
+    # Determine component_key from doc_type
+    doc_type_to_component = {
+        "roster": "roster_editor",
+        "order": "purchase_order_editor",
+        "criteria": "criteria_editor",
+    }
+    component_key = doc_type_to_component.get(doc.doc_type)
+    if not component_key:
+        return None
+
     _cdb = _ConfigSessionLocal()
-    spec = (
-        _cdb.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == doc.connector_name)
+    cfg = (
+        _cdb.query(ComponentApiConfig)
+        .filter(
+            ComponentApiConfig.component_key == component_key,
+            ComponentApiConfig.connector_name == doc.connector_name,
+            ComponentApiConfig.action_name == op_type,
+            ComponentApiConfig.enabled.is_(True),
+        )
         .first()
     )
     _cdb.close()
-    if not spec or not spec.operation_mappings:
+    if not cfg:
         return None
-    for m in spec.operation_mappings:
-        if m.get("operation") == op_type and m.get("doc_type") == doc.doc_type:
-            return m
-    return None
+    return {
+        "operation": cfg.action_name,
+        "target_action": cfg.action_name,
+        "method": cfg.method,
+        "field_mapping": cfg.field_mapping or {},
+        "ref_fields": cfg.ref_fields or {},
+        "id_field": cfg.id_field,
+    }
 
 
 def _build_params(op: dict, doc: WorkingDocument, mapping: dict) -> dict:

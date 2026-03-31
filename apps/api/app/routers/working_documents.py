@@ -380,13 +380,15 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
 
         elif op_type == "add_line":
             fields = op.get("fields", op)
-            new_line = {
-                "product": fields.get("product", ""),
-                "supplier": fields.get("supplier", ""),
-                "quantity": fields.get("quantity", 1),
-                "unit": fields.get("unit", "case"),
-                "unit_price": fields.get("unit_price", 0),
-            }
+            # Preserve all fields from the line (including enrichment fields
+            # like stock_code, itemId, supplierId, unitId, etc.)
+            new_line = {k: v for k, v in fields.items() if k != "op"}
+            # Ensure required fields have defaults
+            new_line.setdefault("product", "")
+            new_line.setdefault("supplier", "")
+            new_line.setdefault("quantity", 1)
+            new_line.setdefault("unit", "case")
+            new_line.setdefault("unit_price", 0)
             lines.append(new_line)
 
         elif op_type == "remove_line":

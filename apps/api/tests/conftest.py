@@ -44,6 +44,7 @@ from app.routers import (
     orders,
     agents,
     roles,
+    component_apis,
 )
 
 
@@ -64,6 +65,7 @@ _test_app.include_router(working_documents.router, prefix="/api")
 _test_app.include_router(orders.router, prefix="/api")
 _test_app.include_router(agents.router, prefix="/api")
 _test_app.include_router(roles.router, prefix="/api")
+_test_app.include_router(component_apis.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------

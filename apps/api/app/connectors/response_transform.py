@@ -164,12 +164,26 @@ def _transform_item(
         if not isinstance(arr_data, list):
             continue
 
+        # Separate direct sub-fields from nested array sub-fields
+        direct: dict[str, str] = {}
+        nested: dict[str, dict[str, str]] = {}  # {inner_arr: {inner_sub: dest}}
+        for sub_src, sub_dest in sub_fields.items():
+            if "[]." in sub_src:
+                inner_arr, inner_sub = sub_src.split("[].", 1)
+                nested.setdefault(inner_arr, {})[inner_sub] = sub_dest
+            else:
+                direct[sub_src] = sub_dest
+        # Remove direct entries that have nested sub-field mappings
+        for inner_arr in nested:
+            direct.pop(inner_arr, None)
+
         transformed_arr = []
         for sub_item in arr_data:
             if not isinstance(sub_item, dict):
                 continue
             row: dict = {}
-            for sub_src, sub_dest_raw in sub_fields.items():
+            # Direct sub-fields
+            for sub_src, sub_dest_raw in direct.items():
                 sub_dest, sub_opts = _parse_field_dest(sub_dest_raw)
                 val = _resolve_dot_path(sub_item, sub_src)
                 if val is not None:
@@ -180,6 +194,27 @@ def _transform_item(
                         dow = _get_day_of_week(row[sub_dest])
                         if dow:
                             row[f"{sub_dest}_dayOfWeek"] = dow
+            # Nested array sub-fields (e.g., breaks[].breakStart)
+            for inner_arr, inner_fields in nested.items():
+                inner_data = sub_item.get(inner_arr)
+                if not isinstance(inner_data, list):
+                    continue
+                inner_transformed = []
+                for inner_item in inner_data:
+                    if not isinstance(inner_item, dict):
+                        continue
+                    inner_row: dict = {}
+                    for isrc, idest_raw in inner_fields.items():
+                        idest, iopts = _parse_field_dest(idest_raw)
+                        val = _resolve_dot_path(inner_item, isrc)
+                        if val is not None:
+                            inner_row[idest] = _apply_field_options(
+                                val, iopts, venue_tz=venue_tz
+                            )
+                    if inner_row:
+                        inner_transformed.append(inner_row)
+                if inner_transformed:
+                    row[inner_arr] = inner_transformed
             if row:
                 transformed_arr.append(row)
 

@@ -50,7 +50,6 @@ const EMPTY_SPEC: ConnectorSpecFull = {
   credential_fields: [],
   oauth_config: null,
   test_request: null,
-  operation_mappings: null,
   created_at: '',
   updated_at: null,
 };
@@ -267,14 +266,52 @@ function transformItem(
   for (const [arrName, subFields] of Object.entries(arrayFields)) {
     const arrData = item[arrName];
     if (!Array.isArray(arrData)) continue;
+
+    // Separate direct sub-fields from nested array sub-fields
+    const direct: Record<string, string> = {};
+    const nested: Record<string, Record<string, string>> = {};
+    for (const [subSrc, subDest] of Object.entries(subFields)) {
+      if (subSrc.includes('[].')) {
+        const [innerArr, innerSub] = subSrc.split('[].', 2);
+        if (!nested[innerArr]) nested[innerArr] = {};
+        nested[innerArr][innerSub] = subDest;
+      } else {
+        direct[subSrc] = subDest;
+      }
+    }
+    // Remove direct entries that have nested sub-field mappings (nested takes priority)
+    for (const innerArr of Object.keys(nested)) {
+      delete direct[innerArr];
+    }
+
     const transformed = arrData
       .filter(el => el && typeof el === 'object')
       .map(el => {
         const row: Record<string, unknown> = {};
-        for (const [subSrc, subDestRaw] of Object.entries(subFields)) {
+        const elObj = el as Record<string, unknown>;
+        // Direct sub-fields
+        for (const [subSrc, subDestRaw] of Object.entries(direct)) {
           const [subDest, subOpts] = parseFieldDest(subDestRaw);
-          const val = resolveDotPath(el as Record<string, unknown>, subSrc);
+          const val = resolveDotPath(elObj, subSrc);
           if (val !== undefined) row[subDest] = applyFieldOptions(val, subOpts);
+        }
+        // Nested array sub-fields (e.g., breaks[].breakStart)
+        for (const [innerArr, innerFields] of Object.entries(nested)) {
+          const innerData = elObj[innerArr];
+          if (!Array.isArray(innerData)) continue;
+          const innerTransformed = innerData
+            .filter(ie => ie && typeof ie === 'object')
+            .map(ie => {
+              const innerRow: Record<string, unknown> = {};
+              for (const [iSrc, iDestRaw] of Object.entries(innerFields)) {
+                const [iDest, iOpts] = parseFieldDest(iDestRaw);
+                const val = resolveDotPath(ie as Record<string, unknown>, iSrc);
+                if (val !== undefined) innerRow[iDest] = applyFieldOptions(val, iOpts);
+              }
+              return innerRow;
+            })
+            .filter(r => Object.keys(r).length > 0);
+          if (innerTransformed.length > 0) row[innerArr] = innerTransformed;
         }
         return row;
       })
@@ -339,19 +376,40 @@ function applyTransformPreview(
 }
 
 /** Extract all leaf paths from an object, recursing into nested objects and arrays. */
-function extractLeafPaths(obj: Record<string, unknown>, prefix = ''): string[] {
+function extractLeafPaths(obj: Record<string, unknown>, prefix = '', siblingItems?: Record<string, unknown>[]): string[] {
   const paths: string[] = [];
   for (const [key, val] of Object.entries(obj)) {
     const path = prefix ? `${prefix}.${key}` : key;
     if (Array.isArray(val)) {
-      // Array — peek at first element
-      if (val.length > 0 && val[0] && typeof val[0] === 'object' && !Array.isArray(val[0])) {
-        paths.push(...extractLeafPaths(val[0] as Record<string, unknown>, `${path}[]`));
+      // Collect all elements of this array across siblings to find one with data
+      let allElements: Record<string, unknown>[] = [];
+      // From current item
+      for (const el of val) {
+        if (el && typeof el === 'object' && !Array.isArray(el)) allElements.push(el as Record<string, unknown>);
+      }
+      // From sibling items (other roster entries / other shifts)
+      if (allElements.length === 0 && siblingItems) {
+        for (const sib of siblingItems) {
+          const sibVal = sib[key];
+          if (Array.isArray(sibVal)) {
+            for (const el of sibVal) {
+              if (el && typeof el === 'object' && !Array.isArray(el)) allElements.push(el as Record<string, unknown>);
+            }
+            if (allElements.length > 0) break;
+          }
+        }
+      }
+
+      if (allElements.length > 0) {
+        // Recurse into the first object element, passing all elements as siblings
+        paths.push(...extractLeafPaths(allElements[0], `${path}[]`, allElements));
+      } else if (val.length === 0) {
+        paths.push(path); // empty array, no siblings have data
       } else {
         paths.push(path); // array of primitives
       }
     } else if (val && typeof val === 'object') {
-      paths.push(...extractLeafPaths(val as Record<string, unknown>, path));
+      paths.push(...extractLeafPaths(val as Record<string, unknown>, path, siblingItems));
     } else {
       paths.push(path);
     }
@@ -388,10 +446,11 @@ function FieldMappingEditor({
   const nestedObj = fieldEntries.filter(([src]) => !src.includes('[]') && src.includes('.'));
   const arrayEntries = fieldEntries.filter(([src]) => src.includes('[].'));
 
-  // Group array entries by parent
+  // Group array entries by top-level parent (first []. segment only)
   const arrayGroups: Record<string, [string, string][]> = {};
   for (const entry of arrayEntries) {
-    const arrName = entry[0].split('[].')[0];
+    const firstBracket = entry[0].indexOf('[].') ;
+    const arrName = entry[0].slice(0, firstBracket);
     if (!arrayGroups[arrName]) arrayGroups[arrName] = [];
     arrayGroups[arrName].push(entry);
   }
@@ -556,8 +615,50 @@ function FieldMappingEditor({
                 }}
               >{isFlattened ? '⊟ Flattened' : '⊞ Flatten'}</button>
             </div>
-            {/* Array sub-fields */}
-            {!isCollapsed && entries.map(([src, dest]) => renderFieldRow(src, dest, 24))}
+            {/* Array sub-fields — split into direct and nested sub-arrays */}
+            {!isCollapsed && (() => {
+              // Separate direct fields from nested array fields within this group
+              const prefix = `${arrName}[].`;
+              const directEntries: [string, string][] = [];
+              const subArrayGroups: Record<string, [string, string][]> = {};
+
+              for (const [src, dest] of entries) {
+                const rest = src.slice(prefix.length);
+                if (rest.includes('[].')) {
+                  // Nested array: e.g., "breaks[].breakStart"
+                  const subArrName = rest.split('[].')[0];
+                  if (!subArrayGroups[subArrName]) subArrayGroups[subArrName] = [];
+                  subArrayGroups[subArrName].push([src, dest]);
+                } else {
+                  directEntries.push([src, dest]);
+                }
+              }
+
+              return (
+                <>
+                  {directEntries.map(([src, dest]) => renderFieldRow(src, dest, 24))}
+                  {Object.entries(subArrayGroups).map(([subArrName, subEntries]) => {
+                    const subKey = `${arrName}.${subArrName}`;
+                    const subCollapsed = collapsed.has(subKey);
+                    return (
+                      <div key={subKey} style={{ marginTop: 2, marginLeft: 24 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                          <button
+                            onClick={() => toggleCollapse(subKey)}
+                            style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, fontSize: '0.65rem', color: '#aaa', width: 16, textAlign: 'center' }}
+                          >{subCollapsed ? '▶' : '▼'}</button>
+                          <span style={{ fontSize: '0.7rem', fontWeight: 600, fontFamily: 'monospace', color: '#888' }}>
+                            {subArrName}[]
+                          </span>
+                          <span style={{ fontSize: '0.58rem', color: '#bbb' }}>{subEntries.length} fields</span>
+                        </div>
+                        {!subCollapsed && subEntries.map(([src, dest]) => renderFieldRow(src, dest, 40))}
+                      </div>
+                    );
+                  })}
+                </>
+              );
+            })()}
           </div>
         );
       })}
@@ -570,7 +671,7 @@ function FieldMappingEditor({
 // ---------------------------------------------------------------------------
 
 function ResponseTransformSection({
-  op, idx, updateTool, connectorName, isNew, externalSample,
+  op, idx, updateTool, connectorName, isNew, externalSample, venueId,
 }: {
   op: ConnectorSpecTool;
   idx: number;
@@ -578,6 +679,7 @@ function ResponseTransformSection({
   connectorName: string;
   isNew: boolean;
   externalSample?: unknown;
+  venueId?: string;
 }) {
   const [sampleResponse, setSampleResponse] = useState<unknown>(externalSample ?? null);
   const [fetchingSample, setFetchingSample] = useState(false);
@@ -591,7 +693,8 @@ function ResponseTransformSection({
       if (!transform.enabled || Object.keys(transform.fields || {}).length === 0) {
         const arr = findArray(externalSample);
         if (arr && arr.length > 0 && typeof arr[0] === 'object') {
-          const paths = extractLeafPaths(arr[0] as Record<string, unknown>);
+          const allItems = arr.filter(i => i && typeof i === 'object') as Record<string, unknown>[];
+          const paths = extractLeafPaths(arr[0] as Record<string, unknown>, '', allItems);
           const merged: Record<string, string> = {};
           for (const p of paths) {
             merged[p] = p.split('.').pop() || p;
@@ -676,7 +779,7 @@ function ResponseTransformSection({
         res = await apiFetch(`/api/connector-specs/${connectorName}/test`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ extracted_fields: sampleFields, tool_action: op.action }),
+          body: JSON.stringify({ extracted_fields: sampleFields, tool_action: op.action, ...(venueId ? { venue_id: venueId } : {}) }),
         });
       }
       const data = await res.json();
@@ -690,7 +793,8 @@ function ResponseTransformSection({
       // Auto-map all leaf fields from the first array item
       const arr = findArray(payload);
       if (arr && arr.length > 0 && typeof arr[0] === 'object') {
-        const paths = extractLeafPaths(arr[0] as Record<string, unknown>);
+        const allItems = arr.filter(i => i && typeof i === 'object') as Record<string, unknown>[];
+        const paths = extractLeafPaths(arr[0] as Record<string, unknown>, '', allItems);
         // Merge with existing mappings — keep user edits, add new paths
         const existing = { ...fields };
         const merged: Record<string, string> = {};
@@ -1426,6 +1530,14 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
   const [tryTestResult, setTryTestResult] = useState<Record<string, unknown> | null>(null);
   const [tryLoading, setTryLoading] = useState<'render' | 'test' | null>(null);
   const [tryError, setTryError] = useState<string | null>(null);
+  const [tryVenueId, setTryVenueId] = useState('');
+  const [venues, setVenues] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    apiFetch('/api/venues').then(r => r.ok ? r.json() : null).then(d => {
+      if (d?.venues) setVenues(d.venues);
+    }).catch(() => {});
+  }, []);
 
   const selectedTool = useMemo(
     () => form.tools.find(t => t.action === tryToolAction) ?? null,
@@ -1529,6 +1641,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
         body: JSON.stringify({
           extracted_fields: tryToolFields,
           tool_action: tryToolAction,
+          ...(tryVenueId ? { venue_id: tryVenueId } : {}),
         }),
       });
       const data = await res.json();
@@ -2125,14 +2238,12 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
           <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Tools</h4>
           <div style={{ display: 'flex', gap: '0.3rem' }}>
-            {form.execution_mode === 'internal' && (
-              <button onClick={() => setShowConsolidatorBuilder(true)} style={{
-                padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #6366f1', borderRadius: 4,
-                backgroundColor: '#fff', color: '#6366f1', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500,
-              }}>
-                + Consolidator
-              </button>
-            )}
+            <button onClick={() => setShowConsolidatorBuilder(true)} style={{
+              padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #6366f1', borderRadius: 4,
+              backgroundColor: '#fff', color: '#6366f1', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500,
+            }}>
+              + Consolidator
+            </button>
             <button onClick={addTool} style={{
               padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
               backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
@@ -2185,6 +2296,16 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                 ))}
               </select>
             </div>
+
+            {venues.length > 0 && (
+              <div style={{ marginBottom: '0.5rem' }}>
+                <label style={labelStyle}>Venue</label>
+                <select value={tryVenueId} onChange={e => setTryVenueId(e.target.value)} style={inputStyle}>
+                  <option value="">Any venue</option>
+                  {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+            )}
 
             {selectedTool && (
               <>
@@ -2743,6 +2864,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     updateTool={updateTool}
                     connectorName={form.connector_name}
                     isNew={isNew}
+                    venueId={tryVenueId || undefined}
                   />
                   </>
                   )}
@@ -2778,123 +2900,6 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
           </div>
         </div>
       )}
-
-      {/* Operation Mappings (Document Sync) */}
-      <div style={sectionStyle}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Operation Mappings</h4>
-          <button
-            onClick={() => update('operation_mappings', [
-              ...(form.operation_mappings || []),
-              { operation: '', doc_type: '', target_action: '', method: 'POST', field_mapping: {}, ref_fields: {}, id_field: null },
-            ])}
-            style={{
-              padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
-              backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            + Add Mapping
-          </button>
-        </div>
-        <p style={{ color: '#999', fontSize: '0.75rem', margin: '0 0 0.75rem', lineHeight: 1.5 }}>
-          Maps UI operations (e.g. add_shift, delete_shift) to connector tool actions for document sync.
-        </p>
-        {(form.operation_mappings || []).length === 0 ? (
-          <p style={{ color: '#bbb', fontSize: '0.78rem', fontStyle: 'italic', margin: 0 }}>No mappings configured.</p>
-        ) : (
-          (form.operation_mappings || []).map((mapping, mi) => {
-            const toolActions = form.tools.map(t => t.action);
-            const updateMapping = (field: string, value: unknown) => {
-              const updated = [...(form.operation_mappings || [])];
-              updated[mi] = { ...updated[mi], [field]: value };
-              update('operation_mappings', updated);
-            };
-            const removeMapping = () => {
-              update('operation_mappings', (form.operation_mappings || []).filter((_, i) => i !== mi));
-            };
-            const fmEntries = Object.entries(mapping.field_mapping || {});
-            const refEntries = Object.entries(mapping.ref_fields || {});
-            return (
-              <div key={mi} style={{ border: '1px solid #e8e4de', borderRadius: 8, padding: '0.75rem', marginBottom: '0.5rem', backgroundColor: '#fafafa' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 6, marginBottom: '0.5rem' }}>
-                  <input value={mapping.operation} onChange={e => updateMapping('operation', e.target.value)} placeholder="operation (e.g. add_shift)" style={{ ...inputStyle, fontSize: '0.78rem' }} />
-                  <input value={mapping.doc_type} onChange={e => updateMapping('doc_type', e.target.value)} placeholder="doc_type (e.g. roster)" style={{ ...inputStyle, fontSize: '0.78rem' }} />
-                  <select value={mapping.target_action} onChange={e => updateMapping('target_action', e.target.value)} style={{ ...inputStyle, fontSize: '0.78rem' }}>
-                    <option value="">Select action...</option>
-                    {toolActions.map(a => <option key={a} value={a}>{a}</option>)}
-                  </select>
-                  <select value={mapping.method} onChange={e => updateMapping('method', e.target.value)} style={{ ...inputStyle, fontSize: '0.78rem', width: 70 }}>
-                    <option value="GET">GET</option>
-                    <option value="POST">POST</option>
-                    <option value="PUT">PUT</option>
-                    <option value="DELETE">DELETE</option>
-                  </select>
-                  <button onClick={removeMapping} title="Remove" style={{ border: 'none', background: 'none', color: '#e53e3e', cursor: 'pointer', fontSize: '0.85rem', padding: '0 4px' }}>&#10005;</button>
-                </div>
-                {/* Field mapping */}
-                <div style={{ marginBottom: '0.4rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Field Mapping</span>
-                    <button onClick={() => updateMapping('field_mapping', { ...mapping.field_mapping, '': '' })} style={{ border: 'none', background: 'none', fontSize: '0.68rem', color: '#999', cursor: 'pointer' }}>+ field</button>
-                  </div>
-                  {fmEntries.map(([k, v], fi) => (
-                    <div key={fi} style={{ display: 'grid', gridTemplateColumns: '1fr 8px 1fr auto', gap: 4, alignItems: 'center', marginTop: 2 }}>
-                      <input value={k} onChange={e => {
-                        const entries = Object.entries(mapping.field_mapping || {});
-                        entries[fi] = [e.target.value, v];
-                        updateMapping('field_mapping', Object.fromEntries(entries));
-                      }} placeholder="op field" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace' }} />
-                      <span style={{ textAlign: 'center', color: '#ccc', fontSize: '0.7rem' }}>→</span>
-                      <input value={v} onChange={e => {
-                        const entries = Object.entries(mapping.field_mapping || {});
-                        entries[fi] = [k, e.target.value];
-                        updateMapping('field_mapping', Object.fromEntries(entries));
-                      }} placeholder="tool param" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace' }} />
-                      <button onClick={() => {
-                        const next = { ...mapping.field_mapping };
-                        delete next[k];
-                        updateMapping('field_mapping', next);
-                      }} style={{ border: 'none', background: 'none', color: '#ccc', cursor: 'pointer', fontSize: '0.75rem' }}>&#10005;</button>
-                    </div>
-                  ))}
-                </div>
-                {/* Ref fields */}
-                <div style={{ marginBottom: '0.4rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>Ref Fields (from external_ref)</span>
-                    <button onClick={() => updateMapping('ref_fields', { ...(mapping.ref_fields || {}), '': '' })} style={{ border: 'none', background: 'none', fontSize: '0.68rem', color: '#999', cursor: 'pointer' }}>+ ref</button>
-                  </div>
-                  {refEntries.map(([k, v], ri) => (
-                    <div key={ri} style={{ display: 'grid', gridTemplateColumns: '1fr 8px 1fr auto', gap: 4, alignItems: 'center', marginTop: 2 }}>
-                      <input value={k} onChange={e => {
-                        const entries = Object.entries(mapping.ref_fields || {});
-                        entries[ri] = [e.target.value, v];
-                        updateMapping('ref_fields', Object.fromEntries(entries));
-                      }} placeholder="tool param" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace' }} />
-                      <span style={{ textAlign: 'center', color: '#ccc', fontSize: '0.7rem' }}>→</span>
-                      <input value={v} onChange={e => {
-                        const entries = Object.entries(mapping.ref_fields || {});
-                        entries[ri] = [k, e.target.value];
-                        updateMapping('ref_fields', Object.fromEntries(entries));
-                      }} placeholder="ref key" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace' }} />
-                      <button onClick={() => {
-                        const next = { ...(mapping.ref_fields || {}) };
-                        delete next[k];
-                        updateMapping('ref_fields', next);
-                      }} style={{ border: 'none', background: 'none', color: '#ccc', cursor: 'pointer', fontSize: '0.75rem' }}>&#10005;</button>
-                    </div>
-                  ))}
-                </div>
-                {/* ID field */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' }}>ID Field</span>
-                  <input value={mapping.id_field || ''} onChange={e => updateMapping('id_field', e.target.value || null)} placeholder="e.g. shift_id" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace', width: 140 }} />
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
 
       {/* Save / Cancel */}
       <div style={{ display: 'flex', gap: 8 }}>

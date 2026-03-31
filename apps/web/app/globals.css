@@ -55,7 +55,7 @@ html { height: 100dvh; height: 100%; }
 @media (max-width: 767px) {
   .markdown-message table {
     display: block; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    font-size: 0.75em;
+    min-width: 100%; font-size: 0.75em;
   }
   .markdown-message th, .markdown-message td { white-space: nowrap; padding: 0.3em 0.5em; }
 }

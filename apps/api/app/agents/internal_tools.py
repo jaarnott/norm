@@ -1191,11 +1191,13 @@ def execute_consolidator(
             for k, v in params.items()
         }
 
-    # Execute each step
-    step_results: dict[str, dict] = {}
-    step_meta: list[dict] = []
-
-    for step in steps:
+    # --- Step execution helper (used by both sequential and parallel paths) ---
+    def _execute_single_step(
+        step: dict,
+        step_results: dict,
+        step_meta: list,
+        db_session: Session,
+    ) -> None:
         step_id = step.get("id", f"step_{len(step_results)}")
 
         # --- Filter step: narrow a previous step's results (no API call) ---
@@ -1224,7 +1226,7 @@ def execute_consolidator(
                         "error": f"No data from '{source_step}'",
                     }
                 )
-                continue
+                return
 
             field = filter_config.get("field", "")
             keyword = resolve_template(filter_config.get("contains", ""))
@@ -1235,7 +1237,6 @@ def execute_consolidator(
                 and keyword.lower() in str(item.get(field, "")).lower()
             ]
 
-            # Single match → store flat so {{step_id.field}} resolves directly
             if len(matches) == 1:
                 step_results[step_id] = {"success": True, "data": matches[0]}
             else:
@@ -1249,7 +1250,7 @@ def execute_consolidator(
                     "result_preview": _step_result_preview(step_results[step_id]),
                 }
             )
-            continue
+            return
 
         # --- API step: call a connector tool ---
         connector_name = step.get("connector")
@@ -1265,7 +1266,7 @@ def execute_consolidator(
                     "error": "Missing connector or action",
                 }
             )
-            continue
+            return
 
         # Look up spec and tool def (from config DB)
         from app.db.engine import _ConfigSessionLocal as _CfgSL
@@ -1286,7 +1287,7 @@ def execute_consolidator(
                     "error": f"Connector not found: {connector_name}",
                 }
             )
-            continue
+            return
 
         tool_def = None
         for t in spec.tools or []:
@@ -1296,18 +1297,20 @@ def execute_consolidator(
         if not tool_def:
             step_results[step_id] = {"error": f"Tool not found: {action}"}
             step_meta.append(
-                {"id": step_id, "status": "error", "error": f"Tool not found: {action}"}
+                {
+                    "id": step_id,
+                    "status": "error",
+                    "error": f"Tool not found: {action}",
+                }
             )
-            continue
+            return
 
-        # Get credentials (venue-aware) — check step params, then input_params
+        # Get credentials (venue-aware)
         from app.agents.tool_loop import _resolve_venue_config
 
-        venue_lookup = {**input_params, **step_params}  # step params take priority
-        config_row = _resolve_venue_config(connector_name, venue_lookup, db)
+        venue_lookup = {**input_params, **step_params}
+        config_row = _resolve_venue_config(connector_name, venue_lookup, db_session)
 
-        # Fallback: if no venue-specific config found and no venue was specified,
-        # try to find ANY enabled config for this connector
         if (
             not config_row
             and not venue_lookup.get("venue")
@@ -1315,7 +1318,7 @@ def execute_consolidator(
             and not venue_lookup.get("venue_id")
         ):
             config_row = (
-                db.query(ConnectorConfig)
+                db_session.query(ConnectorConfig)
                 .filter(
                     ConnectorConfig.connector_name == connector_name,
                     ConnectorConfig.enabled == "true",
@@ -1324,9 +1327,8 @@ def execute_consolidator(
             )
 
         credentials = config_row.config if config_row else {}
-        venue_id = config_row.venue_id if config_row else None
+        venue_id_val = config_row.venue_id if config_row else None
 
-        # Strip venue params from what gets sent to the API
         step_params.pop("venue", None)
         step_params.pop("venue_name", None)
         step_params.pop("venue_id", None)
@@ -1338,13 +1340,12 @@ def execute_consolidator(
                 tool_def,
                 step_params,
                 credentials,
-                db,
+                db_session,
                 thread_id,
-                venue_id=venue_id,
+                venue_id=venue_id_val,
             )
             duration_ms = int((time.time() - t0) * 1000)
 
-            # Apply the tool's response_transform to the step result
             step_payload = result.response_payload
             step_transform = tool_def.get("response_transform")
             if step_transform and step_transform.get("enabled"):
@@ -1379,7 +1380,6 @@ def execute_consolidator(
             }
             if result.error_message:
                 meta_entry["error"] = result.error_message
-            # Flag empty results
             payload = result.response_payload
             if payload is not None:
                 from app.agents.tool_loop import _unwrap_array
@@ -1407,6 +1407,65 @@ def execute_consolidator(
                     "error": str(exc),
                 }
             )
+
+    # --- Group steps by parallel ID ---
+    def _group_steps(
+        steps: list[dict],
+    ) -> list[dict]:
+        """Group consecutive steps with the same 'parallel' value together."""
+        groups: list[dict] = []
+        for step in steps:
+            par = step.get("parallel")
+            if par and groups and groups[-1].get("parallel") == par:
+                groups[-1]["steps"].append(step)
+            else:
+                groups.append({"parallel": par, "steps": [step]})
+        return groups
+
+    # Execute steps — with parallel group support
+    step_results: dict[str, dict] = {}
+    step_meta: list[dict] = []
+
+    for group in _group_steps(steps):
+        if group["parallel"] and len(group["steps"]) >= 2:
+            # Parallel execution using ThreadPoolExecutor
+            from concurrent.futures import ThreadPoolExecutor
+            from app.db.engine import SessionLocal as _SL
+
+            db.commit()  # Flush so worker threads see current state
+
+            thread_results: dict[str, dict] = {}
+            thread_meta: dict[str, list] = {}
+
+            def _run_step(s: dict) -> None:
+                sid = s.get("id", "?")
+                local_results: dict[str, dict] = {**step_results}
+                local_meta: list[dict] = []
+                local_db = _SL()
+                try:
+                    _execute_single_step(s, local_results, local_meta, local_db)
+                finally:
+                    local_db.close()
+                thread_results[sid] = local_results.get(sid, {"error": "no result"})
+                thread_meta[sid] = local_meta
+
+            max_workers = min(len(group["steps"]), 8)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_run_step, s) for s in group["steps"]]
+                for f in futures:
+                    f.result()  # Wait + propagate exceptions
+
+            # Merge results back in step order
+            for s in group["steps"]:
+                sid = s.get("id", "?")
+                if sid in thread_results:
+                    step_results[sid] = thread_results[sid]
+                if sid in thread_meta:
+                    step_meta.extend(thread_meta[sid])
+        else:
+            # Sequential execution (single step or no parallel flag)
+            for step in group["steps"]:
+                _execute_single_step(step, step_results, step_meta, db)
 
     # Apply search if configured
     if search_config:

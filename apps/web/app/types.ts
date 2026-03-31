@@ -138,14 +138,25 @@ export interface TestRequest {
   timeout_seconds: number;
 }
 
-export interface OperationMapping {
-  operation: string;
-  doc_type: string;
-  target_action: string;
+export interface ComponentApiConfig {
+  id: string;
+  component_key: string;
+  connector_name: string;
+  action_name: string;
+  display_label: string | null;
   method: string;
-  field_mapping: Record<string, string>;
-  ref_fields?: Record<string, string>;
-  id_field?: string | null;
+  path_template: string;
+  request_body_template: string | null;
+  headers: Record<string, string>;
+  required_fields: string[];
+  field_descriptions: Record<string, string>;
+  field_mapping: Record<string, string> | null;
+  ref_fields: Record<string, string> | null;
+  id_field: string | null;
+  response_field_mapping: Record<string, string> | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string | null;
 }
 
 export interface ConnectorSpecFull extends ConnectorSpecSummary {
@@ -157,7 +168,6 @@ export interface ConnectorSpecFull extends ConnectorSpecSummary {
   credential_fields: { key: string; label: string; secret: boolean }[];
   oauth_config: OAuthConfig | null;
   test_request: TestRequest | null;
-  operation_mappings: OperationMapping[] | null;
 }
 
 // --- LLM Call types ---

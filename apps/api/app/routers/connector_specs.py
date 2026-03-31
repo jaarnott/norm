@@ -59,7 +59,6 @@ class ConnectorSpecCreate(BaseModel):
     credential_fields: list[dict] = []
     oauth_config: dict | None = None
     test_request: dict | None = None
-    operation_mappings: list[dict] | None = None
     enabled: bool = True
 
 
@@ -76,13 +75,13 @@ class ConnectorSpecUpdate(BaseModel):
     credential_fields: list[dict] | None = None
     oauth_config: dict | None = None
     test_request: dict | None = None
-    operation_mappings: list[dict] | None = None
     enabled: bool | None = None
 
 
 class DryRunBody(BaseModel):
     extracted_fields: dict
     tool_action: str | None = None
+    venue_id: str | None = None
 
 
 class GenerateBody(BaseModel):
@@ -110,7 +109,6 @@ def _spec_to_dict(spec: ConnectorSpec) -> dict:
         "credential_fields": spec.credential_fields,
         "oauth_config": spec.oauth_config,
         "test_request": spec.test_request,
-        "operation_mappings": spec.operation_mappings,
         "version": spec.version,
         "enabled": spec.enabled,
         "created_at": spec.created_at.isoformat() if spec.created_at else None,
@@ -160,7 +158,6 @@ async def create_spec(
         credential_fields=body.credential_fields,
         oauth_config=body.oauth_config,
         test_request=body.test_request,
-        operation_mappings=body.operation_mappings,
         enabled=body.enabled,
     )
     config_db.add(spec)
@@ -320,14 +317,13 @@ async def test_spec(
     if operation is None:
         raise HTTPException(400, "No tools defined on this spec")
 
-    config_row = (
-        db.query(ConnectorConfig)
-        .filter(
-            ConnectorConfig.connector_name == name,
-            ConnectorConfig.enabled == "true",
-        )
-        .first()
+    config_query = db.query(ConnectorConfig).filter(
+        ConnectorConfig.connector_name == name,
+        ConnectorConfig.enabled == "true",
     )
+    if body.venue_id:
+        config_query = config_query.filter(ConnectorConfig.venue_id == body.venue_id)
+    config_row = config_query.first()
     if not config_row:
         raise HTTPException(400, f"No credentials configured for {name}")
 
@@ -439,7 +435,7 @@ _TEMPLATE_VARS_TEXT = """- {{today_iso}} — today's date in ISO format with tim
 - {{one_week_ago_iso}} — 1 week ago in same format
 - {{today}} — today's date as YYYY-MM-DD
 - {{<any_input_param>}} — any field from required_fields
-- {{step_id.field}} — reference a field from a previous step's result (auto-skips into .data wrapper)
+- {{step_id.field}} — reference a field from a completed step's result (auto-skips into .data wrapper). Parallel steps cannot reference each other — only steps that ran before the parallel group.
 - {{step_id.nested.field}} — dotted path navigation; use [N] for array indexing e.g. {{step.items[0].id}}"""
 
 _CONFIG_SCHEMA_TEXT = """- action: a snake_case name for this consolidator tool
@@ -448,8 +444,9 @@ _CONFIG_SCHEMA_TEXT = """- action: a snake_case name for this consolidator tool
 - field_descriptions: object mapping field names to descriptions
 - consolidator_config: object with:
   - steps: array of step objects, each is either:
-    - API step: {id, connector, action, params} — calls a connector tool
+    - API step: {id, connector, action, params, parallel?} — calls a connector tool
     - Filter step: {id, source, filter: {field, contains}} — filters a previous step's results by field value (no API call). If exactly one item matches, result is stored flat so {{step_id.field}} works directly.
+    Steps with the same "parallel" value (e.g. "parallel": "fetch") run concurrently. Use this when steps are independent and don't reference each other's results. Steps without "parallel" run sequentially.
   - search: optional {keyword, steps} — keyword is a template var like {{item_name}}, steps is which step results to search
   - output_fields: optional array of field names to keep from search results"""
 
@@ -835,6 +832,29 @@ _SAVE_TOOL = {
     },
 }
 
+_TEST_CONSOLIDATOR_TOOL = {
+    "name": "test_consolidator",
+    "description": (
+        "Test a consolidator config end-to-end by executing all steps with template variable resolution, "
+        "parallel execution, search, and output filtering — exactly as it would run in production. "
+        "Use this to verify the full consolidator works before saving."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "consolidator_config": {
+                "type": "object",
+                "description": "The consolidator config to test (steps, search, output_fields)",
+            },
+            "params": {
+                "type": "object",
+                "description": "Input parameters to pass (the values the LLM would provide for required_fields)",
+            },
+        },
+        "required": ["consolidator_config", "params"],
+    },
+}
+
 
 def _build_connector_tools(db, config_db=None) -> list[dict]:
     """Build Anthropic tool schemas for all enabled connector specs, with venue injection."""
@@ -952,7 +972,7 @@ async def consolidator_chat(
 
                 # Build real connector tools for the LLM
                 connector_tools = _build_connector_tools(db, config_db)
-                tools = [_SAVE_TOOL] + connector_tools
+                tools = [_SAVE_TOOL, _TEST_CONSOLIDATOR_TOOL] + connector_tools
                 log.info(
                     "Consolidator chat: %d connector tools available",
                     len(connector_tools),
@@ -976,9 +996,9 @@ Consolidator config schema:
 Workflow:
 1. When asked to build a consolidator, FIRST call the relevant connector tools to understand the data. For example, call get_stocktake_templates to see what templates exist and what fields they return.
 2. Use what you learn from the real API responses to build a consolidator config with the correct field names, IDs, and data paths.
-3. Before saving, you MUST test the consolidator by running the steps manually using the tools — call each step's connector tool in sequence with the actual params the consolidator would use. Verify the data flows correctly between steps.
-4. Only call save_consolidator AFTER you have tested all the steps and confirmed they work.
-5. If the user asks to test with specific params, call the actual tools with those params and show the results.
+3. Before saving, use the `test_consolidator` tool to run the full consolidator end-to-end with real params. This executes all steps with template variable resolution, parallel execution, and search — exactly as it would run in production. Check the _steps metadata in the response to verify each step succeeded.
+4. Only call save_consolidator AFTER test_consolidator confirms it works.
+5. If the user asks to test with specific params, use test_consolidator with those params and show the results.
 
 Keep responses concise. Show the key data from API responses (field names, IDs, structure) so the user can verify."""
 
@@ -1035,6 +1055,80 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                                     "type": "tool_result",
                                     "tool_use_id": block.id,
                                     "content": "Config saved successfully.",
+                                }
+                            )
+                            continue
+
+                        if block.name == "test_consolidator":
+                            on_event(
+                                {
+                                    "type": "tool_use",
+                                    "name": "test_consolidator",
+                                    "input": {
+                                        "params": block.input.get("params", {}),
+                                        "steps": len(
+                                            (
+                                                block.input.get(
+                                                    "consolidator_config", {}
+                                                )
+                                            ).get("steps", [])
+                                        ),
+                                    },
+                                }
+                            )
+                            import time as _time
+
+                            t0 = _time.time()
+                            try:
+                                from app.agents.internal_tools import (
+                                    execute_consolidator,
+                                )
+
+                                test_result = execute_consolidator(
+                                    block.input.get("consolidator_config", {}),
+                                    block.input.get("params", {}),
+                                    db,
+                                    None,
+                                )
+                                duration_ms = int((_time.time() - t0) * 1000)
+                                log.info(
+                                    "Consolidator chat: test_consolidator completed in %dms",
+                                    duration_ms,
+                                )
+                            except Exception as exc:
+                                duration_ms = int((_time.time() - t0) * 1000)
+                                log.error(
+                                    "Consolidator chat: test_consolidator failed after %dms: %s",
+                                    duration_ms,
+                                    exc,
+                                )
+                                test_result = {
+                                    "success": False,
+                                    "error": str(exc),
+                                }
+
+                            # Send summary to frontend
+                            on_event(
+                                {
+                                    "type": "tool_result",
+                                    "name": "test_consolidator",
+                                    "result": {
+                                        "success": test_result.get("success"),
+                                        "_steps": test_result.get("_steps", []),
+                                        "duration_ms": duration_ms,
+                                    },
+                                }
+                            )
+
+                            # Send full result to LLM (truncated if large)
+                            result_text = json.dumps(test_result, default=str)
+                            if len(result_text) > 12000:
+                                result_text = result_text[:12000] + '..."}'
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": result_text,
                                 }
                             )
                             continue

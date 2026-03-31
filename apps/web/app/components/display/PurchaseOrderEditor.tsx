@@ -2,9 +2,34 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, callComponentApi } from '../../lib/api';
 
 // --- Types ---
+
+interface SupplierVariant {
+  id: string;
+  supplierId: string;
+  supplierName: string;
+  unitId: string;
+  unitName: string;
+  unitRatio: number;
+  unitCost: number;
+  stockCode: string;
+  brandId: string | null;
+  defaultForSupplier: boolean;
+}
+
+interface StockItem {
+  id: string;
+  name: string;
+  groupName: string;
+  defaultSupplierId: string;
+  globalSalesTaxSortOrder: number;
+  orderingUnitId: string;
+  orderingUnitName: string;
+  orderingUnitRatio: number;
+  suppliers: SupplierVariant[];
+}
 
 interface LineItem {
   id?: string;
@@ -14,6 +39,17 @@ interface LineItem {
   quantity: number;
   unit: string;
   unit_price: number;
+  // LoadedHub enrichment fields
+  itemId?: string;
+  unitId?: string;
+  unitRatio?: number;
+  unitCost?: number;
+  taxPercent?: number;
+  supplierId?: string;
+  supplierName?: string;
+  brandId?: string | null;
+  variantId?: string;
+  variants?: SupplierVariant[];
 }
 
 // --- Helpers ---
@@ -48,12 +84,21 @@ function extractOrder(data: Record<string, unknown>): {
   if (rawLines.length > 0) {
     lines = rawLines.map((item, i) => ({
       id: String(item.id || item.productCode || i),
-      stock_code: String(item.stock_code || item.stockCode || item.sku || item.productCode || item.product_code || item.code || ''),
+      stock_code: String(item.stock_code || item.stockCode || item.sku || item.productCode || item.product_code || item.code || item.itemCode || ''),
       product: String(item.product || item.description || item.productName || item.product_name || item.name || ''),
-      supplier: String(item.supplier || item.supplierName || supplier || ''),
-      quantity: Number(item.quantity || item.qty || 0),
-      unit: String(item.unit || 'case'),
-      unit_price: Number(item.unit_price || item.unitPrice || item.price || 0),
+      supplier: String(item.supplier || item.supplierName || item.defaultSupplierName || supplier || ''),
+      quantity: Number(item.quantity || item.qty || item.quantityOrdered || 0),
+      unit: String(item.unit || item.orderingUnitName || 'case'),
+      unit_price: Number(item.unit_price || item.unitPrice || item.price || item.currentPrice || 0),
+      // LoadedHub enrichment fields
+      itemId: (item.itemId || item.id || '') as string,
+      unitId: (item.unitId || item.orderingUnitId || '') as string,
+      unitRatio: Number(item.unitRatio || item.orderingUnitRatio || 1),
+      unitCost: Number(item.unitCost || item.currentPrice || item.unit_price || item.unitPrice || 0),
+      taxPercent: Number(item.taxPercent || item.globalSalesTaxRate || 0.15),
+      supplierId: (item.supplierId || item.defaultSupplierId || '') as string,
+      supplierName: (item.supplierName || item.defaultSupplierName || supplier || '') as string,
+      brandId: (item.brandId || item.defaultBrandId || null) as string | null,
     }));
   } else if (data.product_name || data.productName || data.product) {
     lines = [{
@@ -79,7 +124,9 @@ function formatCurrency(n: number): string {
 
 const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string; border: string }> = {
   draft: { label: 'Draft', bg: '#fffbeb', color: '#92400e', border: '#fde68a' },
+  processing: { label: 'Processing...', bg: '#fff7ed', color: '#9a3412', border: '#fed7aa' },
   submitted: { label: 'Submitted', bg: '#ecfdf5', color: '#065f46', border: '#a7f3d0' },
+  failed: { label: 'Failed', bg: '#fef2f2', color: '#991b1b', border: '#fecaca' },
   pending_submit: { label: 'Pending', bg: '#fff7ed', color: '#9a3412', border: '#fed7aa' },
   approved: { label: 'Approved', bg: '#ecfdf5', color: '#065f46', border: '#a7f3d0' },
   rejected: { label: 'Rejected', bg: '#fef2f2', color: '#991b1b', border: '#fecaca' },
@@ -96,14 +143,15 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
 
   const initial = extractOrder(orderData || data);
   const [lines, setLines] = useState<LineItem[]>(initial.lines);
+  const [status, setStatus] = useState(initial.status);
   const [notes, setNotes] = useState(initial.notes);
-  const [adding, setAdding] = useState(false);
-  const [newStockCode, setNewStockCode] = useState('');
-  const [newProduct, setNewProduct] = useState('');
-  const [newSupplier, setNewSupplier] = useState('');
-  const [newQty, setNewQty] = useState(1);
-  const [newUnit, setNewUnit] = useState('case');
-  const [newPrice, setNewPrice] = useState(0);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [stockItems, setStockItems] = useState<StockItem[]>([]);
+  const [supplierMap, setSupplierMap] = useState<Record<string, string>>({});
+  const [unitMap, setUnitMap] = useState<Record<string, { name: string; ratio: number }>>({});
+  const [refLoading, setRefLoading] = useState(false);
+  const [variantDropdown, setVariantDropdown] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const connectorName = (props?.connector_name as string) || '';
 
@@ -131,12 +179,64 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
     setNotes(parsed.notes);
   }, [data, workingDocId]);
 
+  // Load reference data (stock items with variants, suppliers, units)
+  useEffect(() => {
+    setRefLoading(true);
+    const venueId = (props?.activeVenueId as string) || undefined;
+    Promise.all([
+      callComponentApi('purchase_order_editor', 'get_stock_items_detail', {}, venueId).catch(() => ({ data: [] })),
+      callComponentApi('purchase_order_editor', 'get_suppliers', {}, venueId).catch(() => ({ data: [] })),
+      callComponentApi('purchase_order_editor', 'get_units', {}, venueId).catch(() => ({ data: [] })),
+    ]).then(([itemsRes, suppliersRes, unitsRes]) => {
+      // Build supplier name map (handle both raw and mapped field names)
+      const suppliers = Array.isArray(suppliersRes.data) ? suppliersRes.data as Record<string, unknown>[] : [];
+      const sMap: Record<string, string> = {};
+      for (const s of suppliers) sMap[String(s.id)] = String(s.name || s.supplierName || s.supplier || '');
+      setSupplierMap(sMap);
+
+      // Build unit map (handle both raw and mapped field names)
+      const units = Array.isArray(unitsRes.data) ? unitsRes.data as Record<string, unknown>[] : [];
+      const uMap: Record<string, { name: string; ratio: number }> = {};
+      for (const u of units) uMap[String(u.id)] = { name: String(u.name || u.unitName || ''), ratio: Number(u.ratio || u.unitRatio || 1) };
+      setUnitMap(uMap);
+
+      // Build stock items with enriched supplier variants
+      const rawItems = Array.isArray(itemsRes.data) ? itemsRes.data as Record<string, unknown>[] : [];
+      const items: StockItem[] = rawItems.map(item => {
+        const rawSuppliers = Array.isArray(item.suppliers) ? item.suppliers as Record<string, unknown>[] : [];
+        return {
+          id: String(item.id),
+          name: String(item.name),
+          groupName: String(item.groupName || ''),
+          defaultSupplierId: String(item.defaultSupplierId || ''),
+          globalSalesTaxSortOrder: Number(item.globalSalesTaxSortOrder || 0),
+          orderingUnitId: String(item.orderingUnitId || ''),
+          orderingUnitName: String(item.orderingUnitName || ''),
+          orderingUnitRatio: Number(item.orderingUnitRatio || 1),
+          suppliers: rawSuppliers.map(s => ({
+            id: String(s.id),
+            supplierId: String(s.supplierId),
+            supplierName: sMap[String(s.supplierId)] || 'Unknown',
+            unitId: String(s.unitId),
+            unitName: uMap[String(s.unitId)]?.name || '',
+            unitRatio: uMap[String(s.unitId)]?.ratio || Number(item.orderingUnitRatio || 1),
+            unitCost: Number(s.unitCost || 0),
+            stockCode: String(s.stockCode || ''),
+            brandId: s.brandId ? String(s.brandId) : null,
+            defaultForSupplier: Boolean(s.defaultForSupplier),
+          })),
+        };
+      });
+      setStockItems(items);
+    }).finally(() => setRefLoading(false));
+  }, [props?.activeVenueId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const title = (props?.title as string) || 'Purchase Order';
   const grandTotal = lines.reduce((sum, l) => sum + l.quantity * l.unit_price, 0);
   const hasPrice = lines.some(l => l.unit_price > 0);
   const interactive = !!onAction || !!workingDocId;
-  const isSubmitted = initial.status === 'submitted' || initial.status === 'approved';
-  const statusCfg = STATUS_CONFIG[initial.status] || STATUS_CONFIG.draft;
+  const isSubmitted = status === 'submitted' || status === 'approved' || status === 'processing';
+  const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.draft;
 
   // PATCH working document helper
   const patchDoc = useCallback(async (ops: Record<string, unknown>[]) => {
@@ -151,8 +251,9 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
         setOrderData(updated.data);
         setDocVersion(updated.version);
         setSyncStatus(updated.sync_status);
-        const parsed = extractOrder(updated.data);
-        setLines(parsed.lines);
+        // Don't reset lines here — the optimistic update from the caller
+        // already has the correct state with enrichment fields (variants,
+        // supplierName, etc.) that extractOrder would strip.
       }
     } catch (e) { console.error(e); }
   }, [workingDocId, threadId, docVersion]);
@@ -175,42 +276,132 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
     }
   }, [workingDocId, patchDoc, onAction, connectorName]);
 
-  const handleAdd = useCallback(() => {
-    if (!newProduct.trim()) return;
-    const line: LineItem = { id: String(Date.now()), stock_code: newStockCode, product: newProduct, supplier: newSupplier, quantity: newQty, unit: newUnit, unit_price: newPrice };
+  const handleAddFromSearch = useCallback((item: StockItem) => {
+    // Find default variant: default supplier + defaultForSupplier=true
+    const defaultVariant = item.suppliers.find(
+      s => s.supplierId === item.defaultSupplierId && s.defaultForSupplier
+    ) || item.suppliers.find(s => s.defaultForSupplier) || item.suppliers[0];
+
+    const line: LineItem = {
+      id: String(Date.now()),
+      stock_code: defaultVariant?.stockCode || '',
+      product: item.name,
+      supplier: defaultVariant?.supplierName || '',
+      quantity: 1,
+      unit: defaultVariant?.unitName || item.orderingUnitName || 'each',
+      unit_price: defaultVariant?.unitCost || 0,
+      itemId: item.id,
+      unitId: defaultVariant?.unitId || item.orderingUnitId,
+      unitRatio: defaultVariant?.unitRatio || item.orderingUnitRatio || 1,
+      unitCost: defaultVariant?.unitCost || 0,
+      taxPercent: item.globalSalesTaxSortOrder === 1 ? 0.15 : 0,
+      supplierId: defaultVariant?.supplierId || item.defaultSupplierId,
+      supplierName: defaultVariant?.supplierName || '',
+      brandId: defaultVariant?.brandId || null,
+      variantId: defaultVariant?.id,
+      variants: item.suppliers,
+    };
+
     setLines(prev => [...prev, line]);
-    setAdding(false);
-    setNewStockCode('');
-    setNewProduct('');
-    setNewSupplier('');
-    setNewQty(1);
-    setNewUnit('case');
-    setNewPrice(0);
+    setSearchQuery('');
+    setSearchOpen(false);
+
     if (workingDocId) {
-      patchDoc([{ op: 'add_line', fields: { stock_code: line.stock_code, product: line.product, supplier: line.supplier, quantity: line.quantity, unit: line.unit, unit_price: line.unit_price } }]);
+      patchDoc([{ op: 'add_line', fields: line as unknown as Record<string, unknown> }]);
     } else if (onAction && connectorName) {
       onAction({ connector_name: connectorName, action: 'add_line', params: line as unknown as Record<string, unknown> });
     }
-  }, [newStockCode, newProduct, newSupplier, newQty, newUnit, newPrice, workingDocId, patchDoc, onAction, connectorName]);
+  }, [workingDocId, patchDoc, onAction, connectorName]);
+
+  const handleVariantChange = useCallback((lineIndex: number, variant: SupplierVariant) => {
+    setLines(prev => prev.map((l, i) => {
+      if (i !== lineIndex) return l;
+      return {
+        ...l,
+        stock_code: variant.stockCode,
+        supplier: variant.supplierName,
+        supplierId: variant.supplierId,
+        supplierName: variant.supplierName,
+        unit: variant.unitName,
+        unit_price: variant.unitCost,
+        unitId: variant.unitId,
+        unitRatio: variant.unitRatio,
+        unitCost: variant.unitCost,
+        brandId: variant.brandId,
+        variantId: variant.id,
+      };
+    }));
+    setVariantDropdown(null);
+    // TODO: sync to working document if needed
+  }, []);
+
+  const searchResults = searchQuery.length >= 2
+    ? stockItems.filter(item =>
+        item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.suppliers.some(s => s.stockCode.toLowerCase().includes(searchQuery.toLowerCase()))
+      ).slice(0, 10)
+    : [];
+
+  const buildBatchPayload = useCallback(() => {
+    // Group lines by supplierId for LoadedHub batch API
+    const groups = new Map<string, LineItem[]>();
+    for (const line of lines) {
+      const key = line.supplierId || line.supplier || 'unknown';
+      groups.set(key, [...(groups.get(key) || []), line]);
+    }
+    return Array.from(groups.entries()).map(([supplierId, groupLines]) => {
+      const subtotal = groupLines.reduce((sum, l) => sum + (l.unitCost || l.unit_price) * l.quantity, 0);
+      const taxRate = groupLines[0]?.taxPercent || 0.15;
+      const tax = subtotal * taxRate;
+      return {
+        createdAt: new Date().toISOString(),
+        isReceived: false,
+        supplierId,
+        lines: groupLines.map(l => ({
+          itemId: l.itemId || '',
+          itemCode: l.stock_code,
+          brandId: l.brandId || null,
+          unitId: l.unitId || '',
+          unitRatio: l.unitRatio || 1,
+          unitCost: Math.round(((l.unitCost || l.unit_price) * (l.unitRatio || 1)) * 100) / 100,
+          quantityReceived: 0,
+          taxPercent: l.taxPercent || 0.15,
+          quantityOrdered: l.quantity,
+          unitCostOrdered: Math.round((l.unitCost || l.unit_price) * 100) / 100,
+        })),
+        orderedBy: 'Norm',
+        subtotal: Math.round(subtotal * 100) / 100,
+        total: Math.round((subtotal + tax) * 100) / 100,
+        tax: Math.round(tax * 100) / 100,
+        status: 'Outstanding',
+        creditRequest: false,
+      };
+    });
+  }, [lines]);
 
   const handleSubmit = useCallback(async () => {
     setSaving(true);
+    setStatus('processing');
     try {
-      if (workingDocId && threadId) {
-        const res = await apiFetch(`/api/threads/${threadId}/working-documents/${workingDocId}/submit`, { method: 'POST' });
-        if (res.ok) {
-          const result = await res.json();
-          setSyncStatus(result.document?.sync_status || 'synced');
-        }
-      } else if (onAction) {
-        await onAction({
-          connector_name: connectorName,
-          action: 'submit_order',
-          params: { lines: lines.map(l => ({ product: l.product, quantity: l.quantity, unit: l.unit, unit_price: l.unit_price })) },
-        });
+      const batchPayload = buildBatchPayload();
+      if (batchPayload.length === 0) {
+        setStatus('draft');
+        setSaving(false);
+        return;
       }
+      const venueId = (props?.activeVenueId as string) || undefined;
+      const result = await callComponentApi('purchase_order_editor', 'create_orders_batch', batchPayload as unknown as Record<string, unknown>, venueId);
+      if (result.error) {
+        console.error('Submit failed:', result.data);
+        setStatus('failed');
+      } else {
+        setStatus('submitted');
+      }
+    } catch (e) {
+      console.error('Submit failed:', e);
+      setStatus('failed');
     } finally { setSaving(false); }
-  }, [workingDocId, threadId, onAction, connectorName, lines]);
+  }, [buildBatchPayload, props]);
 
   const handleNotesChange = useCallback((value: string) => {
     setNotes(value);
@@ -227,7 +418,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
 
   return (
     <div data-testid="po-editor" style={{
-      border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden',
+      border: '1px solid #e5e7eb', borderRadius: 10,
       backgroundColor: '#fff', marginBottom: '0.75rem',
       boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
     }}>
@@ -258,12 +449,6 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
             <div>
               <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>Reference</div>
               <div style={{ fontWeight: 600, color: '#111', fontFamily: 'monospace', fontSize: '0.82rem' }}>{initial.reference}</div>
-            </div>
-          )}
-          {initial.supplier && (
-            <div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>Supplier</div>
-              <div style={{ fontWeight: 600, color: '#111' }}>{initial.supplier}</div>
             </div>
           )}
           {initial.venue && (
@@ -299,9 +484,53 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
             </tr>
           </thead>
           <tbody>
-            {lines.map((l, i) => (
+            {lines.map((l, i) => {
+              // Resolve variants: use stored variants or look up from reference data
+              const variants = l.variants || (l.itemId ? stockItems.find(si => si.id === l.itemId)?.suppliers : undefined) || [];
+              return (
               <tr key={l.id || i} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                <td style={{ padding: '0.5rem 0.5rem', color: '#6b7280', fontFamily: 'monospace', fontSize: '0.78rem' }}>{l.stock_code || '—'}</td>
+                <td style={{ padding: '0.5rem 0.5rem', position: 'relative' }}>
+                  {variants.length > 1 ? (
+                    <>
+                      <span
+                        onClick={() => setVariantDropdown(variantDropdown === i ? null : i)}
+                        style={{ color: '#2563eb', fontFamily: 'monospace', fontSize: '0.78rem', cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
+                        title="Click to change supplier/variant"
+                      >
+                        {l.stock_code || '—'}
+                      </span>
+                      {variantDropdown === i && (
+                        <div style={{
+                          position: 'absolute', top: '100%', left: 0, zIndex: 50, minWidth: 320,
+                          backgroundColor: '#fff', border: '1px solid #e2ddd7', borderRadius: 8,
+                          boxShadow: '0 4px 16px rgba(0,0,0,0.1)', maxHeight: 200, overflowY: 'auto',
+                        }}>
+                          {variants.map(v => (
+                            <div
+                              key={v.id}
+                              onClick={() => handleVariantChange(i, v)}
+                              style={{
+                                padding: '0.4rem 0.6rem', cursor: 'pointer', fontSize: '0.72rem',
+                                borderBottom: '1px solid #f3f4f6',
+                                backgroundColor: v.id === l.variantId ? '#f0f8ff' : '#fff',
+                                display: 'flex', justifyContent: 'space-between', gap: 8,
+                              }}
+                              onMouseEnter={e => (e.currentTarget.style.backgroundColor = v.id === l.variantId ? '#f0f8ff' : '#fafafa')}
+                              onMouseLeave={e => (e.currentTarget.style.backgroundColor = v.id === l.variantId ? '#f0f8ff' : '#fff')}
+                            >
+                              <span style={{ color: '#333' }}>
+                                {v.supplierName} · {v.unitName} · <span style={{ fontFamily: 'monospace' }}>{v.stockCode || '—'}</span>
+                              </span>
+                              <span style={{ fontWeight: 600, color: '#333' }}>${v.unitCost.toFixed(2)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ color: '#6b7280', fontFamily: 'monospace', fontSize: '0.78rem' }}>{l.stock_code || '—'}</span>
+                  )}
+                </td>
                 <td style={{ padding: '0.5rem 0.5rem', color: '#111', fontWeight: 500 }}>{l.product}</td>
                 <td style={{ padding: '0.5rem 0.5rem', color: '#6b7280' }}>{l.supplier}</td>
                 <td style={{ padding: '0.5rem 0.5rem', color: '#6b7280', textAlign: 'center' }}>{l.unit}</td>
@@ -338,7 +567,8 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
                   </td>
                 )}
               </tr>
-            ))}
+              );
+            })}
             {lines.length === 0 && (
               <tr>
                 <td colSpan={hasPrice ? 8 : 6} style={{ padding: '1.5rem', textAlign: 'center', color: '#9ca3af', fontSize: '0.82rem' }}>
@@ -350,62 +580,78 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
         </table>
       </div>
 
-      {/* ── Add line ── */}
+      {/* ── Add item search ── */}
       {interactive && !isSubmitted && (
-        <div style={{ padding: '0 1.25rem' }}>
-          {!adding ? (
-            <button onClick={() => setAdding(true)} style={{
-              margin: '0.5rem 0', padding: '5px 12px', fontSize: '0.75rem', fontWeight: 500,
-              border: '1px dashed #d1d5db', borderRadius: 6, backgroundColor: 'transparent',
-              color: '#6b7280', cursor: 'pointer', fontFamily: 'inherit',
-              transition: 'border-color 0.15s, color 0.15s',
-            }}>+ Add item</button>
-          ) : (
+        <div style={{ padding: '0 1.25rem', position: 'relative' }}>
+          <div style={{ margin: '0.5rem 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              value={searchQuery}
+              onChange={e => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+              onFocus={() => searchQuery.length >= 2 && setSearchOpen(true)}
+              placeholder={refLoading ? 'Loading stock items...' : `Search ${stockItems.length} items...`}
+              disabled={refLoading}
+              style={{ ...inputStyle, flex: 1, maxWidth: 400 }}
+            />
+            {searchQuery && (
+              <button onClick={() => { setSearchQuery(''); setSearchOpen(false); }} style={{
+                border: 'none', background: 'none', color: '#aaa', cursor: 'pointer', fontSize: '0.8rem',
+              }}>&#10005;</button>
+            )}
+          </div>
+          {/* Search results dropdown */}
+          {searchOpen && searchResults.length > 0 && (
             <div style={{
-              margin: '0.5rem 0', padding: '0.6rem 0.75rem',
-              border: '1px solid #dbeafe', borderRadius: 8, backgroundColor: '#f8fafc',
-              display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap',
+              position: 'absolute', left: '1.25rem', right: '1.25rem', zIndex: 50,
+              backgroundColor: '#fff', border: '1px solid #e2ddd7', borderRadius: 8,
+              boxShadow: '0 4px 16px rgba(0,0,0,0.1)', maxHeight: 300, overflow: 'auto',
             }}>
-              <div style={{ flex: 0, minWidth: 80 }}>
-                <label style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Code</label>
-                <input value={newStockCode} onChange={e => setNewStockCode(e.target.value)}
-                  placeholder="SKU" style={{ ...inputStyle, width: 80, fontFamily: 'monospace' }} autoFocus />
-              </div>
-              <div style={{ flex: 2, minWidth: 120 }}>
-                <label style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Product</label>
-                <input value={newProduct} onChange={e => setNewProduct(e.target.value)}
-                  placeholder="Product name" style={{ ...inputStyle, width: '100%' }} />
-              </div>
-              <div style={{ flex: 1, minWidth: 80 }}>
-                <label style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Supplier</label>
-                <input value={newSupplier} onChange={e => setNewSupplier(e.target.value)}
-                  placeholder="Supplier" style={{ ...inputStyle, width: '100%' }} />
-              </div>
-              <div style={{ flex: 0, minWidth: 60 }}>
-                <label style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Unit</label>
-                <input value={newUnit} onChange={e => setNewUnit(e.target.value)}
-                  style={{ ...inputStyle, width: 60 }} />
-              </div>
-              <div style={{ flex: 0, minWidth: 50 }}>
-                <label style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Qty</label>
-                <input type="number" min={1} value={newQty} onChange={e => setNewQty(parseInt(e.target.value, 10) || 1)}
-                  style={{ ...inputStyle, width: 50, textAlign: 'right' }} />
-              </div>
-              <div style={{ flex: 0, minWidth: 60 }}>
-                <label style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Price</label>
-                <input type="number" min={0} step={0.01} value={newPrice} onChange={e => setNewPrice(parseFloat(e.target.value) || 0)}
-                  style={{ ...inputStyle, width: 70, textAlign: 'right' }} />
-              </div>
-              <button onClick={handleAdd} style={{
-                padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
-                backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}>Add</button>
-              <button onClick={() => setAdding(false)} style={{
-                padding: '5px 12px', fontSize: '0.75rem',
-                backgroundColor: 'transparent', color: '#6b7280', border: '1px solid #d1d5db', borderRadius: 6,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}>Cancel</button>
+              {searchResults.map(item => {
+                const defaultVariant = item.suppliers.find(
+                  s => s.supplierId === item.defaultSupplierId && s.defaultForSupplier
+                ) || item.suppliers.find(s => s.defaultForSupplier) || item.suppliers[0];
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => handleAddFromSearch(item)}
+                    style={{
+                      padding: '0.5rem 0.75rem', cursor: 'pointer',
+                      borderBottom: '1px solid #f3f4f6',
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f8f8f5')}
+                    onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#fff')}
+                  >
+                    <div>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 500, color: '#333' }}>{item.name}</div>
+                      <div style={{ fontSize: '0.68rem', color: '#999' }}>
+                        {item.groupName}
+                        {defaultVariant && ` · ${defaultVariant.supplierName} · ${defaultVariant.unitName || 'unit'} · ${defaultVariant.stockCode || 'no code'}`}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      {defaultVariant && (
+                        <>
+                          <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333' }}>
+                            ${defaultVariant.unitCost.toFixed(2)}
+                          </div>
+                          <div style={{ fontSize: '0.62rem', color: '#aaa' }}>
+                            {defaultVariant.unitName || item.orderingUnitName}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {searchOpen && searchQuery.length >= 2 && searchResults.length === 0 && (
+            <div style={{
+              position: 'absolute', left: '1.25rem', right: '1.25rem', zIndex: 50,
+              backgroundColor: '#fff', border: '1px solid #e2ddd7', borderRadius: 8,
+              padding: '0.75rem', textAlign: 'center', color: '#999', fontSize: '0.78rem',
+            }}>
+              No items found for &quot;{searchQuery}&quot;
             </div>
           )}
         </div>

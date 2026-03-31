@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, callComponentApi } from '../../lib/api';
 import { colors } from '../../lib/theme';
 
 interface OrderSummary {
@@ -96,21 +96,9 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
   const loadOrders = useCallback(async (venueId: string) => {
     setLoading(true);
     try {
-      const res = await apiFetch('/api/working-documents/from-connector', {
-        method: 'POST',
-        body: JSON.stringify({
-          connector_name: 'loadedhub',
-          action: 'get_purchase_orders_summary',
-          params: {},
-          doc_type: 'orders',
-          venue_id: venueId,
-        }),
-      });
-      if (res.ok) {
-        const result = await res.json();
-        const extracted = extractOrders(result.data || result);
-        setOrders(extracted);
-      }
+      const result = await callComponentApi('orders_dashboard', 'get_orders_summary', {}, venueId);
+      const extracted = extractOrders(result.data as Record<string, unknown>);
+      setOrders(extracted);
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
@@ -142,19 +130,9 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
     setDetailError(null);
     setDetailLoading(true);
     try {
-      const res = await apiFetch('/api/working-documents/from-connector', {
-        method: 'POST',
-        body: JSON.stringify({
-          connector_name: 'loadedhub',
-          action: 'get_purchase_order_detail',
-          params: { order_id: order.id },
-          venue_id: selectedVenue,
-        }),
-      });
-      if (!res.ok) throw new Error(`Error ${res.status}`);
-      const result = await res.json();
-      const d = result.data || result;
-      const lines = d.lines || [];
+      const result = await callComponentApi('orders_dashboard', 'get_order_detail', { order_id: order.id }, selectedVenue || undefined);
+      const d = (result.data || {}) as Record<string, unknown>;
+      const lines = (d.lines || []) as OrderLine[];
       setDetailLines(lines);
     } catch (e) {
       setDetailError(e instanceof Error ? e.message : 'Failed to load details');

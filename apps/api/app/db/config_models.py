@@ -57,7 +57,6 @@ class ConnectorSpec(ConfigBase):
     credential_fields = Column(JSON, nullable=False, default=list)
     oauth_config = Column(JSON, nullable=True)
     test_request = Column(JSON, nullable=True)
-    operation_mappings = Column(JSON, nullable=True)
     version = Column(Integer, nullable=False, default=1)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
@@ -87,6 +86,41 @@ class AgentConnectorBinding(ConfigBase):
     agent_slug = Column(String, nullable=False)
     connector_name = Column(String, nullable=False)
     capabilities = Column(JSON, nullable=False, default=list)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class ComponentApiConfig(ConfigBase):
+    __tablename__ = "component_api_configs"
+    __table_args__ = (
+        UniqueConstraint(
+            "component_key",
+            "connector_name",
+            "action_name",
+            name="uq_component_connector_action",
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    component_key = Column(String, nullable=False)
+    connector_name = Column(String, nullable=False)
+    action_name = Column(String, nullable=False)
+    display_label = Column(String, nullable=True)
+    method = Column(String, nullable=False, default="GET")
+    path_template = Column(String, nullable=False)
+    request_body_template = Column(Text, nullable=True)
+    headers = Column(JSON, nullable=False, default=dict)
+    required_fields = Column(JSON, nullable=False, default=list)
+    field_descriptions = Column(JSON, nullable=False, default=dict)
+    # Outbound field mapping (for write endpoints — maps component fields to API params)
+    field_mapping = Column(JSON, nullable=True)  # {"componentField": "apiParam"}
+    ref_fields = Column(JSON, nullable=True)  # {"apiParam": "externalRefKey"}
+    id_field = Column(String, nullable=True)  # e.g., "shift_id"
+    # Inbound field mapping (for load endpoints — maps API response fields to component fields)
+    response_field_mapping = Column(
+        JSON, nullable=True
+    )  # {"apiField": "componentField"}
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)

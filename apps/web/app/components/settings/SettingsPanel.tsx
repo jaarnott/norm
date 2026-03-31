@@ -935,7 +935,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'specs' | 'components' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
+type SettingsTab = 'connectors' | 'agents' | 'components' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -951,7 +951,7 @@ export default function SettingsPanel() {
 
   const showConnectors = isAdmin;
   const showAgents = isAdmin;
-  const showSpecs = isAdmin;
+
   const showDeployments = isAdmin;
   const showTests = isAdmin;
   const showRoles = hasSettingsPermission(storedUser, 'org:roles', 'org:members');
@@ -1248,18 +1248,19 @@ export default function SettingsPanel() {
       </div>
 
       {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+      <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee', overflowX: 'auto', WebkitOverflowScrolling: 'touch', alignItems: 'center' }}>
         <button data-testid="settings-tab-venues" onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
         <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Users</button>
+        {showRoles && <button data-testid="settings-tab-roles" onClick={() => setActiveTab('roles')} style={tabStyle('roles')}>Roles</button>}
         <button data-testid="settings-tab-billing" onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
         <button onClick={() => setActiveTab('email')} style={tabStyle('email')}>Email</button>
-        {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
+        {(showAgents || showConnectors || showComponents) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
         {showAgents && <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>}
-        {showSpecs && <button data-testid="settings-tab-specs" onClick={() => setActiveTab('specs')} style={tabStyle('specs')}>Connector Specs</button>}
+        {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
         {showComponents && <button data-testid="settings-tab-components" onClick={() => setActiveTab('components')} style={tabStyle('components')}>Components</button>}
+        {(showDeployments || showTests || showSecrets) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
         {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
         {showTests && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
-        {showRoles && <button data-testid="settings-tab-roles" onClick={() => setActiveTab('roles')} style={tabStyle('roles')}>Roles</button>}
         {showSecrets && <button data-testid="settings-tab-secrets" onClick={() => setActiveTab('secrets')} style={tabStyle('secrets')}>Secrets</button>}
       </div>
 
@@ -1273,6 +1274,9 @@ export default function SettingsPanel() {
         {/* ============ CONNECTORS TAB ============ */}
         {activeTab === 'connectors' && (
           <>
+            <ConnectorSpecsPanel />
+
+            <div style={{ borderTop: '1px solid #e8e4de', marginTop: '2rem', paddingTop: '1.5rem' }}>
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Platform Connectors
             </h3>
@@ -1627,11 +1631,9 @@ export default function SettingsPanel() {
                 </div>
               );
             })}
+            </div>
           </>
         )}
-
-        {/* ============ CONNECTOR SPECS TAB ============ */}
-        {activeTab === 'specs' && <ConnectorSpecsPanel />}
 
         {/* ============ AGENTS TAB ============ */}
         {activeTab === 'agents' && (
