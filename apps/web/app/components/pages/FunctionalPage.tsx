@@ -106,7 +106,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
           value={input}
           onChange={e => {
             setInput(e.target.value);
-            const el = e.target; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+            const el = e.target; el.style.height = 'auto'; const h = Math.min(el.scrollHeight, 150); el.style.height = h + 'px'; el.style.overflow = h >= 150 ? 'auto' : 'hidden';
           }}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -120,7 +120,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
             flex: 1, minHeight: 50, maxHeight: 150,
             padding: '14px 1.5rem', fontSize: '1rem',
             border: '1px solid #ddd', borderRadius: 24, outline: 'none', fontFamily: 'inherit',
-            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'auto',
+            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'hidden',
           }}
         />
         <button type="submit" disabled={loading} style={{

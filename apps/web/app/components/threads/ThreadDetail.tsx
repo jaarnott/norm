@@ -513,12 +513,12 @@ const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend
         <textarea
           data-testid="message-input"
           ref={el => {
-            if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 150) + 'px'; }
+            if (el) { el.style.height = 'auto'; const h = Math.min(el.scrollHeight, 150); el.style.height = h + 'px'; el.style.overflow = h >= 150 ? 'auto' : 'hidden'; }
           }}
           value={value}
           onChange={e => {
             setValue(e.target.value);
-            const el = e.target; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+            const el = e.target; el.style.height = 'auto'; const h = Math.min(el.scrollHeight, 150); el.style.height = h + 'px'; el.style.overflow = h >= 150 ? 'auto' : 'hidden';
           }}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -533,7 +533,7 @@ const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend
             padding: '14px 1.5rem', fontSize: '1rem',
             border: highlight ? '1px solid #c4a882' : '1px solid #ddd',
             borderRadius: 24, outline: 'none', fontFamily: 'inherit',
-            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'auto',
+            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'hidden',
           }}
         />
         <button data-testid="send-btn" type="submit" disabled={loading} style={{
