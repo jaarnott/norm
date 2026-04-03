@@ -1406,7 +1406,7 @@ def _execute_consolidator_legacy(
     )
 
     step_meta: list[dict] = []
-    datasets: dict[str, Any] = {}  # named results from all stages
+    datasets: dict[str, object] = {}  # named results from all stages
 
     # Build template context
     tz_offset = "+13:00"
@@ -1473,7 +1473,7 @@ def _execute_consolidator_legacy(
 
                 if not spec or not tool_def:
                     datasets[step_id] = {"error": f"Tool not found: {connector_name}.{action}"}
-                    step_meta.append({"id": step_id, "status": "error", "error": f"Tool not found"})
+                    step_meta.append({"id": step_id, "status": "error", "error": "Tool not found"})
                     continue
 
                 venue_lookup = {**input_params, **step_params}
@@ -1666,12 +1666,6 @@ def _execute_consolidator_legacy(
             # Try fixing common issues: extra trailing brace
             cleaned = config.rstrip("}")  + "}"
             config = json.loads(cleaned)
-
-    # Check for staged pipeline format
-    if "stages" in config:
-        return _execute_staged_pipeline(
-            config["stages"], input_params, db, thread_id
-        )
 
     steps = config.get("steps", [])
     search_config = config.get("search")

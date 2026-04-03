@@ -355,8 +355,6 @@ def handle_message(
                     thread_obj.title = title
                 # Link the initial routing LlmCall to this thread
                 if llm_call_id:
-                    from app.db.models import LlmCall
-
                     routing_call = db.query(LlmCall).filter(LlmCall.id == llm_call_id).first()
                     if routing_call and not routing_call.thread_id:
                         routing_call.thread_id = thread_obj.id
