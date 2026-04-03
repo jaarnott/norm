@@ -50,7 +50,7 @@ class RenderedRequest:
 
 def _build_jinja_env() -> SandboxedEnvironment:
     env = SandboxedEnvironment(
-        autoescape=True,
+        autoescape=False,
     )
     env.filters.update(TEMPLATE_FILTERS)
     return env

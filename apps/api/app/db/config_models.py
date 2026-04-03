@@ -126,6 +126,21 @@ class ComponentApiConfig(ConfigBase):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class Playbook(ConfigBase):
+    __tablename__ = "playbooks"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    slug = Column(String, unique=True, nullable=False)
+    agent_slug = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    instructions = Column(Text, nullable=False)
+    tool_filter = Column(JSON, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class SystemSecret(ConfigBase):
     __tablename__ = "system_secrets"
 

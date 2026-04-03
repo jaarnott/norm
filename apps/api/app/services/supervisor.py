@@ -44,7 +44,7 @@ def handle_message(
     venue_name = None
     venue_timezone = None
 
-    # 1. If a specific thread_id is provided, route to that thread's domain agent
+    # 1. If a specific thread_id is provided, re-route through classifier
     if thread_id:
         thread = db.query(Thread).filter(Thread.id == thread_id).first()
         if thread:
@@ -59,18 +59,131 @@ def handle_message(
                 if venue_obj:
                     venue_name = venue_obj.name
                     venue_timezone = venue_obj.timezone
-            agent = get_agent(thread.domain)
-            if agent:
-                return agent.handle_message(
-                    message,
-                    db,
-                    user_id,
-                    thread_id,
-                    venue_id=venue_id,
-                    venue_name=venue_name,
-                    venue_timezone=venue_timezone,
-                    config_db=_cdb,
+
+            # Detect automated task "Run Now" — skip playbook routing
+            if thread.intent and thread.intent.endswith(".automated_conversation"):
+                from app.db.models import AutomatedTask
+
+                at = (
+                    db.query(AutomatedTask)
+                    .filter(AutomatedTask.conversation_thread_id == thread_id)
+                    .first()
                 )
+                if at and message.strip() == at.prompt.strip():
+                    logger.info(
+                        "Automated task Run Now detected (task=%s), bypassing router",
+                        at.id[:12],
+                    )
+                    agent = get_agent(thread.domain)
+                    if agent:
+                        system_prompt, anthropic_tools = agent.get_tool_definitions(
+                            db,
+                            user_id=user_id,
+                            active_venue_name=venue_name,
+                            venue_timezone=venue_timezone,
+                            config_db=_cdb,
+                        )
+                        if at.tool_filter:
+                            allowed = set(at.tool_filter)
+                            anthropic_tools = [
+                                t
+                                for t in anthropic_tools
+                                if t["name"].split("__", 1)[-1] in allowed
+                                or t["name"] in allowed
+                            ]
+                            logger.info(
+                                "Task tool_filter applied: %d tools",
+                                len(anthropic_tools),
+                            )
+                        from app.agents.tool_loop import run_tool_loop
+
+                        return run_tool_loop(
+                            message,
+                            thread,
+                            db,
+                            system_prompt,
+                            anthropic_tools,
+                            config_db=_cdb,
+                        )
+
+            # Classify the follow-up to decide how to handle it
+            from app.agents.router import classify_followup
+            from app.db.config_models import Playbook
+
+            # Build a brief summary of recent conversation
+            recent_msgs = (
+                db.query(Message)
+                .filter(Message.thread_id == thread_id)
+                .order_by(Message.created_at.desc())
+                .limit(4)
+                .all()
+            )
+            summary_parts = []
+            for m in reversed(recent_msgs):
+                role = "User" if m.role == "user" else "Agent"
+                summary_parts.append(f"{role}: {m.content[:100]}")
+            recent_summary = "\n".join(summary_parts) if summary_parts else "New thread"
+
+            followup = classify_followup(
+                message,
+                thread.domain,
+                None,  # no "current" playbook — each message gets its own
+                recent_summary,
+                thread_id=thread_id,
+                playbook_tools=None,
+                db=db,
+                config_db=_cdb,
+            )
+
+            action = followup.get("action", "continue")
+            logger.info(
+                "Follow-up routing: action=%s domain=%s playbook=%s reason=%s",
+                action,
+                followup.get("domain"),
+                followup.get("playbook"),
+                followup.get("reason", ""),
+            )
+
+            if action == "new_thread":
+                # User switched topics — fall through to normal routing below
+                thread_id = None
+                prior_thread = thread
+            else:
+                # Load playbook for THIS message if the classifier matched one
+                message_playbook = None
+                playbook_slug = followup.get("playbook")
+                logger.info("Follow-up playbook slug from classifier: %s", playbook_slug)
+                if playbook_slug:
+                    bare_slug = playbook_slug.split("/")[-1] if "/" in playbook_slug else playbook_slug
+                    message_playbook = (
+                        _cdb.query(Playbook)
+                        .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
+                        .first()
+                    )
+                    logger.info(
+                        "Playbook lookup: slug=%s found=%s name=%s",
+                        bare_slug,
+                        message_playbook is not None,
+                        message_playbook.display_name if message_playbook else "N/A",
+                    )
+
+                logger.info(
+                    "Calling agent.handle_message with playbook=%s",
+                    message_playbook.display_name if message_playbook else "None",
+                )
+                agent = get_agent(thread.domain)
+                if agent:
+                    return agent.handle_message(
+                        message,
+                        db,
+                        user_id,
+                        thread_id,
+                        venue_id=venue_id,
+                        venue_name=venue_name,
+                        venue_timezone=venue_timezone,
+                        config_db=_cdb,
+                        playbook=message_playbook,
+                    )
             # Handle venue clarification follow-ups — resolve venue from reply
             # and re-route the original message
             if thread.intent == "venue_clarification":
@@ -143,24 +256,11 @@ def handle_message(
         routing = {"domain": domain, "title": None, "venue": None, "llm_call_id": None}
         logger.info("Skipped LLM routing — page_context directed to %s", domain)
     else:
+        # Pass simple domain slugs — the router prompt has static capability
+        # descriptions that use user-facing language rather than verbose
+        # tool descriptions from the DB.
         domains = registered_domains()
-        domain_descs = []
-        for slug in domains:
-            info = caps.get(slug, {})
-            desc = info.get("description", slug)
-            actions = ", ".join(
-                c["label"]
-                for c in info.get("capabilities", [])
-                if c.get("enabled", True)
-            )
-            line = f"{slug}: {desc}" + (f" (can: {actions})" if actions else "")
-            domain_descs.append(line)
-        # Add meta domain — only for broad "what can you do" with no specific domain
-        domain_descs.append(
-            "meta: ONLY when the user asks a general question about the whole system's capabilities without mentioning a specific domain (e.g. 'what can you do?', 'help'). If they mention a specific area like HR, procurement, or reports, route to that domain instead."
-        )
-
-        routing = classify(message, domain_descs, db=db, config_db=_cdb)
+        routing = classify(message, domains, db=db, config_db=_cdb)
         domain = routing["domain"]
 
     # Resolve venue (skip if already resolved from venue clarification follow-up)
@@ -215,6 +315,21 @@ def handle_message(
                 result["llm_calls"] = [_llm_call_to_dict(llm_call)]
         return result
 
+    # Load playbook if the router matched one
+    playbook = None
+    playbook_slug = routing.get("playbook")
+    if playbook_slug:
+        from app.db.config_models import Playbook
+
+        # Router may return "agent/slug" format — strip the prefix
+        bare_slug = playbook_slug.split("/")[-1] if "/" in playbook_slug else playbook_slug
+
+        playbook = (
+            _cdb.query(Playbook)
+            .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
+            .first()
+        )
+
     # 3. Delegate to the domain agent
     agent = get_agent(domain)
     if agent:
@@ -227,16 +342,27 @@ def handle_message(
             venue_timezone=venue_timezone,
             config_db=_cdb,
             page_context=page_context,
+            playbook=playbook,
         )
 
-        # Set the LLM-generated title on the thread
+        # Set the LLM-generated title on the thread + backfill routing LlmCall thread_id
         title = routing.get("title")
-        if title and result.get("id"):
+        llm_call_id = routing.get("llm_call_id")
+        if result.get("id"):
             thread_obj = db.query(Thread).filter(Thread.id == result["id"]).first()
-            if thread_obj and not thread_obj.title:
-                thread_obj.title = title
+            if thread_obj:
+                if title and not thread_obj.title:
+                    thread_obj.title = title
+                # Link the initial routing LlmCall to this thread
+                if llm_call_id:
+                    from app.db.models import LlmCall
+
+                    routing_call = db.query(LlmCall).filter(LlmCall.id == llm_call_id).first()
+                    if routing_call and not routing_call.thread_id:
+                        routing_call.thread_id = thread_obj.id
                 db.flush()
-            result["title"] = title
+            if title:
+                result["title"] = title
 
         # Migrate prior meta/unknown conversation into the new thread
         if prior_thread and result.get("id"):

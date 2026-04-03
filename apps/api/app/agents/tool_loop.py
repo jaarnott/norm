@@ -275,15 +275,14 @@ def _execute_loop(
             )
 
         if response.stop_reason == "tool_use":
-            # The LLM is calling a tool. Emit any streamed reasoning as a
-            # thinking event, then cancel the streaming conversation message.
+            # The LLM is calling a tool. Cancel the streaming conversation
+            # message. Don't re-emit the reasoning text as a thinking event —
+            # the frontend already captured it via the token stream.
             reasoning = _extract_text(response)
             if reasoning:
-                # Strip [Tool] prefix — frontend already handles this via token detection
                 cleaned = reasoning.lstrip()
                 if cleaned.startswith("[Tool]"):
                     cleaned = cleaned[6:].lstrip()
-                _emit_event({"type": "thinking", "text": cleaned})
             _emit_event({"type": "stream_cancel"})
 
             pending_writes: list[ToolCall] = []
@@ -447,11 +446,14 @@ def _execute_loop(
                         )
                         component = tool_def.get("display_component")
                         if component:
+                            props = dict(tool_def.get("display_props") or {})
+                            if tc.venue_id:
+                                props["activeVenueId"] = tc.venue_id
                             display_blocks.append(
                                 {
                                     "component": component,
                                     "data": {"working_document_id": doc.id},
-                                    "props": tool_def.get("display_props") or {},
+                                    "props": props,
                                 }
                             )
                     else:
@@ -859,6 +861,9 @@ def _execute_tool_call(
             result = handler(tc.input_params or {}, db, tc.thread_id)
             tc.duration_ms = int((time.time() - t0) * 1000)
             payload = result.get("data")
+            # Set venue_id from handler result if available (for display block props)
+            if isinstance(payload, dict) and payload.get("venue_id") and not tc.venue_id:
+                tc.venue_id = payload["venue_id"]
             # Preserve _chart_props on result_payload so _build_display_block can find them
             if isinstance(payload, dict) and "_chart_props" in result:
                 payload = {**payload, "_chart_props": result["_chart_props"]}
@@ -891,7 +896,11 @@ def _execute_tool_call(
                 "handler": f"{tc.connector_name}.{tc.action}",
             }
             db.flush()
-            return {**result, "data": payload}  # return transformed data
+            return {
+                "success": result.get("success"),
+                "data": payload,
+                "error": result.get("error"),
+            }
         except Exception as exc:
             tc.duration_ms = int((time.time() - t0) * 1000)
             tc.status = "failed"
@@ -1219,10 +1228,30 @@ def _fuzzy_match_text(query_word: str, text: str, threshold: float = 0.45) -> bo
 
 
 def _search_tool_result(
-    tool_call_id: str, query: str, fields: str | None, db: Session
+    tool_call_id: str,
+    query: str,
+    fields: str | None,
+    db: Session,
+    thread_id: str | None = None,
 ) -> dict:
     """Search through a stored tool call's result payload with fuzzy matching."""
     tc = db.query(ToolCall).filter(ToolCall.id == tool_call_id).first()
+
+    # Fallback: if exact ID not found, find the most recent GET tool call
+    # for this thread (the LLM sometimes hallucinates the ID)
+    if (not tc or not tc.result_payload) and thread_id:
+        tc = (
+            db.query(ToolCall)
+            .filter(
+                ToolCall.thread_id == thread_id,
+                ToolCall.method == "GET",
+                ToolCall.status == "executed",
+                ToolCall.connector_name != "norm",
+            )
+            .order_by(ToolCall.created_at.desc())
+            .first()
+        )
+
     if not tc or not tc.result_payload:
         return {"error": "Tool call not found or has no stored result"}
 

@@ -104,7 +104,10 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       <form onSubmit={e => { e.preventDefault(); if (input.trim()) { onSend(input, { page_id: config.id, agent: config.agent }); setInput(''); } }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
         <textarea
           value={input}
-          onChange={e => setInput(e.target.value)}
+          onChange={e => {
+            setInput(e.target.value);
+            const el = e.target; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+          }}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -117,7 +120,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
             flex: 1, minHeight: 50, maxHeight: 150,
             padding: '14px 1.5rem', fontSize: '1rem',
             border: '1px solid #ddd', borderRadius: 24, outline: 'none', fontFamily: 'inherit',
-            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'hidden',
+            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'auto',
           }}
         />
         <button type="submit" disabled={loading} style={{

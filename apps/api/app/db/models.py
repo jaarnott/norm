@@ -126,6 +126,7 @@ class Venue(Base):
     name = Column(String, nullable=False)
     location = Column(String)
     timezone = Column(String, nullable=True)  # IANA timezone e.g. "Pacific/Auckland"
+    day_start_time = Column(String, nullable=True)  # HH:MM e.g. "07:00"
 
     organization = relationship("Organization", back_populates="venues")
 
@@ -182,6 +183,7 @@ class Thread(Base):
     thinking_steps = Column(JSON, nullable=True)
     conversation_summary = Column(Text, nullable=True)
     summary_through_count = Column(Integer, nullable=True)
+    playbook_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -573,6 +575,9 @@ class AutomatedTask(Base):
     overrides_next_run = Column(
         JSON, nullable=True
     )  # one-off instructions, cleared after execution
+    tool_filter = Column(
+        JSON, nullable=True
+    )  # list of action names to include, or null for all
     conversation_thread_id = Column(
         String, ForeignKey("threads.id"), nullable=True
     )  # persistent conversation

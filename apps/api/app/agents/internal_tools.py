@@ -865,8 +865,62 @@ def _handle_search_tool_result(
         params.get("query", ""),
         params.get("fields"),
         db,
+        thread_id=thread_id,
     )
     return {"success": True, "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Display Components (LLM-triggered visual output)
+# ---------------------------------------------------------------------------
+
+
+def _show_component(
+    params: dict, db: Session, thread_id: str | None, expected_action: str | None = None
+) -> dict:
+    """Generic handler that retrieves a prior tool call's data for display.
+
+    The LLM calls this when it wants to show a visual component to the user,
+    referencing a previous data-fetching tool call by ID.
+    """
+    from app.db.models import ToolCall
+
+    source_id = params.get("source_tool_call_id", "").strip()
+
+    tc = None
+    if source_id:
+        tc = db.query(ToolCall).filter(ToolCall.id == source_id).first()
+
+    # Fallback: find the most recent matching GET call for this thread
+    if (not tc or not tc.result_payload) and thread_id:
+        q = db.query(ToolCall).filter(
+            ToolCall.thread_id == thread_id,
+            ToolCall.method == "GET",
+            ToolCall.status == "executed",
+            ToolCall.connector_name != "norm",
+        )
+        if expected_action:
+            q = q.filter(ToolCall.action == expected_action)
+        tc = q.order_by(ToolCall.created_at.desc()).first()
+
+    if not tc or not tc.result_payload:
+        return {"success": False, "data": {}, "error": "Source tool call not found"}
+
+    return {"success": True, "data": tc.result_payload}
+
+
+@register("norm", "show_roster")
+def _show_roster(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Display the roster as a visual weekly grid."""
+    return _show_component(params, db, thread_id, expected_action="get_roster")
+
+
+@register("norm", "show_orders")
+def _show_orders(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Display the orders dashboard."""
+    return _show_component(
+        params, db, thread_id, expected_action="get_purchase_orders_summary"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -892,35 +946,170 @@ def _automated_task_to_dict(t) -> dict:
 
 @register("norm", "create_automated_task")
 def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Create an automated task (draft) for an agent."""
-    from app.db.models import AutomatedTask
+    """Create an automated task using a sub-LLM call to draft the task prompt.
 
-    title = params.get("title")
-    prompt = params.get("prompt")
-    agent_slug = params.get("agent_slug")
-    if not title or not prompt or not agent_slug:
+    Gathers conversation context (playbooks used, tools called) and uses Haiku
+    to produce a well-structured, self-contained task prompt. Also infers
+    tool_filter from the conversation's actual tool usage.
+    """
+    import json as _json
+
+    from app.config import settings
+    from app.db.models import AutomatedTask, LlmCall, Thread, ToolCall, User
+    from app.interpreter.llm_interpreter import call_llm
+
+    intent = params.get("intent", "").strip()
+    agent_slug = params.get("agent_slug", "").strip()
+    if not intent or not agent_slug:
         return {
             "success": False,
             "data": {},
-            "error": "title, prompt, and agent_slug are required",
+            "error": "intent and agent_slug are required",
         }
 
-    # Resolve user from the parent task
-    from app.db.models import Thread
+    schedule_hint = params.get("schedule", "").strip()
 
+    # Look up user context from the thread
     created_by = None
+    user_email = "the user"
     if thread_id:
         parent = db.query(Thread).filter(Thread.id == thread_id).first()
-        if parent:
+        if parent and parent.user_id:
             created_by = parent.user_id
+            user = db.query(User).filter(User.id == parent.user_id).first()
+            if user:
+                user_email = user.email
+
+    # Gather playbooks used in the conversation
+    playbook_section = ""
+    if thread_id:
+        routing_calls = (
+            db.query(LlmCall)
+            .filter(LlmCall.thread_id == thread_id, LlmCall.call_type == "routing")
+            .all()
+        )
+        playbook_slugs = set()
+        for lc in routing_calls:
+            slug = (lc.parsed_response or {}).get("playbook")
+            if slug:
+                bare = slug.split("/")[-1] if "/" in slug else slug
+                playbook_slugs.add(bare)
+
+        if playbook_slugs:
+            from app.db.config_models import Playbook
+            from app.db.engine import _ConfigSessionLocal
+
+            config_db = _ConfigSessionLocal()
+            try:
+                playbooks = (
+                    config_db.query(Playbook)
+                    .filter(
+                        Playbook.slug.in_(playbook_slugs),
+                        Playbook.enabled == True,  # noqa: E712
+                    )
+                    .all()
+                )
+                if playbooks:
+                    pb_parts = [
+                        f"## {pb.display_name}\n{pb.instructions}" for pb in playbooks
+                    ]
+                    playbook_section = (
+                        "\nPlaybooks used in this conversation (include relevant "
+                        "workflow steps, but user-specific requests always take "
+                        "priority over playbook defaults):\n\n"
+                        + "\n\n".join(pb_parts)
+                    )
+            finally:
+                config_db.close()
+
+    # Gather tools used in conversation → build tool_filter
+    tool_filter = None
+    tool_list_str = "all available tools"
+    if thread_id:
+        used = (
+            db.query(ToolCall.action)
+            .filter(ToolCall.thread_id == thread_id, ToolCall.status == "executed")
+            .distinct()
+            .all()
+        )
+        actions = {a[0] for a in used if a[0]}
+        # Always include utility + email tools
+        actions |= {"resolve_dates", "search_tool_result"}
+        actions |= {"send_notification", "send_email"}
+        # Remove internal-only tools not useful for scheduled runs
+        actions -= {
+            "update_task_config",
+            "set_override",
+            "update_thread_summary",
+            "create_automated_task",
+            "show_roster",
+            "show_orders",
+        }
+        tool_filter = sorted(actions)
+        tool_list_str = ", ".join(tool_filter)
+
+    # Sub-LLM call to draft the task
+    system_prompt = f"""You are a task prompt writer for Norm, a hospitality operations platform.
+
+Given the user's intent, create a well-structured automated task that an AI agent will execute on a schedule.
+
+Rules for writing task prompts:
+- The prompt must be completely self-contained — no conversation context is available during scheduled runs.
+- Include specific venue names, employee names, item names — never use pronouns like "this" or "the same".
+- If the user wants email delivery, include explicit instructions to email results to {user_email}.
+- Write the prompt as clear step-by-step instructions the agent should follow.
+- Be specific about what data to fetch, how to present it, and what to do with the results.
+- User-specific requests ALWAYS take priority over playbook defaults (e.g. formatting preferences).
+{playbook_section}
+
+Tools available for this task: {tool_list_str}
+
+Schedule hints:
+- If the user said "daily at 9am" → schedule_type: "daily", schedule_config: {{"hour": 9, "minute": 0}}
+- If "every monday at 8am" → schedule_type: "weekly", schedule_config: {{"day_of_week": "monday", "hour": 8, "minute": 0}}
+- If "monthly on the 1st" → schedule_type: "monthly", schedule_config: {{"day_of_month": 1, "hour": 9, "minute": 0}}
+- If no schedule mentioned → schedule_type: "manual", schedule_config: {{}}
+
+Return ONLY valid JSON — no markdown, no explanation:
+{{"title": "Short descriptive title (3-6 words)", "description": "One-line summary of what the task does", "prompt": "The full self-contained task prompt with step-by-step instructions...", "schedule_type": "manual|daily|weekly|monthly", "schedule_config": {{}}}}"""
+
+    user_prompt = f"Intent: {intent}"
+    if schedule_hint:
+        user_prompt += f"\nSchedule: {schedule_hint}"
+
+    try:
+        parsed, _llm_call_id = call_llm(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=settings.DATE_RESOLVER_MODEL,  # Haiku — fast and cheap
+            db=db,
+            thread_id=thread_id,
+            call_type="task_creation",
+            max_tokens=1024,
+        )
+
+        title = parsed.get("title", "Automated Task")
+        prompt = parsed.get("prompt", intent)
+        description = parsed.get("description")
+        schedule_type = parsed.get("schedule_type", "manual")
+        schedule_config = parsed.get("schedule_config") or {}
+
+    except (_json.JSONDecodeError, Exception) as e:
+        logger.warning("Task creation sub-LLM failed, using intent as prompt: %s", e)
+        title = intent[:60]
+        prompt = intent
+        description = None
+        schedule_type = "manual"
+        schedule_config = {}
 
     task = AutomatedTask(
         title=title,
-        description=params.get("description"),
+        description=description,
         agent_slug=agent_slug,
         prompt=prompt,
-        schedule_type=params.get("schedule_type", "manual"),
-        schedule_config=params.get("schedule_config") or {},
+        schedule_type=schedule_type,
+        schedule_config=schedule_config,
+        tool_filter=tool_filter,
         status="draft",
         created_by=created_by,
     )
@@ -1076,10 +1265,388 @@ def _step_result_preview(step_result: dict) -> dict:
     return {"_value": str(data)[:200]}
 
 
+@register("norm", "create_purchase_order")
+def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Open the purchase order editor for a venue, optionally pre-populated with items.
+
+    Items can be specified at three levels:
+    a) itemId + quantity — component resolves default supplier + variant
+    b) itemId + supplierId + quantity — component resolves default variant for that supplier
+    c) itemId + supplierId + variantId + quantity — fully resolved
+    """
+    venue = params.get("venue", "")
+    if not venue:
+        return {"success": False, "data": {}, "error": "venue is required"}
+
+    from app.db.models import Venue
+
+    venue_obj = db.query(Venue).filter(Venue.name.ilike(f"%{venue}%")).first()
+    venue_id = venue_obj.id if venue_obj else None
+
+    # Validate and pass items through — component handles supplier/variant resolution
+    items = params.get("items", [])
+    if not isinstance(items, list):
+        items = []
+
+    # If items have itemIds, validate them against actual stock items
+    if items and venue_id:
+        item_ids = [
+            item.get("itemId") for item in items
+            if isinstance(item, dict) and item.get("itemId")
+        ]
+        if item_ids:
+            # Fetch stock items via the component API to validate IDs
+            try:
+                from app.connectors.function_executor import execute_function
+
+                validate_code = (
+                    "def run(params, call_api, log):\n"
+                    "    items = call_api('loadedhub', 'get_stock_items', {'venue': params['venue']})\n"
+                    "    if isinstance(items, list):\n"
+                    "        return {i.get('id'): i.get('name') for i in items if isinstance(i, dict)}\n"
+                    "    return {}\n"
+                )
+                stock_result = execute_function(
+                    validate_code, {"venue": venue}, db, thread_id
+                )
+                valid_ids = stock_result.get("data", {})
+                if isinstance(valid_ids, dict) and valid_ids:
+                    invalid = [
+                        iid for iid in item_ids if iid not in valid_ids
+                    ]
+                    if invalid:
+                        return {
+                            "success": False,
+                            "data": {},
+                            "error": (
+                                f"Invalid itemId(s): {', '.join(invalid[:3])}. "
+                                "These IDs do not exist in the stock items database. "
+                                "You MUST use the exact 'id' values returned by "
+                                "search_tool_result — do NOT generate or guess IDs."
+                            ),
+                        }
+            except Exception:
+                pass  # validation is best-effort, don't block on errors
+
+    order_lines = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("itemId"):
+            continue  # itemId is required
+        line: dict = {
+            "itemId": item["itemId"],
+            "quantity": item.get("quantity", item.get("orderQty", item.get("qty", 1))),
+        }
+        if item.get("supplierId"):
+            line["supplierId"] = item["supplierId"]
+        if item.get("variantId"):
+            line["variantId"] = item["variantId"]
+        order_lines.append(line)
+
+    return {
+        "success": True,
+        "data": {
+            "message": f"Purchase order editor opened for {venue}" + (f" with {len(order_lines)} items" if order_lines else ""),
+            "venue": venue,
+            "venue_id": venue_id,
+            "order_lines": order_lines,
+        },
+    }
+
+
 def execute_consolidator(
     config: dict, input_params: dict, db: Session, thread_id: str | None
 ) -> dict:
-    """Execute a consolidator config — call sub-tools and aggregate results.
+    """Execute a consolidator tool — dispatches to function executor.
+
+    The config must contain a `function_code` key with a Python function
+    that defines `run(params, call_api, log)`.
+    """
+    import json as _json
+
+    # Handle double-encoded JSON string configs
+    if isinstance(config, str):
+        try:
+            config = _json.loads(config)
+        except _json.JSONDecodeError:
+            cleaned = config.rstrip("}") + "}"
+            config = _json.loads(cleaned)
+
+    function_code = config.get("function_code")
+    if not function_code:
+        # Fall back to legacy steps/stages execution during migration
+        return _execute_consolidator_legacy(config, input_params, db, thread_id)
+
+    from app.connectors.function_executor import execute_function
+
+    return execute_function(function_code, input_params, db, thread_id)
+
+
+def _execute_consolidator_legacy(
+    stages: dict, input_params: dict, db: Session, thread_id: str | None
+) -> dict:
+    """Execute a staged consolidator pipeline: fetch → transform → calculate.
+
+    Each stage has a clear responsibility and produces named datasets
+    that subsequent stages can reference.
+    """
+    import json
+    import time
+    import datetime
+    import re
+    from app.db.models import ConnectorSpec, ConnectorConfig
+    from app.connectors.spec_executor import execute_spec
+    from app.connectors.calculation_engine import (
+        execute_calculate_stage,
+        _array_sum,
+        _array_avg,
+        _array_min,
+        _array_max,
+    )
+
+    step_meta: list[dict] = []
+    datasets: dict[str, Any] = {}  # named results from all stages
+
+    # Build template context
+    tz_offset = "+13:00"
+    try:
+        from zoneinfo import ZoneInfo
+
+        now = datetime.datetime.now(ZoneInfo("Pacific/Auckland"))
+        offset = now.strftime("%z")
+        tz_offset = f"{offset[:3]}:{offset[3:]}"
+    except Exception:
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+    template_ctx: dict[str, str] = {
+        "today": now.strftime("%Y-%m-%d"),
+        "today_iso": now.strftime(f"%Y-%m-%dT00:00:00{tz_offset}").replace("+", "%2B"),
+        "one_week_ago": (now - datetime.timedelta(days=7)).strftime("%Y-%m-%d"),
+        "one_week_ago_iso": (now - datetime.timedelta(days=7)).strftime(f"%Y-%m-%dT00:00:00{tz_offset}").replace("+", "%2B"),
+        "four_weeks_ago": (now - datetime.timedelta(days=28)).strftime("%Y-%m-%d"),
+        "four_weeks_ago_iso": (now - datetime.timedelta(days=28)).strftime(f"%Y-%m-%dT00:00:00{tz_offset}").replace("+", "%2B"),
+        **{k: str(v) for k, v in input_params.items()},
+    }
+
+    def resolve_template(value: str) -> str:
+        def replacer(match: re.Match) -> str:
+            key = match.group(1).strip()
+            if key in template_ctx:
+                return template_ctx[key]
+            if key in datasets:
+                d = datasets[key]
+                if isinstance(d, dict):
+                    d = d.get("data", d)
+                if isinstance(d, (int, float)):
+                    return str(d)
+                return json.dumps(d) if not isinstance(d, str) else d
+            return match.group(0)
+        return re.sub(r"\{\{(.+?)\}\}", replacer, value)
+
+    def resolve_params(params: dict) -> dict:
+        return {k: resolve_template(str(v)) if isinstance(v, str) else v for k, v in params.items()}
+
+    # ---- STAGE 1: FETCH ----
+    fetch_steps = stages.get("fetch", [])
+    if fetch_steps:
+        from app.agents.tool_loop import _resolve_venue_config
+        from app.db.engine import _ConfigSessionLocal
+
+        for step in fetch_steps:
+            step_id = step.get("id", f"fetch_{len(datasets)}")
+            connector_name = step.get("connector")
+            action = step.get("action")
+            step_params = resolve_params(step.get("params", {}))
+            t0 = time.time()
+
+            try:
+                _cfg = _ConfigSessionLocal()
+                spec = _cfg.query(ConnectorSpec).filter(ConnectorSpec.connector_name == connector_name).first()
+                tool_def = None
+                if spec:
+                    for t in spec.tools or []:
+                        if isinstance(t, dict) and t.get("action") == action:
+                            tool_def = t
+                            break
+                _cfg.close()
+
+                if not spec or not tool_def:
+                    datasets[step_id] = {"error": f"Tool not found: {connector_name}.{action}"}
+                    step_meta.append({"id": step_id, "status": "error", "error": f"Tool not found"})
+                    continue
+
+                venue_lookup = {**input_params, **step_params}
+                config_row = _resolve_venue_config(connector_name, venue_lookup, db)
+                if not config_row:
+                    config_row = db.query(ConnectorConfig).filter(
+                        ConnectorConfig.connector_name == connector_name,
+                        ConnectorConfig.enabled == "true",
+                    ).first()
+
+                credentials = config_row.config if config_row else {}
+                venue_id_val = config_row.venue_id if config_row else None
+
+                clean_params = dict(step_params)
+                for k in ("venue", "venue_name", "venue_id"):
+                    clean_params.pop(k, None)
+
+                result, _ = execute_spec(spec, tool_def, clean_params, credentials, db, thread_id, venue_id=venue_id_val)
+                duration_ms = int((time.time() - t0) * 1000)
+
+                payload = result.response_payload
+                # Apply response transform
+                step_transform = tool_def.get("response_transform")
+                if step_transform and step_transform.get("enabled") and payload:
+                    from app.connectors.response_transform import apply_response_transform
+
+                    venue_tz = None
+                    if venue_id_val:
+                        from app.db.models import Venue
+                        v = db.query(Venue).filter(Venue.id == venue_id_val).first()
+                        if v and v.timezone:
+                            venue_tz = v.timezone
+
+                    wrapped = {"data": payload} if isinstance(payload, list) else (payload if isinstance(payload, dict) else {"data": payload})
+                    transformed = apply_response_transform(wrapped, step_transform, venue_timezone=venue_tz)
+                    payload = transformed.get("data", transformed) if isinstance(transformed, dict) else transformed
+
+                datasets[step_id] = payload
+                step_meta.append({"id": step_id, "status": "success", "type": "fetch", "duration_ms": duration_ms})
+
+            except Exception as exc:
+                duration_ms = int((time.time() - t0) * 1000)
+                datasets[step_id] = {"error": str(exc)}
+                step_meta.append({"id": step_id, "status": "error", "type": "fetch", "error": str(exc)[:200], "duration_ms": duration_ms})
+
+    # ---- STAGE 2: TRANSFORM ----
+    transform_steps = stages.get("transform", [])
+    for step in transform_steps:
+        step_id = step.get("id", f"transform_{len(datasets)}")
+        t0 = time.time()
+
+        try:
+            if "aggregate" in step:
+                agg = step["aggregate"]
+                source_name = agg.get("source", "")
+                source = datasets.get(source_name, [])
+                if isinstance(source, dict):
+                    source = source.get("data", source)
+                    if isinstance(source, dict):
+                        for k in ("data", "items", "results"):
+                            if isinstance(source.get(k), list):
+                                source = source[k]
+                                break
+                if not isinstance(source, list):
+                    source = []
+
+                func = agg.get("function", "sum")
+                field = agg.get("field")
+
+                if func == "sum":
+                    val = _array_sum(source, field)
+                elif func == "avg":
+                    val = _array_avg(source, field)
+                elif func == "min":
+                    val = _array_min(source, field)
+                elif func == "max":
+                    val = _array_max(source, field)
+                elif func == "count":
+                    val = len(source)
+                else:
+                    val = 0
+
+                datasets[step_id] = val
+                # Also make it available as a template var
+                template_ctx[step_id] = str(val)
+
+            elif "filter" in step:
+                filt = step["filter"]
+                source = datasets.get(filt.get("source", ""), [])
+                if isinstance(source, dict):
+                    source = source.get("data", source)
+                if not isinstance(source, list):
+                    source = []
+
+                # If source is a list of objects with nested arrays, unwrap to the largest array
+                # (e.g., roster objects with rosteredShifts arrays)
+                from app.agents.tool_loop import _unwrap_array
+                unwrapped = _unwrap_array(source)
+                if unwrapped and len(unwrapped) > len(source):
+                    source = unwrapped
+
+                from app.connectors.calculation_engine import evaluate_row_formula
+                condition = resolve_template(filt.get("condition", "True"))
+                datasets[step_id] = [item for item in source if isinstance(item, dict) and evaluate_row_formula(condition, item)]
+
+            elif "sort" in step:
+                sort = step["sort"]
+                source = datasets.get(sort.get("source", ""), [])
+                if isinstance(source, dict):
+                    source = source.get("data", source)
+                if not isinstance(source, list):
+                    source = []
+                key = sort.get("key", "")
+                desc = sort.get("descending", False)
+                datasets[step_id] = sorted(
+                    source,
+                    key=lambda r: float(r.get(key, 0) or 0) if isinstance(r.get(key), (int, float, type(None))) else 0,
+                    reverse=desc,
+                )
+
+            elif "join" in step:
+                from app.connectors.calculation_engine import _op_join
+                j = step["join"]
+                left = datasets.get(j.get("left", ""), [])
+                right = datasets.get(j.get("right", ""), [])
+                if isinstance(left, dict):
+                    left = left.get("data", left)
+                if isinstance(right, dict):
+                    right = right.get("data", right)
+                datasets[step_id] = _op_join(
+                    {"left": left if isinstance(left, list) else [], "right": right if isinstance(right, list) else [], "left_key": j.get("left_key", "id"), "right_key": j.get("right_key", "id")},
+                    resolve_template,
+                )
+
+            duration_ms = int((time.time() - t0) * 1000)
+            step_meta.append({"id": step_id, "status": "success", "type": "transform", "duration_ms": duration_ms})
+
+        except Exception as exc:
+            datasets[step_id] = {"error": str(exc)}
+            step_meta.append({"id": step_id, "status": "error", "type": "transform", "error": str(exc)[:200]})
+
+    # ---- STAGE 3: CALCULATE ----
+    calc_config = stages.get("calculate")
+    if calc_config:
+        t0 = time.time()
+        try:
+            result_data = execute_calculate_stage(calc_config, datasets, resolve_template)
+            duration_ms = int((time.time() - t0) * 1000)
+            step_meta.append({"id": "calculate", "status": "success", "type": "calculate", "duration_ms": duration_ms, "result_count": len(result_data)})
+            return {
+                "success": True,
+                "data": result_data,
+                "_steps": step_meta,
+            }
+        except Exception as exc:
+            step_meta.append({"id": "calculate", "status": "error", "type": "calculate", "error": str(exc)[:200]})
+            return {"success": False, "data": {}, "error": str(exc), "_steps": step_meta}
+
+    # No calculate stage — return all datasets
+    return {
+        "success": True,
+        "data": datasets,
+        "_steps": step_meta,
+    }
+
+
+def _execute_consolidator_legacy(
+    config: dict, input_params: dict, db: Session, thread_id: str | None
+) -> dict:
+    """LEGACY: Execute a consolidator config with steps/stages format.
+
+    Kept for backward compatibility during migration. Will be removed
+    once all consolidators are converted to function_code format.
 
     A consolidator defines a sequence of connector tool calls (steps),
     optional keyword search across results, and output field filtering.
@@ -1090,6 +1657,21 @@ def execute_consolidator(
     import time
     from app.db.models import ConnectorSpec, ConnectorConfig
     from app.connectors.spec_executor import execute_spec
+
+    # Defensive: handle double-encoded JSON string configs
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError:
+            # Try fixing common issues: extra trailing brace
+            cleaned = config.rstrip("}")  + "}"
+            config = json.loads(cleaned)
+
+    # Check for staged pipeline format
+    if "stages" in config:
+        return _execute_staged_pipeline(
+            config["stages"], input_params, db, thread_id
+        )
 
     steps = config.get("steps", [])
     search_config = config.get("search")
@@ -1252,6 +1834,44 @@ def execute_consolidator(
             )
             return
 
+        # --- Calculation step: compute values from previous step results ---
+        calc_config = step.get("calculation")
+        if calc_config:
+            import time as _time
+
+            from app.connectors.calculation_engine import execute_calculation
+
+            t0 = _time.time()
+            try:
+                result = execute_calculation(
+                    calc_config, resolve_template, step_results
+                )
+                duration_ms = int((_time.time() - t0) * 1000)
+                step_results[step_id] = {"success": True, "data": result}
+                step_meta.append(
+                    {
+                        "id": step_id,
+                        "status": "success",
+                        "type": "calculation",
+                        "duration_ms": duration_ms,
+                        "result_preview": _step_result_preview(
+                            step_results[step_id]
+                        ),
+                    }
+                )
+            except Exception as exc:
+                logger.warning("Calculation step %s failed: %s", step_id, exc)
+                step_results[step_id] = {"error": str(exc)}
+                step_meta.append(
+                    {
+                        "id": step_id,
+                        "status": "error",
+                        "type": "calculation",
+                        "error": str(exc),
+                    }
+                )
+            return
+
         # --- API step: call a connector tool ---
         connector_name = step.get("connector")
         action = step.get("action")
@@ -1360,7 +1980,20 @@ def execute_consolidator(
                         else {"data": step_payload}
                     )
                 )
-                transformed = apply_response_transform(wrapped, step_transform)
+                # Resolve venue timezone for tz/dow field options
+                step_venue_tz = None
+                if venue_id_val:
+                    from app.db.models import Venue
+
+                    venue_obj = (
+                        db_session.query(Venue).filter(Venue.id == venue_id_val).first()
+                    )
+                    if venue_obj and venue_obj.timezone:
+                        step_venue_tz = venue_obj.timezone
+
+                transformed = apply_response_transform(
+                    wrapped, step_transform, venue_timezone=step_venue_tz
+                )
                 step_payload = (
                     transformed.get("data", transformed)
                     if isinstance(transformed, dict)
@@ -1531,17 +2164,38 @@ def execute_consolidator(
 
     # No search — return raw step results (optionally filtered to output_fields)
     if output_fields:
-        for step_id, sr in step_results.items():
-            data = sr.get("data", sr)
-            arr = _unwrap_array(data) if isinstance(data, (dict, list)) else None
-            if arr:
-                step_results[step_id] = [
-                    {k: item.get(k) for k in output_fields if k in item} for item in arr
-                ]
+        # Check if output_fields are step IDs (filter which steps to return)
+        # or field names (filter which fields to keep in arrays)
+        if all(f in step_results for f in output_fields):
+            # Step-level filter: only return these steps
+            step_results = {k: v for k, v in step_results.items() if k in output_fields}
+        else:
+            # Field-level filter: keep only these fields from array items
+            from app.agents.tool_loop import _unwrap_array
+
+            for step_id, sr in step_results.items():
+                data = sr.get("data", sr) if isinstance(sr, dict) else sr
+                arr = _unwrap_array(data) if isinstance(data, (dict, list)) else None
+                if arr:
+                    step_results[step_id] = [
+                        {k: item.get(k) for k in output_fields if k in item}
+                        for item in arr
+                    ]
+
+    # For single-step consolidators, return the step data directly
+    # so the tool-level response_transform can process it
+    if len(step_results) == 1:
+        only_result = list(step_results.values())[0]
+        return {
+            "success": only_result.get("success", True),
+            "data": only_result.get("data", only_result),
+            "_steps": step_meta,
+        }
 
     return {
         "success": all(
-            sr.get("success", False) or "error" not in sr
+            (sr.get("success", False) or "error" not in sr)
+            if isinstance(sr, dict) else True
             for sr in step_results.values()
         ),
         "data": step_results,

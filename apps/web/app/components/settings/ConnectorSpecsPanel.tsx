@@ -7,11 +7,15 @@ import ConnectorSpecEditor from './ConnectorSpecEditor';
 
 type ViewMode = 'list' | 'create' | 'edit';
 
-export default function ConnectorSpecsPanel() {
+export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeChange?: (isEditing: boolean) => void } = {}) {
   const [specs, setSpecs] = useState<ConnectorSpecSummary[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [editingSpec, setEditingSpec] = useState<ConnectorSpecFull | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+
+  useEffect(() => {
+    onViewModeChange?.(viewMode !== 'list');
+  }, [viewMode, onViewModeChange]);
 
   // Error banner state
   const [errorBanner, setErrorBanner] = useState<string | null>(null);

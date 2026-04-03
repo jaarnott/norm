@@ -31,6 +31,7 @@ class BaseDomainAgent(ABC):
         venue_timezone: str | None = None,
         config_db: Session | None = None,
         page_context: dict | None = None,
+        playbook=None,
     ) -> dict:
         """Process a new user message for this domain.
 
@@ -84,6 +85,7 @@ class BaseDomainAgent(ABC):
         user_id: str | None = None,
         config_db: Session | None = None,
         page_context: dict | None = None,
+        playbook=None,
     ) -> tuple[str, list[dict]]:
         """Return (system_prompt, anthropic_tools) for the agentic tool loop.
 
@@ -100,6 +102,7 @@ class BaseDomainAgent(ABC):
             user_id=user_id,
             config_db=config_db,
             page_context=page_context,
+            playbook=playbook,
         )
 
     def handle_message_with_tools(
@@ -113,6 +116,7 @@ class BaseDomainAgent(ABC):
         venue_timezone: str | None = None,
         config_db: Session | None = None,
         page_context: dict | None = None,
+        playbook=None,
     ) -> dict:
         """Process a message using the agentic tool loop.
 
@@ -127,6 +131,7 @@ class BaseDomainAgent(ABC):
             user_id=user_id,
             config_db=config_db,
             page_context=page_context,
+            playbook=playbook,
         )
         ctx = self.build_context(db, user_id)
 

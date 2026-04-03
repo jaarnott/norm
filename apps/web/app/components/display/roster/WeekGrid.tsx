@@ -152,9 +152,9 @@ export default function WeekGrid({ staffRows, days, editingShiftId, onSelectShif
               const isToday = dk === dateKey(new Date());
               return (
                 <DroppableCell key={di} staffId={row.id} dk={dk} isToday={isToday}>
-                  {dayShifts.map(shift => (
+                  {dayShifts.map((shift, si) => (
                     <DraggableShift
-                      key={shift.id}
+                      key={shift.id || `${row.id}-${dk}-${si}`}
                       shift={shift}
                       staffId={row.id}
                       interactive={interactive}

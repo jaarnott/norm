@@ -33,6 +33,7 @@ class ProcurementAgent(BaseDomainAgent):
         venue_timezone: str | None = None,
         config_db: Session | None = None,
         page_context: dict | None = None,
+        playbook=None,
     ) -> dict:
         # Try the agentic tool loop first (if tools are bound)
         system_prompt, anthropic_tools = self.get_tool_definitions(
@@ -42,6 +43,7 @@ class ProcurementAgent(BaseDomainAgent):
             user_id=user_id,
             config_db=config_db,
             page_context=page_context,
+            playbook=playbook,
         )
         if anthropic_tools:
             return self.handle_message_with_tools(
@@ -54,6 +56,7 @@ class ProcurementAgent(BaseDomainAgent):
                 venue_timezone=venue_timezone,
                 config_db=config_db,
                 page_context=page_context,
+                playbook=playbook,
             )
 
         # Classic single-shot interpretation (no tools bound)

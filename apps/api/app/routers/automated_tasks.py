@@ -29,6 +29,7 @@ class CreateBody(BaseModel):
     prompt: str
     schedule_type: str = "manual"
     schedule_config: dict = {}
+    tool_filter: list[str] | None = None
 
 
 class UpdateBody(BaseModel):
@@ -38,6 +39,7 @@ class UpdateBody(BaseModel):
     schedule_type: str | None = None
     schedule_config: dict | None = None
     status: str | None = None
+    tool_filter: list[str] | None = None
 
 
 class RunBody(BaseModel):
@@ -67,6 +69,7 @@ def _automated_task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dic
         "task_config": t.task_config or {},
         "thread_summary": t.thread_summary,
         "overrides_next_run": t.overrides_next_run,
+        "tool_filter": t.tool_filter,
         "conversation_thread_id": t.conversation_thread_id,
         "last_run_at": t.last_run_at.isoformat() if t.last_run_at else None,
         "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
@@ -154,6 +157,7 @@ async def create_task(
         prompt=body.prompt,
         schedule_type=body.schedule_type,
         schedule_config=body.schedule_config,
+        tool_filter=body.tool_filter,
         status="draft",
         created_by=user.id,
     )
@@ -180,6 +184,7 @@ async def update_task(
         "schedule_type",
         "schedule_config",
         "status",
+        "tool_filter",
     ):
         val = getattr(body, field, None)
         if val is not None:

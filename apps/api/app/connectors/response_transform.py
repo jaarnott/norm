@@ -238,6 +238,13 @@ def _transform_item(
     return base
 
 
+def _str_safe(v) -> str:
+    """Convert value to string for comparison, preserving False and 0."""
+    if v is None:
+        return ""
+    return str(v)
+
+
 def _evaluate_filters(item: dict, filters: list[dict]) -> bool:
     """Evaluate filter conditions against a single item. All must pass (AND logic)."""
     for f in filters:
@@ -251,23 +258,23 @@ def _evaluate_filters(item: dict, filters: list[dict]) -> bool:
             if field_val is None or field_val == "" or field_val == []:
                 return False
         elif op == "equals":
-            if str(field_val or "").lower() != str(target).lower():
+            if _str_safe(field_val).lower() != str(target).lower():
                 return False
         elif op == "not_equals":
-            if str(field_val or "").lower() == str(target).lower():
+            if _str_safe(field_val).lower() == str(target).lower():
                 return False
         elif op == "contains":
-            if target.lower() not in str(field_val or "").lower():
+            if target.lower() not in _str_safe(field_val).lower():
                 return False
         elif op == "gt":
             try:
-                if float(field_val or 0) <= float(target):
+                if float(field_val if field_val is not None else 0) <= float(target):
                     return False
             except (ValueError, TypeError):
                 return False
         elif op == "lt":
             try:
-                if float(field_val or 0) >= float(target):
+                if float(field_val if field_val is not None else 0) >= float(target):
                     return False
             except (ValueError, TypeError):
                 return False

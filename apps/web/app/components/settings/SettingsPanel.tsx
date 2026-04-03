@@ -11,6 +11,7 @@ import TestsPanel from './TestsPanel';
 import RolesPanel from './RolesPanel';
 import SecretsPanel from './SecretsPanel';
 import ComponentsPanel from './ComponentsPanel';
+import PlaybooksPanel from './PlaybooksPanel';
 import { getStoredUser } from '../../lib/api';
 import type { User } from '../../types';
 
@@ -51,13 +52,16 @@ interface VenueConnector {
   config?: Record<string, string>;
 }
 
-function VenueCard({ venue, onDelete }: { venue: VenueDetail; onDelete: () => void }) {
+function VenueCard({ venue, onDelete, onUpdate }: { venue: VenueDetail; onDelete: () => void; onUpdate: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [connectors, setConnectors] = useState<VenueConnector[]>([]);
   const [connectorForms, setConnectorForms] = useState<Record<string, Record<string, string>>>({});
   const [savingConnector, setSavingConnector] = useState<string | null>(null);
   const [loadingConnectors, setLoadingConnectors] = useState(false);
   const [editingConnector, setEditingConnector] = useState<string | null>(null);
+  const [editingVenue, setEditingVenue] = useState(false);
+  const [venueForm, setVenueForm] = useState({ timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' });
+  const [savingVenue, setSavingVenue] = useState(false);
 
   const loadConnectors = useCallback(async () => {
     setLoadingConnectors(true);
@@ -134,7 +138,9 @@ function VenueCard({ venue, onDelete }: { venue: VenueDetail; onDelete: () => vo
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600, color: '#111', fontSize: '0.9rem' }}>{venue.name}</div>
           {venue.location && <div style={{ fontSize: '0.75rem', color: '#999' }}>{venue.location}</div>}
-          {venue.timezone && <div style={{ fontSize: '0.7rem', color: '#aaa' }}>{venue.timezone}</div>}
+          <div style={{ fontSize: '0.7rem', color: '#aaa' }}>
+            {venue.timezone || 'No timezone'}{venue.day_start_time ? ` · Day starts ${venue.day_start_time}` : ''}
+          </div>
         </div>
         <div style={{ fontSize: '0.72rem', color: '#999' }}>
           {venue.connector_count || 0} connector{(venue.connector_count || 0) !== 1 ? 's' : ''}
@@ -151,6 +157,59 @@ function VenueCard({ venue, onDelete }: { venue: VenueDetail; onDelete: () => vo
           padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderTop: 'none',
           borderRadius: '0 0 8px 8px', backgroundColor: '#fafafa',
         }}>
+          {/* Venue settings */}
+          <div style={{ marginBottom: '0.75rem', paddingBottom: '0.75rem', borderBottom: '1px solid #e5e7eb' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+              <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase' }}>Venue Settings</span>
+              {!editingVenue && (
+                <button onClick={() => { setVenueForm({ timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' }); setEditingVenue(true); }} style={{
+                  padding: '2px 8px', fontSize: '0.68rem', border: '1px solid #ddd', borderRadius: 4,
+                  backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit',
+                }}>Edit</button>
+              )}
+            </div>
+            {editingVenue ? (
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>Timezone</label>
+                  <input value={venueForm.timezone} onChange={e => setVenueForm(f => ({ ...f, timezone: e.target.value }))}
+                    placeholder="e.g. Pacific/Auckland"
+                    style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+                </div>
+                <div style={{ width: 100 }}>
+                  <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>Day Start</label>
+                  <input type="time" value={venueForm.day_start_time} onChange={e => setVenueForm(f => ({ ...f, day_start_time: e.target.value }))}
+                    style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+                </div>
+                <button onClick={async () => {
+                  setSavingVenue(true);
+                  try {
+                    await apiFetch(`/api/venues/${venue.id}`, {
+                      method: 'PUT',
+                      body: JSON.stringify({ timezone: venueForm.timezone || null, day_start_time: venueForm.day_start_time || null }),
+                    });
+                    setEditingVenue(false);
+                    onUpdate();
+                  } finally { setSavingVenue(false); }
+                }} disabled={savingVenue} style={{
+                  padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600,
+                  backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 4,
+                  cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+                }}>{savingVenue ? 'Saving...' : 'Save'}</button>
+                <button onClick={() => setEditingVenue(false)} style={{
+                  padding: '4px 12px', fontSize: '0.72rem',
+                  backgroundColor: '#fff', color: '#666', border: '1px solid #ddd', borderRadius: 4,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}>Cancel</button>
+              </div>
+            ) : (
+              <div style={{ fontSize: '0.78rem', color: '#555' }}>
+                <span>Timezone: <strong>{venue.timezone || '—'}</strong></span>
+                <span style={{ marginLeft: '1rem' }}>Day starts: <strong>{venue.day_start_time || '—'}</strong></span>
+              </div>
+            )}
+          </div>
+
           {loadingConnectors ? (
             <div style={{ fontSize: '0.75rem', color: '#999' }}>Loading connectors...</div>
           ) : connectors.length === 0 ? (
@@ -357,7 +416,7 @@ function VenuesTab() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         {venues.map(v => (
-          <VenueCard key={v.id} venue={v} onDelete={() => handleDelete(v.id)} />
+          <VenueCard key={v.id} venue={v} onDelete={() => handleDelete(v.id)} onUpdate={loadData} />
         ))}
         {venues.length === 0 && (
           <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.82rem' }}>
@@ -935,7 +994,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'components' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
+type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -956,6 +1015,8 @@ export default function SettingsPanel() {
   const showTests = isAdmin;
   const showRoles = hasSettingsPermission(storedUser, 'org:roles', 'org:members');
   const showComponents = isAdmin;
+  const showPlaybooks = isAdmin;
+  const [specEditing, setSpecEditing] = useState(false);
   const showSecrets = isAdmin;
 
   // Fetch org ID for billing tab
@@ -1258,6 +1319,7 @@ export default function SettingsPanel() {
         {showAgents && <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>}
         {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
         {showComponents && <button data-testid="settings-tab-components" onClick={() => setActiveTab('components')} style={tabStyle('components')}>Components</button>}
+        {showPlaybooks && <button data-testid="settings-tab-playbooks" onClick={() => setActiveTab('playbooks')} style={tabStyle('playbooks')}>Playbooks</button>}
         {(showDeployments || showTests || showSecrets) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
         {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
         {showTests && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
@@ -1274,9 +1336,9 @@ export default function SettingsPanel() {
         {/* ============ CONNECTORS TAB ============ */}
         {activeTab === 'connectors' && (
           <>
-            <ConnectorSpecsPanel />
+            <ConnectorSpecsPanel onViewModeChange={setSpecEditing} />
 
-            <div style={{ borderTop: '1px solid #e8e4de', marginTop: '2rem', paddingTop: '1.5rem' }}>
+            {!specEditing && <div style={{ borderTop: '1px solid #e8e4de', marginTop: '2rem', paddingTop: '1.5rem' }}>
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Platform Connectors
             </h3>
@@ -1631,7 +1693,7 @@ export default function SettingsPanel() {
                 </div>
               );
             })}
-            </div>
+            </div>}
           </>
         )}
 
@@ -1858,6 +1920,7 @@ export default function SettingsPanel() {
 
         {/* ============ SECRETS TAB ============ */}
         {activeTab === 'components' && <ComponentsPanel />}
+        {activeTab === 'playbooks' && <PlaybooksPanel />}
         {activeTab === 'secrets' && <SecretsPanel />}
       </div>
     </div>

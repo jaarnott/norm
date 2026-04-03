@@ -22,6 +22,7 @@ async def list_venues(
                 "name": v.name,
                 "location": v.location,
                 "timezone": v.timezone,
+                "day_start_time": v.day_start_time,
                 "organization_id": v.organization_id,
             }
             for v in venues

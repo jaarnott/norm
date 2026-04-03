@@ -229,11 +229,51 @@ A consolidator is a meta-tool that chains multiple API calls together. It's conf
 - `{{step_id.field.path}}` — data from a prior step
 - `{{step_id}}` — entire dataset from a prior step
 
+**Parallel execution:** Steps with the same `"parallel"` value run concurrently via ThreadPoolExecutor. Use this when steps are independent (e.g. fetching sales data from multiple venues). Parallel steps cannot reference each other's results — only steps that completed before the parallel group.
+
 **Key file:** `app/agents/internal_tools.py` — `execute_consolidator()` (line ~1094)
 
 ---
 
-## 9. Working Documents
+## 9. Playbooks
+
+Playbooks are focused instruction sets for specific workflows. Instead of one monolithic system prompt per agent, the router auto-matches the user's message to the most relevant playbook, giving the agent targeted guidance and optionally filtering its available tools.
+
+**What a playbook contains:**
+- `slug` — unique identifier (e.g. `weekly_sales_report`)
+- `agent_slug` — which agent this playbook belongs to
+- `description` — short description used by the router for matching
+- `instructions` — the focused prompt text (workflow steps, tool patterns, formatting rules)
+- `tool_filter` — optional list of tool actions. If set, only these tools are available.
+
+**How it works:**
+1. User sends a message
+2. The router classifies the domain AND selects a playbook (if one clearly matches)
+3. If a playbook matches → its instructions are injected into the system prompt between the base agent prompt and the dynamic context sections, and tools are filtered
+4. If no playbook matches → agent uses its default prompt with all tools (existing behaviour)
+5. The `playbook_id` is stored on the thread so follow-up messages reuse the same playbook
+
+**Prompt composition with playbook:**
+```
+[Agent base prompt from AgentConfig.system_prompt]
+## Active Playbook: {display_name}
+{instructions}
+[Venue context, email context, chart guidance — same as without playbook]
+[Tool definitions — filtered to playbook.tool_filter if set]
+```
+
+**Example:** A "Weekly Sales Report" playbook for the reports agent might instruct: "1. Call resolve_dates for the last 7 days. 2. Call get_sales_data for each venue. 3. Render a comparison chart. 4. Summarise the trends." — giving the agent a clear recipe instead of figuring it out from 30 tools.
+
+**Key files:**
+- `app/db/config_models.py` — Playbook model (config DB)
+- `app/routers/playbooks.py` — CRUD endpoints
+- `app/agents/router.py` — playbook matching in classification
+- `app/agents/prompt_builder.py` — instruction injection + tool filtering
+- `apps/web/app/components/settings/PlaybooksPanel.tsx` — Settings UI
+
+---
+
+## 10. Working Documents
 
 Working documents are an edit/sync layer between frontend components and external APIs. They enable interactive editing (roster shifts, order lines, hiring criteria) with optimistic concurrency and background sync.
 
@@ -258,7 +298,7 @@ Working documents are an edit/sync layer between frontend components and externa
 
 ---
 
-## 10. Prompt Builder
+## 11. Prompt Builder
 
 The prompt builder dynamically constructs the system prompt for each agent based on its connector bindings, available tools, venue context, and timezone. No hardcoded prompts — everything is built from configuration.
 
@@ -280,7 +320,7 @@ The prompt builder dynamically constructs the system prompt for each agent based
 
 ---
 
-## 11. Config Database
+## 12. Config Database
 
 All system configuration lives in a dedicated shared Cloud SQL instance (`norm-config`) that all environments read from. Edit a connector spec or agent prompt once — it's immediately available in testing, staging, and production.
 
@@ -291,6 +331,7 @@ All system configuration lives in a dedicated shared Cloud SQL instance (`norm-c
 | `connector_specs` | Tool definitions, auth types, OAuth config, response transforms |
 | `agent_configs` | Agent system prompts, display names, descriptions |
 | `agent_connector_bindings` | Which agents can use which connectors, with per-capability enable/disable |
+| `playbooks` | Focused workflow instructions per agent, with optional tool filtering |
 | `system_secrets` | API keys, OAuth credentials, JWT secret (loaded at startup) |
 
 **What's NOT in the config DB (stays in per-environment DB):**
@@ -307,7 +348,7 @@ All system configuration lives in a dedicated shared Cloud SQL instance (`norm-c
 
 ---
 
-## 12. Automated Tasks (Saved Threads)
+## 13. Automated Tasks (Saved Threads)
 
 Automated tasks are prompts that run on a schedule via APScheduler. They are created through conversation — the user asks an agent (e.g. "set up a daily sales report for Bessie") and the LLM calls the `create_automated_task` internal tool. There is no "Save as Task" button in the UI.
 
@@ -340,7 +381,7 @@ Automated tasks are prompts that run on a schedule via APScheduler. They are cre
 
 ---
 
-## 13. Auth & Permissions
+## 14. Auth & Permissions
 
 Two-tier authorization: **platform admin** (system-wide) and **organization roles** (per-org, granular).
 
@@ -373,7 +414,7 @@ Stored in the `roles` table with a JSON `permissions` array. Each user's org mem
 
 ---
 
-## 14. SSE Streaming
+## 15. SSE Streaming
 
 Messages are processed via Server-Sent Events (SSE) so the frontend shows real-time progress: routing decisions, thinking steps, tool executions, and the final response.
 
@@ -405,7 +446,7 @@ Messages are processed via Server-Sent Events (SSE) so the frontend shows real-t
 
 ---
 
-## 15. Display Blocks
+## 16. Display Blocks
 
 Display blocks are the mechanism for rendering rich UI from tool results. They bridge the backend tool loop and the frontend component registry.
 
@@ -437,7 +478,8 @@ Display blocks are the mechanism for rendering rich UI from tool results. They b
 User message
   → Supervisor (routing)
     → Page context provided? → Skip router, use page's agent directly
-    → Otherwise → Router LLM (classify domain)
+    → Otherwise → Router LLM (classify domain + match playbook)
+    → Load playbook if matched (instructions + tool filter)
     → Agent (reports/procurement/hr)
       → Tool Loop (up to 10 iterations)
         → Internal tool (@register handler)
@@ -463,6 +505,7 @@ User message
 | **Connectors** | `app/db/config_models.py`, `app/connectors/spec_executor.py`, `app/connectors/registry.py` |
 | **Transforms** | `app/connectors/response_transform.py` |
 | **Prompt Builder** | `app/agents/prompt_builder.py` |
+| **Playbooks** | `app/db/config_models.py` (Playbook), `app/routers/playbooks.py`, `app/agents/router.py` (matching), `PlaybooksPanel.tsx` |
 | **Components** | `apps/web/app/components/display/DisplayBlockRenderer.tsx`, `apps/web/app/components/pages/` |
 | **Working Documents** | `app/routers/working_documents.py`, `app/services/document_sync.py` |
 | **Config DB** | `app/db/config_models.py`, `app/db/engine.py` (get_config_db) |

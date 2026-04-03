@@ -46,6 +46,7 @@ html { height: 100dvh; height: 100%; }
 }
 .markdown-message th, .markdown-message td {
   border: 1px solid #ddd; padding: 0.4em 0.75em; text-align: left;
+  word-break: keep-all; overflow-wrap: normal;
 }
 .markdown-message th { background: #f5f5f5; font-weight: 600; }
 .markdown-message tr:nth-child(even) { background: #fafafa; }

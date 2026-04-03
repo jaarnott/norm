@@ -45,17 +45,20 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
 
   return (
     <div style={{
-      border: `1px solid ${isPending ? '#e8daef' : isApproved ? '#c3e6cb' : '#d6d8db'}`,
+      border: `1px solid ${isPending ? '#e2ddd7' : isApproved ? '#c3e6cb' : '#e2e3e5'}`,
       borderRadius: 10,
-      backgroundColor: isPending ? '#f9f4fc' : isApproved ? '#f0faf3' : '#f7f7f8',
-      padding: '1rem',
+      backgroundColor: isPending ? '#faf8f5' : isApproved ? '#f8fdf9' : '#f7f7f8',
+      padding: '0.85rem 1rem',
       marginTop: '0.5rem',
     }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
-        <span style={{ fontSize: '0.95rem' }}>{isPending ? '🔐' : isApproved ? '✅' : '❌'}</span>
-        <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333' }}>
-          {isPending ? 'Approval Required' : isApproved ? 'Approved' : 'Rejected'}
+      <div style={{ marginBottom: toolCalls.length > 0 ? '0.6rem' : 0 }}>
+        <span style={{
+          fontSize: '0.65rem', fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+          backgroundColor: isPending ? '#f5f0ea' : isApproved ? '#d4edda' : '#e2e3e5',
+          color: isPending ? '#a08060' : isApproved ? '#155724' : '#666',
+        }}>
+          {isPending ? 'Approval Required' : isApproved ? 'Approved' : 'Declined'}
         </span>
       </div>
 
@@ -63,49 +66,47 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
       {toolCalls.map(tc => (
         <div key={tc.id} style={{
           backgroundColor: '#fff',
-          border: '1px solid #e8e4de',
+          border: '1px solid #f0ebe5',
           borderRadius: 8,
-          padding: '0.75rem',
-          marginBottom: '0.5rem',
+          padding: '0.6rem 0.75rem',
+          marginBottom: '0.4rem',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.3rem' }}>
-            <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333' }}>
-              {tc.summary}
-            </span>
+          <div style={{ fontSize: '0.78rem', fontWeight: 500, color: '#333', marginBottom: '0.2rem' }}>
+            {tc.summary}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
             <span style={{
-              fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 4,
-              backgroundColor: '#f0f0f0', color: '#888',
+              fontSize: '0.62rem', fontWeight: 600, padding: '1px 5px', borderRadius: 3,
+              backgroundColor: '#f5f0ea', color: '#a08060',
             }}>
               {tc.action}
             </span>
-            <span style={{ fontSize: '0.68rem', color: '#aaa' }}>on {tc.connector_name}</span>
+            <span style={{ fontSize: '0.65rem', color: '#bbb' }}>{tc.connector_name}</span>
           </div>
 
-          {/* Show details toggle */}
           {tc.input_params && (
             <>
               <button
                 onClick={() => toggleDetails(tc.id)}
                 style={{
                   background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                  fontSize: '0.7rem', color: '#999', padding: '0.3rem 0 0', display: 'flex', alignItems: 'center', gap: 4,
+                  fontSize: '0.68rem', color: '#bbb', padding: '0.25rem 0 0', display: 'flex', alignItems: 'center', gap: 4,
                 }}
               >
                 <span style={{
                   display: 'inline-block', transition: 'transform 0.15s',
                   transform: showDetails.has(tc.id) ? 'rotate(90deg)' : 'rotate(0deg)',
-                  fontSize: '0.6rem',
+                  fontSize: '0.55rem',
                 }}>&#9654;</span>
                 {showDetails.has(tc.id) ? 'Hide details' : 'Show details'}
               </button>
               {showDetails.has(tc.id) && (
                 <pre style={{
-                  fontSize: '0.7rem', color: '#666', backgroundColor: '#f8f8f8',
-                  padding: '0.5rem', borderRadius: 6, marginTop: '0.4rem',
-                  overflow: 'auto', maxHeight: 300, lineHeight: 1.4,
+                  fontSize: '0.68rem', color: '#888', backgroundColor: '#faf8f5',
+                  padding: '0.4rem', borderRadius: 6, marginTop: '0.3rem',
+                  overflow: 'auto', maxHeight: 250, lineHeight: 1.4,
                   whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  border: '1px solid #f0ebe5',
                 }}>
                   {JSON.stringify(tc.input_params, null, 2)}
                 </pre>
@@ -115,32 +116,32 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
         </div>
       ))}
 
-      {/* Action buttons */}
+      {/* Action buttons — bottom right */}
       {isPending && (
-        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-          <button
-            onClick={handleApprove}
-            disabled={loading}
-            style={{
-              padding: '0.45rem 1.25rem', fontSize: '0.82rem', fontWeight: 600,
-              border: 'none', borderRadius: 6, cursor: loading ? 'not-allowed' : 'pointer',
-              backgroundColor: '#28a745', color: '#fff', fontFamily: 'inherit',
-              opacity: loading ? 0.6 : 1,
-            }}
-          >
-            {loading ? '...' : 'Approve'}
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.4rem', marginTop: '0.5rem' }}>
           <button
             onClick={handleReject}
             disabled={loading}
             style={{
-              padding: '0.45rem 1.25rem', fontSize: '0.82rem', fontWeight: 600,
-              border: 'none', borderRadius: 6, cursor: loading ? 'not-allowed' : 'pointer',
-              backgroundColor: '#dc3545', color: '#fff', fontFamily: 'inherit',
+              padding: '0.35rem 1rem', fontSize: '0.75rem', fontWeight: 500,
+              border: '1px solid #e2ddd7', borderRadius: 6, cursor: loading ? 'not-allowed' : 'pointer',
+              backgroundColor: '#fff', color: '#888', fontFamily: 'inherit',
               opacity: loading ? 0.6 : 1,
             }}
           >
-            {loading ? '...' : 'Reject'}
+            {loading ? '...' : 'Decline'}
+          </button>
+          <button
+            onClick={handleApprove}
+            disabled={loading}
+            style={{
+              padding: '0.35rem 1rem', fontSize: '0.75rem', fontWeight: 500,
+              border: 'none', borderRadius: 6, cursor: loading ? 'not-allowed' : 'pointer',
+              backgroundColor: '#a08060', color: '#fff', fontFamily: 'inherit',
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? '...' : 'Approve'}
           </button>
         </div>
       )}

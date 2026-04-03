@@ -42,9 +42,15 @@ export default function HomePanel({ onSend, loading }: HomePanelProps) {
       <form onSubmit={e => { e.preventDefault(); if (input.trim()) { onSend(input); setInput(''); } }} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
         <textarea
           data-testid="home-message-input"
-          ref={textareaRef}
+          ref={el => {
+            (textareaRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = el;
+            if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 150) + 'px'; }
+          }}
           value={input}
-          onChange={handleInput}
+          onChange={e => {
+            handleInput(e);
+            const el = e.target; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+          }}
           onKeyDown={handleKeyDown}
           placeholder="Get Norm to do it"
           rows={1}
@@ -61,7 +67,7 @@ export default function HomePanel({ onSend, loading }: HomePanelProps) {
             resize: 'none',
             lineHeight: '1.4',
             boxSizing: 'border-box',
-            overflow: 'hidden',
+            overflow: 'auto',
           }}
         />
         <button

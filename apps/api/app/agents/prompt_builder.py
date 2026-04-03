@@ -147,6 +147,7 @@ def build_tool_definitions(
     user_id: str | None = None,
     config_db: Session | None = None,
     page_context: dict | None = None,
+    playbook=None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
@@ -185,26 +186,62 @@ def build_tool_definitions(
         today_str = datetime.date.today().isoformat()
     system_prompt = system_prompt.replace("{{today}}", today_str)
 
-    # Add automated tasks guidance if those tools are available
-    has_automated_tasks = any(t.get("action") == "create_automated_task" for t in tools)
-    if has_automated_tasks:
-        system_prompt += """
+    # Pre-load venues (needed by both playbook and standard modes for tool definitions)
+    from app.services.venue_service import get_user_venues
+    from app.db.models import ConnectorConfig
+
+    user_venues = get_user_venues(db)
+
+    # --- PLAYBOOK MODE: slim, focused prompt ---
+    if playbook:
+        # Build venue context line
+        venue_line = ""
+        if active_venue_name:
+            tz_detail = ""
+            if venue_timezone:
+                try:
+                    from zoneinfo import ZoneInfo as _ZI
+
+                    _tz = _ZI(venue_timezone)
+                    _now = datetime.datetime.now(_tz)
+                    _off = _now.strftime("%z")
+                    tz_detail = f" (timezone: {venue_timezone}, UTC{_off[:3]}:{_off[3:]})"
+                except Exception:
+                    tz_detail = f" (timezone: {venue_timezone})"
+            venue_line = f"\n\n## Active Venue\n**{active_venue_name}**{tz_detail}. Use this as the default venue for all tool calls."
+
+        system_prompt = f"""You are the {domain} agent for Norm, a hospitality operations platform.
+Today's date is {today_str}.
+
+## Playbook: {playbook.display_name}
+{playbook.instructions}
+
+## Rules
+- Only present data returned by tool calls. Never fabricate or estimate data.
+- Use markdown tables for tabular data. Be concise.
+- Start tool calls with "[Tool] " prefix explaining what you're doing.
+- Use date formats exactly as shown in each tool's field description.{venue_line}
+"""
+    else:
+        # --- STANDARD MODE: full prompt with all guidance sections ---
+
+        # Inject automated tasks guidance if those tools are available
+        has_automated_tasks = any(t.get("action") == "create_automated_task" for t in tools)
+        if has_automated_tasks:
+            system_prompt += """
 
 ## Automated Tasks
-You can create automated tasks that run on a schedule or on demand. When a user asks you to do something regularly (e.g., "check candidates every day", "send me a weekly sales report"), use the `create_automated_task` tool to set it up.
-
-- Use `create_automated_task` when the user wants something done regularly or automatically
-- Set `agent_slug` to your domain (e.g., "hr", "procurement", "reports")
-- Write a clear, self-contained `prompt` — it will be sent to the agent on each run without any conversation context
-- Choose the right `schedule_type`: "daily", "weekly", "monthly", or "manual" (trigger only)
-- Set `schedule_config` with appropriate time fields: `{hour, minute}` for daily, `{day_of_week, hour, minute}` for weekly
-- The task is created as a draft — the user can test it and then activate it
+When a user asks to do something regularly or automatically, use `create_automated_task`:
+- Set `intent` to describe what the task should do, including specifics from the conversation (venue names, employee names, items, email requests). Be detailed — the intent is used to generate a self-contained task prompt.
+- Set `agent_slug` to the appropriate domain ("hr", "procurement", or "reports")
+- Set `schedule` if the user specified when it should run (e.g. "daily at 9am", "every monday at 8am")
+- The task will be created as a draft for the user to review and activate
 """
 
-    # Add chart visualization guidance if render_chart tool is available
-    has_render_chart = any(t.get("action") == "render_chart" for t in tools)
-    if has_render_chart:
-        system_prompt += """
+        # Add chart visualization guidance if render_chart tool is available
+        has_render_chart = any(t.get("action") == "render_chart" for t in tools)
+        if has_render_chart:
+            system_prompt += """
 
 ## Chart Visualization
 When presenting data from a tool call, use the `render_chart` tool to create a visual chart.
@@ -230,112 +267,108 @@ Keep your search query to just the core keyword — for example, if the user ask
 The search uses fuzzy matching so it handles misspellings and partial matches. It returns up to 20 results ranked by relevance.
 """
 
-    # Add email capability guidance
-    has_system_email = any(t["connector"] == "norm_email" for t in tools)
-    has_gmail = any(t["connector"] == "gmail" for t in tools)
-    has_outlook = any(t["connector"] == "microsoft_outlook" for t in tools)
+        # Add email capability guidance
+        has_system_email = any(t["connector"] == "norm_email" for t in tools)
+        has_gmail = any(t["connector"] == "gmail" for t in tools)
+        has_outlook = any(t["connector"] == "microsoft_outlook" for t in tools)
 
-    if has_system_email or has_gmail or has_outlook:
-        from app.db.models import ConnectorConfig as CC, User as UserModel
+        if has_system_email or has_gmail or has_outlook:
+            from app.db.models import ConnectorConfig as CC, User as UserModel
 
-        # Look up the current user's email
-        current_user_email = None
-        if user_id:
-            u = db.query(UserModel).filter(UserModel.id == user_id).first()
-            if u:
-                current_user_email = u.email
+            # Look up the current user's email
+            current_user_email = None
+            if user_id:
+                u = db.query(UserModel).filter(UserModel.id == user_id).first()
+                if u:
+                    current_user_email = u.email
 
-        email_lines = ["\n\n## Email Capabilities"]
-        if current_user_email:
-            email_lines.append(
-                f"The current user's email address is **{current_user_email}**. Use this when they ask to send something to themselves or 'to me'."
-            )
-        if has_system_email:
-            email_lines.append(
-                "- **System email** (`norm_email__send_notification`): Send notifications from the platform (e.g., task results, alerts, reports). Uses a template system."
-            )
-        if has_gmail and user_id:
-            cfg = (
-                db.query(CC)
-                .filter(CC.connector_name == "gmail", CC.user_id == user_id)
-                .first()
-            )
-            addr = (
-                (cfg.oauth_metadata or {}).get("email", "connected Gmail")
-                if cfg
-                else "connected Gmail"
-            )
-            email_lines.append(
-                f"- **Gmail** (`gmail__send_email`): Send from **{addr}**. Use for outreach, purchase orders, and correspondence that should come from the user."
-            )
-        if has_outlook and user_id:
-            cfg = (
-                db.query(CC)
-                .filter(CC.connector_name == "microsoft_outlook", CC.user_id == user_id)
-                .first()
-            )
-            addr = (
-                (cfg.oauth_metadata or {}).get("email", "connected Outlook")
-                if cfg
-                else "connected Outlook"
-            )
-            email_lines.append(
-                f"- **Outlook** (`microsoft_outlook__send_email`): Send from **{addr}**. Use for outreach, purchase orders, and correspondence that should come from the user."
-            )
-        email_lines.append(
-            "\nUse system email for automated notifications and alerts. Use the user's connected account when the email should appear to come from them personally."
-        )
-        if has_automated_tasks:
-            email_lines.append(
-                "You can create automated tasks that send emails on a schedule (e.g., daily reports, weekly summaries)."
-            )
-        system_prompt += "\n".join(email_lines)
-
-    # Add venue guidance when multiple venues exist
-    from app.services.venue_service import get_user_venues
-    from app.db.models import ConnectorConfig
-
-    user_venues = get_user_venues(db)
-    if len(user_venues) > 1:
-        # Build per-venue connector availability
-        venue_lines = []
-        for v in user_venues:
-            configs = (
-                db.query(ConnectorConfig)
-                .filter(
-                    ConnectorConfig.venue_id == v.id,
-                    ConnectorConfig.enabled == "true",
+            email_lines = ["\n\n## Email Capabilities"]
+            if current_user_email:
+                email_lines.append(
+                    f"The current user's email address is **{current_user_email}**. Use this when they ask to send something to themselves or 'to me'."
                 )
-                .all()
-            )
-            connector_names = [c.connector_name for c in configs]
-            if connector_names:
-                venue_lines.append(
-                    f"- {v.name} (connected to: {', '.join(connector_names)})"
+            if has_system_email:
+                email_lines.append(
+                    "- **System email** (`norm_email__send_notification`): Send notifications from the platform (e.g., task results, alerts, reports). Uses a template system."
                 )
-            else:
-                venue_lines.append(f"- {v.name} (no connectors configured)")
-        venue_detail = "\n".join(venue_lines)
+            if has_gmail and user_id:
+                cfg = (
+                    db.query(CC)
+                    .filter(CC.connector_name == "gmail", CC.user_id == user_id)
+                    .first()
+                )
+                addr = (
+                    (cfg.oauth_metadata or {}).get("email", "connected Gmail")
+                    if cfg
+                    else "connected Gmail"
+                )
+                email_lines.append(
+                    f"- **Gmail** (`gmail__send_email`): Send from **{addr}**. Use for outreach, purchase orders, and correspondence that should come from the user."
+                )
+            if has_outlook and user_id:
+                cfg = (
+                    db.query(CC)
+                    .filter(CC.connector_name == "microsoft_outlook", CC.user_id == user_id)
+                    .first()
+                )
+                addr = (
+                    (cfg.oauth_metadata or {}).get("email", "connected Outlook")
+                    if cfg
+                    else "connected Outlook"
+                )
+                email_lines.append(
+                    f"- **Outlook** (`microsoft_outlook__send_email`): Send from **{addr}**. Use for outreach, purchase orders, and correspondence that should come from the user."
+                )
+            email_lines.append(
+                "\nUse system email for automated notifications and alerts. Use the user's connected account when the email should appear to come from them personally."
+            )
+            if has_automated_tasks:
+                email_lines.append(
+                    "You can create automated tasks that send emails on a schedule (e.g., daily reports, weekly summaries)."
+                )
+            system_prompt += "\n".join(email_lines)
 
-        if active_venue_name:
-            tz_info = ""
-            if venue_timezone:
-                try:
-                    from zoneinfo import ZoneInfo
-
-                    tz = ZoneInfo(venue_timezone)
-                    now = datetime.datetime.now(tz)
-                    offset = now.strftime("%z")
-                    offset_fmt = f"{offset[:3]}:{offset[3:]}"
-                    today_in_tz = now.strftime("%Y-%m-%d")
-                    tz_info = (
-                        f" (timezone: {venue_timezone}, currently UTC{offset_fmt})"
+        # Add venue guidance when multiple venues exist
+        if len(user_venues) > 1:
+            # Build per-venue connector availability
+            venue_lines = []
+            for v in user_venues:
+                configs = (
+                    db.query(ConnectorConfig)
+                    .filter(
+                        ConnectorConfig.venue_id == v.id,
+                        ConnectorConfig.enabled == "true",
                     )
-                    tz_info += f"\nToday's date in this timezone is {today_in_tz}. When making API calls that require dates or datetimes, use the offset {offset_fmt} (URL-encoded as %2B{offset[1:3]}:{offset[3:]} for positive offsets)."
-                except Exception:
-                    tz_info = f" (timezone: {venue_timezone})"
+                    .all()
+                )
+                connector_names = [c.connector_name for c in configs]
+                if connector_names:
+                    venue_lines.append(
+                        f"- {v.name} (connected to: {', '.join(connector_names)})"
+                    )
+                else:
+                    venue_lines.append(f"- {v.name} (no connectors configured)")
+            venue_detail = "\n".join(venue_lines)
 
-            system_prompt += f"""
+            if active_venue_name:
+                tz_info = ""
+                if venue_timezone:
+                    try:
+                        from zoneinfo import ZoneInfo
+
+                        tz = ZoneInfo(venue_timezone)
+                        now = datetime.datetime.now(tz)
+                        offset = now.strftime("%z")
+                        offset_fmt = f"{offset[:3]}:{offset[3:]}"
+                        today_in_tz = now.strftime("%Y-%m-%d")
+                        tz_info = (
+                            f" (timezone: {venue_timezone}, currently UTC{offset_fmt})"
+                        )
+                        tz_info += f"\nToday's date in this timezone is {today_in_tz}. When making API calls that require dates or datetimes, use the offset {offset_fmt} (URL-encoded as %2B{offset[1:3]}:{offset[3:]} for positive offsets)."
+                    except Exception:
+                        tz_info = f" (timezone: {venue_timezone})"
+
+                system_prompt += f"""
 
 ## Active Venue
 The user's active venue is **{active_venue_name}**{tz_info}. Use this as the default venue for all tool calls.
@@ -348,8 +381,8 @@ Other available venues:
 - Only call tools for venues that have the relevant connector configured
 - For cross-venue queries, include only venues that have the relevant connector
 """
-        else:
-            system_prompt += f"""
+            else:
+                system_prompt += f"""
 
 ## Venues
 The user has access to multiple venues:
@@ -363,27 +396,27 @@ The user has access to multiple venues:
 - For cross-venue queries, only include venues that have the relevant connector
 """
 
-    # Add page context so the agent knows what the user is viewing
-    if page_context:
-        _page_labels = {
-            "roster": "Roster",
-            "hiring": "Hiring",
-            "orders": "Orders",
-            "saved-reports": "Saved Reports",
-            "tasks-hr": "HR Automated Tasks",
-            "tasks-procurement": "Procurement Automated Tasks",
-            "tasks-reports": "Reports Automated Tasks",
-        }
-        page_label = _page_labels.get(page_context["page_id"], page_context["page_id"])
-        system_prompt += f"""
+        # Add page context so the agent knows what the user is viewing
+        if page_context:
+            _page_labels = {
+                "roster": "Roster",
+                "hiring": "Hiring",
+                "orders": "Orders",
+                "saved-reports": "Saved Reports",
+                "tasks-hr": "HR Automated Tasks",
+                "tasks-procurement": "Procurement Automated Tasks",
+                "tasks-reports": "Reports Automated Tasks",
+            }
+            page_label = _page_labels.get(page_context["page_id"], page_context["page_id"])
+            system_prompt += f"""
 
 ## Current Page Context
 The user is currently viewing the **{page_label}** page.
 Their question likely relates to what they see on this page. Prioritize answers relevant to this context.
 """
 
-    # Always add parallel tool-use guidance
-    system_prompt += """
+        # Always add parallel tool-use guidance (standard mode only)
+        system_prompt += """
 
 ## Tool Use
 When you need to retrieve multiple independent pieces of data (e.g., sales data for several months, stock levels for several suppliers), call ALL the tools in a single response rather than one at a time. This executes them in parallel and is much faster. Only call tools sequentially when a later call depends on the result of an earlier one.
@@ -468,9 +501,19 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             }
         )
 
+    # Apply playbook tool filter — keep only tools in the filter list
+    if playbook and playbook.tool_filter:
+        allowed = set(playbook.tool_filter)
+        anthropic_tools = [
+            t
+            for t in anthropic_tools
+            if t["name"].split("__", 1)[-1] in allowed or t["name"] in allowed
+        ]
+
     logger.info(
-        "Built %d Anthropic tool definitions for domain=%s",
+        "Built %d Anthropic tool definitions for domain=%s (playbook=%s)",
         len(anthropic_tools),
         domain,
+        playbook.slug if playbook else None,
     )
     return system_prompt, anthropic_tools

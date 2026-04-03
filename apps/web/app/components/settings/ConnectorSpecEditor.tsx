@@ -4,6 +4,10 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import type { ConnectorSpecFull, ConnectorSpecTool, TestRequest } from '../../types';
 import { apiFetch, getToken } from '../../lib/api';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import FunctionEditor from './FunctionEditor';
 
 interface Props {
   spec: ConnectorSpecFull | null;
@@ -1312,20 +1316,30 @@ function ConsolidatorToolEditor({
             }}>
               {msg.role === 'user' ? 'You' : 'AI'}
             </div>
-            {msg.toolEvents?.map((ev, j) => renderToolEvent(ev, j))}
-            <div style={{ fontSize: '0.78rem', color: '#333', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-              {msg.content}
-            </div>
+            {msg.toolEvents?.map((ev, j) => renderToolEvent(ev, j) as React.ReactNode)}
+            {msg.role === 'assistant' ? (
+              <div className="markdown-message" style={{ fontSize: '0.78rem', color: '#333', lineHeight: 1.5 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{String(msg.content)}</ReactMarkdown>
+              </div>
+            ) : (
+              <div style={{ fontSize: '0.78rem', color: '#333', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                {String(msg.content)}
+              </div>
+            )}
           </div>
         ))}
         {/* Streaming state */}
         {chatLoading && (
           <div style={{ marginBottom: '0.5rem' }}>
             <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#555', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>AI</div>
-            {streamingEvents?.map((ev, j) => renderToolEvent(ev, j))}
-            <div style={{ fontSize: '0.78rem', color: '#333', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-              {streamingText || <span style={{ color: '#aaa' }}>Thinking...</span>}
-            </div>
+            {streamingEvents?.map((ev, j) => renderToolEvent(ev, j) as React.ReactNode)}
+            {streamingText ? (
+              <div className="markdown-message" style={{ fontSize: '0.78rem', color: '#333', lineHeight: 1.5 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{String(streamingText)}</ReactMarkdown>
+              </div>
+            ) : (
+              <div style={{ fontSize: '0.78rem', color: '#aaa', lineHeight: 1.5 }}>Thinking...</div>
+            )}
           </div>
         )}
         <div ref={chatEndRef} />
@@ -1433,38 +1447,27 @@ function ConsolidatorToolEditor({
         )}
       </div>
 
-      {/* Collapsible config JSON */}
-      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '0.5rem' }}>
-        <div
-          onClick={() => setShowConfig(!showConfig)}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none', marginBottom: showConfig ? '0.4rem' : 0 }}
-        >
-          <span style={{ fontSize: '0.7rem', color: '#888' }}>{showConfig ? '\u25BC' : '\u25B6'}</span>
-          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666' }}>Config JSON</span>
-          <span style={{ fontSize: '0.68rem', color: '#aaa' }}>
-            {((op.consolidator_config as Record<string, unknown>)?.steps as unknown[] || []).length} steps
-          </span>
-        </div>
-        {showConfig && (
-          <JsonTextarea
-            value={op.consolidator_config}
-            onChange={v => updateTool(idx, 'consolidator_config', v)}
-            rows={10}
-            autoResize
-            style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.78rem' }}
-          />
-        )}
+      {/* Function Editor — always shown for consolidator tools */}
+      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '0.5rem', marginBottom: '0.5rem' }}>
+        <FunctionEditor
+          functionCode={((op.consolidator_config as Record<string, unknown>)?.function_code as string) || 'def run(params, call_api, log):\n    venue = params.get("venue", "")\n    log(f"Hello from {venue}")\n    return {"message": "Replace this with your function"}'}
+          onChange={(code) => updateTool(idx, 'consolidator_config', { function_code: code })}
+          requiredFields={op.required_fields || []}
+          connectorName="norm"
+        />
       </div>
 
-      {/* Response Transform */}
-      <ResponseTransformSection
+      {/* Config JSON removed — function editor is the only way to edit consolidator config */}
+
+      {/* Response Transform — hidden for consolidator tools (transform is applied inside the sub-step) */}
+      {!op.consolidator_config && <ResponseTransformSection
         op={op}
         idx={idx}
         updateTool={updateTool}
         connectorName="norm"
         isNew={false}
         externalSample={testResult?.success ? testResult.data : undefined}
-      />
+      />}
     </div>
   );
 }

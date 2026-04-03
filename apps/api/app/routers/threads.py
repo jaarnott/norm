@@ -37,12 +37,14 @@ def _get_automated_task_meta(db: Session, conversation_thread_id: str) -> dict |
         "id": at.id,
         "title": at.title,
         "description": at.description,
+        "agent_slug": at.agent_slug,
         "schedule_type": at.schedule_type,
         "schedule_config": at.schedule_config or {},
         "status": at.status,
         "prompt": at.prompt,
         "task_config": at.task_config or {},
         "thread_summary": at.thread_summary,
+        "tool_filter": at.tool_filter,
         "last_run_at": at.last_run_at.isoformat() if at.last_run_at else None,
     }
 
@@ -413,7 +415,9 @@ def _approve_tool_calls(
     system_prompt, anthropic_tools = build_tool_definitions(
         thread.domain, db, user_id=user.id, config_db=config_db
     )
-    return resume_tool_loop(thread, db, system_prompt, anthropic_tools)
+    return resume_tool_loop(
+        thread, db, system_prompt, anthropic_tools, config_db=config_db
+    )
 
 
 def _reject_tool_calls(
@@ -446,7 +450,9 @@ def _reject_tool_calls(
     system_prompt, anthropic_tools = build_tool_definitions(
         thread.domain, db, user_id=user.id, config_db=config_db
     )
-    return resume_tool_loop(thread, db, system_prompt, anthropic_tools)
+    return resume_tool_loop(
+        thread, db, system_prompt, anthropic_tools, config_db=config_db
+    )
 
 
 # ---------------------------------------------------------------------------

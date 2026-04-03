@@ -255,12 +255,14 @@ export interface BaseThread {
     id: string;
     title: string;
     description: string | null;
+    agent_slug: string;
     schedule_type: string;
     schedule_config: Record<string, unknown>;
     status: string;
     prompt: string;
     task_config: Record<string, unknown>;
     thread_summary: string | null;
+    tool_filter: string[] | null;
     last_run_at: string | null;
   } | null;
 }
@@ -342,6 +344,7 @@ export interface AutomatedTask {
   task_config: Record<string, unknown>;
   thread_summary: string | null;
   overrides_next_run: Record<string, unknown> | null;
+  tool_filter: string[] | null;
   conversation_thread_id: string | null;
   last_run_at: string | null;
   next_run_at: string | null;
@@ -408,6 +411,7 @@ export interface VenueDetail {
   name: string;
   location: string | null;
   timezone: string | null;
+  day_start_time: string | null;
   organization_id: string | null;
   connector_count?: number;
 }

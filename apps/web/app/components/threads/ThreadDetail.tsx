@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, memo } from 'react';
 import { Package, UserRound, BarChart3, HelpCircle, Timer, type LucideIcon } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
 import type { Thread, ProcurementThread, HrThread, ConversationMessage, ToolCallRecord, DisplayBlock, WidgetAction } from '../../types';
 import ActivityTimeline from './ActivityTimeline';
 import DisplayBlockRenderer, { FULL_WIDTH_COMPONENTS } from '../display/DisplayBlockRenderer';
@@ -175,7 +176,7 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
               }}>
                 {isUser ? m.text : (
                   <div className="markdown-message">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{m.text}</ReactMarkdown>
                   </div>
                 )}
               </div>
@@ -511,8 +512,14 @@ const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend
       <form onSubmit={e => { e.preventDefault(); if (value.trim()) { onSend(value); setValue(''); } }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
         <textarea
           data-testid="message-input"
+          ref={el => {
+            if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 150) + 'px'; }
+          }}
           value={value}
-          onChange={e => setValue(e.target.value)}
+          onChange={e => {
+            setValue(e.target.value);
+            const el = e.target; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+          }}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -526,7 +533,7 @@ const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend
             padding: '14px 1.5rem', fontSize: '1rem',
             border: highlight ? '1px solid #c4a882' : '1px solid #ddd',
             borderRadius: 24, outline: 'none', fontFamily: 'inherit',
-            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'hidden',
+            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'auto',
           }}
         />
         <button data-testid="send-btn" type="submit" disabled={loading} style={{
@@ -576,8 +583,12 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
     prompt: at.prompt,
     schedule_type: at.schedule_type,
     schedule_config: { ...at.schedule_config },
+    tool_filter: at.tool_filter ? [...at.tool_filter] : null as string[] | null,
   });
   const [saving, setSaving] = useState(false);
+  const [agentTools, setAgentTools] = useState<Array<{ action: string; method: string; description: string; connector: string }>>([]);
+  const [toolFilterInput, setToolFilterInput] = useState('');
+  const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
 
   const ats = AT_STATUS[at.status] || AT_STATUS.draft;
 
@@ -657,7 +668,30 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                   </div>
                 </div>
               )}
-              <button onClick={() => { setForm({ prompt: at.prompt, schedule_type: at.schedule_type, schedule_config: { ...at.schedule_config } }); setEditing(true); }} style={{
+              <div style={{ marginBottom: '0.4rem' }}>
+                <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Tools</span>
+                <div style={{ padding: '0.4rem 0.5rem', backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: '0.25rem', alignItems: 'center' }}>
+                  {at.tool_filter && at.tool_filter.length > 0 ? (
+                    at.tool_filter.map(action => (
+                      <span key={action} style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: 10, backgroundColor: '#eef2ff', color: '#4338ca', fontWeight: 500 }}>{action}</span>
+                    ))
+                  ) : (
+                    <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>All tools (no filter)</span>
+                  )}
+                </div>
+              </div>
+              <button onClick={() => {
+                setForm({ prompt: at.prompt, schedule_type: at.schedule_type, schedule_config: { ...at.schedule_config }, tool_filter: at.tool_filter ? [...at.tool_filter] : null });
+                setEditing(true);
+                if (at.agent_slug && agentTools.length === 0) {
+                  import('../../lib/api').then(({ apiFetch }) =>
+                    apiFetch(`/api/playbooks/tools/${at.agent_slug}`)
+                      .then(r => r.ok ? r.json() : null)
+                      .then(d => { if (d?.tools) setAgentTools(d.tools); })
+                      .catch(() => {})
+                  );
+                }
+              }} style={{
                 padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
                 border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#374151',
                 cursor: 'pointer', fontFamily: 'inherit', marginTop: '0.3rem',
@@ -686,6 +720,80 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                   <select value={(form.schedule_config.day_of_week as string) || 'monday'} onChange={e => setForm(f => ({ ...f, schedule_config: { ...f.schedule_config, day_of_week: e.target.value } }))} style={{ padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6, textTransform: 'capitalize' }}>
                     {DAYS_OF_WEEK.map(d => <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>)}
                   </select>
+                )}
+              </div>
+              {/* Tool Filter */}
+              <div style={{ marginBottom: '0.4rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Tool Filter</span>
+                  {form.tool_filter ? (
+                    <button onClick={() => setForm(f => ({ ...f, tool_filter: null }))} style={{ fontSize: '0.65rem', color: '#6366f1', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>Clear filter (use all tools)</button>
+                  ) : (
+                    <button onClick={() => setForm(f => ({ ...f, tool_filter: [] }))} style={{ fontSize: '0.65rem', color: '#6366f1', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>Add filter</button>
+                  )}
+                </div>
+                {form.tool_filter !== null && (
+                  <>
+                    {form.tool_filter.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginBottom: 4 }}>
+                        {form.tool_filter.map(action => (
+                          <span key={action} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.68rem', padding: '2px 8px', borderRadius: 10, backgroundColor: '#eef2ff', color: '#4338ca', fontWeight: 500 }}>
+                            {action}
+                            <span onClick={() => { const next = form.tool_filter!.filter(a => a !== action); setForm(f => ({ ...f, tool_filter: next.length > 0 ? next : [] })); }} style={{ cursor: 'pointer', fontWeight: 700, fontSize: '0.72rem', lineHeight: 1 }}>&times;</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type="text"
+                        value={toolFilterInput}
+                        onChange={e => { setToolFilterInput(e.target.value); setToolDropdownOpen(true); }}
+                        onFocus={() => {
+                          setToolDropdownOpen(true);
+                          if (agentTools.length === 0 && at.agent_slug) {
+                            import('../../lib/api').then(({ apiFetch }) =>
+                              apiFetch(`/api/playbooks/tools/${at.agent_slug}`)
+                                .then(r => r.ok ? r.json() : null)
+                                .then(d => { if (d?.tools) setAgentTools(d.tools); })
+                                .catch(() => {})
+                            );
+                          }
+                        }}
+                        onBlur={() => setTimeout(() => setToolDropdownOpen(false), 150)}
+                        placeholder={agentTools.length > 0 ? 'Search tools to add...' : 'Loading tools...'}
+                        style={{ width: '100%', padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6, boxSizing: 'border-box' }}
+                      />
+                      {toolDropdownOpen && agentTools.length > 0 && (() => {
+                        const selected = new Set(form.tool_filter || []);
+                        const filtered = agentTools
+                          .filter(t => !selected.has(t.action))
+                          .filter(t => !toolFilterInput || t.action.toLowerCase().includes(toolFilterInput.toLowerCase()) || t.description.toLowerCase().includes(toolFilterInput.toLowerCase()));
+                        if (filtered.length === 0) return null;
+                        return (
+                          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, maxHeight: 180, overflowY: 'auto', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', marginTop: 2 }}>
+                            {filtered.map(t => (
+                              <div
+                                key={t.action}
+                                onMouseDown={e => {
+                                  e.preventDefault();
+                                  setForm(f => ({ ...f, tool_filter: [...(f.tool_filter || []), t.action] }));
+                                  setToolFilterInput('');
+                                }}
+                                style={{ padding: '5px 10px', cursor: 'pointer', fontSize: '0.78rem', borderBottom: '1px solid #f5f5f5' }}
+                                onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f0f4ff')}
+                                onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#fff')}
+                              >
+                                <span style={{ fontWeight: 500 }}>{t.action}</span>
+                                <span style={{ color: '#aaa', fontSize: '0.68rem', marginLeft: 6 }}>[{t.method}]</span>
+                                {t.description && <div style={{ fontSize: '0.68rem', color: '#888', marginTop: 1 }}>{t.description}</div>}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </>
                 )}
               </div>
               <div style={{ display: 'flex', gap: '0.3rem' }}>

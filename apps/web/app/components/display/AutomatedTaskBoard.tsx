@@ -101,15 +101,26 @@ export default function AutomatedTaskBoard({ data, onAction }: DisplayBlockProps
 
   if (tasks.length === 0) {
     return (
-      <div style={{ padding: '3rem', textAlign: 'center', color: '#9ca3af' }}>
-        <div style={{ fontSize: '1rem', marginBottom: '0.5rem' }}>No automated tasks yet</div>
-        <div style={{ fontSize: '0.82rem' }}>Ask Norm to create one — e.g., &ldquo;Set up a daily task to check BambooHR candidates&rdquo;</div>
+      <div style={{ padding: '0.5rem' }}>
+        <h2 style={{ margin: '0 0 1.5rem', fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>Automated Tasks</h2>
+        <div style={{ padding: '2rem', textAlign: 'center', color: '#9ca3af' }}>
+          <div style={{ fontSize: '1rem', marginBottom: '0.5rem' }}>No automated tasks yet</div>
+          <div style={{ fontSize: '0.82rem' }}>Ask Norm to create one — e.g., &ldquo;Set up a daily task to check BambooHR candidates&rdquo;</div>
+        </div>
       </div>
     );
   }
 
   return (
     <div data-testid="auto-task-board" style={{ padding: '0.5rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>Automated Tasks</h2>
+          <p style={{ margin: '0.15rem 0 0', fontSize: '0.78rem', color: '#999' }}>
+            {tasks.length} task{tasks.length !== 1 ? 's' : ''} configured
+          </p>
+        </div>
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         {tasks.map(task => {
           const ss = STATUS_STYLES[task.status] || STATUS_STYLES.draft;
@@ -144,6 +155,9 @@ export default function AutomatedTaskBoard({ data, onAction }: DisplayBlockProps
               <div style={{ display: 'flex', gap: '1rem', fontSize: '0.72rem', color: '#9ca3af', marginBottom: '0.4rem' }}>
                 <span>{formatSchedule(task.schedule_type, task.schedule_config)}</span>
                 <span>Last run: {timeAgo(task.last_run_at)}</span>
+                {task.tool_filter && task.tool_filter.length > 0 && (
+                  <span style={{ color: '#6366f1' }}>Tools: {task.tool_filter.length} filtered</span>
+                )}
               </div>
 
               <div style={{ display: 'flex', gap: '0.3rem' }}>

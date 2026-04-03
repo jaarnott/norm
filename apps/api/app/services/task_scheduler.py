@@ -137,7 +137,7 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
 
     Can be called by the scheduler (background thread) or by an API endpoint.
     """
-    from app.db.engine import SessionLocal
+    from app.db.engine import SessionLocal, _ConfigSessionLocal
     from app.db.models import AutomatedTask, AutomatedTaskRun, Thread, Message
     from app.agents.registry import get_agent
     from app.agents.tool_loop import run_tool_loop
@@ -145,6 +145,7 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
     owns_session = db is None
     if owns_session:
         db = SessionLocal()
+    config_db = _ConfigSessionLocal()
 
     try:
         task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
@@ -172,10 +173,26 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 raise ValueError(f"Agent not found: {task.agent_slug}")
 
             system_prompt, anthropic_tools = agent.get_tool_definitions(
-                db, user_id=task.created_by
+                db, user_id=task.created_by, config_db=config_db
             )
             if not system_prompt:
                 system_prompt = f"You are the {task.agent_slug} agent for Norm."
+
+            # Apply task-level tool filter
+            if task.tool_filter:
+                allowed = set(task.tool_filter)
+                anthropic_tools = [
+                    t
+                    for t in anthropic_tools
+                    if t["name"].split("__", 1)[-1] in allowed
+                    or t["name"] in allowed
+                ]
+                logger.info(
+                    "Task %s tool_filter applied: %d -> %d tools",
+                    task.id,
+                    len(anthropic_tools) + len(allowed),
+                    len(anthropic_tools),
+                )
 
             ctx = agent.build_context(db)
             at_context = _build_task_context(task, ctx)
@@ -296,5 +313,6 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             return {"success": False, "error": str(exc)}
 
     finally:
+        config_db.close()
         if owns_session:
             db.close()

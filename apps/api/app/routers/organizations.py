@@ -43,12 +43,14 @@ class CreateVenueBody(BaseModel):
     name: str
     location: str | None = None
     timezone: str | None = None
+    day_start_time: str | None = None  # HH:MM e.g. "07:00"
 
 
 class UpdateVenueBody(BaseModel):
     name: str | None = None
     location: str | None = None
     timezone: str | None = None
+    day_start_time: str | None = None
 
 
 # --- Helpers ---
@@ -72,6 +74,8 @@ def _org_to_dict(org: Organization, db: Session, include_details: bool = False) 
                 "id": v.id,
                 "name": v.name,
                 "location": v.location,
+                "timezone": v.timezone,
+                "day_start_time": v.day_start_time,
                 "connector_count": db.query(ConnectorConfig)
                 .filter(
                     ConnectorConfig.venue_id == v.id, ConnectorConfig.enabled == "true"
@@ -301,6 +305,7 @@ async def create_venue(
         name=body.name,
         location=body.location,
         timezone=body.timezone,
+        day_start_time=body.day_start_time,
         organization_id=org_id,
     )
     db.add(venue)
@@ -324,6 +329,7 @@ async def create_venue(
         "name": venue.name,
         "location": venue.location,
         "timezone": venue.timezone,
+        "day_start_time": venue.day_start_time,
         "organization_id": org_id,
     }
 
@@ -346,6 +352,8 @@ async def update_venue(
         venue.location = body.location
     if body.timezone is not None:
         venue.timezone = body.timezone
+    if body.day_start_time is not None:
+        venue.day_start_time = body.day_start_time
 
     db.commit()
     return {
@@ -353,6 +361,7 @@ async def update_venue(
         "name": venue.name,
         "location": venue.location,
         "timezone": venue.timezone,
+        "day_start_time": venue.day_start_time,
     }
 
 

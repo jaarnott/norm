@@ -443,12 +443,31 @@ _CONFIG_SCHEMA_TEXT = """- action: a snake_case name for this consolidator tool
 - required_fields: array of field names the LLM must provide
 - field_descriptions: object mapping field names to descriptions
 - consolidator_config: object with:
-  - steps: array of step objects, each is either:
-    - API step: {id, connector, action, params, parallel?} — calls a connector tool
-    - Filter step: {id, source, filter: {field, contains}} — filters a previous step's results by field value (no API call). If exactly one item matches, result is stored flat so {{step_id.field}} works directly.
-    Steps with the same "parallel" value (e.g. "parallel": "fetch") run concurrently. Use this when steps are independent and don't reference each other's results. Steps without "parallel" run sequentially.
-  - search: optional {keyword, steps} — keyword is a template var like {{item_name}}, steps is which step results to search
-  - output_fields: optional array of field names to keep from search results"""
+  - function_code: a Python function string that defines run(params, call_api, log)
+
+The function receives:
+- params: dict with all required_fields values + auto-injected template vars:
+  - today, today_iso, one_week_ago, one_week_ago_iso, four_weeks_ago, four_weeks_ago_iso
+  - All values from required_fields (passed by the LLM)
+- call_api(connector, action, params): calls any connector tool, returns the result data
+  - Response transforms (field mapping, filters, timezone normalization) are applied automatically
+  - The venue param is resolved automatically from params
+  - Max 20 API calls per execution
+- log(message): debug output captured and shown in the test UI
+
+Available in function scope: math, json, datetime modules. Standard Python (loops, list comprehensions, try/except, dict/list operations).
+
+Example consolidator_config:
+{
+  "function_code": "def run(params, call_api, log):\\n    venue = params['venue']\\n    date = params.get('date', params['today'])\\n    \\n    log(f'Fetching roster for {venue} on {date}')\\n    roster = call_api('loadedhub', 'get_roster', {\\n        'venue': venue,\\n        'start_datetime': f'{date}T00:00:00%2B13:00',\\n        'end_datetime': f'{date}T23:59:59%2B13:00',\\n    })\\n    \\n    shifts = []\\n    for r in (roster if isinstance(roster, list) else [roster]):\\n        for s in r.get('rosteredShifts', []):\\n            if date in str(s.get('clockinTime', '')):\\n                shifts.append(s)\\n    \\n    log(f'Found {len(shifts)} shifts')\\n    return shifts"
+}
+
+IMPORTANT:
+- Call connector tools FIRST to explore the APIs and see actual field names and data structures
+- Then write the function using those exact field names
+- Use log() liberally for debugging
+- The function must define run(params, call_api, log) and return the result
+- Use test_consolidator to verify the function works before saving"""
 
 
 def _parse_ai_json(raw: str) -> dict:
@@ -819,7 +838,7 @@ _SAVE_TOOL = {
             },
             "consolidator_config": {
                 "type": "object",
-                "description": "The consolidator config (steps, search, output_fields)",
+                "description": "The consolidator config with function_code: {\"function_code\": \"def run(params, call_api, log):\\n    ...\"}",
             },
         },
         "required": [
@@ -835,16 +854,16 @@ _SAVE_TOOL = {
 _TEST_CONSOLIDATOR_TOOL = {
     "name": "test_consolidator",
     "description": (
-        "Test a consolidator config end-to-end by executing all steps with template variable resolution, "
-        "parallel execution, search, and output filtering — exactly as it would run in production. "
-        "Use this to verify the full consolidator works before saving."
+        "Test a consolidator function end-to-end with real data. "
+        "Executes the function_code with the given params and returns the result + debug logs. "
+        "Use this to verify the function works before saving."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "consolidator_config": {
                 "type": "object",
-                "description": "The consolidator config to test (steps, search, output_fields)",
+                "description": "The consolidator config to test: {\"function_code\": \"def run(params, call_api, log):\\n    ...\"}",
             },
             "params": {
                 "type": "object",
@@ -982,11 +1001,11 @@ async def consolidator_chat(
                 if body.current_tool:
                     current_tool_text = f"\n\nCurrent tool definition being edited:\n```json\n{json.dumps(body.current_tool, indent=2)}\n```"
 
-                system_prompt = f"""You are a consolidator tool builder. You help users create composite API tools that chain multiple connector calls together.
+                system_prompt = f"""You are a consolidator tool builder. You help users create Python functions that chain multiple connector API calls together.
 
 You have DIRECT ACCESS to all the connector tools listed below. You can call them to explore the APIs, see response shapes, and understand what data is available.
 
-Template variables available in consolidator configs:
+Template variables available in params:
 {_TEMPLATE_VARS_TEXT}
 
 Consolidator config schema:
@@ -994,11 +1013,15 @@ Consolidator config schema:
 {current_tool_text}
 
 Workflow:
-1. When asked to build a consolidator, FIRST call the relevant connector tools to understand the data. For example, call get_stocktake_templates to see what templates exist and what fields they return.
-2. Use what you learn from the real API responses to build a consolidator config with the correct field names, IDs, and data paths.
-3. Before saving, use the `test_consolidator` tool to run the full consolidator end-to-end with real params. This executes all steps with template variable resolution, parallel execution, and search — exactly as it would run in production. Check the _steps metadata in the response to verify each step succeeded.
+1. When asked to build a consolidator, FIRST call the relevant connector tools to understand the data structures and field names.
+2. Write a Python function `run(params, call_api, log)` that:
+   - Uses `call_api(connector, action, params)` to fetch data from connector tools
+   - Transforms, filters, and calculates using standard Python
+   - Uses `log()` for debug output
+   - Returns the final result (list, dict, or scalar)
+3. Before saving, use `test_consolidator` to run the function end-to-end with real params. Check the _logs for debug output and verify the data is correct.
 4. Only call save_consolidator AFTER test_consolidator confirms it works.
-5. If the user asks to test with specific params, use test_consolidator with those params and show the results.
+5. The consolidator_config must be: {{"function_code": "def run(params, call_api, log):\\n    ..."}}
 
 Keep responses concise. Show the key data from API responses (field names, IDs, structure) so the user can verify."""
 

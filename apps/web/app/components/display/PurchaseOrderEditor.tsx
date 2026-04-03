@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
-import { apiFetch, callComponentApi } from '../../lib/api';
+import { apiFetch, callComponentApi, getStoredUser } from '../../lib/api';
 
 // --- Types ---
 
@@ -25,6 +25,7 @@ interface StockItem {
   groupName: string;
   defaultSupplierId: string;
   globalSalesTaxSortOrder: number;
+  globalPrice: number;
   orderingUnitId: string;
   orderingUnitName: string;
   orderingUnitRatio: number;
@@ -63,7 +64,7 @@ function extractOrder(data: Record<string, unknown>): {
   const status = String(data.status || 'draft');
 
   let rawLines: Record<string, unknown>[] = [];
-  const candidates = ['lines', 'items', 'lineItems', 'line_items', 'products', 'orderLines'];
+  const candidates = ['lines', 'items', 'lineItems', 'line_items', 'products', 'orderLines', 'order_lines'];
   for (const key of candidates) {
     const val = data[key];
     if (Array.isArray(val) && val.length > 0) {
@@ -153,7 +154,12 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   const [refLoading, setRefLoading] = useState(false);
   const [variantDropdown, setVariantDropdown] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [debugSearch, setDebugSearch] = useState('');
+  const [debugExpanded, setDebugExpanded] = useState<Set<string>>(new Set());
+  const [livePrices, setLivePrices] = useState<Record<string, { cost: number; unitName: string; documentNumber: string }>>({});
   const connectorName = (props?.connector_name as string) || '';
+  const isAdmin = getStoredUser()?.role === 'admin';
 
   useEffect(() => {
     if (!workingDocId || !threadId) return;
@@ -210,6 +216,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
           groupName: String(item.groupName || ''),
           defaultSupplierId: String(item.defaultSupplierId || ''),
           globalSalesTaxSortOrder: Number(item.globalSalesTaxSortOrder || 0),
+          globalPrice: Number(item.globalPrice || 0),
           orderingUnitId: String(item.orderingUnitId || ''),
           orderingUnitName: String(item.orderingUnitName || ''),
           orderingUnitRatio: Number(item.orderingUnitRatio || 1),
@@ -228,8 +235,146 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
         };
       });
       setStockItems(items);
+
     }).finally(() => setRefLoading(false));
   }, [props?.activeVenueId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch live prices for order line items and update their unit_price
+  const _fetchLivePricesForLines = useCallback(async (targetLines: LineItem[]) => {
+    const venueId = (props?.activeVenueId as string) || undefined;
+    const itemIds = targetLines.map(l => l.itemId).filter(Boolean);
+    if (itemIds.length === 0) return;
+
+    const now = new Date();
+    const offset = '+13:00';
+    const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:00.000${offset}`;
+    const qs = itemIds.map(id => `itemIdTimeStrings=${encodeURIComponent(`${id},${ts}`)}`).join('&');
+
+    try {
+      const res = await callComponentApi('purchase_order_editor', 'get_live_prices', { query_string: qs }, venueId);
+      const costs = (res.data as Record<string, unknown>)?.itemCosts as Record<string, Array<{ cost: number; unitName: string }>> | undefined;
+      if (costs) {
+        setLines(prev => prev.map(line => {
+          if (!line.itemId) return line;
+          const entry = costs[line.itemId];
+          if (entry && entry.length > 0) {
+            return { ...line, unit_price: entry[0].cost, unitCost: entry[0].cost };
+          }
+          return line;
+        }));
+        // Also update livePrices state for the debug panel
+        const prices: Record<string, { cost: number; unitName: string; documentNumber: string }> = {};
+        for (const [itemId, entries] of Object.entries(costs)) {
+          if (Array.isArray(entries) && entries.length > 0) {
+            prices[itemId] = { cost: entries[0].cost, unitName: entries[0].unitName, documentNumber: (entries[0] as Record<string, unknown>).documentNumber as string || '' };
+          }
+        }
+        setLivePrices(prev => ({ ...prev, ...prices }));
+      }
+    } catch { /* ignore price fetch errors */ }
+  }, [props?.activeVenueId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-resolve order_lines from LLM when both stock items and order data are available
+  useEffect(() => {
+    if (stockItems.length === 0) return;
+
+    // Get order_lines from working document data or direct data prop
+    const sourceData = (orderData || data) as Record<string, unknown>;
+    const orderLines = sourceData?.order_lines;
+    if (!Array.isArray(orderLines) || orderLines.length === 0) return;
+
+    // Only resolve once — skip if lines already have stock codes
+    if (lines.some(l => l.stock_code && l.stock_code !== '—' && l.stock_code !== '')) return;
+
+    const resolved: LineItem[] = [];
+    for (const ol of orderLines as Record<string, unknown>[]) {
+      const itemId = String(ol.itemId || '');
+      if (!itemId) continue;
+      const stockItem = stockItems.find(si => si.id === itemId);
+      if (!stockItem) continue;
+
+      let variant: typeof stockItem.suppliers[0] | undefined;
+      const reqSupplierId = String(ol.supplierId || '');
+      const reqVariantId = String(ol.variantId || '');
+
+      if (reqVariantId) {
+        variant = stockItem.suppliers.find(v => v.id === reqVariantId);
+      } else if (reqSupplierId) {
+        variant = stockItem.suppliers.find(v => v.supplierId === reqSupplierId && v.defaultForSupplier)
+          || stockItem.suppliers.find(v => v.supplierId === reqSupplierId);
+      } else {
+        variant = stockItem.suppliers.find(v => v.supplierId === stockItem.defaultSupplierId && v.defaultForSupplier)
+          || stockItem.suppliers.find(v => v.defaultForSupplier)
+          || stockItem.suppliers[0];
+      }
+
+      resolved.push({
+        id: String(Date.now()) + Math.random(),
+        stock_code: variant?.stockCode || '',
+        product: stockItem.name,
+        supplier: variant?.supplierName || '',
+        quantity: Number(ol.quantity || ol.orderQty || 1),
+        unit: variant?.unitName || stockItem.orderingUnitName || 'each',
+        unit_price: variant?.unitCost || 0,
+        itemId: stockItem.id,
+        unitId: variant?.unitId || stockItem.orderingUnitId,
+        unitRatio: variant?.unitRatio || stockItem.orderingUnitRatio || 1,
+        unitCost: variant?.unitCost || 0,
+        taxPercent: stockItem.globalSalesTaxSortOrder === 1 ? 0.15 : 0,
+        supplierId: variant?.supplierId || stockItem.defaultSupplierId,
+        supplierName: variant?.supplierName || '',
+        brandId: variant?.brandId || null,
+        variantId: variant?.id,
+        variants: stockItem.suppliers,
+      });
+    }
+    if (resolved.length > 0) {
+      setLines(resolved);
+      // Fetch live prices for the resolved items
+      _fetchLivePricesForLines(resolved);
+    }
+  }, [stockItems, orderData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch live prices for all stock items (admin debug)
+  useEffect(() => {
+    if (!isAdmin || stockItems.length === 0) return;
+    const venueId = (props?.activeVenueId as string) || undefined;
+    const now = new Date();
+    const offset = '+13:00';
+    const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:00.000${offset}`;
+
+    // Batch in groups of 20
+    const batchSize = 20;
+    const batches: string[][] = [];
+    for (let i = 0; i < stockItems.length; i += batchSize) {
+      batches.push(stockItems.slice(i, i + batchSize).map(s => s.id));
+    }
+
+    const fetchBatch = async (ids: string[]) => {
+      const qs = ids.map(id => `itemIdTimeStrings=${encodeURIComponent(`${id},${ts}`)}`).join('&');
+      try {
+        const res = await callComponentApi('purchase_order_editor', 'get_live_prices', { query_string: qs }, venueId);
+        const costs = (res.data as Record<string, unknown>)?.itemCosts as Record<string, Array<{ cost: number; unitName: string; documentNumber: string }>> | undefined;
+        if (costs) {
+          const prices: Record<string, { cost: number; unitName: string; documentNumber: string }> = {};
+          for (const [itemId, entries] of Object.entries(costs)) {
+            if (Array.isArray(entries) && entries.length > 0) {
+              prices[itemId] = { cost: entries[0].cost, unitName: entries[0].unitName, documentNumber: entries[0].documentNumber };
+            }
+          }
+          setLivePrices(prev => ({ ...prev, ...prices }));
+        }
+      } catch { /* ignore price fetch errors */ }
+    };
+
+    // Fetch first batch immediately, rest with delay to avoid hammering API
+    if (batches.length > 0) {
+      fetchBatch(batches[0]);
+      batches.slice(1).forEach((batch, i) => {
+        setTimeout(() => fetchBatch(batch), (i + 1) * 500);
+      });
+    }
+  }, [stockItems, isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const title = (props?.title as string) || 'Purchase Order';
   const grandTotal = lines.reduce((sum, l) => sum + l.quantity * l.unit_price, 0);
@@ -305,6 +450,9 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
     setLines(prev => [...prev, line]);
     setSearchQuery('');
     setSearchOpen(false);
+
+    // Fetch live price for the added item
+    _fetchLivePricesForLines([line]);
 
     if (workingDocId) {
       patchDoc([{ op: 'add_line', fields: line as unknown as Record<string, unknown> }]);
@@ -712,6 +860,125 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
           </div>
         )}
       </div>
+
+      {/* Admin Debug Panel — stock items with variants */}
+      {isAdmin && (
+        <div style={{ borderTop: '1px solid #e5e7eb', marginTop: '0.5rem' }}>
+          <button
+            onClick={() => setDebugOpen(!debugOpen)}
+            style={{
+              width: '100%', padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem',
+              background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+              fontSize: '0.72rem', fontWeight: 600, color: '#9ca3af', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: '0.6rem' }}>{debugOpen ? '▼' : '▶'}</span>
+            Debug: Stock Items ({stockItems.length} loaded)
+          </button>
+
+          {debugOpen && (
+            <div style={{ padding: '0 1rem 0.75rem' }}>
+              <input
+                value={debugSearch}
+                onChange={e => setDebugSearch(e.target.value)}
+                placeholder="Search items or stock codes..."
+                style={{
+                  width: '100%', padding: '6px 10px', fontSize: '0.78rem', fontFamily: 'inherit',
+                  border: '1px solid #e5e7eb', borderRadius: 6, marginBottom: '0.5rem',
+                  boxSizing: 'border-box',
+                }}
+              />
+
+              {(() => {
+                const query = debugSearch.toLowerCase();
+                const filtered = query.length >= 1
+                  ? stockItems.filter(item =>
+                      item.name.toLowerCase().includes(query) ||
+                      item.id.toLowerCase().includes(query) ||
+                      item.suppliers.some(s => s.stockCode.toLowerCase().includes(query))
+                    )
+                  : stockItems;
+                const display = filtered.slice(0, 50);
+
+                return (
+                  <>
+                    <div style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '0.3rem' }}>
+                      Showing {display.length} of {filtered.length}{filtered.length !== stockItems.length ? ` (${stockItems.length} total)` : ''}
+                    </div>
+                    <div style={{ maxHeight: 400, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 6, fontSize: '0.72rem' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ backgroundColor: '#f9fafb', position: 'sticky', top: 0 }}>
+                            <th style={{ padding: '4px 8px', textAlign: 'left', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Item</th>
+                            <th style={{ padding: '4px 8px', textAlign: 'left', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Group</th>
+                            <th style={{ padding: '4px 8px', textAlign: 'left', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Default Supplier</th>
+                            <th style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Price</th>
+                            <th style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Variants</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {display.map(item => {
+                            const isExpanded = debugExpanded.has(item.id);
+                            const defaultSupplier = supplierMap[item.defaultSupplierId] || item.defaultSupplierId.slice(0, 8);
+                            return (
+                              <React.Fragment key={item.id}>
+                                <tr
+                                  onClick={() => {
+                                    const next = new Set(debugExpanded);
+                                    if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+                                    setDebugExpanded(next);
+                                  }}
+                                  style={{ cursor: 'pointer', backgroundColor: isExpanded ? '#f0f9ff' : undefined, borderBottom: '1px solid #f3f4f6' }}
+                                >
+                                  <td style={{ padding: '4px 8px' }}>
+                                    <span style={{ fontSize: '0.6rem', color: '#9ca3af', marginRight: 4 }}>{isExpanded ? '▼' : '▶'}</span>
+                                    {item.name}
+                                  </td>
+                                  <td style={{ padding: '4px 8px', color: '#6b7280' }}>{item.groupName}</td>
+                                  <td style={{ padding: '4px 8px', color: '#6b7280' }}>{defaultSupplier}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right' }}>
+                                    {livePrices[item.id]
+                                      ? <span style={{ color: '#059669', fontWeight: 500 }}>${livePrices[item.id].cost.toFixed(2)}<span style={{ fontSize: '0.6rem', color: '#9ca3af', marginLeft: 3 }}>/{livePrices[item.id].unitName}</span></span>
+                                      : <span style={{ color: '#d1d5db' }}>—</span>
+                                    }
+                                  </td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'center', color: '#9ca3af' }}>{item.suppliers.length}</td>
+                                </tr>
+                                {isExpanded && item.suppliers.map((v, vi) => (
+                                  <tr key={vi} style={{ backgroundColor: '#f8fafc', fontSize: '0.68rem' }}>
+                                    <td style={{ padding: '2px 8px 2px 28px', color: '#374151' }}>
+                                      <span style={{ fontFamily: 'monospace', color: '#6366f1' }}>{v.stockCode || '—'}</span>
+                                    </td>
+                                    <td style={{ padding: '2px 8px', color: '#374151' }}>{v.supplierName}</td>
+                                    <td style={{ padding: '2px 8px', color: '#374151' }}>
+                                      {v.unitName} {v.unitRatio !== 1 ? `(×${v.unitRatio})` : ''}
+                                    </td>
+                                    <td style={{ padding: '2px 8px', textAlign: 'center' }}>
+                                      <span style={{ color: '#059669', fontWeight: 500 }}>${v.unitCost.toFixed(2)}</span>
+                                      {v.defaultForSupplier && <span style={{ marginLeft: 4, fontSize: '0.6rem', color: '#2563eb' }}>✓ default</span>}
+                                    </td>
+                                  </tr>
+                                ))}
+                                {isExpanded && (
+                                  <tr style={{ backgroundColor: '#f8fafc', fontSize: '0.62rem' }}>
+                                    <td colSpan={5} style={{ padding: '2px 8px 4px 28px', color: '#9ca3af', fontFamily: 'monospace' }}>
+                                      id: {item.id} | orderingUnit: {item.orderingUnitName} (×{item.orderingUnitRatio}) | tax: {item.globalSalesTaxSortOrder === 1 ? 'yes' : 'no'}
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

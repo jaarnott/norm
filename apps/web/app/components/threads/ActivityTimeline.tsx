@@ -351,13 +351,36 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
     });
   };
 
-  const routingCall = (llmCalls || []).find(c => c.call_type === 'routing');
-  const routingSortKey = routingCall ? routingCall.created_at : createdAt;
+  // Show ALL routing calls (initial + follow-up reclassifications)
+  const routingCalls = (llmCalls || []).filter(c => c.call_type === 'routing');
+  const firstRoutingKey = routingCalls.length > 0 ? routingCalls[0].created_at : createdAt;
 
-  const routingEvents = [
-    { type: 'routing' as const, label: 'Supervisor analysed request', icon: '🧠', time: formatTime(routingSortKey), sortKey: routingSortKey, sortOrder: 0 },
-    { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: '➡️', time: formatTime(routingSortKey), sortKey: routingSortKey, sortOrder: 1 },
-  ];
+  const routingEvents = routingCalls.length > 0
+    ? routingCalls.flatMap((rc, idx) => {
+        const isFollowup = idx > 0 || (rc.parsed_response as Record<string, unknown>)?.action != null;
+        const action = (rc.parsed_response as Record<string, unknown>)?.action as string | undefined;
+        const playbook = (rc.parsed_response as Record<string, unknown>)?.playbook as string | undefined;
+        const reason = (rc.parsed_response as Record<string, unknown>)?.reason as string | undefined;
+
+        if (isFollowup && action) {
+          return [{
+            type: 'routing' as const,
+            label: `Supervisor: ${action}${playbook ? ` → ${playbook}` : ''}${reason ? ` (${reason})` : ''}`,
+            icon: '🧠',
+            time: formatTime(rc.created_at),
+            sortKey: rc.created_at,
+            sortOrder: 0,
+          }];
+        }
+        return [
+          { type: 'routing' as const, label: 'Supervisor analysed request', icon: '🧠', time: formatTime(rc.created_at), sortKey: rc.created_at, sortOrder: 0 },
+          { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: '➡️', time: formatTime(rc.created_at), sortKey: rc.created_at, sortOrder: 1 },
+        ];
+      })
+    : [
+        { type: 'routing' as const, label: 'Supervisor analysed request', icon: '🧠', time: formatTime(firstRoutingKey), sortKey: firstRoutingKey, sortOrder: 0 },
+        { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: '➡️', time: formatTime(firstRoutingKey), sortKey: firstRoutingKey, sortOrder: 1 },
+      ];
 
   const messageEvents = messages.map((m, i) => {
     const classified = classifyMessage(m, i);
