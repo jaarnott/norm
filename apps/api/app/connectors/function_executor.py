@@ -20,24 +20,51 @@ logger = logging.getLogger(__name__)
 # Builtins allowed in function execution
 _SAFE_BUILTINS = {
     # Types
-    "True": True, "False": False, "None": None,
-    "int": int, "float": float, "str": str, "bool": bool,
-    "list": list, "dict": dict, "tuple": tuple, "set": set,
+    "True": True,
+    "False": False,
+    "None": None,
+    "int": int,
+    "float": float,
+    "str": str,
+    "bool": bool,
+    "list": list,
+    "dict": dict,
+    "tuple": tuple,
+    "set": set,
     "type": type,
     # Math
-    "abs": abs, "round": round, "min": min, "max": max,
-    "sum": sum, "len": len, "pow": pow,
+    "abs": abs,
+    "round": round,
+    "min": min,
+    "max": max,
+    "sum": sum,
+    "len": len,
+    "pow": pow,
     # Iteration
-    "range": range, "enumerate": enumerate, "zip": zip,
-    "map": map, "filter": filter, "sorted": sorted, "reversed": reversed,
+    "range": range,
+    "enumerate": enumerate,
+    "zip": zip,
+    "map": map,
+    "filter": filter,
+    "sorted": sorted,
+    "reversed": reversed,
     # Checks
-    "isinstance": isinstance, "hasattr": hasattr, "getattr": getattr,
-    "any": any, "all": all,
+    "isinstance": isinstance,
+    "hasattr": hasattr,
+    "getattr": getattr,
+    "any": any,
+    "all": all,
     # String/format
-    "format": format, "repr": repr, "print": print,
+    "format": format,
+    "repr": repr,
+    "print": print,
     # Exceptions (needed for try/except in user code)
-    "Exception": Exception, "ValueError": ValueError, "TypeError": TypeError,
-    "KeyError": KeyError, "IndexError": IndexError, "ZeroDivisionError": ZeroDivisionError,
+    "Exception": Exception,
+    "ValueError": ValueError,
+    "TypeError": TypeError,
+    "KeyError": KeyError,
+    "IndexError": IndexError,
+    "ZeroDivisionError": ZeroDivisionError,
 }
 
 # Modules injected into the function namespace
@@ -132,7 +159,12 @@ def execute_function(
         # Execute
         call_t0 = time.time()
         result, _ = execute_spec(
-            spec, tool_def, clean_params, credentials, use_db, thread_id,
+            spec,
+            tool_def,
+            clean_params,
+            credentials,
+            use_db,
+            thread_id,
             venue_id=venue_id,
         )
         call_ms = int((time.time() - call_t0) * 1000)
@@ -209,7 +241,9 @@ def execute_function(
             api_params = dict(api_params or {})
             worker_db = SessionLocal()
             try:
-                payload, call_ms = _do_api_call(connector, action, api_params, worker_db)
+                payload, call_ms = _do_api_call(
+                    connector, action, api_params, worker_db
+                )
                 return payload, call_ms, None
             except Exception as exc:
                 return {"error": str(exc)}, 0, str(exc)
@@ -227,7 +261,9 @@ def execute_function(
             if err:
                 log(f"API: {connector}.{action} FAILED: {err}")
             else:
-                log(f"API: {connector}.{action} → {_describe_data(payload)} ({call_ms}ms)")
+                log(
+                    f"API: {connector}.{action} → {_describe_data(payload)} ({call_ms}ms)"
+                )
             results.append(payload)
 
         log(f"Parallel batch: {len(calls)} calls in {total_ms}ms")
@@ -249,13 +285,13 @@ def execute_function(
         "today": now.strftime("%Y-%m-%d"),
         "today_iso": now.strftime(f"%Y-%m-%dT00:00:00{tz_offset}").replace("+", "%2B"),
         "one_week_ago": (now - datetime.timedelta(days=7)).strftime("%Y-%m-%d"),
-        "one_week_ago_iso": (now - datetime.timedelta(days=7)).strftime(
-            f"%Y-%m-%dT00:00:00{tz_offset}"
-        ).replace("+", "%2B"),
+        "one_week_ago_iso": (now - datetime.timedelta(days=7))
+        .strftime(f"%Y-%m-%dT00:00:00{tz_offset}")
+        .replace("+", "%2B"),
         "four_weeks_ago": (now - datetime.timedelta(days=28)).strftime("%Y-%m-%d"),
-        "four_weeks_ago_iso": (now - datetime.timedelta(days=28)).strftime(
-            f"%Y-%m-%dT00:00:00{tz_offset}"
-        ).replace("+", "%2B"),
+        "four_weeks_ago_iso": (now - datetime.timedelta(days=28))
+        .strftime(f"%Y-%m-%dT00:00:00{tz_offset}")
+        .replace("+", "%2B"),
     }
 
     # Execute the function
@@ -277,6 +313,7 @@ def execute_function(
 
         # Pass call_api_parallel if function accepts 4 args, otherwise just 3
         import inspect
+
         sig = inspect.signature(run_fn)
         if len(sig.parameters) >= 4:
             result_data = run_fn(enriched_params, call_api, log, call_api_parallel)

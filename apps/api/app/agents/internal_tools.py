@@ -1016,8 +1016,7 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
                     playbook_section = (
                         "\nPlaybooks used in this conversation (include relevant "
                         "workflow steps, but user-specific requests always take "
-                        "priority over playbook defaults):\n\n"
-                        + "\n\n".join(pb_parts)
+                        "priority over playbook defaults):\n\n" + "\n\n".join(pb_parts)
                     )
             finally:
                 config_db.close()
@@ -1291,7 +1290,8 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
     # If items have itemIds, validate them against actual stock items
     if items and venue_id:
         item_ids = [
-            item.get("itemId") for item in items
+            item.get("itemId")
+            for item in items
             if isinstance(item, dict) and item.get("itemId")
         ]
         if item_ids:
@@ -1311,9 +1311,7 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
                 )
                 valid_ids = stock_result.get("data", {})
                 if isinstance(valid_ids, dict) and valid_ids:
-                    invalid = [
-                        iid for iid in item_ids if iid not in valid_ids
-                    ]
+                    invalid = [iid for iid in item_ids if iid not in valid_ids]
                     if invalid:
                         return {
                             "success": False,
@@ -1347,7 +1345,8 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
     return {
         "success": True,
         "data": {
-            "message": f"Purchase order editor opened for {venue}" + (f" with {len(order_lines)} items" if order_lines else ""),
+            "message": f"Purchase order editor opened for {venue}"
+            + (f" with {len(order_lines)} items" if order_lines else ""),
             "venue": venue,
             "venue_id": venue_id,
             "order_lines": order_lines,
@@ -1423,9 +1422,13 @@ def _execute_consolidator_legacy(
         "today": now.strftime("%Y-%m-%d"),
         "today_iso": now.strftime(f"%Y-%m-%dT00:00:00{tz_offset}").replace("+", "%2B"),
         "one_week_ago": (now - datetime.timedelta(days=7)).strftime("%Y-%m-%d"),
-        "one_week_ago_iso": (now - datetime.timedelta(days=7)).strftime(f"%Y-%m-%dT00:00:00{tz_offset}").replace("+", "%2B"),
+        "one_week_ago_iso": (now - datetime.timedelta(days=7))
+        .strftime(f"%Y-%m-%dT00:00:00{tz_offset}")
+        .replace("+", "%2B"),
         "four_weeks_ago": (now - datetime.timedelta(days=28)).strftime("%Y-%m-%d"),
-        "four_weeks_ago_iso": (now - datetime.timedelta(days=28)).strftime(f"%Y-%m-%dT00:00:00{tz_offset}").replace("+", "%2B"),
+        "four_weeks_ago_iso": (now - datetime.timedelta(days=28))
+        .strftime(f"%Y-%m-%dT00:00:00{tz_offset}")
+        .replace("+", "%2B"),
         **{k: str(v) for k, v in input_params.items()},
     }
 
@@ -1442,10 +1445,14 @@ def _execute_consolidator_legacy(
                     return str(d)
                 return json.dumps(d) if not isinstance(d, str) else d
             return match.group(0)
+
         return re.sub(r"\{\{(.+?)\}\}", replacer, value)
 
     def resolve_params(params: dict) -> dict:
-        return {k: resolve_template(str(v)) if isinstance(v, str) else v for k, v in params.items()}
+        return {
+            k: resolve_template(str(v)) if isinstance(v, str) else v
+            for k, v in params.items()
+        }
 
     # ---- STAGE 1: FETCH ----
     fetch_steps = stages.get("fetch", [])
@@ -1462,7 +1469,11 @@ def _execute_consolidator_legacy(
 
             try:
                 _cfg = _ConfigSessionLocal()
-                spec = _cfg.query(ConnectorSpec).filter(ConnectorSpec.connector_name == connector_name).first()
+                spec = (
+                    _cfg.query(ConnectorSpec)
+                    .filter(ConnectorSpec.connector_name == connector_name)
+                    .first()
+                )
                 tool_def = None
                 if spec:
                     for t in spec.tools or []:
@@ -1472,17 +1483,25 @@ def _execute_consolidator_legacy(
                 _cfg.close()
 
                 if not spec or not tool_def:
-                    datasets[step_id] = {"error": f"Tool not found: {connector_name}.{action}"}
-                    step_meta.append({"id": step_id, "status": "error", "error": "Tool not found"})
+                    datasets[step_id] = {
+                        "error": f"Tool not found: {connector_name}.{action}"
+                    }
+                    step_meta.append(
+                        {"id": step_id, "status": "error", "error": "Tool not found"}
+                    )
                     continue
 
                 venue_lookup = {**input_params, **step_params}
                 config_row = _resolve_venue_config(connector_name, venue_lookup, db)
                 if not config_row:
-                    config_row = db.query(ConnectorConfig).filter(
-                        ConnectorConfig.connector_name == connector_name,
-                        ConnectorConfig.enabled == "true",
-                    ).first()
+                    config_row = (
+                        db.query(ConnectorConfig)
+                        .filter(
+                            ConnectorConfig.connector_name == connector_name,
+                            ConnectorConfig.enabled == "true",
+                        )
+                        .first()
+                    )
 
                 credentials = config_row.config if config_row else {}
                 venue_id_val = config_row.venue_id if config_row else None
@@ -1491,33 +1510,71 @@ def _execute_consolidator_legacy(
                 for k in ("venue", "venue_name", "venue_id"):
                     clean_params.pop(k, None)
 
-                result, _ = execute_spec(spec, tool_def, clean_params, credentials, db, thread_id, venue_id=venue_id_val)
+                result, _ = execute_spec(
+                    spec,
+                    tool_def,
+                    clean_params,
+                    credentials,
+                    db,
+                    thread_id,
+                    venue_id=venue_id_val,
+                )
                 duration_ms = int((time.time() - t0) * 1000)
 
                 payload = result.response_payload
                 # Apply response transform
                 step_transform = tool_def.get("response_transform")
                 if step_transform and step_transform.get("enabled") and payload:
-                    from app.connectors.response_transform import apply_response_transform
+                    from app.connectors.response_transform import (
+                        apply_response_transform,
+                    )
 
                     venue_tz = None
                     if venue_id_val:
                         from app.db.models import Venue
+
                         v = db.query(Venue).filter(Venue.id == venue_id_val).first()
                         if v and v.timezone:
                             venue_tz = v.timezone
 
-                    wrapped = {"data": payload} if isinstance(payload, list) else (payload if isinstance(payload, dict) else {"data": payload})
-                    transformed = apply_response_transform(wrapped, step_transform, venue_timezone=venue_tz)
-                    payload = transformed.get("data", transformed) if isinstance(transformed, dict) else transformed
+                    wrapped = (
+                        {"data": payload}
+                        if isinstance(payload, list)
+                        else (
+                            payload if isinstance(payload, dict) else {"data": payload}
+                        )
+                    )
+                    transformed = apply_response_transform(
+                        wrapped, step_transform, venue_timezone=venue_tz
+                    )
+                    payload = (
+                        transformed.get("data", transformed)
+                        if isinstance(transformed, dict)
+                        else transformed
+                    )
 
                 datasets[step_id] = payload
-                step_meta.append({"id": step_id, "status": "success", "type": "fetch", "duration_ms": duration_ms})
+                step_meta.append(
+                    {
+                        "id": step_id,
+                        "status": "success",
+                        "type": "fetch",
+                        "duration_ms": duration_ms,
+                    }
+                )
 
             except Exception as exc:
                 duration_ms = int((time.time() - t0) * 1000)
                 datasets[step_id] = {"error": str(exc)}
-                step_meta.append({"id": step_id, "status": "error", "type": "fetch", "error": str(exc)[:200], "duration_ms": duration_ms})
+                step_meta.append(
+                    {
+                        "id": step_id,
+                        "status": "error",
+                        "type": "fetch",
+                        "error": str(exc)[:200],
+                        "duration_ms": duration_ms,
+                    }
+                )
 
     # ---- STAGE 2: TRANSFORM ----
     transform_steps = stages.get("transform", [])
@@ -1571,13 +1628,19 @@ def _execute_consolidator_legacy(
                 # If source is a list of objects with nested arrays, unwrap to the largest array
                 # (e.g., roster objects with rosteredShifts arrays)
                 from app.agents.tool_loop import _unwrap_array
+
                 unwrapped = _unwrap_array(source)
                 if unwrapped and len(unwrapped) > len(source):
                     source = unwrapped
 
                 from app.connectors.calculation_engine import evaluate_row_formula
+
                 condition = resolve_template(filt.get("condition", "True"))
-                datasets[step_id] = [item for item in source if isinstance(item, dict) and evaluate_row_formula(condition, item)]
+                datasets[step_id] = [
+                    item
+                    for item in source
+                    if isinstance(item, dict) and evaluate_row_formula(condition, item)
+                ]
 
             elif "sort" in step:
                 sort = step["sort"]
@@ -1590,12 +1653,17 @@ def _execute_consolidator_legacy(
                 desc = sort.get("descending", False)
                 datasets[step_id] = sorted(
                     source,
-                    key=lambda r: float(r.get(key, 0) or 0) if isinstance(r.get(key), (int, float, type(None))) else 0,
+                    key=lambda r: (
+                        float(r.get(key, 0) or 0)
+                        if isinstance(r.get(key), (int, float, type(None)))
+                        else 0
+                    ),
                     reverse=desc,
                 )
 
             elif "join" in step:
                 from app.connectors.calculation_engine import _op_join
+
                 j = step["join"]
                 left = datasets.get(j.get("left", ""), [])
                 right = datasets.get(j.get("right", ""), [])
@@ -1604,33 +1672,74 @@ def _execute_consolidator_legacy(
                 if isinstance(right, dict):
                     right = right.get("data", right)
                 datasets[step_id] = _op_join(
-                    {"left": left if isinstance(left, list) else [], "right": right if isinstance(right, list) else [], "left_key": j.get("left_key", "id"), "right_key": j.get("right_key", "id")},
+                    {
+                        "left": left if isinstance(left, list) else [],
+                        "right": right if isinstance(right, list) else [],
+                        "left_key": j.get("left_key", "id"),
+                        "right_key": j.get("right_key", "id"),
+                    },
                     resolve_template,
                 )
 
             duration_ms = int((time.time() - t0) * 1000)
-            step_meta.append({"id": step_id, "status": "success", "type": "transform", "duration_ms": duration_ms})
+            step_meta.append(
+                {
+                    "id": step_id,
+                    "status": "success",
+                    "type": "transform",
+                    "duration_ms": duration_ms,
+                }
+            )
 
         except Exception as exc:
             datasets[step_id] = {"error": str(exc)}
-            step_meta.append({"id": step_id, "status": "error", "type": "transform", "error": str(exc)[:200]})
+            step_meta.append(
+                {
+                    "id": step_id,
+                    "status": "error",
+                    "type": "transform",
+                    "error": str(exc)[:200],
+                }
+            )
 
     # ---- STAGE 3: CALCULATE ----
     calc_config = stages.get("calculate")
     if calc_config:
         t0 = time.time()
         try:
-            result_data = execute_calculate_stage(calc_config, datasets, resolve_template)
+            result_data = execute_calculate_stage(
+                calc_config, datasets, resolve_template
+            )
             duration_ms = int((time.time() - t0) * 1000)
-            step_meta.append({"id": "calculate", "status": "success", "type": "calculate", "duration_ms": duration_ms, "result_count": len(result_data)})
+            step_meta.append(
+                {
+                    "id": "calculate",
+                    "status": "success",
+                    "type": "calculate",
+                    "duration_ms": duration_ms,
+                    "result_count": len(result_data),
+                }
+            )
             return {
                 "success": True,
                 "data": result_data,
                 "_steps": step_meta,
             }
         except Exception as exc:
-            step_meta.append({"id": "calculate", "status": "error", "type": "calculate", "error": str(exc)[:200]})
-            return {"success": False, "data": {}, "error": str(exc), "_steps": step_meta}
+            step_meta.append(
+                {
+                    "id": "calculate",
+                    "status": "error",
+                    "type": "calculate",
+                    "error": str(exc)[:200],
+                }
+            )
+            return {
+                "success": False,
+                "data": {},
+                "error": str(exc),
+                "_steps": step_meta,
+            }
 
     # No calculate stage — return all datasets
     return {
@@ -1664,7 +1773,7 @@ def _execute_consolidator_legacy(
             config = json.loads(config)
         except json.JSONDecodeError:
             # Try fixing common issues: extra trailing brace
-            cleaned = config.rstrip("}")  + "}"
+            cleaned = config.rstrip("}") + "}"
             config = json.loads(cleaned)
 
     steps = config.get("steps", [])
@@ -1848,9 +1957,7 @@ def _execute_consolidator_legacy(
                         "status": "success",
                         "type": "calculation",
                         "duration_ms": duration_ms,
-                        "result_preview": _step_result_preview(
-                            step_results[step_id]
-                        ),
+                        "result_preview": _step_result_preview(step_results[step_id]),
                     }
                 )
             except Exception as exc:
@@ -2189,7 +2296,8 @@ def _execute_consolidator_legacy(
     return {
         "success": all(
             (sr.get("success", False) or "error" not in sr)
-            if isinstance(sr, dict) else True
+            if isinstance(sr, dict)
+            else True
             for sr in step_results.values()
         ),
         "data": step_results,

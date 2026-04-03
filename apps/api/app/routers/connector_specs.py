@@ -838,7 +838,7 @@ _SAVE_TOOL = {
             },
             "consolidator_config": {
                 "type": "object",
-                "description": "The consolidator config with function_code: {\"function_code\": \"def run(params, call_api, log):\\n    ...\"}",
+                "description": 'The consolidator config with function_code: {"function_code": "def run(params, call_api, log):\\n    ..."}',
             },
         },
         "required": [
@@ -863,7 +863,7 @@ _TEST_CONSOLIDATOR_TOOL = {
         "properties": {
             "consolidator_config": {
                 "type": "object",
-                "description": "The consolidator config to test: {\"function_code\": \"def run(params, call_api, log):\\n    ...\"}",
+                "description": 'The consolidator config to test: {"function_code": "def run(params, call_api, log):\\n    ..."}',
             },
             "params": {
                 "type": "object",

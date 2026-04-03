@@ -184,8 +184,7 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 anthropic_tools = [
                     t
                     for t in anthropic_tools
-                    if t["name"].split("__", 1)[-1] in allowed
-                    or t["name"] in allowed
+                    if t["name"].split("__", 1)[-1] in allowed or t["name"] in allowed
                 ]
                 logger.info(
                     "Task %s tool_filter applied: %d -> %d tools",

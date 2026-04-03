@@ -152,9 +152,15 @@ def handle_message(
                 # Load playbook for THIS message if the classifier matched one
                 message_playbook = None
                 playbook_slug = followup.get("playbook")
-                logger.info("Follow-up playbook slug from classifier: %s", playbook_slug)
+                logger.info(
+                    "Follow-up playbook slug from classifier: %s", playbook_slug
+                )
                 if playbook_slug:
-                    bare_slug = playbook_slug.split("/")[-1] if "/" in playbook_slug else playbook_slug
+                    bare_slug = (
+                        playbook_slug.split("/")[-1]
+                        if "/" in playbook_slug
+                        else playbook_slug
+                    )
                     message_playbook = (
                         _cdb.query(Playbook)
                         .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
@@ -322,7 +328,9 @@ def handle_message(
         from app.db.config_models import Playbook
 
         # Router may return "agent/slug" format — strip the prefix
-        bare_slug = playbook_slug.split("/")[-1] if "/" in playbook_slug else playbook_slug
+        bare_slug = (
+            playbook_slug.split("/")[-1] if "/" in playbook_slug else playbook_slug
+        )
 
         playbook = (
             _cdb.query(Playbook)
@@ -355,7 +363,9 @@ def handle_message(
                     thread_obj.title = title
                 # Link the initial routing LlmCall to this thread
                 if llm_call_id:
-                    routing_call = db.query(LlmCall).filter(LlmCall.id == llm_call_id).first()
+                    routing_call = (
+                        db.query(LlmCall).filter(LlmCall.id == llm_call_id).first()
+                    )
                     if routing_call and not routing_call.thread_id:
                         routing_call.thread_id = thread_obj.id
                 db.flush()

@@ -205,7 +205,9 @@ def build_tool_definitions(
                     _tz = _ZI(venue_timezone)
                     _now = datetime.datetime.now(_tz)
                     _off = _now.strftime("%z")
-                    tz_detail = f" (timezone: {venue_timezone}, UTC{_off[:3]}:{_off[3:]})"
+                    tz_detail = (
+                        f" (timezone: {venue_timezone}, UTC{_off[:3]}:{_off[3:]})"
+                    )
                 except Exception:
                     tz_detail = f" (timezone: {venue_timezone})"
             venue_line = f"\n\n## Active Venue\n**{active_venue_name}**{tz_detail}. Use this as the default venue for all tool calls."
@@ -226,7 +228,9 @@ Today's date is {today_str}.
         # --- STANDARD MODE: full prompt with all guidance sections ---
 
         # Inject automated tasks guidance if those tools are available
-        has_automated_tasks = any(t.get("action") == "create_automated_task" for t in tools)
+        has_automated_tasks = any(
+            t.get("action") == "create_automated_task" for t in tools
+        )
         if has_automated_tasks:
             system_prompt += """
 
@@ -308,7 +312,9 @@ The search uses fuzzy matching so it handles misspellings and partial matches. I
             if has_outlook and user_id:
                 cfg = (
                     db.query(CC)
-                    .filter(CC.connector_name == "microsoft_outlook", CC.user_id == user_id)
+                    .filter(
+                        CC.connector_name == "microsoft_outlook", CC.user_id == user_id
+                    )
                     .first()
                 )
                 addr = (
@@ -407,7 +413,9 @@ The user has access to multiple venues:
                 "tasks-procurement": "Procurement Automated Tasks",
                 "tasks-reports": "Reports Automated Tasks",
             }
-            page_label = _page_labels.get(page_context["page_id"], page_context["page_id"])
+            page_label = _page_labels.get(
+                page_context["page_id"], page_context["page_id"]
+            )
             system_prompt += f"""
 
 ## Current Page Context

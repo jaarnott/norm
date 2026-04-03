@@ -862,7 +862,11 @@ def _execute_tool_call(
             tc.duration_ms = int((time.time() - t0) * 1000)
             payload = result.get("data")
             # Set venue_id from handler result if available (for display block props)
-            if isinstance(payload, dict) and payload.get("venue_id") and not tc.venue_id:
+            if (
+                isinstance(payload, dict)
+                and payload.get("venue_id")
+                and not tc.venue_id
+            ):
                 tc.venue_id = payload["venue_id"]
             # Preserve _chart_props on result_payload so _build_display_block can find them
             if isinstance(payload, dict) and "_chart_props" in result:
