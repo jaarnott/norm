@@ -755,8 +755,41 @@ def _execute_loop(
                 display_blocks=display_blocks,
             )
 
-    # Max iterations reached
-    text = "I've gathered what I can. Let me know if you need anything else or want me to continue."
+    # Max iterations reached — give the LLM one final chance to summarise
+    _emit_event(
+        {
+            "type": "thinking",
+            "text": "Reached tool call limit — summarising findings...",
+        }
+    )
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "You have used all available tool calls for this turn. "
+                "Please present your best answer using the data you have already collected. "
+                "Be specific — include numbers, names, and dates from the tool results. "
+                "End with: 'I can keep researching if you'd like, or we can look at something else.'"
+            ),
+        }
+    )
+    try:
+        final_response = call_llm_with_tools(
+            system_prompt,
+            messages,
+            tools=[],  # No tools — forces text-only response
+            db=db,
+            thread_id=task.id,
+            call_type="tool_use",
+        )
+        text = _extract_text(final_response)
+    except Exception:
+        logger.exception("Final summary LLM call failed after max iterations")
+        text = (
+            "I've done some research but ran out of tool calls before finishing. "
+            "Send a follow-up message and I'll continue where I left off."
+        )
+
     db.add(
         Message(
             thread_id=task.id,
@@ -1237,8 +1270,15 @@ def _search_tool_result(
     fields: str | None,
     db: Session,
     thread_id: str | None = None,
+    sort_by: str | None = None,
+    sort_order: str | None = None,
+    top_n: int | None = None,
 ) -> dict:
-    """Search through a stored tool call's result payload with fuzzy matching."""
+    """Search, sort, and filter a stored tool call's result payload.
+
+    Supports fuzzy text search (query), numeric sorting (sort_by/sort_order),
+    and result limiting (top_n). These can be combined or used independently.
+    """
     tc = db.query(ToolCall).filter(ToolCall.id == tool_call_id).first()
 
     # Fallback: if exact ID not found, find the most recent GET tool call
@@ -1260,47 +1300,73 @@ def _search_tool_result(
         return {"error": "Tool call not found or has no stored result"}
 
     data = _unwrap_array(tc.result_payload)
+    limit = top_n or 20
 
     if data is None:
-        if query.lower() in json.dumps(tc.result_payload).lower():
+        if query and query.lower() in json.dumps(tc.result_payload).lower():
             return {"matches": [tc.result_payload], "total_matches": 1}
         return {"matches": [], "total_matches": 0}
 
-    query_words = [w for w in query.lower().split() if len(w) >= 2]
-    if not query_words:
-        return {"matches": [], "total_matches": 0}
+    # Apply field selection helper
+    def _select_fields(item: dict) -> dict:
+        if fields:
+            field_list = [f.strip() for f in fields.split(",")]
+            return _truncate_nested_arrays(
+                {k: item.get(k) for k in field_list if k in item}
+            )
+        return _truncate_nested_arrays(item)
 
-    scored: list[tuple[float, dict]] = []
-    for item in data:
-        # Collect all string values from the item
-        text_values = [
-            str(v) for v in item.values() if isinstance(v, (str, int, float)) and v
-        ]
-        combined = " ".join(text_values)
+    # If query is provided, do fuzzy text matching first
+    if query and query.strip():
+        query_words = [w for w in query.lower().split() if len(w) >= 2]
+        if query_words:
+            scored: list[tuple[float, dict]] = []
+            for item in data:
+                text_values = [
+                    str(v)
+                    for v in item.values()
+                    if isinstance(v, (str, int, float)) and v
+                ]
+                combined = " ".join(text_values)
+                match_count = sum(
+                    1 for qw in query_words if _fuzzy_match_text(qw, combined)
+                )
+                if match_count > 0:
+                    score = match_count / len(query_words)
+                    scored.append((score, item))
 
-        # Score: how many query words fuzzy-match
-        match_count = sum(1 for qw in query_words if _fuzzy_match_text(qw, combined))
-        if match_count > 0:
-            score = match_count / len(query_words)
-            if fields:
-                field_list = [f.strip() for f in fields.split(",")]
-                scored.append(
-                    (
-                        score,
-                        _truncate_nested_arrays(
-                            {k: item.get(k) for k in field_list if k in item}
-                        ),
-                    )
+            # Sort by relevance, then by sort_by if provided
+            if sort_by:
+                descending = (sort_order or "desc").lower() != "asc"
+                scored.sort(
+                    key=lambda x: (
+                        float(x[1].get(sort_by, 0))
+                        if isinstance(x[1].get(sort_by), (int, float))
+                        else 0
+                    ),
+                    reverse=descending,
                 )
             else:
-                scored.append((score, _truncate_nested_arrays(item)))
+                scored.sort(key=lambda x: x[0], reverse=True)
 
-    # Sort by score descending, cap at 20
-    scored.sort(key=lambda x: x[0], reverse=True)
-    matches = [item for _, item in scored[:20]]
+            matches = [_select_fields(item) for _, item in scored[:limit]]
+            return {"matches": matches, "total_matches": len(scored)}
 
-    # No need to apply transform — tc.result_payload is already transformed
-    return {"matches": matches, "total_matches": len(scored)}
+    # No query — pure sort/filter mode
+    if sort_by:
+        descending = (sort_order or "desc").lower() != "asc"
+        # Filter to items that have the sort field as a number
+        sortable = [
+            item
+            for item in data
+            if isinstance(item.get(sort_by), (int, float)) and item.get(sort_by, 0) != 0
+        ]
+        sortable.sort(key=lambda x: float(x.get(sort_by, 0)), reverse=descending)
+        matches = [_select_fields(item) for item in sortable[:limit]]
+        return {"matches": matches, "total_matches": len(sortable)}
+
+    # No query and no sort — return nothing useful
+    return {"matches": [], "total_matches": 0}
 
 
 def _is_read_only(method: str) -> bool:

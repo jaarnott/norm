@@ -860,12 +860,22 @@ def _handle_search_tool_result(
     """Search through a stored tool call's result payload by keyword."""
     from app.agents.tool_loop import _search_tool_result
 
+    top_n = params.get("top_n")
+    if top_n is not None:
+        try:
+            top_n = int(top_n)
+        except (ValueError, TypeError):
+            top_n = None
+
     result = _search_tool_result(
         params.get("tool_call_id", ""),
         params.get("query", ""),
         params.get("fields"),
         db,
         thread_id=thread_id,
+        sort_by=params.get("sort_by"),
+        sort_order=params.get("sort_order"),
+        top_n=top_n,
     )
     return {"success": True, "data": result}
 

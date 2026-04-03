@@ -266,9 +266,12 @@ When presenting data from a tool call, use the `render_chart` tool to create a v
 
 ## Large Results & Search
 When a tool result is too large to display, you'll see `_too_large` with a `_sample_item` showing available fields.
-Use `norm__search_tool_result` with the `tool_call_id` and a short search `query` to find matching items.
-Keep your search query to just the core keyword — for example, if the user asks for "corona beer boxes", search for "corona".
-The search uses fuzzy matching so it handles misspellings and partial matches. It returns up to 20 results ranked by relevance.
+Use `norm__search_tool_result` to search, sort, or find top items in large results:
+- **Text search**: provide `query` with a keyword (fuzzy matching). Keep it to the core keyword — e.g. "corona" not "corona beer boxes".
+- **Sort by value**: provide `sort_by` with a field name (e.g. "amount") and optionally `sort_order` ("desc" or "asc", default "desc"). No `query` needed.
+- **Top N**: provide `top_n` to limit results (default 20). Combine with `sort_by` to get e.g. "top 5 by amount".
+- **Combine**: search for a keyword AND sort the matches — e.g. query="Tuesday", sort_by="amount", sort_order="desc", top_n=10.
+Example: to find the 5 highest sales periods, use: sort_by="amount", sort_order="desc", top_n=5
 """
 
         # Add email capability guidance
