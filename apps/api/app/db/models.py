@@ -700,9 +700,7 @@ class Report(Base):
     is_template = Column(Boolean, nullable=False, default=False)
     refresh_interval_seconds = Column(Integer, nullable=True)  # null = manual
     global_filters = Column(JSON, nullable=True)  # for reports: date range, venue
-    organization_id = Column(
-        String, ForeignKey("organizations.id"), nullable=True
-    )
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 

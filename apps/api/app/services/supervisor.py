@@ -208,7 +208,7 @@ def handle_message(
                     prior_thread = thread
                     message = original_message
                     # venue_id stays None — agent gets all venues
-                elif (resolved_id := resolve_venue_id(message.strip(), db)):
+                elif resolved_id := resolve_venue_id(message.strip(), db):
                     venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
                     # Re-route the original message with the resolved venue
                     original_message = thread.raw_prompt or message
@@ -302,9 +302,7 @@ def handle_message(
                 resolved_id = resolve_venue_id(router_venue, db)
                 if resolved_id:
                     venue_id = resolved_id
-                    venue_obj = (
-                        db.query(Venue).filter(Venue.id == resolved_id).first()
-                    )
+                    venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
                     venue_name = venue_obj.name if venue_obj else router_venue
                     venue_timezone = venue_obj.timezone if venue_obj else None
                 else:
@@ -555,7 +553,10 @@ def _create_venue_clarification(
     Shows a venue picker component with clickable buttons. Stores the
     routing result so the original request can be resumed after selection.
     """
-    question = routing.get("venue_question") or "Sure! Which venue would you like me to look at?"
+    question = (
+        routing.get("venue_question")
+        or "Sure! Which venue would you like me to look at?"
+    )
 
     # Store routing info so we can resume after venue selection
     extracted = {"routing": {k: v for k, v in routing.items() if k != "llm_call_id"}}

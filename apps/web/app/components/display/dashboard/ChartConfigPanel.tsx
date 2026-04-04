@@ -142,9 +142,6 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
     setDraft(d => ({ ...d, script: { ...d.script, ...patch } }));
   }, []);
 
-  // Auto-test on mount
-  useEffect(() => { runTest(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
   const runTest = async () => {
     setLoading(true);
     try {
@@ -168,6 +165,9 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
     } catch { /* ignore */ }
     setLoading(false);
   };
+
+  // Auto-test on mount
+  useEffect(() => { runTest(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSave = async () => {
     setSaving(true);

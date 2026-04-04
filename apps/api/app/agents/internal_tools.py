@@ -1096,9 +1096,7 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
             tool_filter = sorted(actions)
             tool_list_str = ", ".join(tool_filter)
         else:
-            logger.info(
-                "No domain tools found in conversation — skipping tool_filter"
-            )
+            logger.info("No domain tools found in conversation — skipping tool_filter")
 
     # Sub-LLM call to draft the task
     system_prompt = f"""You are a task prompt writer for Norm, a hospitality operations platform.
