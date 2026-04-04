@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { SavedReport, SavedReportChart, ReportGridItem } from '../../types';
 import Chart from './Chart';
+import DateRangePicker from './DateRangePicker';
 
 const ROW_HEIGHT = 40; // px per grid row
 const GRID_COLS = 24;
@@ -19,6 +20,7 @@ export default function ReportBuilder({ data }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const [dateRange, setDateRange] = useState<{ start: string; end: string } | undefined>();
 
   const reportId = data?.report_id;
 
@@ -30,6 +32,9 @@ export default function ReportBuilder({ data }: Props) {
         const r = await res.json();
         setReport(r);
         setTitleDraft(r.title);
+        if (r.global_filters?.start && r.global_filters?.end) {
+          setDateRange({ start: r.global_filters.start, end: r.global_filters.end });
+        }
       }
     } catch { /* ignore */ }
     setLoading(false);
@@ -115,11 +120,18 @@ export default function ReportBuilder({ data }: Props) {
     fetchReport();
   };
 
-  const refreshAll = async () => {
+  const refreshAll = async (filters?: { start?: string; end?: string }) => {
     if (!reportId) return;
     setRefreshing(true);
     try {
-      const res = await apiFetch(`/api/reports/${reportId}/refresh`, { method: 'POST' });
+      const gf: Record<string, string> = {};
+      const range = filters || dateRange;
+      if (range?.start) gf.start = range.start;
+      if (range?.end) gf.end = range.end;
+      const res = await apiFetch(`/api/reports/${reportId}/refresh`, {
+        method: 'POST',
+        body: JSON.stringify({ global_filters: Object.keys(gf).length > 0 ? gf : null }),
+      });
       if (res.ok) setReport(await res.json());
     } catch { /* ignore */ }
     setRefreshing(false);
@@ -204,9 +216,28 @@ export default function ReportBuilder({ data }: Props) {
           )}
           <span style={{ fontSize: '0.7rem', color: '#aaa' }}>{report.charts.length} chart{report.charts.length !== 1 ? 's' : ''}</span>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {report.is_dashboard && (
+            <span style={{ fontSize: '0.65rem', fontWeight: 600, color: '#4f8a5e', backgroundColor: '#f0faf2', padding: '2px 8px', borderRadius: 4 }}>
+              Dashboard
+            </span>
+          )}
+          <DateRangePicker
+            value={dateRange}
+            onChange={(range) => {
+              setDateRange(range);
+              refreshAll(range);
+              // Persist to report's global_filters
+              if (reportId) {
+                apiFetch(`/api/reports/${reportId}`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({ global_filters: { start: range.start, end: range.end } }),
+                }).catch(() => {});
+              }
+            }}
+          />
           <button
-            onClick={refreshAll}
+            onClick={() => refreshAll()}
             disabled={refreshing}
             style={{
               padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600,
@@ -214,6 +245,44 @@ export default function ReportBuilder({ data }: Props) {
               color: '#555', cursor: refreshing ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
             }}
           >{refreshing ? 'Refreshing...' : 'Refresh All'}</button>
+          {!report.is_dashboard && (
+            <div style={{ display: 'flex', gap: 0 }}>
+              <select
+                id="promote-agent-select"
+                defaultValue=""
+                style={{
+                  padding: '4px 6px', fontSize: '0.72rem', fontWeight: 600,
+                  border: '1px solid #cbd5e1', borderRadius: '5px 0 0 5px', backgroundColor: '#fff',
+                  color: '#555', fontFamily: 'inherit', cursor: 'pointer',
+                }}
+              >
+                <option value="" disabled>Agent...</option>
+                <option value="reports">Reports</option>
+                <option value="hr">HR</option>
+                <option value="procurement">Procurement</option>
+              </select>
+              <button
+                onClick={async () => {
+                  const select = document.getElementById('promote-agent-select') as HTMLSelectElement;
+                  const slug = select?.value;
+                  if (!slug) { select?.focus(); return; }
+                  const res = await apiFetch(`/api/reports/${report.id}/promote-to-dashboard`, {
+                    method: 'POST',
+                    body: JSON.stringify({ agent_slug: slug }),
+                  });
+                  if (res.ok) {
+                    const updated = await res.json();
+                    setReport(updated);
+                  }
+                }}
+                style={{
+                  padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600,
+                  border: '1px solid #cbd5e1', borderLeft: 'none', borderRadius: '0 5px 5px 0', backgroundColor: '#fff',
+                  color: '#555', cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >Set as Dashboard</button>
+            </div>
+          )}
           <button
             onClick={saveReport}
             style={{

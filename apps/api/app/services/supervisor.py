@@ -69,7 +69,9 @@ def handle_message(
                     .filter(AutomatedTask.conversation_thread_id == thread_id)
                     .first()
                 )
-                if at and message.strip() == at.prompt.strip():
+                if at and " ".join(message.split()) == " ".join(
+                    (at.prompt or "").split()
+                ):
                     logger.info(
                         "Automated task Run Now detected (task=%s), bypassing router",
                         at.id[:12],
@@ -196,20 +198,24 @@ def handle_message(
                 from app.services.venue_service import resolve_venue_id
                 from app.db.models import Venue
 
-                resolved_id = resolve_venue_id(message.strip(), db)
-                if resolved_id:
+                user_reply = message.strip().lower()
+                db.add(Message(thread_id=thread.id, role="user", content=message))
+                db.flush()
+
+                # "All venues" — re-route without a specific venue
+                if user_reply in ("all", "all venues"):
+                    original_message = thread.raw_prompt or message
+                    prior_thread = thread
+                    message = original_message
+                    # venue_id stays None — agent gets all venues
+                elif (resolved_id := resolve_venue_id(message.strip(), db)):
                     venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
-                    # Add the user's venue reply to the conversation
-                    db.add(Message(thread_id=thread.id, role="user", content=message))
-                    db.flush()
                     # Re-route the original message with the resolved venue
                     original_message = thread.raw_prompt or message
                     prior_thread = thread
-                    # Fall through to classification with venue set
                     venue_id = resolved_id
                     venue_name = venue_obj.name if venue_obj else message.strip()
                     venue_timezone = venue_obj.timezone if venue_obj else None
-                    # Override message to the original request
                     message = original_message
                 else:
                     # Couldn't resolve — ask again
@@ -282,15 +288,31 @@ def handle_message(
             venue_timezone = venues[0].timezone
         elif len(venues) > 1:
             router_venue = routing.get("venue")
-            if router_venue and router_venue != "all":
+
+            if router_venue == "all":
+                # Cross-venue query — agent handles multiple venues
+                pass
+            elif router_venue == "unclear":
+                # Needs a venue but user didn't specify — show venue picker
+                return _create_venue_clarification(
+                    message, venues, domain, routing, db, user_id
+                )
+            elif router_venue:
+                # Router extracted specific venue(s) — resolve
                 resolved_id = resolve_venue_id(router_venue, db)
                 if resolved_id:
                     venue_id = resolved_id
-                    venue_name = router_venue
-                    venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
+                    venue_obj = (
+                        db.query(Venue).filter(Venue.id == resolved_id).first()
+                    )
+                    venue_name = venue_obj.name if venue_obj else router_venue
                     venue_timezone = venue_obj.timezone if venue_obj else None
-            # "all" or no specific venue → agent gets all venues in its prompt
-            # and can make tool calls per venue or ask for clarification itself
+                else:
+                    # Router picked a name that doesn't resolve — clarify
+                    return _create_venue_clarification(
+                        message, venues, domain, routing, db, user_id
+                    )
+            # else: no venue field in router response — request doesn't need one
 
     # Emit routing event so the frontend knows which agent was selected
     from app.agents.tool_loop import _emit_event
@@ -521,41 +543,68 @@ def _build_capabilities_response(
 
 
 def _create_venue_clarification(
-    message: str, venue_list: str, db: Session, user_id: str | None = None
+    message: str,
+    venues: list,
+    domain: str,
+    routing: dict,
+    db: Session,
+    user_id: str | None = None,
 ) -> dict:
-    """Ask the user to specify which venue before proceeding."""
-    question = f"Which venue would you like me to check? Available venues: {venue_list}"
+    """Ask the user to specify which venue before proceeding.
+
+    Shows a venue picker component with clickable buttons. Stores the
+    routing result so the original request can be resumed after selection.
+    """
+    question = routing.get("venue_question") or "Sure! Which venue would you like me to look at?"
+
+    # Store routing info so we can resume after venue selection
+    extracted = {"routing": {k: v for k, v in routing.items() if k != "llm_call_id"}}
 
     thread = Thread(
         user_id=user_id,
         intent="venue_clarification",
-        domain="unknown",
+        domain=domain,
         status="needs_clarification",
         raw_prompt=message,
-        extracted_fields={},
+        extracted_fields=extracted,
         missing_fields=["venue"],
         clarification_question=question,
     )
     db.add(thread)
     db.flush()
 
+    venue_data = [{"id": v.id, "name": v.name} for v in venues]
+    display_blocks = [{"component": "venue_picker", "data": {"venues": venue_data}}]
+
     db.add(Message(thread_id=thread.id, role="user", content=message))
-    db.add(Message(thread_id=thread.id, role="assistant", content=question))
+    db.add(
+        Message(
+            thread_id=thread.id,
+            role="assistant",
+            content=question,
+            display_blocks=display_blocks,
+        )
+    )
     db.commit()
     db.refresh(thread)
 
     return {
         "id": thread.id,
-        "domain": "unknown",
+        "domain": domain,
         "intent": "venue_clarification",
-        "title": thread.title,
+        "title": routing.get("title") or thread.title,
         "message": message,
         "status": "needs_clarification",
         "created_at": thread.created_at.isoformat(),
         "updated_at": thread.updated_at.isoformat(),
         "conversation": [
-            {"role": "user", "text": message},
-            {"role": "assistant", "text": question},
+            {"role": "user", "text": message, "created_at": None},
+            {
+                "role": "assistant",
+                "text": question,
+                "display_blocks": display_blocks,
+                "created_at": None,
+            },
         ],
         "clarification_question": question,
     }

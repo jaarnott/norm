@@ -14,6 +14,8 @@ import Chart from './Chart';
 import ReportBuilder from './ReportBuilder';
 import SavedReportsBoard from './SavedReportsBoard';
 import ToolApprovalCard from './ToolApprovalCard';
+import DashboardView from './DashboardView';
+import VenuePicker from './VenuePicker';
 
 export interface DisplayBlockProps {
   data: Record<string, unknown>;
@@ -23,7 +25,7 @@ export interface DisplayBlockProps {
 }
 
 /** Components that render full-width above the conversation instead of inline in chat bubbles */
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'dashboard_view']);
 
 const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   generic_table: GenericTable,
@@ -39,6 +41,8 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   saved_reports_board: SavedReportsBoard,
   orders_dashboard: OrdersDashboard,
   tool_approval: ToolApprovalCard,
+  venue_picker: VenuePicker,
+  dashboard_view: DashboardView,
 };
 
 interface DisplayBlockRendererProps {

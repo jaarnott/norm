@@ -148,14 +148,6 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
 
         return (
           <div key={i} style={{ maxWidth: 768, margin: '0 auto', width: '100%' }}>
-            {/* Display blocks render full-width within 950px */}
-            {displayBlocks.length > 0 && (
-              <div style={{ marginBottom: '0.5rem' }}>
-                {displayBlocks.map((block: DisplayBlock, bi: number) => (
-                  <DisplayBlockRenderer key={bi} block={block} onAction={onWidgetAction} threadId={threadId} />
-                ))}
-              </div>
-            )}
             {/* Message text constrained to 768px, centered within 950 */}
             <div style={{
               maxWidth: 768,
@@ -181,6 +173,14 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
                 )}
               </div>
             </div>
+            {/* Inline display blocks render below the message text */}
+            {displayBlocks.length > 0 && (
+              <div style={{ marginTop: '0.5rem' }}>
+                {displayBlocks.map((block: DisplayBlock, bi: number) => (
+                  <DisplayBlockRenderer key={bi} block={block} onAction={onWidgetAction} threadId={threadId} />
+                ))}
+              </div>
+            )}
           </div>
         );
       })}

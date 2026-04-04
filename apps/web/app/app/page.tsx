@@ -426,6 +426,12 @@ export default function Home() {
       return { report_id: null };
     }
 
+    // Send a message on behalf of the user (e.g., venue picker selection)
+    if (action.action === 'send_message' && action.params?.message) {
+      sendMessage(action.params.message as string);
+      return { ok: true };
+    }
+
     // Handle tool approval/rejection from ToolApprovalCard
     if (action.action === 'tool_approve' || action.action === 'tool_reject') {
       const targetAction = action.action === 'tool_approve' ? 'approve' : 'reject';
@@ -564,41 +570,37 @@ export default function Home() {
       );
 
       return (
-        <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+        <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
           {mobileQuotaModal}
-          <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem', borderBottom: '1px solid #e2ddd7', backgroundColor: '#faf8f5' }}>
-            <button onClick={() => { setMobileView('home'); setSelectedThreadId(null); setActivePage(null); }} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
-              backgroundColor: 'transparent', cursor: 'pointer',
-            }}>
-              <ArrowLeft size={20} strokeWidth={1.75} />
-            </button>
-            <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#111' }}>
-              {selectedThread?.title || activePage || 'Back'}
-            </span>
-          </div>
+          <button onClick={() => setMobileView('list')} style={{
+            position: 'absolute', top: 10, left: 10, zIndex: 10,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
+            backgroundColor: 'rgba(250, 248, 245, 0.85)', backdropFilter: 'blur(4px)',
+            cursor: 'pointer',
+          }}>
+            <Menu size={22} strokeWidth={1.75} />
+          </button>
           <div style={{ flex: 1, overflow: 'auto' }}>{content}</div>
         </div>
       );
     }
 
-    // Settings view — back goes to home
+    // Settings view
     if (mobileView === 'settings') {
       return (
-        <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+        <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
           {mobileQuotaModal}
-          <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem', borderBottom: '1px solid #e2ddd7', backgroundColor: '#faf8f5' }}>
-            <button onClick={() => { setMobileView('home'); setActiveAgent('home'); }} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
-              backgroundColor: 'transparent', cursor: 'pointer',
-            }}>
-              <ArrowLeft size={20} strokeWidth={1.75} />
-            </button>
-            <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#111' }}>Settings</span>
-          </div>
-          <div style={{ flex: 1, overflow: 'auto' }}><SettingsPanel /></div>
+          <button onClick={() => setMobileView('list')} style={{
+            position: 'absolute', top: 10, left: 10, zIndex: 10,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
+            backgroundColor: 'rgba(250, 248, 245, 0.85)', backdropFilter: 'blur(4px)',
+            cursor: 'pointer',
+          }}>
+            <Menu size={22} strokeWidth={1.75} />
+          </button>
+          <div style={{ flex: 1, overflow: 'auto', paddingTop: '3rem' }}><SettingsPanel /></div>
         </div>
       );
     }
@@ -713,21 +715,19 @@ export default function Home() {
       );
     }
 
-    // Home view (default) — conversation with hamburger button
+    // Home view (default) — conversation with floating hamburger
     return (
-      <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+      <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
         {mobileQuotaModal}
-        {/* Hamburger header */}
-        <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem', backgroundColor: '#faf8f5' }}>
-          <button onClick={() => setMobileView('list')} style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
-            backgroundColor: 'transparent', cursor: 'pointer',
-          }}>
-            <Menu size={22} strokeWidth={1.75} />
-          </button>
-          <span style={{ fontSize: '1rem', fontWeight: 700, color: '#a08060' }}>Norm</span>
-        </div>
+        <button onClick={() => setMobileView('list')} style={{
+          position: 'absolute', top: 10, left: 10, zIndex: 10,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
+          backgroundColor: 'rgba(250, 248, 245, 0.85)', backdropFilter: 'blur(4px)',
+          cursor: 'pointer',
+        }}>
+          <Menu size={22} strokeWidth={1.75} />
+        </button>
         <div style={{ flex: 1, overflow: 'auto' }}>
           <HomePanel onSend={sendMessage} loading={loading} />
         </div>

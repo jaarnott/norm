@@ -235,8 +235,13 @@ Today's date is {today_str}.
             system_prompt += """
 
 ## Automated Tasks
-When a user asks to do something regularly or automatically, use `create_automated_task`:
-- Set `intent` to describe what the task should do, including specifics from the conversation (venue names, employee names, items, email requests). Be detailed — the intent is used to generate a self-contained task prompt.
+When a user asks to do something regularly or automatically:
+1. First, execute the request normally so the user can see the result.
+2. After presenting the result, offer to save it as an automated task.
+3. Only call `create_automated_task` after the user has seen the output and confirmed they want it automated.
+
+When calling `create_automated_task`:
+- Set `intent` to describe what the task should do, including specifics from the conversation (venue names, employee names, items, email requests). Be detailed.
 - Set `agent_slug` to the appropriate domain ("hr", "procurement", or "reports")
 - Set `schedule` if the user specified when it should run (e.g. "daily at 9am", "every monday at 8am")
 - The task will be created as a draft for the user to review and activate
@@ -296,7 +301,9 @@ Example: to find the 5 highest sales periods, use: sort_by="amount", sort_order=
                 )
             if has_system_email:
                 email_lines.append(
-                    "- **System email** (`norm_email__send_notification`): Send notifications from the platform (e.g., task results, alerts, reports). Uses a template system."
+                    "- **Report email** (`norm_email__send_report_email`): Email a formatted copy of your response to the user. "
+                    "Use when the user says 'email this to me' or when an automated task should email results. "
+                    "Just provide `to` and `subject` — your last response is automatically converted to a formatted email with tables and data."
                 )
             if has_gmail and user_id:
                 cfg = (
@@ -329,7 +336,7 @@ Example: to find the 5 highest sales periods, use: sort_by="amount", sort_order=
                     f"- **Outlook** (`microsoft_outlook__send_email`): Send from **{addr}**. Use for outreach, purchase orders, and correspondence that should come from the user."
                 )
             email_lines.append(
-                "\nUse system email for automated notifications and alerts. Use the user's connected account when the email should appear to come from them personally."
+                "\nUse report email to send data and results from Norm. Use the user's connected account (Gmail/Outlook) when the email should appear to come from them personally."
             )
             if has_automated_tasks:
                 email_lines.append(

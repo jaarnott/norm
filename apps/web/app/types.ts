@@ -75,15 +75,17 @@ export interface StripeInvoice {
   hosted_invoice_url: string | null;
 }
 
-export type ChartType = 'bar' | 'stacked_bar' | 'line' | 'pie' | 'scatter' | 'bubble' | 'table';
+export type ChartType = 'bar' | 'stacked_bar' | 'line' | 'pie' | 'scatter' | 'bubble' | 'table' | 'kpi' | 'component' | 'text';
 
 export interface ChartSpec {
   chart_type: ChartType;
   title: string;
-  x_axis: { key: string; label: string };
-  y_axis?: { key: string; label: string };
+  x_axis: { key: string; label: string; format?: string };
+  y_axis?: { key: string; label: string; format?: string };
   series: { key: string; label: string; color: string }[];
   orientation?: 'vertical' | 'horizontal';
+  group_by?: string;
+  value_key?: string;
 }
 
 export interface ChartScript {
@@ -106,6 +108,12 @@ export interface SavedReport {
   description: string | null;
   layout: ReportGridItem[];
   status: string;
+  is_dashboard: boolean;
+  agent_slug: string | null;
+  is_published: boolean;
+  is_template: boolean;
+  refresh_interval_seconds: number | null;
+  global_filters: Record<string, unknown> | null;
   charts: SavedReportChart[];
   created_at: string;
   updated_at: string;

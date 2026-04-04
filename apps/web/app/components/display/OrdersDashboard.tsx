@@ -150,11 +150,19 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
     borderBottom: `1px solid ${colors.borderLight}`,
   };
 
+  const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
+
   return (
     <div>
       {/* Header with venue selector */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: colors.textPrimary }}>Orders</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>Purchase Orders</h2>
+          <span style={{ fontSize: '0.75rem', color: colors.textMuted }}>
+            {loading ? 'Loading...' : `${sortedOrders.length} orders`}
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         {venues.length > 1 && (
           <select
             value={selectedVenue || ''}
@@ -168,9 +176,7 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
             {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
           </select>
         )}
-        <span style={{ fontSize: '0.75rem', color: colors.textMuted }}>
-          {loading ? 'Loading...' : `${sortedOrders.length} orders`}
-        </span>
+        </div>
       </div>
 
       {loading && (
@@ -185,7 +191,45 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
         </div>
       )}
 
-      {!loading && sortedOrders.length > 0 && (
+      {!loading && sortedOrders.length > 0 && isMobileView && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          {sortedOrders.map(order => {
+            const badge = statusBadge(order.status);
+            const isExpanded = expandedId === order.id;
+            return (
+              <div key={order.id} onClick={() => toggleRow(order)} style={{
+                border: `1px solid ${isExpanded ? colors.primary : colors.borderLight}`,
+                borderRadius: 10, backgroundColor: isExpanded ? colors.selectedBg : '#fff',
+                padding: '0.7rem', cursor: 'pointer',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.3rem' }}>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 600, color: colors.textPrimary }}>{order.supplierName}</div>
+                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: colors.textPrimary }}>{formatCurrency(order.total)}</span>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', fontSize: '0.7rem', color: colors.textMuted }}>
+                  <span style={{ padding: '1px 6px', borderRadius: 8, fontSize: '0.65rem', fontWeight: 500, backgroundColor: badge.bg, color: badge.text }}>{order.status}</span>
+                  <span>#{order.orderNumber}</span>
+                  <span>{new Date(order.createdAt).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}</span>
+                </div>
+                {isExpanded && (
+                  <div style={{ marginTop: '0.5rem', borderTop: `1px solid ${colors.borderLight}`, paddingTop: '0.5rem' }}>
+                    {detailLoading && <div style={{ fontSize: '0.75rem', color: colors.textMuted }}>Loading...</div>}
+                    {detailError && <div style={{ fontSize: '0.75rem', color: colors.error }}>{detailError}</div>}
+                    {!detailLoading && detailLines.length > 0 && detailLines.map((line, li) => (
+                      <div key={li} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.2rem 0', fontSize: '0.72rem', color: colors.textSecondary }}>
+                        <span>{line.itemName} × {line.quantityOrdered}</span>
+                        <span>{formatCurrency(line.unitCost * line.quantityOrdered)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!loading && sortedOrders.length > 0 && !isMobileView && (
         <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600, tableLayout: 'fixed' }}>
             <thead>

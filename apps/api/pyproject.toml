@@ -26,6 +26,7 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.0.0",
     "slowapi>=0.1.9",
     "resend>=2.0.0",
+    "markdown>=3.10.2",
 ]
 
 [project.optional-dependencies]

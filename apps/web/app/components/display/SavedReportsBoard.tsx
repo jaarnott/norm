@@ -87,27 +87,62 @@ export default function SavedReportsBoard({ onAction }: Props) {
                 <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#333', marginBottom: 4 }}>
                   {report.title}
                 </div>
-                <div style={{ fontSize: '0.72rem', color: '#aaa' }}>
+                <div style={{ fontSize: '0.72rem', color: '#aaa', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   {report.charts.length} chart{report.charts.length !== 1 ? 's' : ''}
                   {report.status === 'saved' && (
-                    <span style={{ marginLeft: 6, color: '#48bb78' }}>Saved</span>
+                    <span style={{ color: '#48bb78' }}>Saved</span>
                   )}
                   {report.status === 'draft' && (
-                    <span style={{ marginLeft: 6, color: '#ed8936' }}>Draft</span>
+                    <span style={{ color: '#ed8936' }}>Draft</span>
+                  )}
+                  {report.is_dashboard && (
+                    <span style={{ fontSize: '0.62rem', fontWeight: 600, color: '#4f8a5e', backgroundColor: '#f0faf2', padding: '1px 6px', borderRadius: 3 }}>Dashboard</span>
                   )}
                 </div>
               </div>
-              <button
-                onClick={(e) => { e.stopPropagation(); setConfirmDelete(report.id); }}
-                onMouseEnter={e => (e.currentTarget.style.color = '#e53e3e')}
-                onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
-                style={{
-                  border: 'none', background: 'none', color: '#ccc',
-                  cursor: 'pointer', fontSize: '0.85rem', padding: '0 4px',
-                  transition: 'color 0.15s',
-                }}
-                title="Delete report"
-              >&times;</button>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {!report.is_dashboard && (
+                  <select
+                    onClick={e => e.stopPropagation()}
+                    onChange={async (e) => {
+                      const slug = e.target.value;
+                      if (!slug) return;
+                      e.target.value = '';
+                      const res = await apiFetch(`/api/reports/${report.id}/promote-to-dashboard`, {
+                        method: 'POST',
+                        body: JSON.stringify({ agent_slug: slug }),
+                      });
+                      if (res.ok) {
+                        const updated = await res.json();
+                        setReports(prev => prev.map(r => r.id === updated.id ? updated : r));
+                      }
+                    }}
+                    defaultValue=""
+                    style={{
+                      border: 'none', background: 'none', color: '#ccc',
+                      cursor: 'pointer', fontSize: '0.62rem', padding: '0 2px',
+                      fontFamily: 'inherit',
+                    }}
+                    title="Set as dashboard"
+                  >
+                    <option value="" disabled>Dashboard</option>
+                    <option value="reports">Reports</option>
+                    <option value="hr">HR</option>
+                    <option value="procurement">Procurement</option>
+                  </select>
+                )}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(report.id); }}
+                  onMouseEnter={e => (e.currentTarget.style.color = '#e53e3e')}
+                  onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
+                  style={{
+                    border: 'none', background: 'none', color: '#ccc',
+                    cursor: 'pointer', fontSize: '0.85rem', padding: '0 4px',
+                    transition: 'color 0.15s',
+                  }}
+                  title="Delete report"
+                >&times;</button>
+              </div>
             </div>
             {report.description && (
               <div style={{ fontSize: '0.75rem', color: '#999', marginTop: 4 }}>{report.description}</div>

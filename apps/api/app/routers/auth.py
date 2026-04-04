@@ -178,7 +178,7 @@ def invite_user(
 
     # Generate invite token and send email
     token = create_invite_token(target_user.id)
-    invite_url = f"{app_settings.APP_URL}/accept-invite?token={token}"
+    invite_url = f"{app_settings.app_url}/accept-invite?token={token}"
 
     org = db.query(Organization).filter(Organization.id == body.org_id).first()
     org_name = org.name if org else "Norm"
@@ -260,7 +260,7 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
 
     if user and user.is_active:
         token = create_reset_token(user.id)
-        reset_url = f"{app_settings.APP_URL}/reset-password?token={token}"
+        reset_url = f"{app_settings.app_url}/reset-password?token={token}"
 
         try:
             send_system_email(

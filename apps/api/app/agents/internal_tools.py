@@ -504,36 +504,64 @@ def _outlook_send_email(params: dict, db: Session, thread_id: str | None) -> dic
     )
 
 
-@register("norm_email", "send_notification")
-def _system_send_notification(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Send a system notification email from noreply@norm.com."""
+@register("norm_email", "send_report_email")
+def _send_report_email(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Send a formatted report email with the agent's response content."""
     from app.services.email_service import send_system_email
+    from app.services.email_content_builder import build_report_html
+    from app.db.models import Message, EmailLog
+    from app.config import settings
 
     to = params.get("to", "")
     if isinstance(to, str):
         to = [addr.strip() for addr in to.split(",") if addr.strip()]
-    template_name = params.get("template_name", "")
-    template_context = params.get("template_context", {})
+    subject = params.get("subject", "Report from Norm")
 
-    if not to or not template_name:
+    if not to:
+        return {"success": False, "data": {}, "error": "to is required"}
+
+    # Get content: either from content_markdown param or from last assistant message
+    content_markdown = params.get("content_markdown")
+    display_blocks = None
+
+    if not content_markdown and thread_id:
+        last_msg = (
+            db.query(Message)
+            .filter(Message.thread_id == thread_id, Message.role == "assistant")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if last_msg:
+            content_markdown = last_msg.content
+            display_blocks = last_msg.display_blocks
+
+    if not content_markdown:
         return {
             "success": False,
             "data": {},
-            "error": "to and template_name are required",
+            "error": "No content to send — provide content_markdown or ensure thread has an assistant message",
         }
 
-    if isinstance(template_context, str):
-        import json
+    # Build HTML from markdown + display blocks
+    report_html = build_report_html(content_markdown, display_blocks)
 
-        try:
-            template_context = json.loads(template_context)
-        except (json.JSONDecodeError, TypeError):
-            template_context = {}
+    # Build thread URL for "View in Norm" button
+    domain = settings.CORS_ALLOWED_ORIGINS.split(",")[0].strip().rstrip("/")
+    if domain == "*":
+        domain = "https://bettercallnorm.com"
+    thread_url = f"{domain}/app" if not thread_id else f"{domain}/app"
 
-    log_id = send_system_email(
-        template_name, to, template_context, db, thread_id=thread_id
-    )
-    from app.db.models import EmailLog
+    # Render via template
+    import datetime
+
+    template_context = {
+        "subject": subject,
+        "report_html": report_html,
+        "thread_url": thread_url,
+        "generated_at": datetime.datetime.now().strftime("%d %b %Y, %I:%M %p"),
+    }
+
+    log_id = send_system_email("report", to, template_context, db, thread_id=thread_id)
 
     log = db.query(EmailLog).filter(EmailLog.id == log_id).first() if log_id else None
 
@@ -1046,7 +1074,7 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
         actions |= {"resolve_dates", "search_tool_result"}
         actions |= {"send_notification", "send_email"}
         # Remove internal-only tools not useful for scheduled runs
-        actions -= {
+        internal_only = {
             "update_task_config",
             "set_override",
             "update_thread_summary",
@@ -1054,8 +1082,23 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
             "show_roster",
             "show_orders",
         }
-        tool_filter = sorted(actions)
-        tool_list_str = ", ".join(tool_filter)
+        actions -= internal_only
+        # Only set tool_filter if we found meaningful domain tools
+        # (not just utilities like resolve_dates, search_tool_result)
+        utility_tools = {
+            "resolve_dates",
+            "search_tool_result",
+            "send_notification",
+            "send_email",
+        }
+        domain_actions = actions - utility_tools
+        if len(domain_actions) >= 1:
+            tool_filter = sorted(actions)
+            tool_list_str = ", ".join(tool_filter)
+        else:
+            logger.info(
+                "No domain tools found in conversation — skipping tool_filter"
+            )
 
     # Sub-LLM call to draft the task
     system_prompt = f"""You are a task prompt writer for Norm, a hospitality operations platform.

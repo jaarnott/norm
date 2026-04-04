@@ -414,15 +414,26 @@ def _normalize_fields(extracted_fields: dict, operation: dict) -> dict:
     for key, value in normalized.items():
         if not isinstance(value, str):
             continue
-        desc = field_descs.get(key, "")
+        desc = field_descs.get(key, "").lower()
+        # Date-only fields: strip time portion from ISO datetime
+        # Triggered by descriptions like "date (YYYY-MM-DD)", "short date", "date only"
+        if any(
+            hint in desc
+            for hint in ("yyyy-mm-dd", "short date", "date only", "date format")
+        ):
+            # "2026-04-04T08:30:45+13:00" → "2026-04-04"
+            match = re.match(r"(\d{4}-\d{2}-\d{2})", value)
+            if match:
+                normalized[key] = match.group(1)
+                continue
         # Fix datetime fields that need URL-encoded timezone offset (%2B)
-        if "%2B" in desc:
+        if "%2b" in desc:
             # "2026-03-16T07:00:00 13:00" → space before offset → %2B
             value = re.sub(r"(\d{2}:\d{2}:\d{2})\s+(\d{1,2}:\d{2})$", r"\1%2B\2", value)
             # "2026-03-16T07:00:00+13:00" → bare + → %2B
             value = re.sub(r"(\d{2}:\d{2}:\d{2})\+(\d{1,2}:\d{2})$", r"\1%2B\2", value)
             normalized[key] = value
-        elif "8601" in desc or "timezone" in desc.lower():
+        elif "8601" in desc or "timezone" in desc:
             # Standard ISO format: space before offset → +
             value = re.sub(r"(\d{2}:\d{2}:\d{2})\s+(\d{1,2}:\d{2})$", r"\1+\2", value)
             normalized[key] = value

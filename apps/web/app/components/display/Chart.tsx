@@ -8,7 +8,10 @@ import {
 } from 'recharts';
 import type { ChartType, ChartSpec } from '../../types';
 import { apiFetch } from '../../lib/api';
-import { Settings } from 'lucide-react';
+import { Settings, Maximize2 } from 'lucide-react';
+import KpiCard from './KpiCard';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const CHART_TYPES: { type: ChartType; label: string; icon: string }[] = [
   { type: 'table', label: 'Table', icon: '▤' },
@@ -17,9 +20,14 @@ const CHART_TYPES: { type: ChartType; label: string; icon: string }[] = [
   { type: 'line', label: 'Line', icon: '⟋' },
   { type: 'pie', label: 'Pie', icon: '◔' },
   { type: 'scatter', label: 'Scatter', icon: '⁘' },
+  { type: 'kpi', label: 'KPI', icon: '#' },
+  { type: 'text', label: 'Text', icon: 'T' },
 ];
 
 const DEFAULT_COLORS = ['#d4c4ae', '#a8cfc0', '#b8c8dc', '#e0c8a8', '#c8b8d4', '#a8d0b8', '#d8c0b8', '#b8d0d4'];
+
+// More distinct palette for stacked/multi-series charts (venue breakdowns etc.)
+const STACK_COLORS = ['#4f8a5e', '#5b8abd', '#c4a882', '#b07d4f', '#8b6caf', '#c75a5a', '#3d9e8f', '#d4a03c', '#7a8b5e', '#a05195'];
 
 const BRAND_COLORS: { name: string; value: string }[] = [
   { name: 'Sand', value: '#d4c4ae' },
@@ -35,12 +43,20 @@ const BRAND_COLORS: { name: string; value: string }[] = [
 ];
 
 /** Auto-format values for display — detects ISO dates, formats numbers. */
-function formatValue(val: unknown): string {
+function formatValue(val: unknown, fmt?: string): string {
   if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(val)) {
     const d = new Date(val);
+    if (fmt === 'time') return d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit' });
+    if (fmt === 'datetime') return d.toLocaleString('en-NZ', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    if (fmt === 'date') return d.toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' });
+    // Auto-detect: if multiple values span less than 2 days, show time; otherwise show date
     return d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' });
   }
-  if (typeof val === 'number') return val.toLocaleString();
+  if (typeof val === 'number') {
+    if (fmt === 'currency') return `$${val.toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (fmt === 'percent') return `${(val * 100).toFixed(1)}%`;
+    return val.toLocaleString();
+  }
   return String(val ?? '');
 }
 
@@ -58,12 +74,14 @@ interface Props {
   height?: number;
   hideAddToReport?: boolean;
   onRemove?: () => void;
+  onExpand?: () => void;
+  onDrillDown?: (payload: { label: string; value: number; field: string; row: Record<string, unknown> }) => void;
   fillContainer?: boolean;
   hideBorder?: boolean;
   className?: string;
 }
 
-function Chart({ data, props: chartProps, onAction, threadId, height: chartHeight = 280, hideAddToReport, onRemove, fillContainer, hideBorder, className }: Props) {
+function Chart({ data, props: chartProps, onAction, threadId, height: chartHeight = 280, hideAddToReport, onRemove, onExpand, onDrillDown, fillContainer, hideBorder, className }: Props) {
   const [chartType, setChartType] = useState<ChartType>(chartProps?.chart_type || 'bar');
   const [addingToReport, setAddingToReport] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
@@ -106,6 +124,8 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
   if (!xKey && dataKeys.length > 0) xKey = dataKeys[0];
 
   const xLabel = chartProps?.x_axis?.label || getLabel(xKey, fieldLabels);
+  const xFormat = chartProps?.x_axis?.format as string | undefined;
+  const yFormat = chartProps?.y_axis?.format as string | undefined;
   const title = editTitle ?? chartProps?.title ?? 'Chart';
 
   // If configured series keys don't match data, auto-detect numeric columns
@@ -136,6 +156,64 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
     }
     return result;
   }, [series, rows, dataKeys, xKey, fieldLabels, hiddenFields, editColors]);
+
+  // Aggregate rows when there are duplicate x-axis values (e.g., multi-venue data).
+  // - bar/line: group by xKey, sum numeric series values
+  // - stacked_bar: pivot a grouping column (e.g. "venue") into separate series
+  const { chartRows, chartSeries } = useMemo(() => {
+    if (rows.length === 0 || !xKey) return { chartRows: rows, chartSeries: effectiveSeries };
+
+    // Check if there are duplicate x-axis values
+    const xValues = rows.map(r => String(r[xKey] ?? ''));
+    const hasDuplicates = new Set(xValues).size < xValues.length;
+    if (!hasDuplicates) return { chartRows: rows, chartSeries: effectiveSeries };
+
+    // Use explicit group_by from chart spec, or auto-detect a grouping column
+    const specGroupBy = chartProps?.group_by as string | undefined;
+    const groupCol = specGroupBy || dataKeys.find(k => /^venue$|^venue_name$|^location$/i.test(k));
+    const specValueKey = chartProps?.value_key as string | undefined;
+
+    if (chartType === 'stacked_bar' && groupCol) {
+      // Pivot: one row per x-value, one series column per group
+      const groups = [...new Set(rows.map(r => String(r[groupCol] ?? 'Other')))];
+      const valueKey = specValueKey || effectiveSeries[0]?.key || '';
+      const grouped = new Map<string, Record<string, unknown>>();
+      for (const row of rows) {
+        const xVal = String(row[xKey] ?? '');
+        const group = String(row[groupCol] ?? 'Other');
+        if (!grouped.has(xVal)) grouped.set(xVal, { [xKey]: row[xKey] });
+        const entry = grouped.get(xVal)!;
+        entry[group] = Number(entry[group] || 0) + Number(row[valueKey] || 0);
+      }
+      // Use configured series colours if they match, otherwise generate
+      const configuredSeries = (chartProps?.series as { key: string; label: string; color: string }[]) || [];
+      const configMap = new Map(configuredSeries.map(s => [s.key, s]));
+      const pivotedSeries = groups.map((g, i) => {
+        const existing = configMap.get(g);
+        return {
+          key: g,
+          label: existing?.label || g,
+          color: existing?.color || STACK_COLORS[i % STACK_COLORS.length],
+        };
+      });
+      return { chartRows: Array.from(grouped.values()), chartSeries: pivotedSeries };
+    }
+
+    // Default: aggregate by summing numeric values per x-key
+    const grouped = new Map<string, Record<string, unknown>>();
+    for (const row of rows) {
+      const xVal = String(row[xKey] ?? '');
+      if (!grouped.has(xVal)) {
+        grouped.set(xVal, { ...row });
+      } else {
+        const entry = grouped.get(xVal)!;
+        for (const s of effectiveSeries) {
+          entry[s.key] = Number(entry[s.key] || 0) + Number(row[s.key] || 0);
+        }
+      }
+    }
+    return { chartRows: Array.from(grouped.values()), chartSeries: effectiveSeries };
+  }, [rows, xKey, chartType, effectiveSeries, dataKeys]);
 
   const handleAddToReport = async () => {
     setAddingToReport(true);
@@ -235,6 +313,19 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
                 transition: 'color 0.15s',
               }}
             >{addingToReport ? 'Adding...' : '+ Report'}</button>
+          )}
+          {onExpand && fillContainer && (
+            <button
+              onClick={onExpand}
+              onMouseEnter={e => (e.currentTarget.style.color = '#999')}
+              onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
+              style={{
+                padding: '3px 6px', border: 'none', borderRadius: 4, backgroundColor: 'transparent',
+                color: '#ccc', cursor: 'pointer', lineHeight: 1, display: 'flex', alignItems: 'center',
+                transition: 'color 0.15s',
+              }}
+              title="Full screen"
+            ><Maximize2 size={14} strokeWidth={1.75} /></button>
           )}
           <button
             onClick={() => setShowEditor(!showEditor)}
@@ -392,11 +483,22 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
         ) : (
           <>
             {chartType === 'table' && <TableView rows={rows} series={effectiveSeries} xKey={xKey} />}
-            {chartType === 'bar' && <BarView rows={rows} series={effectiveSeries} xKey={xKey} xLabel={xLabel} chartHeight={fillContainer ? '100%' : chartHeight} />}
-            {chartType === 'stacked_bar' && <BarView rows={rows} series={effectiveSeries} xKey={xKey} xLabel={xLabel} stacked chartHeight={fillContainer ? '100%' : chartHeight} />}
-            {chartType === 'line' && <LineView rows={rows} series={effectiveSeries} xKey={xKey} xLabel={xLabel} chartHeight={fillContainer ? '100%' : chartHeight} />}
-            {chartType === 'pie' && <PieView rows={rows} series={effectiveSeries} xKey={xKey} chartHeight={fillContainer ? '100%' : chartHeight} />}
+            {chartType === 'bar' && <BarView rows={chartRows} series={chartSeries} xKey={xKey} xLabel={xLabel} xFormat={xFormat} yFormat={yFormat} chartHeight={fillContainer ? '100%' : chartHeight} onBarClick={onDrillDown ? (data, field) => onDrillDown({ label: String(data[xKey] || ''), value: Number(data[field] || 0), field, row: data }) : undefined} />}
+            {chartType === 'stacked_bar' && <BarView rows={chartRows} series={chartSeries} xKey={xKey} xLabel={xLabel} xFormat={xFormat} yFormat={yFormat} stacked chartHeight={fillContainer ? '100%' : chartHeight} onBarClick={onDrillDown ? (data, field) => onDrillDown({ label: String(data[xKey] || ''), value: Number(data[field] || 0), field, row: data }) : undefined} />}
+            {chartType === 'line' && <LineView rows={chartRows} series={chartSeries} xKey={xKey} xLabel={xLabel} xFormat={xFormat} yFormat={yFormat} chartHeight={fillContainer ? '100%' : chartHeight} onDotClick={onDrillDown ? (data, field) => onDrillDown({ label: String(data[xKey] || ''), value: Number(data[field] || 0), field, row: data }) : undefined} />}
+            {chartType === 'pie' && <PieView rows={rows} series={effectiveSeries} xKey={xKey} chartHeight={fillContainer ? '100%' : chartHeight} onSliceClick={onDrillDown ? (label, value, row) => onDrillDown({ label, value, field: effectiveSeries[0]?.key || '', row }) : undefined} />}
             {chartType === 'scatter' && <ScatterView rows={rows} series={effectiveSeries} xKey={xKey} xLabel={xLabel} chartHeight={fillContainer ? '100%' : chartHeight} />}
+            {chartType === 'kpi' && <KpiCard rows={rows} spec={(() => {
+              const cp = chartProps as Record<string, unknown>;
+              const nested = cp?.kpi_spec as Record<string, unknown> | undefined;
+              // Merge: root-level fields win over nested kpi_spec
+              return { ...(nested || {}), ...cp } as Parameters<typeof KpiCard>[0]['spec'];
+            })()} title={title} />}
+            {chartType === 'text' && (
+              <div className="markdown-message" style={{ padding: '0.5rem', fontSize: '0.85rem', lineHeight: 1.6 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{String((chartProps as Record<string, unknown>)?.text_content || rows[0]?.text || '')}</ReactMarkdown>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -475,41 +577,53 @@ function TableView({ rows, series, xKey }: { rows: Record<string, unknown>[]; se
 
 export default memo(Chart);
 
-function BarView({ rows, series, xKey, xLabel, stacked, chartHeight = 280 }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; xLabel: string; stacked?: boolean; chartHeight?: number | string }) {
+function BarView({ rows, series, xKey, xLabel, xFormat, yFormat, stacked, chartHeight = 280, onBarClick }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; xLabel: string; xFormat?: string; yFormat?: string; stacked?: boolean; chartHeight?: number | string; onBarClick?: (data: Record<string, unknown>, seriesKey: string) => void }) {
   return (
     <ResponsiveContainer width="100%" height={chartHeight as number}>
       <BarChart data={rows}>
         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-        <XAxis dataKey={xKey} tickFormatter={formatValue} tick={{ fontSize: 11 }} />
-        <YAxis tickFormatter={v => formatValue(v)} tick={{ fontSize: 11 }} />
-        <Tooltip formatter={(v) => formatValue(v as number)} labelFormatter={formatValue} contentStyle={{ fontSize: '0.78rem' }} />
+        <XAxis dataKey={xKey} tickFormatter={v => formatValue(v, xFormat)} tick={{ fontSize: 11 }} />
+        <YAxis tickFormatter={v => formatValue(v, yFormat)} tick={{ fontSize: 11 }} />
+        <Tooltip formatter={(v) => formatValue(v as number, yFormat)} labelFormatter={v => formatValue(v, xFormat)} contentStyle={{ fontSize: '0.78rem' }} />
         <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
         {series.map(s => (
-          <Bar key={s.key} dataKey={s.key} name={s.label} fill={s.color} stackId={stacked ? 'stack' : undefined} radius={stacked ? 0 : [3, 3, 0, 0]} />
+          <Bar key={s.key} dataKey={s.key} name={s.label} fill={s.color} stackId={stacked ? 'stack' : undefined} radius={stacked ? 0 : [3, 3, 0, 0]}
+            cursor={onBarClick ? 'pointer' : undefined}
+            onClick={onBarClick ? (data: unknown) => onBarClick(data as Record<string, unknown>, s.key) : undefined}
+          />
         ))}
       </BarChart>
     </ResponsiveContainer>
   );
 }
 
-function LineView({ rows, series, xKey, xLabel, chartHeight = 280 }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; xLabel: string; chartHeight?: number | string }) {
+function LineView({ rows, series, xKey, xLabel, xFormat, yFormat, chartHeight = 280, onDotClick }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; xLabel: string; xFormat?: string; yFormat?: string; chartHeight?: number | string; onDotClick?: (data: Record<string, unknown>, field: string) => void }) {
   return (
     <ResponsiveContainer width="100%" height={chartHeight as number}>
-      <LineChart data={rows}>
+      <LineChart
+        data={rows}
+        onClick={onDotClick ? (state: unknown) => {
+          const s = state as { activePayload?: { payload: Record<string, unknown>; dataKey: string }[] } | null;
+          if (s?.activePayload?.[0]?.payload) {
+            onDotClick(s.activePayload[0].payload, s.activePayload[0].dataKey);
+          }
+        } : undefined}
+        style={onDotClick ? { cursor: 'pointer' } : undefined}
+      >
         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-        <XAxis dataKey={xKey} tickFormatter={formatValue} tick={{ fontSize: 11 }} />
-        <YAxis tickFormatter={v => formatValue(v)} tick={{ fontSize: 11 }} />
-        <Tooltip formatter={(v) => formatValue(v as number)} labelFormatter={formatValue} contentStyle={{ fontSize: '0.78rem' }} />
+        <XAxis dataKey={xKey} tickFormatter={v => formatValue(v, xFormat)} tick={{ fontSize: 11 }} />
+        <YAxis tickFormatter={v => formatValue(v, yFormat)} tick={{ fontSize: 11 }} />
+        <Tooltip formatter={(v) => formatValue(v as number, yFormat)} labelFormatter={v => formatValue(v, xFormat)} contentStyle={{ fontSize: '0.78rem' }} />
         <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
         {series.map(s => (
-          <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2} dot={{ r: 3 }} />
+          <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2} dot={{ r: 3 }} activeDot={onDotClick ? { r: 5, cursor: 'pointer' } : { r: 4 }} />
         ))}
       </LineChart>
     </ResponsiveContainer>
   );
 }
 
-function PieView({ rows, series, xKey, chartHeight = 280 }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; chartHeight?: number | string }) {
+function PieView({ rows, series, xKey, chartHeight = 280, onSliceClick }: { rows: Record<string, unknown>[]; series: { key: string; label: string; color: string }[]; xKey: string; chartHeight?: number | string; onSliceClick?: (label: string, value: number, row: Record<string, unknown>) => void }) {
   const dataKey = series[0]?.key || '';
   // Aggregate rows by x-axis key (e.g., sum all "Food" rows and all "Beverage" rows)
   const aggregated = new Map<string, number>();
@@ -521,7 +635,16 @@ function PieView({ rows, series, xKey, chartHeight = 280 }: { rows: Record<strin
   return (
     <ResponsiveContainer width="100%" height={chartHeight as number}>
       <PieChart>
-        <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="70%" label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false}>
+        <Pie
+          data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="70%"
+          label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false}
+          style={onSliceClick ? { cursor: 'pointer' } : undefined}
+          onClick={onSliceClick ? (entry) => {
+            if (entry?.name != null) {
+              onSliceClick(String(entry.name), Number(entry.value || 0), entry as unknown as Record<string, unknown>);
+            }
+          } : undefined}
+        >
           {pieData.map((_, i) => <Cell key={i} fill={DEFAULT_COLORS[i % DEFAULT_COLORS.length]} />)}
         </Pie>
         <Tooltip contentStyle={{ fontSize: '0.78rem' }} />

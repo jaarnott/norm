@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, LayoutDashboard, type LucideIcon } from 'lucide-react';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -34,6 +34,35 @@ function getCurrentWeekRange(): { start_datetime: string; end_datetime: string }
 }
 
 export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
+  // Dashboards (one per agent)
+  {
+    id: 'dashboard-hr',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    agent: 'hr',
+    component: 'dashboard_view',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { agent_slug: 'hr' },
+  },
+  {
+    id: 'dashboard-procurement',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    agent: 'procurement',
+    component: 'dashboard_view',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { agent_slug: 'procurement' },
+  },
+  {
+    id: 'dashboard-reports',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    agent: 'reports',
+    component: 'dashboard_view',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { agent_slug: 'reports' },
+  },
+  // Functional pages
   {
     id: 'roster',
     label: 'Roster',

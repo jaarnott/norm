@@ -53,6 +53,12 @@ fi
 API_PID=$!
 
 # ── 8. Start Frontend ────────────────────────────────────────────
+# Clean stale lock files and corrupt Turbopack cache
+rm -f "$WEB_DIR/.next/dev/lock"
+if [ -d "$WEB_DIR/.next" ] && ! (cd "$WEB_DIR" && pnpm next --version > /dev/null 2>&1); then
+  echo "Clearing corrupt .next cache …"
+  rm -rf "$WEB_DIR/.next"
+fi
 (cd "$WEB_DIR" && pnpm dev) &
 WEB_PID=$!
 

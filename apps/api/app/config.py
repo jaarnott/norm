@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     MICROSOFT_CLIENT_ID: str = ""
     MICROSOFT_CLIENT_SECRET: str = ""
-    APP_URL: str = "https://bettercallnorm.com"
+    APP_URL: str = ""  # Auto-derived from ENVIRONMENT if not set
 
     # ── Observability (Phase 4) ─────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     GCP_PROJECT_ID: str = ""
 
     # ── Helpers ─────────────────────────────────────────────────────────
+
+    @property
+    def app_url(self) -> str:
+        """Resolve APP_URL from explicit setting or derive from ENVIRONMENT."""
+        if self.APP_URL:
+            return self.APP_URL
+        urls = {
+            "production": "https://bettercallnorm.com",
+            "staging": "https://staging.bettercallnorm.com",
+            "testing": "https://testing.bettercallnorm.com",
+            "local": "http://localhost:3000",
+        }
+        return urls.get(self.ENVIRONMENT, "http://localhost:3000")
 
     @property
     def cors_origins_list(self) -> list[str]:

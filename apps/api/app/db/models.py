@@ -693,6 +693,16 @@ class Report(Base):
     description = Column(Text, nullable=True)
     layout = Column(JSON, nullable=False, default=list)  # [{chart_id, x, y, w, h}]
     status = Column(String, nullable=False, default="draft")  # draft|saved
+    # Dashboard fields
+    is_dashboard = Column(Boolean, nullable=False, default=False)
+    agent_slug = Column(String, nullable=True)  # hr, procurement, reports
+    is_published = Column(Boolean, nullable=False, default=False)
+    is_template = Column(Boolean, nullable=False, default=False)
+    refresh_interval_seconds = Column(Integer, nullable=True)  # null = manual
+    global_filters = Column(JSON, nullable=True)  # for reports: date range, venue
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=True
+    )
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
