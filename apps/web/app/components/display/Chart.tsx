@@ -274,8 +274,8 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
         : { marginTop: '0.5rem' }
       ),
     }}>
-      {/* Header */}
-      <div style={{
+      {/* Header — hidden for KPI (KpiCard has its own title) */}
+      {chartType !== 'kpi' && <div style={{
         display: 'flex', alignItems: 'center', padding: '0.5rem 0.75rem',
         justifyContent: fillContainer ? 'center' : 'space-between',
         position: fillContainer ? 'relative' : undefined,
@@ -327,11 +327,14 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
             >&times;</button>
           )}
         </div>
-      </div>
+      </div>}
 
 
       {/* Chart area */}
-      <div style={{ padding: '0.75rem', ...(fillContainer ? { flex: 1, minHeight: 0 } : {}) }}>
+      <div style={{
+        padding: '0.75rem',
+        ...(fillContainer ? { flex: 1, minHeight: 0, overflow: 'hidden' } : {}),
+      }}>
         {rows.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '2rem', color: '#999', fontSize: '0.85rem' }}>
             No data to display. Open the inspector <span style={{ fontFamily: 'monospace' }}>{'{}'}</span> to debug.

@@ -12,8 +12,9 @@ def _init():
     from app.agents.procurement.agent import ProcurementAgent
     from app.agents.hr.agent import HrAgent
     from app.agents.reports.agent import ReportsAgent
+    from app.agents.time_attendance.agent import TimeAttendanceAgent
 
-    for agent in [ProcurementAgent(), HrAgent(), ReportsAgent()]:
+    for agent in [ProcurementAgent(), HrAgent(), ReportsAgent(), TimeAttendanceAgent()]:
         _agents[agent.domain] = agent
 
 

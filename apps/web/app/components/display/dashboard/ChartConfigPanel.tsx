@@ -17,9 +17,19 @@ const CHART_TYPES: { type: ChartType; label: string; icon: string }[] = [
   { type: 'scatter', label: 'Scatter', icon: '\u2058' },
   { type: 'kpi', label: 'KPI', icon: '#' },
   { type: 'text', label: 'Text', icon: 'T' },
+  { type: 'component' as ChartType, label: 'Component', icon: '\u25A3' },
 ];
 
 const DEFAULT_COLORS = ['#d4c4ae', '#a8cfc0', '#b8c8dc', '#e0c8a8', '#c8b8d4', '#a8d0b8', '#d8c0b8', '#b8d0d4'];
+
+const EMBEDDABLE_COMPONENTS = [
+  { key: 'hiring_board', label: 'Hiring Pipeline', needsProps: ['connector_name'] },
+  { key: 'orders_dashboard', label: 'Orders', needsProps: [] },
+  { key: 'roster_table', label: 'Roster', needsProps: [] },
+  { key: 'automated_task_board', label: 'Tasks', needsProps: ['agent_slug'] },
+  { key: 'generic_table', label: 'Data Table', needsProps: [] },
+  { key: 'saved_reports_board', label: 'Reports', needsProps: [] },
+];
 
 const DATE_PRESETS = [
   { value: 'now', label: 'Now' },
@@ -255,8 +265,16 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
         {/* ---- Scrollable Content ---- */}
         <div style={{ flex: 1, overflow: 'auto', padding: '1rem' }}>
 
+          {/* ==== Component Settings (when chart_type is component) ==== */}
+          {draft.chart_type === ('component' as ChartType) && (
+            <ComponentSettings
+              spec={draft.chart_spec}
+              onChange={updateSpec}
+            />
+          )}
+
           {/* ==== Section 1: Data Source ==== */}
-          <Section title="Data Source">
+          {draft.chart_type !== ('component' as ChartType) && <Section title="Data Source">
             <FieldGroup label="Connector">
               <select value={draft.script.connector} onChange={e => updateScript({ connector: e.target.value })} style={selectStyle}>
                 <option value="">Select connector...</option>
@@ -376,10 +394,10 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
               />
               Round times to nearest 30 minutes
             </label>
-          </Section>
+          </Section>}
 
           {/* ==== Section 2: Test ==== */}
-          <Section title="Test">
+          {draft.chart_type !== ('component' as ChartType) && <Section title="Test">
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
               {venues.length > 0 && (
                 <select value={selectedVenue} onChange={e => setSelectedVenue(e.target.value)} style={selectStyle}>
@@ -471,10 +489,10 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
                 )}
               </>
             )}
-          </Section>
+          </Section>}
 
           {/* ==== Section 3: Chart Settings ==== */}
-          <Section title="Chart Settings">
+          {draft.chart_type !== ('component' as ChartType) && <Section title="Chart Settings">
             {draft.chart_type === 'kpi' && (
               <KpiSettings spec={draft.chart_spec} numericFields={numericFields} responseFields={responseFields} onChange={updateSpec} />
             )}
@@ -498,10 +516,7 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
                 </FieldGroup>
               </div>
             )}
-            {draft.chart_type === 'component' as ChartType && (
-              <div style={{ fontSize: '0.72rem', color: '#999' }}>Component: {String(draft.chart_spec.component_key || 'none')}</div>
-            )}
-          </Section>
+          </Section>}
 
           {/* ==== Section 4: Advanced ==== */}
           <div style={{ marginBottom: '1rem' }}>
@@ -737,6 +752,72 @@ function PieSettings({ spec, numericFields, responseFields, onChange }: {
           onChange={v => onChange({ series: [{ key: v, label: v, color: DEFAULT_COLORS[0] }] })} />
       </FieldGroup>
     </div>
+  );
+}
+
+function ComponentSettings({ spec, onChange }: {
+  spec: Record<string, unknown>;
+  onChange: (patch: Record<string, unknown>) => void;
+}) {
+  const componentKey = String(spec.component_key || '');
+  const componentProps = (spec.component_props as Record<string, unknown>) || {};
+  const componentDef = EMBEDDABLE_COMPONENTS.find(c => c.key === componentKey);
+
+  const updateProps = (patch: Record<string, unknown>) => {
+    onChange({ component_props: { ...componentProps, ...patch } });
+  };
+
+  return (
+    <Section title="Component">
+      <FieldGroup label="Component Type">
+        <select
+          value={componentKey}
+          onChange={e => onChange({ component_key: e.target.value })}
+          style={selectStyle}
+        >
+          <option value="">Select component...</option>
+          {EMBEDDABLE_COMPONENTS.map(c => (
+            <option key={c.key} value={c.key}>{c.label}</option>
+          ))}
+        </select>
+      </FieldGroup>
+
+      {componentKey && (
+        <div style={{ marginTop: 8 }}>
+          {componentDef && componentDef.needsProps.includes('connector_name') && (
+            <FieldGroup label="Connector">
+              <input
+                value={String(componentProps.connector_name || '')}
+                onChange={e => updateProps({ connector_name: e.target.value })}
+                style={inputStyle}
+                placeholder="e.g. bamboohr"
+              />
+            </FieldGroup>
+          )}
+
+          {componentDef && componentDef.needsProps.includes('agent_slug') && (
+            <FieldGroup label="Agent">
+              <select
+                value={String(componentProps.agent_slug || '')}
+                onChange={e => updateProps({ agent_slug: e.target.value })}
+                style={selectStyle}
+              >
+                <option value="">Select agent...</option>
+                <option value="hr">HR</option>
+                <option value="procurement">Procurement</option>
+                <option value="reports">Reports</option>
+              </select>
+            </FieldGroup>
+          )}
+
+          {componentDef && componentDef.needsProps.length === 0 && (
+            <div style={{ fontSize: '0.72rem', color: '#bbb', marginTop: 4 }}>
+              This component loads its own data — no additional configuration needed.
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
   );
 }
 

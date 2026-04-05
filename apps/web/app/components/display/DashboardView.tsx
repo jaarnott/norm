@@ -287,8 +287,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
 
           // Responsive grid placement
           const colSpan = item.colSpan || 24;
+          const mobileHeight = (item.rowSpan || 8) * ROW_HEIGHT;
           const gridStyle: React.CSSProperties = isMobile
-            ? { minHeight: (item.rowSpan || 8) * ROW_HEIGHT }
+            ? { height: mobileHeight, minHeight: mobileHeight, width: '100%' }
             : isTablet
               ? {
                   gridColumn: `1 / span ${Math.min(colSpan <= 12 ? colSpan : 12, 12)}`,

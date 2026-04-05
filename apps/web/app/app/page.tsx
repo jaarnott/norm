@@ -737,7 +737,7 @@ export default function Home() {
 
   // Desktop layout: three-panel
   return (
-    <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100dvh', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
       {quotaExceeded && (
         <QuotaExceededModal
           used={quotaExceeded.used}

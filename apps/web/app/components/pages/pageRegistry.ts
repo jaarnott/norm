@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, LayoutDashboard, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, LayoutDashboard, Clock, type LucideIcon } from 'lucide-react';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -62,12 +62,21 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
     componentProps: { agent_slug: 'reports' },
   },
-  // Functional pages
+  // Time & Attendance
+  {
+    id: 'dashboard-time_attendance',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    agent: 'time_attendance',
+    component: 'dashboard_view',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { agent_slug: 'time_attendance' },
+  },
   {
     id: 'roster',
     label: 'Roster',
     icon: Calendar,
-    agent: 'hr',
+    agent: 'time_attendance',
     component: 'roster_editor',
     loadAction: {
       connector: 'loadedhub',
@@ -75,6 +84,19 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
       defaultParams: getCurrentWeekRange,
     },
   },
+  {
+    id: 'tasks-time_attendance',
+    label: 'Tasks',
+    icon: Timer,
+    agent: 'time_attendance',
+    component: 'automated_task_board',
+    loadAction: {
+      connector: 'norm',
+      action: 'list_automated_tasks',
+      defaultParams: () => ({ agent_slug: 'time_attendance' }),
+    },
+  },
+  // HR (Hiring & Onboarding)
   {
     id: 'hiring',
     label: 'Hiring',

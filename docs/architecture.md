@@ -59,11 +59,12 @@ A connector is a configuration-driven definition of an external API. Connectors 
 
 **Current connectors:** LoadedHub, BambooHR, Deputy, Gmail, Microsoft Outlook, Bidfood + internal connectors (norm, norm_reports, norm_email)
 
-**Example:** The LoadedHub connector has 30 tools including `get_roster`, `get_sales_data`, `get_stock_items`, `get_purchase_orders_summary`. Each tool defines the HTTP method, URL path template, required fields, and response transform.
+**Example:** The LoadedHub connector has 33 tools including `get_roster`, `get_sales_data`, `get_stock_items`, `get_purchase_orders_summary`, `get_roster_summary` (consolidator). Each tool defines the HTTP method, URL path template, required fields, and response transform.
 
 **Key files:**
 - `app/db/config_models.py` — ConnectorSpec model
 - `app/connectors/spec_executor.py` — renders templates + executes HTTP requests
+- `app/connectors/tool_executor.py` — reusable `execute_connector_tool()` used by both tool loop and dashboard refresh
 - `app/connectors/registry.py` — resolves connector for a domain + action
 
 ---
@@ -99,9 +100,12 @@ Registered via the `@register("connector", "action")` decorator in Python. These
 3. Write tools (POST/PUT/DELETE) pause for user approval
 4. Up to 10 iterations before returning a response
 
+**Unified execution path:** Both the LLM tool loop and the dashboard refresh use the same `execute_connector_tool()` function, ensuring consistent param normalization (`_normalize_fields`), response transforms, and consolidator handling.
+
 **Key files:**
 - `app/agents/tool_loop.py` — `run_tool_loop()`, `_execute_tool_call()`
 - `app/agents/internal_tools.py` — `@register` decorator + all internal handlers
+- `app/connectors/tool_executor.py` — `execute_connector_tool()`, `ToolResult` dataclass
 
 ---
 
@@ -151,10 +155,11 @@ Functional pages are full-width components accessed via sidebar navigation. Each
 
 | Page | Agent | Component | Data source |
 |---|---|---|---|
+| Dashboard (×3) | hr/procurement/reports | `dashboard_view` | Per-chart scripts via `execute_connector_tool` |
 | Roster | hr | `roster_editor` | LoadedHub `get_roster` |
 | Hiring | hr | `hiring_board` | BambooHR `get_jobs` |
 | Orders | procurement | `orders_dashboard` | LoadedHub `get_purchase_orders_summary` |
-| Reports | reports | `saved_reports_board` | Self-loading |
+| Reports | reports | `saved_reports_board` | Self-loading (templates + own + shared) |
 | Tasks (×3) | hr/procurement/reports | `automated_task_board` | Norm `list_automated_tasks` |
 
 **Page context flow:**
@@ -189,6 +194,12 @@ Transforms convert raw API responses into LLM-friendly format. Configured per-to
   - `"clockinTime|tz"` — normalize to venue timezone
   - `"clockinTime|dow"` — add a `_dayOfWeek` field ("Tuesday")
 
+**Param normalization** (`_normalize_fields` in `spec_executor.py`):
+- Reads `field_descriptions` from the tool definition and formats params accordingly
+- Converts full ISO datetimes to short dates (`YYYY-MM-DD`) when field description contains hints like "short date"
+- URL-encodes timezone offsets (`+` → `%2B`) when field description indicates it
+- Applied automatically by `execute_connector_tool()` for both LLM calls and dashboard refresh
+
 **Example config:**
 ```json
 {
@@ -210,32 +221,99 @@ Transforms convert raw API responses into LLM-friendly format. Configured per-to
 
 A consolidator is a meta-tool that chains multiple API calls together. It's configured as `consolidator_config` on a tool definition — the LLM calls one tool, but the backend executes a multi-step pipeline.
 
-**What consolidators do:**
-1. Execute steps in sequence (each step calls a connector action)
-2. Pass data between steps using `{{step_id.field}}` templates
-3. Filter intermediate results
-4. Search across results by keyword
-5. Select output fields
+**Two modes:**
 
-**Example:** A "get stock with supplier details" consolidator might:
-1. Step 1: Call `get_stock_items` → returns 1000 items
-2. Step 2: Filter to items matching search keyword
-3. Step 3: Call `get_suppliers` for each unique supplier ID
-4. Return combined data with supplier names attached
+### Function-based (current)
+The consolidator config contains a `function_code` key with a Python function that defines `run(params, call_api, log, call_api_parallel=None)`.
 
-**Template variables available:**
-- `{{today_iso}}`, `{{one_week_ago_iso}}` — auto-computed dates
-- `{{input_param}}` — from the LLM's tool call input
-- `{{step_id.field.path}}` — data from a prior step
-- `{{step_id}}` — entire dataset from a prior step
+**Available in function scope:**
+- `params` — input params + auto-injected `today`, `today_iso`, date helpers
+- `call_api(connector, action, params)` — execute a single tool call
+- `call_api_parallel([(connector, action, params), ...])` — execute multiple calls concurrently
+- `log(message)` — debug output (visible in dashboard test panel)
+- Modules: `math`, `json`, `datetime`
+- Max 20 API calls per execution
 
-**Parallel execution:** Steps with the same `"parallel"` value run concurrently via ThreadPoolExecutor. Use this when steps are independent (e.g. fetching sales data from multiple venues). Parallel steps cannot reference each other's results — only steps that completed before the parallel group.
+**Example:** The `get_roster_summary` consolidator:
+1. Calls `get_roster` and `get_timeclock_entries` in parallel via `call_api_parallel`
+2. Matches rostered shifts with clockin entries by staff member + day
+3. Returns flat rows per day with rostered/actual hours/cost, no-shows, unrostered clockins
 
-**Key file:** `app/agents/internal_tools.py` — `execute_consolidator()` (line ~1094)
+### Legacy step-based
+Uses `steps` array with template variables (`{{step_id.field}}`). Being migrated to function-based.
+
+**Dashboard integration:** Consolidators work seamlessly in dashboard charts. The `execute_connector_tool()` function detects `consolidator_config` and routes to `execute_consolidator()` instead of `execute_spec()`. The dashboard test panel shows consolidator execution logs.
+
+**Key files:**
+- `app/agents/internal_tools.py` — `execute_consolidator()`
+- `app/connectors/function_executor.py` — sandboxed Python execution
+- `app/connectors/tool_executor.py` — consolidator detection + routing
 
 ---
 
-## 9. Playbooks
+## 9. Dashboards & Reports
+
+Dashboards are interactive data views built from chart widgets. Reports are collections of charts that users build during conversations. Both use the same underlying `Report` + `ReportChart` models.
+
+### Dashboard system
+
+**How dashboards work:**
+1. Each agent (HR, Procurement, Reports) can have a dashboard — accessed via the Dashboard sidebar entry
+2. Users browse available dashboards via the **Dashboard Picker**: system templates, own dashboards, shared dashboards
+3. The user's active dashboard per agent is stored in `User.dashboard_preferences` (JSON)
+4. Dashboards auto-refresh — each chart refreshes independently in parallel for progressive loading
+
+**Chart types:** bar, stacked_bar, line, pie, scatter, table, KPI, text, component (embedded UI widget)
+
+**Chart data flow:**
+1. Each chart has a `script` field: `{connector, action, params}` — a replayable recipe
+2. On refresh, `execute_connector_tool()` executes the script (same path as the LLM tool loop)
+3. Date placeholders (`today_start`, `now`, `12h_ago`, etc.) are resolved with business-day-aware timestamps
+4. Multi-venue: when "All Venues" is selected, the chart runs per-venue in parallel, rows tagged with `venue` column
+5. Response transforms are applied, giving charts the same clean data the LLM sees
+
+**Progressive loading:** Each chart refreshes via its own `POST /reports/{id}/charts/{chartId}/refresh` endpoint. The frontend fires all chart refreshes in parallel — fast charts (KPIs ~1s) appear immediately while slow ones (consolidators ~3-5s) are still loading. Each chart shows a shimmer bar during refresh.
+
+**Chart config panel:** Unified slide-out panel for configuring charts — replaces the old inline editor:
+- **Data Source**: connector dropdown, endpoint picker (shows all tools for the connector), parameter presets (date dropdowns, round-to-30m checkbox)
+- **Test**: venue selector, run test, per-venue results, rendered request, execution logs (for consolidators)
+- **Chart Settings**: type-specific configuration with field dropdowns populated from test response data
+- **Advanced**: raw JSON editors for chart_spec and script
+
+**Stacked charts:** When data has a grouping column (e.g. `venue`), the chart pivots data automatically — one series per group, each with a distinct colour. Group By dropdown in chart settings.
+
+**Embedded components:** Charts with `chart_type: "component"` render full UI widgets (hiring_board, orders_dashboard, etc.) instead of Recharts visualisations. These manage their own data — no script/test needed.
+
+### Dashboard templates
+
+Templates are stored in the **config DB** (`dashboard_templates` table) and managed via Settings → Templates. Admins can edit templates using a live dashboard editor — the same DashboardView users see, with a "Save to Template" button.
+
+**Template instantiation:** Users click "Use Template" in the dashboard picker → creates a real Report + ReportCharts from the template → sets it as the active dashboard.
+
+### Reports
+
+Reports are user-created collections of charts built during conversations. The Reports page shows three sections:
+- **Templates** — system templates from config DB
+- **Shared** — reports published by other org members
+- **My Reports** — current user's own reports
+
+**Key files:**
+- `app/routers/reports_crud.py` — chart CRUD, refresh (full + per-chart), dashboard endpoints, template instantiation
+- `app/connectors/tool_executor.py` — `execute_connector_tool()` (shared with tool loop)
+- `app/db/dashboard_templates.py` — seed data for templates
+- `app/routers/templates.py` — template CRUD + live editor endpoints
+- `apps/web/app/components/display/DashboardView.tsx` — dashboard rendering + progressive refresh
+- `apps/web/app/components/display/dashboard/ChartConfigPanel.tsx` — unified chart configuration
+- `apps/web/app/components/display/dashboard/DashboardPicker.tsx` — browse + set active dashboard
+- `apps/web/app/components/display/dashboard/TemplateGallery.tsx` — template cards
+- `apps/web/app/components/display/Chart.tsx` — Recharts rendering (bar, line, pie, KPI, table)
+- `apps/web/app/components/display/KpiCard.tsx` — KPI widget
+- `apps/web/app/components/display/ReportBuilder.tsx` — report editor with grid layout
+- `apps/web/app/components/display/SavedReportsBoard.tsx` — reports listing page
+
+---
+
+## 10. Playbooks
 
 Playbooks are focused instruction sets for specific workflows. Instead of one monolithic system prompt per agent, the router auto-matches the user's message to the most relevant playbook, giving the agent targeted guidance and optionally filtering its available tools.
 
@@ -273,7 +351,7 @@ Playbooks are focused instruction sets for specific workflows. Instead of one mo
 
 ---
 
-## 10. Working Documents
+## 11. Working Documents
 
 Working documents are an edit/sync layer between frontend components and external APIs. They enable interactive editing (roster shifts, order lines, hiring criteria) with optimistic concurrency and background sync.
 
@@ -298,7 +376,7 @@ Working documents are an edit/sync layer between frontend components and externa
 
 ---
 
-## 11. Prompt Builder
+## 12. Prompt Builder
 
 The prompt builder dynamically constructs the system prompt for each agent based on its connector bindings, available tools, venue context, and timezone. No hardcoded prompts — everything is built from configuration.
 
@@ -320,7 +398,7 @@ The prompt builder dynamically constructs the system prompt for each agent based
 
 ---
 
-## 12. Config Database
+## 13. Config Database
 
 All system configuration lives in a dedicated shared Cloud SQL instance (`norm-config`) that all environments read from. Edit a connector spec or agent prompt once — it's immediately available in testing, staging, and production.
 
@@ -331,7 +409,9 @@ All system configuration lives in a dedicated shared Cloud SQL instance (`norm-c
 | `connector_specs` | Tool definitions, auth types, OAuth config, response transforms |
 | `agent_configs` | Agent system prompts, display names, descriptions |
 | `agent_connector_bindings` | Which agents can use which connectors, with per-capability enable/disable |
+| `component_api_configs` | Component API integrations (field mapping, response mapping) |
 | `playbooks` | Focused workflow instructions per agent, with optional tool filtering |
+| `dashboard_templates` | Reusable dashboard layouts with chart definitions (managed via Settings UI) |
 | `system_secrets` | API keys, OAuth credentials, JWT secret (loaded at startup) |
 
 **What's NOT in the config DB (stays in per-environment DB):**
@@ -342,13 +422,13 @@ All system configuration lives in a dedicated shared Cloud SQL instance (`norm-c
 **No fallback:** If the config DB is unreachable, the API fails at startup with a clear error. There is no silent fallback to the local database — this prevents stale config from being used accidentally.
 
 **Key files:**
-- `app/db/config_models.py` — ConfigBase + ConnectorSpec, AgentConfig, AgentConnectorBinding, SystemSecret
+- `app/db/config_models.py` — ConfigBase + ConnectorSpec, AgentConfig, AgentConnectorBinding, ComponentApiConfig, DashboardTemplate, Playbook, SystemSecret
 - `app/db/engine.py` — `get_config_db()`, `get_config_db_rw()`, startup connectivity test
 - `app/config.py` — `CONFIG_DATABASE_URL` setting
 
 ---
 
-## 13. Automated Tasks (Saved Threads)
+## 14. Automated Tasks (Saved Threads)
 
 Automated tasks are prompts that run on a schedule via APScheduler. They are created through conversation — the user asks an agent (e.g. "set up a daily sales report for Bessie") and the LLM calls the `create_automated_task` internal tool. There is no "Save as Task" button in the UI.
 
@@ -381,7 +461,7 @@ Automated tasks are prompts that run on a schedule via APScheduler. They are cre
 
 ---
 
-## 14. Auth & Permissions
+## 15. Auth & Permissions
 
 Two-tier authorization: **platform admin** (system-wide) and **organization roles** (per-org, granular).
 
@@ -414,7 +494,7 @@ Stored in the `roles` table with a JSON `permissions` array. Each user's org mem
 
 ---
 
-## 15. SSE Streaming
+## 16. SSE Streaming
 
 Messages are processed via Server-Sent Events (SSE) so the frontend shows real-time progress: routing decisions, thinking steps, tool executions, and the final response.
 
@@ -446,7 +526,7 @@ Messages are processed via Server-Sent Events (SSE) so the frontend shows real-t
 
 ---
 
-## 16. Display Blocks
+## 17. Display Blocks
 
 Display blocks are the mechanism for rendering rich UI from tool results. They bridge the backend tool loop and the frontend component registry.
 
@@ -474,6 +554,7 @@ Display blocks are the mechanism for rendering rich UI from tool results. They b
 
 ## Data Flow Summary
 
+### Conversation flow
 ```
 User message
   → Supervisor (routing)
@@ -484,11 +565,28 @@ User message
       → Tool Loop (up to 10 iterations)
         → Internal tool (@register handler)
           OR
-        → External tool (ConnectorSpec → spec_executor → HTTP)
+        → External tool (ConnectorSpec → execute_connector_tool → HTTP)
+          → _normalize_fields (param formatting per field_descriptions)
           → Response Transform (field mapping, filtering)
         → Display Block (component + data)
       → LLM response (text + display blocks)
   → Frontend renders conversation + components
+```
+
+### Dashboard refresh flow
+```
+Dashboard loads → cached data shown immediately
+  → Per-chart refresh (parallel, one request per chart)
+    → POST /reports/{id}/charts/{chartId}/refresh
+      → Resolve date placeholders (business-day-aware)
+      → Per-venue execution (sequential within each chart)
+        → execute_connector_tool (same path as LLM tool loop)
+          → Consolidator? → execute_consolidator (function_code)
+          → Standard? → execute_spec → HTTP → response_transform
+      → Tag rows with venue name
+      → Save updated data to chart
+    → Frontend updates chart immediately when response arrives
+  → Progressive rendering: fast charts appear first
 ```
 
 ---
@@ -502,10 +600,12 @@ User message
 | **Router** | `app/agents/router.py` |
 | **Tool Loop** | `app/agents/tool_loop.py` |
 | **Internal Tools** | `app/agents/internal_tools.py` |
-| **Connectors** | `app/db/config_models.py`, `app/connectors/spec_executor.py`, `app/connectors/registry.py` |
+| **Connectors** | `app/db/config_models.py`, `app/connectors/spec_executor.py`, `app/connectors/tool_executor.py`, `app/connectors/registry.py` |
+| **Consolidators** | `app/agents/internal_tools.py` (execute_consolidator), `app/connectors/function_executor.py` |
 | **Transforms** | `app/connectors/response_transform.py` |
 | **Prompt Builder** | `app/agents/prompt_builder.py` |
 | **Playbooks** | `app/db/config_models.py` (Playbook), `app/routers/playbooks.py`, `app/agents/router.py` (matching), `PlaybooksPanel.tsx` |
+| **Dashboards** | `app/routers/reports_crud.py`, `app/routers/templates.py`, `DashboardView.tsx`, `ChartConfigPanel.tsx`, `DashboardPicker.tsx`, `Chart.tsx`, `KpiCard.tsx` |
 | **Components** | `apps/web/app/components/display/DisplayBlockRenderer.tsx`, `apps/web/app/components/pages/` |
 | **Working Documents** | `app/routers/working_documents.py`, `app/services/document_sync.py` |
 | **Config DB** | `app/db/config_models.py`, `app/db/engine.py` (get_config_db) |

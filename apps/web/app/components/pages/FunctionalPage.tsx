@@ -149,7 +149,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   // If a report is open, show the Report Builder full-screen
   if (activeReportId) {
     return (
-      <div style={{ height: '100vh', position: 'relative', backgroundColor: '#fff' }}>
+      <div style={{ height: '100dvh', position: 'relative', backgroundColor: '#fff' }}>
         <div style={{ height: '100%', overflowY: 'auto', paddingBottom: '100px' }}>
           <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #e2e8f0' }}>
             <button
@@ -160,7 +160,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
               }}
             >&larr; Back to Reports</button>
           </div>
-          <div style={{ height: 'calc(100vh - 150px)' }}>
+          <div style={{ height: 'calc(100dvh - 150px)' }}>
             <DisplayBlockRenderer
               block={{
                 component: 'report_builder',
@@ -186,8 +186,8 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   // Phase 1: Full-height component (no conversation yet)
   if (!hasConversation) {
     return (
-      <div style={{ height: '100vh', position: 'relative', backgroundColor: '#fff' }}>
-        <div style={{ height: '100%', overflowY: 'auto', padding: '1rem 1.5rem', paddingBottom: '100px' }}>
+      <div style={{ height: '100dvh', position: 'relative', backgroundColor: '#fff' }}>
+        <div style={{ height: '100%', overflowY: 'auto', paddingTop: '1rem', paddingLeft: '1.5rem', paddingRight: '1.5rem', paddingBottom: '100px' }}>
           {loadingData && (
             <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading...</div>
           )}
@@ -210,7 +210,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   // Phase 2: Split view — component top, conversation bottom
   return (
     <div ref={containerRef} style={{
-      height: '100vh', display: 'flex', flexDirection: 'column',
+      height: '100dvh', display: 'flex', flexDirection: 'column',
       backgroundColor: '#fff', userSelect: isDragging ? 'none' : undefined,
     }}>
       {/* Top pane: component */}

@@ -67,6 +67,8 @@ def _find(db: Session, thread_id: str) -> tuple[dict | None, str]:
         return get_order(db, thread_id), "procurement"
     if thread.domain == "hr":
         return get_hr_thread(db, thread_id), "hr"
+    if thread.domain == "time_attendance":
+        return get_hr_thread(db, thread_id), "time_attendance"
     if thread.domain == "reports":
         return _report_thread_to_dict(thread), "reports"
     # Generic fallback for any other domain (meta, etc.)

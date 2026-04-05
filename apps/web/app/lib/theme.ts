@@ -19,6 +19,7 @@ export const colors = {
   // Domain accents
   procurement: '#e2b94e',    // Golden yellow
   hr: '#7ca5c4',             // Soft blue
+  time_attendance: '#8b7ec8', // Purple
   reports: '#7bc4a0',        // Green
   home: '#888',              // Neutral gray
   unknown: '#d4c4a8',        // Warm beige (unassigned)
