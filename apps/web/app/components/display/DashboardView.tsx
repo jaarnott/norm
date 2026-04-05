@@ -90,14 +90,6 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-refresh on initial load — show cached data immediately, refresh in background
-  useEffect(() => {
-    if (dashboard && !loading && !initialRefreshDone.current) {
-      initialRefreshDone.current = true;
-      handleRefresh();
-    }
-  }, [dashboard, loading]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleRefresh = useCallback(async (filters?: { venue_id?: string }) => {
     if (!dashboard?.id || !dashboard.charts?.length) return;
     setRefreshing(true);
@@ -145,6 +137,14 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     setLastRefreshed(new Date());
     setRefreshing(false);
   }, [dashboard?.id, dashboard?.charts, selectedVenue]);
+
+  // Auto-refresh on initial load — show cached data immediately, refresh in background
+  useEffect(() => {
+    if (dashboard && !loading && !initialRefreshDone.current) {
+      initialRefreshDone.current = true;
+      handleRefresh();
+    }
+  }, [dashboard, loading, handleRefresh]);
 
   // Auto-refresh — handleRefresh in deps so interval always uses the latest venue selection
   useEffect(() => {
