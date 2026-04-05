@@ -5,6 +5,8 @@ import { apiFetch } from '../../lib/api';
 import type { SavedReport, SavedReportChart, ReportGridItem } from '../../types';
 import Chart from './Chart';
 import DateRangePicker from './DateRangePicker';
+import ChartConfigPanel from './dashboard/ChartConfigPanel';
+import { Settings } from 'lucide-react';
 
 const ROW_HEIGHT = 40; // px per grid row
 const GRID_COLS = 24;
@@ -21,6 +23,7 @@ export default function ReportBuilder({ data }: Props) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [dateRange, setDateRange] = useState<{ start: string; end: string } | undefined>();
+  const [inspectedChartId, setInspectedChartId] = useState<string | null>(null);
 
   const reportId = data?.report_id;
 
@@ -324,6 +327,7 @@ export default function ReportBuilder({ data }: Props) {
                   onResize={(patch) => updateGridItem(item.chart_id, patch)}
                   onDelete={() => setConfirmDelete(item.chart_id)}
                   onMoveStart={(e) => handleMoveStart(item.chart_id, e)}
+                  onInspect={() => setInspectedChartId(item.chart_id)}
                 />
               );
             })}
@@ -379,6 +383,22 @@ export default function ReportBuilder({ data }: Props) {
             </div>
           </div>
         )}
+
+        {/* Chart config panel */}
+        {inspectedChartId && reportId && (() => {
+          const c = report.charts.find(ch => ch.id === inspectedChartId);
+          return c ? (
+            <ChartConfigPanel
+              reportId={reportId}
+              chart={c}
+              venues={[]}
+              onClose={() => setInspectedChartId(null)}
+              onUpdated={() => fetchReport()}
+            />
+          ) : null;
+        })()}
+
+        <style>{`.cell-chart-border:hover .chart-inspect-btn { opacity: 1 !important; }`}</style>
       </div>
     </div>
   );
@@ -391,13 +411,14 @@ export default function ReportBuilder({ data }: Props) {
 const MemoChart = React.memo(Chart);
 
 function GridChartCell({
-  item, chart, onResize, onDelete, onMoveStart,
+  item, chart, onResize, onDelete, onMoveStart, onInspect,
 }: {
   item: ReportGridItem;
   chart: SavedReportChart;
   onResize: (patch: Partial<ReportGridItem>) => void;
   onDelete: () => void;
   onMoveStart: (e: React.MouseEvent) => void;
+  onInspect: () => void;
 }) {
   const cellRef = useRef<HTMLDivElement>(null);
 
@@ -459,6 +480,21 @@ function GridChartCell({
         position: 'relative',
       }}
     >
+      {/* Settings icon — visible on hover */}
+      <button
+        onClick={onInspect}
+        className="chart-inspect-btn"
+        title="Chart settings"
+        style={{
+          position: 'absolute', top: 4, right: 4, zIndex: 10,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: 24, height: 24, border: 'none', borderRadius: 4,
+          backgroundColor: 'rgba(255,255,255,0.9)', cursor: 'pointer',
+          opacity: 0, transition: 'opacity 0.15s', color: '#999',
+        }}
+      >
+        <Settings size={13} strokeWidth={1.75} />
+      </button>
       <MemoChart
         data={{ rows: chart.data as Record<string, unknown>[], script: chart.script as unknown as Record<string, unknown> }}
         props={{ ...chart.chart_spec, chart_type: chart.chart_type, title: chart.title }}

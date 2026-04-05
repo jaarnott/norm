@@ -37,6 +37,7 @@ class User(Base):
     role = Column(String, nullable=False, default="user")  # "admin" or "user"
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
+    dashboard_preferences = Column(JSON, nullable=True)  # {"hr": "report-id", ...}
 
     threads = relationship("Thread", back_populates="user")
     memberships = relationship("OrganizationMembership", back_populates="user")

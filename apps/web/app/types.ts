@@ -86,6 +86,10 @@ export interface ChartSpec {
   orientation?: 'vertical' | 'horizontal';
   group_by?: string;
   value_key?: string;
+  field_labels?: Record<string, string>;
+  field_formats?: Record<string, string>;
+  hidden_fields?: string[];
+  field_order?: string[];
 }
 
 export interface ChartScript {

@@ -1315,14 +1315,157 @@ def _step_result_preview(step_result: dict) -> dict:
     return {"_value": str(data)[:200]}
 
 
+def _resolve_stock_items(
+    requested_items: list[dict], stock_items: list[dict]
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Resolve requested items against stock items by name, stock_code, or itemId.
+
+    Returns (resolved, ambiguous, failed) where:
+    - resolved: items with confirmed itemId + quantity
+    - ambiguous: items with multiple candidates needing user selection
+    - failed: items with no match
+    """
+    # Build lookup indexes
+    by_id = {s["id"]: s for s in stock_items if s.get("id")}
+    by_name_lower: dict[str, list[dict]] = {}
+    for s in stock_items:
+        name = (s.get("name") or "").lower().strip()
+        if name:
+            by_name_lower.setdefault(name, []).append(s)
+
+    resolved = []
+    ambiguous = []
+    failed = []
+
+    for item in requested_items:
+        if not isinstance(item, dict):
+            continue
+        quantity = item.get("quantity", item.get("orderQty", item.get("qty", 1)))
+
+        # Path 1: itemId provided — validate and pass through
+        if item.get("itemId"):
+            if item["itemId"] in by_id:
+                resolved.append(
+                    {
+                        "itemId": item["itemId"],
+                        "quantity": quantity,
+                        "matched_name": by_id[item["itemId"]].get("name", ""),
+                    }
+                )
+            else:
+                failed.append(
+                    {
+                        "name": item.get("name", item["itemId"]),
+                        "reason": "Invalid itemId",
+                    }
+                )
+            continue
+
+        query = (item.get("name") or "").strip()
+        if not query:
+            continue
+
+        query_lower = query.lower()
+
+        # Path 2: stock_code match
+        if item.get("stock_code"):
+            code = item["stock_code"].strip().lower()
+            for s in stock_items:
+                # Check stock code across all supplier variants
+                for sup in s.get("suppliers", []):
+                    if (sup.get("stockCode") or "").lower() == code:
+                        resolved.append(
+                            {
+                                "itemId": s["id"],
+                                "quantity": quantity,
+                                "matched_name": s.get("name", ""),
+                            }
+                        )
+                        break
+                else:
+                    continue
+                break
+            else:
+                failed.append(
+                    {
+                        "name": query,
+                        "reason": f"Stock code '{item['stock_code']}' not found",
+                    }
+                )
+            continue
+
+        # Path 3: exact name match (case-insensitive)
+        exact = by_name_lower.get(query_lower, [])
+        if len(exact) == 1:
+            resolved.append(
+                {
+                    "itemId": exact[0]["id"],
+                    "quantity": quantity,
+                    "matched_name": exact[0].get("name", ""),
+                }
+            )
+            continue
+
+        # Path 4: substring match — query in item name or item name in query
+        candidates = []
+        for s in stock_items:
+            s_name = (s.get("name") or "").lower()
+            if query_lower in s_name or s_name in query_lower:
+                candidates.append(s)
+
+        # Path 5: word-level match — all query words found in item name
+        # Handles plurals (kegs→keg) and partial words (peroni→PERONI)
+        if not candidates:
+            query_words = [w for w in query_lower.split() if len(w) >= 2]
+            if query_words:
+                for s in stock_items:
+                    s_name = (s.get("name") or "").lower()
+                    s_words = s_name.split()
+                    matched = 0
+                    for qw in query_words:
+                        # Check if query word is a substring of any item word
+                        # or item word is a substring of query word (handles plurals)
+                        if any(qw in sw or sw in qw for sw in s_words):
+                            matched += 1
+                    if matched == len(query_words):
+                        candidates.append(s)
+
+        if len(candidates) == 1:
+            resolved.append(
+                {
+                    "itemId": candidates[0]["id"],
+                    "quantity": quantity,
+                    "matched_name": candidates[0].get("name", ""),
+                }
+            )
+        elif len(candidates) > 1:
+            ambiguous.append(
+                {
+                    "query": query,
+                    "quantity": quantity,
+                    "candidates": [
+                        {
+                            "id": c["id"],
+                            "name": c.get("name", ""),
+                            "group": c.get("groupName", ""),
+                        }
+                        for c in candidates[:10]
+                    ],
+                }
+            )
+        else:
+            failed.append({"name": query, "reason": "No match found"})
+
+    return resolved, ambiguous, failed
+
+
 @register("norm", "create_purchase_order")
 def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Open the purchase order editor for a venue, optionally pre-populated with items.
+    """Create a purchase order with items resolved by name.
 
-    Items can be specified at three levels:
-    a) itemId + quantity — component resolves default supplier + variant
-    b) itemId + supplierId + quantity — component resolves default variant for that supplier
-    c) itemId + supplierId + variantId + quantity — fully resolved
+    Items can be specified by name (auto-resolved) or by itemId (direct).
+    Returns resolved order_lines for the PurchaseOrderEditor, plus a
+    resolution report and any ambiguous items needing user selection.
     """
     venue = params.get("venue", "")
     if not venue:
@@ -1333,76 +1476,71 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
     venue_obj = db.query(Venue).filter(Venue.name.ilike(f"%{venue}%")).first()
     venue_id = venue_obj.id if venue_obj else None
 
-    # Validate and pass items through — component handles supplier/variant resolution
     items = params.get("items", [])
     if not isinstance(items, list):
         items = []
 
-    # If items have itemIds, validate them against actual stock items
+    # Fetch stock items for name resolution
+    stock_items = []
     if items and venue_id:
-        item_ids = [
-            item.get("itemId")
-            for item in items
-            if isinstance(item, dict) and item.get("itemId")
-        ]
-        if item_ids:
-            # Fetch stock items via the component API to validate IDs
-            try:
-                from app.connectors.function_executor import execute_function
+        try:
+            from app.connectors.function_executor import execute_function
 
-                validate_code = (
-                    "def run(params, call_api, log):\n"
-                    "    items = call_api('loadedhub', 'get_stock_items', {'venue': params['venue']})\n"
-                    "    if isinstance(items, list):\n"
-                    "        return {i.get('id'): i.get('name') for i in items if isinstance(i, dict)}\n"
-                    "    return {}\n"
-                )
-                stock_result = execute_function(
-                    validate_code, {"venue": venue}, db, thread_id
-                )
-                valid_ids = stock_result.get("data", {})
-                if isinstance(valid_ids, dict) and valid_ids:
-                    invalid = [iid for iid in item_ids if iid not in valid_ids]
-                    if invalid:
-                        return {
-                            "success": False,
-                            "data": {},
-                            "error": (
-                                f"Invalid itemId(s): {', '.join(invalid[:3])}. "
-                                "These IDs do not exist in the stock items database. "
-                                "You MUST use the exact 'id' values returned by "
-                                "search_tool_result — do NOT generate or guess IDs."
-                            ),
-                        }
-            except Exception:
-                pass  # validation is best-effort, don't block on errors
+            fetch_code = (
+                "def run(params, call_api, log):\n"
+                "    items = call_api('loadedhub', 'get_stock_items', {'venue': params['venue']})\n"
+                "    if isinstance(items, list):\n"
+                "        return items\n"
+                "    return []\n"
+            )
+            result = execute_function(fetch_code, {"venue": venue}, db, thread_id)
+            raw = result.get("data", [])
+            if isinstance(raw, list):
+                stock_items = raw
+        except Exception:
+            logger.warning("Failed to fetch stock items for PO resolution")
 
+    # Resolve items by name/stockCode/itemId
+    resolved, ambiguous, failed_items = _resolve_stock_items(items, stock_items)
+
+    # Build order_lines from resolved items
     order_lines = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if not item.get("itemId"):
-            continue  # itemId is required
-        line: dict = {
-            "itemId": item["itemId"],
-            "quantity": item.get("quantity", item.get("orderQty", item.get("qty", 1))),
-        }
-        if item.get("supplierId"):
-            line["supplierId"] = item["supplierId"]
-        if item.get("variantId"):
-            line["variantId"] = item["variantId"]
+    for r in resolved:
+        line: dict = {"itemId": r["itemId"], "quantity": r["quantity"]}
         order_lines.append(line)
 
-    return {
-        "success": True,
-        "data": {
-            "message": f"Purchase order editor opened for {venue}"
-            + (f" with {len(order_lines)} items" if order_lines else ""),
-            "venue": venue,
-            "venue_id": venue_id,
-            "order_lines": order_lines,
-        },
+    # Build resolution report
+    resolution_report: dict = {}
+    if resolved:
+        resolution_report["resolved"] = [
+            {"name": r.get("matched_name", ""), "quantity": r["quantity"]}
+            for r in resolved
+        ]
+    if failed_items:
+        resolution_report["failed"] = failed_items
+
+    # Build response
+    data: dict = {
+        "message": f"Purchase order editor opened for {venue}"
+        + (
+            f" with {len(order_lines)} item{'s' if len(order_lines) != 1 else ''}"
+            if order_lines
+            else ""
+        ),
+        "venue": venue,
+        "venue_id": venue_id,
+        "order_lines": order_lines,
     }
+
+    if resolution_report:
+        data["resolution_report"] = resolution_report
+    if ambiguous:
+        data["needs_selection"] = ambiguous
+        data["message"] += (
+            f". {len(ambiguous)} item{'s' if len(ambiguous) != 1 else ''} need clarification"
+        )
+
+    return {"success": True, "data": data}
 
 
 def execute_consolidator(

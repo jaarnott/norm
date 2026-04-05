@@ -8,56 +8,59 @@ import {
 } from 'recharts';
 import type { ChartType, ChartSpec } from '../../types';
 import { apiFetch } from '../../lib/api';
-import { Settings, Maximize2 } from 'lucide-react';
+import { Maximize2 } from 'lucide-react';
 import KpiCard from './KpiCard';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-
-const CHART_TYPES: { type: ChartType; label: string; icon: string }[] = [
-  { type: 'table', label: 'Table', icon: '▤' },
-  { type: 'bar', label: 'Bar', icon: '▮' },
-  { type: 'stacked_bar', label: 'Stacked', icon: '▦' },
-  { type: 'line', label: 'Line', icon: '⟋' },
-  { type: 'pie', label: 'Pie', icon: '◔' },
-  { type: 'scatter', label: 'Scatter', icon: '⁘' },
-  { type: 'kpi', label: 'KPI', icon: '#' },
-  { type: 'text', label: 'Text', icon: 'T' },
-];
 
 const DEFAULT_COLORS = ['#d4c4ae', '#a8cfc0', '#b8c8dc', '#e0c8a8', '#c8b8d4', '#a8d0b8', '#d8c0b8', '#b8d0d4'];
 
 // More distinct palette for stacked/multi-series charts (venue breakdowns etc.)
 const STACK_COLORS = ['#4f8a5e', '#5b8abd', '#c4a882', '#b07d4f', '#8b6caf', '#c75a5a', '#3d9e8f', '#d4a03c', '#7a8b5e', '#a05195'];
 
-const BRAND_COLORS: { name: string; value: string }[] = [
-  { name: 'Sand', value: '#d4c4ae' },
-  { name: 'Mint', value: '#a8cfc0' },
-  { name: 'Sky', value: '#b8c8dc' },
-  { name: 'Cream', value: '#e0c8a8' },
-  { name: 'Lavender', value: '#c8b8d4' },
-  { name: 'Sage', value: '#a8d0b8' },
-  { name: 'Blush', value: '#d8c0b8' },
-  { name: 'Duck Egg', value: '#b8d0d4' },
-  { name: 'Gold', value: '#c4a882' },
-  { name: 'Taupe', value: '#a08060' },
-];
-
 /** Auto-format values for display — detects ISO dates, formats numbers. */
-function formatValue(val: unknown, fmt?: string): string {
+interface FieldFormat {
+  type?: string;       // time, date, datetime, currency, percent, number
+  decimals?: number;   // decimal places (for number/currency)
+  prefix?: string;
+  suffix?: string;
+  align?: 'left' | 'center' | 'right';
+}
+
+function formatValue(val: unknown, fmt?: string | FieldFormat): string {
+  // Normalise: string shorthand → object
+  const f: FieldFormat = typeof fmt === 'string' ? { type: fmt } : (fmt || {});
+  const pre = f.prefix ?? '';
+  const suf = f.suffix ?? '';
+
   if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(val)) {
     const d = new Date(val);
-    if (fmt === 'time') return d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit' });
-    if (fmt === 'datetime') return d.toLocaleString('en-NZ', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-    if (fmt === 'date') return d.toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' });
-    // Auto-detect: if multiple values span less than 2 days, show time; otherwise show date
+    if (f.type === 'time') return `${pre}${d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit' })}${suf}`;
+    if (f.type === 'datetime') return `${pre}${d.toLocaleString('en-NZ', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${suf}`;
+    if (f.type === 'date') return `${pre}${d.toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' })}${suf}`;
     return d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' });
   }
   if (typeof val === 'number') {
-    if (fmt === 'currency') return `$${val.toLocaleString('en-NZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    if (fmt === 'percent') return `${(val * 100).toFixed(1)}%`;
-    return val.toLocaleString();
+    const dec = f.decimals;
+    if (f.type === 'currency') {
+      const opts = dec !== undefined
+        ? { minimumFractionDigits: dec, maximumFractionDigits: dec }
+        : { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+      return `${pre || '$'}${val.toLocaleString('en-NZ', opts)}${suf}`;
+    }
+    if (f.type === 'percent') {
+      const pct = dec !== undefined ? (val * 100).toFixed(dec) : (val * 100).toFixed(1);
+      return `${pre}${pct}${suf || '%'}`;
+    }
+    if (f.type === 'number' || dec !== undefined) {
+      const opts = dec !== undefined
+        ? { minimumFractionDigits: dec, maximumFractionDigits: dec }
+        : {};
+      return `${pre}${val.toLocaleString('en-NZ', opts)}${suf}`;
+    }
+    return `${pre}${val.toLocaleString()}${suf}`;
   }
-  return String(val ?? '');
+  return `${pre}${String(val ?? '')}${suf}`;
 }
 
 /** Get a display label for a field, using field_labels if available. */
@@ -84,13 +87,7 @@ interface Props {
 function Chart({ data, props: chartProps, onAction, threadId, height: chartHeight = 280, hideAddToReport, onRemove, onExpand, onDrillDown, fillContainer, hideBorder, className }: Props) {
   const [chartType, setChartType] = useState<ChartType>(chartProps?.chart_type || 'bar');
   const [addingToReport, setAddingToReport] = useState(false);
-  const [showInspector, setShowInspector] = useState(false);
-  const [showEditor, setShowEditor] = useState(false);
-  const [editTitle, setEditTitle] = useState<string | null>(null);
-  const [editLabels, setEditLabels] = useState<Record<string, string>>(chartProps?.field_labels || {});
-  const [hiddenFields, setHiddenFields] = useState<Set<string>>(new Set());
-  const [editColors, setEditColors] = useState<Record<string, string>>({});
-  const fieldLabels = editLabels;
+  const fieldLabels = chartProps?.field_labels || {};
 
   const rows = useMemo(() => {
     // Try data.rows first (standard chart format)
@@ -126,7 +123,7 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
   const xLabel = chartProps?.x_axis?.label || getLabel(xKey, fieldLabels);
   const xFormat = chartProps?.x_axis?.format as string | undefined;
   const yFormat = chartProps?.y_axis?.format as string | undefined;
-  const title = editTitle ?? chartProps?.title ?? 'Chart';
+  const title = chartProps?.title ?? 'Chart';
 
   // If configured series keys don't match data, auto-detect numeric columns
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -144,18 +141,13 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
         .filter(k => k !== xKey && typeof rows[0][k] === 'number')
         .map((k, i) => ({ key: k, label: getLabel(k, fieldLabels), color: DEFAULT_COLORS[i % DEFAULT_COLORS.length] }));
     }
-    // Apply field labels and custom colors
+    // Apply field labels
     result = result.map(s => ({
       ...s,
       label: s.label && s.label !== s.key ? s.label : getLabel(s.key, fieldLabels),
-      color: editColors[s.key] || s.color,
     }));
-    // Filter out hidden fields
-    if (hiddenFields.size > 0) {
-      result = result.filter(s => !hiddenFields.has(s.key));
-    }
     return result;
-  }, [series, rows, dataKeys, xKey, fieldLabels, hiddenFields, editColors]);
+  }, [series, rows, dataKeys, xKey, fieldLabels]);
 
   // Aggregate rows when there are duplicate x-axis values (e.g., multi-venue data).
   // - bar/line: group by xKey, sum numeric series values
@@ -272,13 +264,6 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
     setAddingToReport(false);
   };
 
-  const btnStyle = (active: boolean): React.CSSProperties => ({
-    padding: '3px 8px', fontSize: '0.72rem', fontWeight: active ? 700 : 500,
-    border: active ? '1px solid #4d65ff' : '1px solid #ddd', borderRadius: 4,
-    backgroundColor: active ? '#eef' : '#fff', color: active ? '#4d65ff' : '#888',
-    cursor: 'pointer', fontFamily: 'inherit',
-  });
-
   return (
     <div className={className} style={{
       border: hideBorder ? '1px solid transparent' : '1px solid #e2e8f0',
@@ -327,19 +312,6 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
               title="Full screen"
             ><Maximize2 size={14} strokeWidth={1.75} /></button>
           )}
-          <button
-            onClick={() => setShowEditor(!showEditor)}
-            onMouseEnter={e => { if (!showEditor) e.currentTarget.style.color = '#999'; }}
-            onMouseLeave={e => { if (!showEditor) e.currentTarget.style.color = '#ccc'; }}
-            style={{
-              padding: '3px 6px',
-              border: 'none', borderRadius: 4, backgroundColor: 'transparent',
-              color: showEditor ? '#c4a882' : '#ccc',
-              cursor: 'pointer', lineHeight: 1, display: 'flex', alignItems: 'center',
-              transition: 'color 0.15s',
-            }}
-            title="Edit chart"
-          ><Settings size={15} strokeWidth={1.75} /></button>
           {onRemove && (
             <button
               onClick={onRemove}
@@ -357,122 +329,6 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
         </div>
       </div>
 
-      {/* Editor panel */}
-      {showEditor && (
-        <div style={{ borderBottom: '1px solid #f0f0f0', padding: '0.5rem 0.75rem', backgroundColor: '#f9fdf9', fontSize: '0.75rem', position: 'relative' }}>
-          {/* Inspector toggle — top right of edit panel */}
-          <button
-            onClick={() => setShowInspector(!showInspector)}
-            style={{
-              position: 'absolute', top: 6, right: 8,
-              padding: '2px 6px', fontSize: '0.68rem', fontWeight: showInspector ? 700 : 500,
-              border: showInspector ? '1px solid #ed8936' : '1px solid #ddd', borderRadius: 3,
-              backgroundColor: showInspector ? '#fffaf0' : '#fff', color: showInspector ? '#ed8936' : '#aaa',
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}
-            title="Inspect data"
-          >{'{}'}</button>
-          <div style={{ marginBottom: 6 }}>
-            <label style={{ fontWeight: 600, color: '#555', fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Chart Type</label>
-            <div style={{ display: 'flex', gap: 3, marginTop: 3 }}>
-              {CHART_TYPES.map(ct => (
-                <button key={ct.type} onClick={() => setChartType(ct.type)} style={btnStyle(chartType === ct.type)} title={ct.label}>
-                  {ct.icon} <span style={{ marginLeft: 2 }}>{ct.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div style={{ marginBottom: 6 }}>
-            <label style={{ fontWeight: 600, color: '#555', fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Title</label>
-            <input
-              value={title}
-              onChange={e => setEditTitle(e.target.value)}
-              style={{ display: 'block', width: '100%', padding: '3px 6px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit', marginTop: 2 }}
-            />
-          </div>
-          <div>
-            <label style={{ fontWeight: 600, color: '#555', fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Fields</label>
-            <div style={{ marginTop: 4 }}>
-              {dataKeys.map(key => {
-                const isX = key === xKey;
-                const isHidden = hiddenFields.has(key);
-                return (
-                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                    <input
-                      type="checkbox"
-                      checked={!isHidden}
-                      onChange={e => {
-                        const next = new Set(hiddenFields);
-                        if (e.target.checked) next.delete(key); else next.add(key);
-                        setHiddenFields(next);
-                      }}
-                      style={{ margin: 0 }}
-                      disabled={isX}
-                    />
-                    <span style={{ fontFamily: 'monospace', color: '#888', fontSize: '0.72rem', width: 100 }}>{key}{isX ? ' (x)' : ''}</span>
-                    <input
-                      value={editLabels[key] || ''}
-                      onChange={e => setEditLabels(prev => ({ ...prev, [key]: e.target.value }))}
-                      placeholder={key}
-                      style={{ flex: 1, padding: '2px 4px', border: '1px solid #e2e8f0', borderRadius: 3, fontSize: '0.72rem', fontFamily: 'inherit' }}
-                    />
-                    {!isX && (
-                      <ColorPicker
-                        value={editColors[key] || effectiveSeries.find(s => s.key === key)?.color || DEFAULT_COLORS[0]}
-                        onChange={color => setEditColors(prev => ({ ...prev, [key]: color }))}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Data inspector */}
-      {showInspector && (
-        <div style={{ borderBottom: '1px solid #f0f0f0', padding: '0.5rem 0.75rem', backgroundColor: '#fafafa', maxHeight: 300, overflow: 'auto' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.72rem' }}>
-            <div>
-              <div style={{ fontWeight: 600, color: '#888', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-                Chart Config
-              </div>
-              <pre style={{ margin: 0, backgroundColor: '#1e1e2e', color: '#cdd6f4', padding: '0.4rem', borderRadius: 4, fontSize: '0.7rem', overflow: 'auto', maxHeight: 120 }}>
-                {JSON.stringify({
-                  chart_type: chartType,
-                  x_axis: { key: xKey, label: xLabel },
-                  configured_series: chartProps?.series,
-                  effective_series: effectiveSeries,
-                  data_columns: dataKeys,
-                  orientation: chartProps?.orientation,
-                }, null, 2)}
-              </pre>
-              {data?.script && Object.keys(data.script).length > 0 && (
-                <>
-                  <div style={{ fontWeight: 600, color: '#888', marginBottom: 3, marginTop: 6, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-                    Script (refresh recipe)
-                  </div>
-                  <pre style={{ margin: 0, backgroundColor: '#1e1e2e', color: '#cdd6f4', padding: '0.4rem', borderRadius: 4, fontSize: '0.7rem', overflow: 'auto', maxHeight: 80 }}>
-                    {JSON.stringify(data.script, null, 2)}
-                  </pre>
-                </>
-              )}
-            </div>
-            <div>
-              <div style={{ fontWeight: 600, color: '#888', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-                Data ({rows.length} rows){rows.length === 0 && <span style={{ color: '#e53e3e', fontWeight: 400 }}> — no data returned</span>}
-              </div>
-              <pre style={{ margin: 0, backgroundColor: '#1e1e2e', color: '#cdd6f4', padding: '0.4rem', borderRadius: 4, fontSize: '0.7rem', overflow: 'auto', maxHeight: 200 }}>
-                {JSON.stringify(rows.length > 10 ? [...rows.slice(0, 10), `... ${rows.length - 10} more`] : rows, null, 2)}
-              </pre>
-            </div>
-          </div>
-          <div style={{ marginTop: 4, fontSize: '0.65rem', color: '#bbb' }}>
-            Raw display block: data keys = [{Object.keys(data || {}).join(', ')}], props keys = [{Object.keys(chartProps || {}).join(', ')}]
-          </div>
-        </div>
-      )}
 
       {/* Chart area */}
       <div style={{ padding: '0.75rem', ...(fillContainer ? { flex: 1, minHeight: 0 } : {}) }}>
@@ -482,7 +338,12 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
           </div>
         ) : (
           <>
-            {chartType === 'table' && <TableView rows={rows} series={effectiveSeries} xKey={xKey} />}
+            {chartType === 'table' && <TableView rows={rows} series={effectiveSeries} xKey={xKey}
+              fieldLabels={chartProps?.field_labels as Record<string, string> | undefined}
+              hiddenFields={chartProps?.hidden_fields ? new Set(chartProps.hidden_fields as string[]) : undefined}
+              fieldFormats={chartProps?.field_formats as Record<string, string | FieldFormat> | undefined}
+              fieldOrder={chartProps?.field_order as string[] | undefined}
+            />}
             {chartType === 'bar' && <BarView rows={chartRows} series={chartSeries} xKey={xKey} xLabel={xLabel} xFormat={xFormat} yFormat={yFormat} chartHeight={fillContainer ? '100%' : chartHeight} onBarClick={onDrillDown ? (data, field) => onDrillDown({ label: String(data[xKey] || ''), value: Number(data[field] || 0), field, row: data }) : undefined} />}
             {chartType === 'stacked_bar' && <BarView rows={chartRows} series={chartSeries} xKey={xKey} xLabel={xLabel} xFormat={xFormat} yFormat={yFormat} stacked chartHeight={fillContainer ? '100%' : chartHeight} onBarClick={onDrillDown ? (data, field) => onDrillDown({ label: String(data[xKey] || ''), value: Number(data[field] || 0), field, row: data }) : undefined} />}
             {chartType === 'line' && <LineView rows={chartRows} series={chartSeries} xKey={xKey} xLabel={xLabel} xFormat={xFormat} yFormat={yFormat} chartHeight={fillContainer ? '100%' : chartHeight} onDotClick={onDrillDown ? (data, field) => onDrillDown({ label: String(data[xKey] || ''), value: Number(data[field] || 0), field, row: data }) : undefined} />}
@@ -509,65 +370,39 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
 // ---------------------------------------------------------------------------
 // Color picker — brand palette dropdown + custom option
 // ---------------------------------------------------------------------------
-
-function ColorPicker({ value, onChange }: { value: string; onChange: (color: string) => void }) {
-  const isBrandColor = BRAND_COLORS.some(c => c.value === value);
-  const [showCustom, setShowCustom] = useState(!isBrandColor && value !== DEFAULT_COLORS[0]);
-
-  return (
-    <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-      <select
-        value={showCustom ? '_custom' : value}
-        onChange={e => {
-          if (e.target.value === '_custom') {
-            setShowCustom(true);
-          } else {
-            setShowCustom(false);
-            onChange(e.target.value);
-          }
-        }}
-        style={{
-          fontSize: '0.68rem', border: '1px solid #e2e8f0', borderRadius: 3,
-          padding: '2px 4px', fontFamily: 'inherit', color: '#666',
-          backgroundColor: '#fff', cursor: 'pointer',
-        }}
-      >
-        {BRAND_COLORS.map(c => (
-          <option key={c.value} value={c.value}>{c.name}</option>
-        ))}
-        <option value="_custom">Custom...</option>
-      </select>
-      {showCustom && (
-        <input
-          type="color"
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          style={{ width: 22, height: 22, padding: 0, border: '1px solid #e2e8f0', borderRadius: 3, cursor: 'pointer' }}
-        />
-      )}
-      <div style={{ width: 14, height: 14, borderRadius: 2, backgroundColor: value, border: '1px solid #ddd', flexShrink: 0 }} />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Sub-views
 // ---------------------------------------------------------------------------
 
-function TableView({ rows, series, xKey }: { rows: Record<string, unknown>[]; series: { key: string; label: string }[]; xKey: string }) {
+function TableView({ rows, series, xKey, fieldLabels, hiddenFields, fieldFormats, fieldOrder }: {
+  rows: Record<string, unknown>[]; series: { key: string; label: string }[]; xKey: string;
+  fieldLabels?: Record<string, string>; hiddenFields?: Set<string>;
+  fieldFormats?: Record<string, string | FieldFormat>; fieldOrder?: string[];
+}) {
   if (rows.length === 0) return <div style={{ color: '#999', fontSize: '0.8rem' }}>No data</div>;
-  const columns = [xKey, ...series.map(s => s.key)];
-  const labels: Record<string, string> = { [xKey]: xKey };
-  series.forEach(s => { labels[s.key] = s.label; });
+  // Use all data keys, filtering out hidden ones, respecting field_order
+  const allKeys = rows.length > 0 ? Object.keys(rows[0]) : [];
+  const visible = allKeys.filter(k => !k.startsWith('_') && !(hiddenFields?.has(k)));
+  const columns = fieldOrder && fieldOrder.length > 0
+    ? [...fieldOrder.filter(k => visible.includes(k)), ...visible.filter(k => !fieldOrder.includes(k))]
+    : visible;
+  const labels: Record<string, string> = {};
+  columns.forEach(c => {
+    labels[c] = fieldLabels?.[c] || series.find(s => s.key === c)?.label || c;
+  });
+  const getAlign = (c: string): 'left' | 'center' | 'right' => {
+    const ff = fieldFormats?.[c];
+    if (ff && typeof ff === 'object' && ff.align) return ff.align;
+    return 'left';
+  };
   return (
     <div style={{ overflow: 'auto', maxHeight: 300 }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
         <thead>
-          <tr>{columns.map(c => <th key={c} style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid #eee', fontWeight: 600, color: '#555' }}>{labels[c] || c}</th>)}</tr>
+          <tr>{columns.map(c => <th key={c} style={{ textAlign: getAlign(c), padding: '4px 8px', borderBottom: '1px solid #eee', fontWeight: 600, color: '#555' }}>{labels[c]}</th>)}</tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i}>{columns.map(c => <td key={c} style={{ padding: '4px 8px', borderBottom: '1px solid #f5f5f5', color: '#333' }}>{formatValue(row[c])}</td>)}</tr>
+            <tr key={i}>{columns.map(c => <td key={c} style={{ textAlign: getAlign(c), padding: '4px 8px', borderBottom: '1px solid #f5f5f5', color: '#333' }}>{formatValue(row[c], fieldFormats?.[c])}</td>)}</tr>
           ))}
         </tbody>
       </table>

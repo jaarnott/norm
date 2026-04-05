@@ -12,6 +12,7 @@ import RolesPanel from './RolesPanel';
 import SecretsPanel from './SecretsPanel';
 import ComponentsPanel from './ComponentsPanel';
 import PlaybooksPanel from './PlaybooksPanel';
+import TemplatesPanel from './TemplatesPanel';
 import { getStoredUser } from '../../lib/api';
 import type { User } from '../../types';
 
@@ -994,7 +995,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
+type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -1320,6 +1321,7 @@ export default function SettingsPanel() {
         {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
         {showComponents && <button data-testid="settings-tab-components" onClick={() => setActiveTab('components')} style={tabStyle('components')}>Components</button>}
         {showPlaybooks && <button data-testid="settings-tab-playbooks" onClick={() => setActiveTab('playbooks')} style={tabStyle('playbooks')}>Playbooks</button>}
+        {showPlaybooks && <button data-testid="settings-tab-templates" onClick={() => setActiveTab('templates')} style={tabStyle('templates')}>Templates</button>}
         {(showDeployments || showTests || showSecrets) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
         {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
         {showTests && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
@@ -1921,6 +1923,7 @@ export default function SettingsPanel() {
         {/* ============ SECRETS TAB ============ */}
         {activeTab === 'components' && <ComponentsPanel />}
         {activeTab === 'playbooks' && <PlaybooksPanel />}
+        {activeTab === 'templates' && <TemplatesPanel />}
         {activeTab === 'secrets' && <SecretsPanel />}
       </div>
     </div>

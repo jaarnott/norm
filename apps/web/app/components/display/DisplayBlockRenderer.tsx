@@ -16,6 +16,7 @@ import SavedReportsBoard from './SavedReportsBoard';
 import ToolApprovalCard from './ToolApprovalCard';
 import DashboardView from './DashboardView';
 import VenuePicker from './VenuePicker';
+import StockPicker from './StockPicker';
 
 export interface DisplayBlockProps {
   data: Record<string, unknown>;
@@ -42,6 +43,7 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   orders_dashboard: OrdersDashboard,
   tool_approval: ToolApprovalCard,
   venue_picker: VenuePicker,
+  stock_picker: StockPicker,
   dashboard_view: DashboardView,
 };
 

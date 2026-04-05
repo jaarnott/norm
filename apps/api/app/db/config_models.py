@@ -141,6 +141,20 @@ class Playbook(ConfigBase):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class DashboardTemplate(ConfigBase):
+    __tablename__ = "dashboard_templates"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    slug = Column(String, unique=True, nullable=False)
+    agent_slug = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    charts = Column(JSON, nullable=False, default=list)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class SystemSecret(ConfigBase):
     __tablename__ = "system_secrets"
 

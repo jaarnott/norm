@@ -22,6 +22,7 @@ class ToolResult:
     error: str | None = None
     rendered_request: dict | None = None  # {method, url, headers, body}
     row_count: int = 0
+    logs: list[str] | None = None  # consolidator execution logs
 
 
 def execute_connector_tool(
@@ -77,7 +78,44 @@ def execute_connector_tool(
             error=f"Action not found: {action}. Available: {', '.join(str(a) for a in available_actions)}",
         )
 
-    # 3. Resolve credentials
+    # 3. Check for consolidator (internal handler) — these don't use execute_spec
+    consolidator_config = tool_def.get("consolidator_config")
+    if consolidator_config:
+        from app.agents.internal_tools import execute_consolidator
+
+        # Pass venue info through params so the consolidator can use it
+        call_params = dict(params)
+        if venue_id:
+            from app.db.models import Venue as _Venue
+
+            v = db.query(_Venue).filter(_Venue.id == venue_id).first()
+            if v and not call_params.get("venue"):
+                call_params["venue"] = v.name
+
+        try:
+            handler_result = execute_consolidator(
+                consolidator_config, call_params, db, thread_id
+            )
+        except Exception as exc:
+            return ToolResult(success=False, payload=None, error=str(exc))
+
+        payload = handler_result.get("data")
+        logs = handler_result.get("_logs", [])
+        return ToolResult(
+            success=handler_result.get("success", True),
+            payload=payload,
+            error=handler_result.get("error"),
+            rendered_request={
+                "method": "CONSOLIDATOR",
+                "url": f"{connector_name}/{action}",
+            },
+            row_count=(
+                len(payload) if isinstance(payload, list) else (1 if payload else 0)
+            ),
+            logs=logs if logs else None,
+        )
+
+    # 3b. Resolve credentials for standard spec execution
     # Strip venue params (not API fields)
     clean_params = dict(params)
     clean_params.pop("venue", None)
@@ -214,7 +252,10 @@ def get_tool_info(
                 {"name": field, "required": False, "description": desc}
             )
 
-    return {"accepted_params": accepted_params}
+    return {
+        "accepted_params": accepted_params,
+        "is_consolidator": bool(tool_def.get("consolidator_config")),
+    }
 
 
 def list_connector_tools(connector_name: str, config_db: Session) -> dict:

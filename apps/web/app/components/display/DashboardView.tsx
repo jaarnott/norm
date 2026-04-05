@@ -5,11 +5,11 @@ import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { SavedReport } from '../../types';
 import { apiFetch } from '../../lib/api';
 import Chart from './Chart';
-import { RefreshCw, Share2, Check, Settings2 } from 'lucide-react';
+import { RefreshCw, Share2, Check, Settings, Maximize2 } from 'lucide-react';
 import ChartFullScreenModal from './dashboard/ChartFullScreenModal';
 import ChartConfigPanel from './dashboard/ChartConfigPanel';
 import DrillDownPanel from './dashboard/DrillDownPanel';
-import TemplateGallery from './dashboard/TemplateGallery';
+import DashboardPicker from './dashboard/DashboardPicker';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 // Lazy imports for embeddable components (avoids circular deps with DisplayBlockRenderer)
@@ -39,9 +39,11 @@ const ROW_HEIGHT = 40;
 
 export default function DashboardView({ data, props }: DisplayBlockProps) {
   const agentSlug = (data?.agent_slug as string) || (props?.agent_slug as string) || '';
+  const directReportId = (data?.report_id as string) || '';
   const [dashboard, setDashboard] = useState<SavedReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshingCharts, setRefreshingCharts] = useState<Set<string>>(new Set());
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [debugInfo, setDebugInfo] = useState<Record<string, unknown>[] | null>(null);
   const [refreshErrors, setRefreshErrors] = useState<Record<string, unknown>[] | null>(null);
@@ -51,22 +53,30 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   const [venues, setVenues] = useState<{ id: string; name: string }[]>([]);
   const [selectedVenue, setSelectedVenue] = useState<string>('');
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
   const { isMobile, isTablet } = useBreakpoint();
 
-  // Load dashboard for agent
+  const initialRefreshDone = useRef(false);
+
+  // Load dashboard — by direct report_id or by agent slug
   useEffect(() => {
-    if (!agentSlug) { setLoading(false); return; }
-    apiFetch(`/api/reports/dashboards/${agentSlug}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d?.dashboard) {
-          setDashboard(d.dashboard);
-          setLastRefreshed(new Date());
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [agentSlug]);
+    initialRefreshDone.current = false;
+    if (directReportId) {
+      apiFetch(`/api/reports/${directReportId}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) { setDashboard(d); } })
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    } else if (agentSlug) {
+      apiFetch(`/api/reports/dashboards/${agentSlug}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.dashboard) { setDashboard(d.dashboard); } })
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    } else {
+      setLoading(false);
+    }
+  }, [agentSlug, directReportId]);
 
   // Load venues
   useEffect(() => {
@@ -80,33 +90,61 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleRefresh = useCallback(async (filters?: { venue_id?: string }) => {
-    if (!dashboard?.id) return;
-    setRefreshing(true);
-    try {
-      const globalFilters: Record<string, string> = {};
-      const venueId = filters?.venue_id !== undefined ? filters.venue_id : selectedVenue;
-      if (venueId) {
-        globalFilters.venue_id = venueId;
-      } else {
-        // Explicitly signal "All Venues" so backend doesn't fall through to script/report venue
-        globalFilters.venue_id = '__all__';
-      }
+  // Auto-refresh on initial load — show cached data immediately, refresh in background
+  useEffect(() => {
+    if (dashboard && !loading && !initialRefreshDone.current) {
+      initialRefreshDone.current = true;
+      handleRefresh();
+    }
+  }, [dashboard, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
-      const res = await apiFetch(`/api/reports/${dashboard.id}/refresh`, {
-        method: 'POST',
-        body: JSON.stringify({ global_filters: globalFilters }),
+  const handleRefresh = useCallback(async (filters?: { venue_id?: string }) => {
+    if (!dashboard?.id || !dashboard.charts?.length) return;
+    setRefreshing(true);
+
+    const globalFilters: Record<string, string> = {};
+    const venueId = filters?.venue_id !== undefined ? filters.venue_id : selectedVenue;
+    if (venueId) {
+      globalFilters.venue_id = venueId;
+    } else {
+      globalFilters.venue_id = '__all__';
+    }
+    const body = JSON.stringify({ global_filters: globalFilters });
+
+    // Mark all charts as refreshing
+    const chartIds = dashboard.charts.map(c => c.id);
+    setRefreshingCharts(new Set(chartIds));
+
+    // Fire per-chart refreshes in parallel
+    const promises = chartIds.map(async (chartId) => {
+      try {
+        const res = await apiFetch(`/api/reports/${dashboard.id}/charts/${chartId}/refresh`, {
+          method: 'POST', body,
+        });
+        if (res.ok) {
+          const { chart: updatedChart } = await res.json();
+          if (updatedChart) {
+            setDashboard(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                charts: prev.charts.map(c => c.id === chartId ? updatedChart : c),
+              };
+            });
+          }
+        }
+      } catch { /* ignore */ }
+      setRefreshingCharts(prev => {
+        const next = new Set(prev);
+        next.delete(chartId);
+        return next;
       });
-      if (res.ok) {
-        const updated = await res.json();
-        setDashboard(updated);
-        setLastRefreshed(new Date());
-        setDebugInfo(updated.refresh_debug || null);
-        setRefreshErrors(updated.refresh_errors || null);
-      }
-    } catch { /* ignore */ }
+    });
+
+    await Promise.all(promises);
+    setLastRefreshed(new Date());
     setRefreshing(false);
-  }, [dashboard?.id, selectedVenue]);
+  }, [dashboard?.id, dashboard?.charts, selectedVenue]);
 
   // Auto-refresh — handleRefresh in deps so interval always uses the latest venue selection
   useEffect(() => {
@@ -121,23 +159,26 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     return <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading dashboard...</div>;
   }
 
-  if (!dashboard) {
+  const reloadDashboard = () => {
+    setLoading(true);
+    setShowPicker(false);
+    apiFetch(`/api/reports/dashboards/${agentSlug}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.dashboard) {
+          setDashboard(d.dashboard);
+          setLastRefreshed(new Date());
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  if (!dashboard || showPicker) {
     return (
-      <TemplateGallery
+      <DashboardPicker
         agentSlug={agentSlug}
-        onInstantiated={() => {
-          setLoading(true);
-          apiFetch(`/api/reports/dashboards/${agentSlug}`)
-            .then(r => r.ok ? r.json() : null)
-            .then(d => {
-              if (d?.dashboard) {
-                setDashboard(d.dashboard);
-                setLastRefreshed(new Date());
-              }
-            })
-            .catch(() => {})
-            .finally(() => setLoading(false));
-        }}
+        onDashboardSelected={reloadDashboard}
       />
     );
   }
@@ -153,7 +194,17 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       {/* Toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>{dashboard.title}</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>{dashboard.title}</h2>
+            {agentSlug && (
+              <button
+                onClick={() => setShowPicker(true)}
+                style={{ border: 'none', background: 'none', color: '#bbb', fontSize: '0.65rem', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 6px' }}
+                onMouseEnter={e => (e.currentTarget.style.color = '#888')}
+                onMouseLeave={e => (e.currentTarget.style.color = '#bbb')}
+              >Change</button>
+            )}
+          </div>
           {dashboard.description && <p style={{ margin: '0.15rem 0 0', fontSize: '0.75rem', color: '#999' }}>{dashboard.description}</p>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -261,22 +312,46 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
               }}
               className="dashboard-chart-tile"
             >
-              {/* Inspect button — visible on hover */}
-              <button
-                onClick={() => setInspectedChartId(chart.id)}
+              {/* Per-chart loading indicator */}
+              {refreshingCharts.has(chart.id) && (
+                <div style={{
+                  position: 'absolute', top: 0, left: 0, right: 0, height: 2, zIndex: 11,
+                  background: 'linear-gradient(90deg, transparent, #c4a882, transparent)',
+                  animation: 'shimmer 1.5s infinite',
+                  borderRadius: '10px 10px 0 0',
+                }} />
+              )}
+              {/* Chart action buttons — visible on hover */}
+              <div
                 className="chart-inspect-btn"
-                title="Inspect chart config"
                 style={{
                   position: 'absolute', top: 4, right: 4, zIndex: 10,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  width: 24, height: 24, border: 'none', borderRadius: 4,
-                  backgroundColor: 'rgba(255,255,255,0.9)', cursor: 'pointer',
-                  opacity: 0, transition: 'opacity 0.15s',
-                  color: '#999',
+                  display: 'flex', gap: 2, opacity: 0, transition: 'opacity 0.15s',
                 }}
               >
-                <Settings2 size={13} strokeWidth={1.75} />
-              </button>
+                <button
+                  onClick={() => setExpandedChartId(chart.id)}
+                  title="Full screen"
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 24, height: 24, border: 'none', borderRadius: 4,
+                    backgroundColor: 'rgba(255,255,255,0.9)', cursor: 'pointer', color: '#999',
+                  }}
+                >
+                  <Maximize2 size={13} strokeWidth={1.75} />
+                </button>
+                <button
+                  onClick={() => setInspectedChartId(chart.id)}
+                  title="Chart settings"
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 24, height: 24, border: 'none', borderRadius: 4,
+                    backgroundColor: 'rgba(255,255,255,0.9)', cursor: 'pointer', color: '#999',
+                  }}
+                >
+                  <Settings size={13} strokeWidth={1.75} />
+                </button>
+              </div>
               {isEmbedded && EmbeddedComponent ? (
                 <div style={{ height: '100%', overflow: 'auto' }}>
                   {chart.chart_spec?.title && (
@@ -295,7 +370,6 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
                   props={{ ...chart.chart_spec, chart_type: chart.chart_type, fillContainer: true } as Record<string, unknown>}
                   hideAddToReport
                   fillContainer
-                  onExpand={() => setExpandedChartId(chart.id)}
                   onDrillDown={(payload) => {
                     const xAxisKey = ((chart.chart_spec as unknown as Record<string, unknown>)?.x_axis as Record<string, unknown> | undefined)?.key as string || '';
                     const matchingRows = (chart.data || []).filter(r => String(r[xAxisKey]) === payload.label);
@@ -370,6 +444,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
         .dashboard-chart-tile:hover .chart-inspect-btn { opacity: 1 !important; }
       `}</style>
     </div>

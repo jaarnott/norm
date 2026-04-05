@@ -65,6 +65,7 @@ interface TestResult {
     row_count: number;
     rendered_request?: { method: string; url: string };
   }[];
+  logs?: string[];
 }
 
 interface Draft {
@@ -92,9 +93,17 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
       if (raw.kpi_spec && typeof raw.kpi_spec === 'object') {
         const nested = raw.kpi_spec as Record<string, unknown>;
         for (const [k, v] of Object.entries(nested)) {
-          if (!(k in raw)) raw[k] = v; // only fill gaps, don't overwrite
+          if (!(k in raw)) raw[k] = v;
         }
         delete raw.kpi_spec;
+      }
+      // Clean legacy chart_type echo (it's on the chart model, not the spec)
+      delete raw.chart_type;
+      // Tables use hidden_fields/field_labels/field_formats — x_axis and series are redundant
+      const ct = (chart.chart_type as string) || 'bar';
+      if (ct === 'table') {
+        delete raw.x_axis;
+        delete raw.series;
       }
       return raw;
     })(),
@@ -172,12 +181,21 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
   const handleSave = async () => {
     setSaving(true);
     try {
+      // Clean up spec before saving
+      const cleanSpec = { ...draft.chart_spec };
+      delete cleanSpec.chart_type; // chart_type lives on the model, not the spec
+      // Tables use hidden_fields/field_labels/field_formats — x_axis and series are redundant
+      if (draft.chart_type === 'table') {
+        delete cleanSpec.x_axis;
+        delete cleanSpec.series;
+      }
+
       const res = await apiFetch(`/api/reports/${reportId}/charts/${chart.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
           title: draft.title,
           chart_type: draft.chart_type,
-          chart_spec: draft.chart_spec,
+          chart_spec: cleanSpec,
           script: draft.script,
         }),
       });
@@ -261,12 +279,13 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
                         key={tool.action}
                         onClick={() => {
                           // Set action and pre-populate params from field_descriptions
+                          const venueKeys = new Set(['venue', 'venue_name', 'venue_id']);
                           const params: Record<string, unknown> = {};
                           for (const f of tool.required_fields) {
-                            params[f] = draft.script.params[f] || '';
+                            if (!venueKeys.has(f)) params[f] = draft.script.params[f] || '';
                           }
                           for (const f of Object.keys(tool.field_descriptions)) {
-                            if (!(f in params)) params[f] = draft.script.params[f] || '';
+                            if (!(f in params) && !venueKeys.has(f)) params[f] = draft.script.params[f] || '';
                           }
                           // Preserve _all_venues flag if it was set
                           if (draft.script.params._all_venues) params._all_venues = true;
@@ -304,7 +323,7 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
             )}
 
             {/* Params */}
-            {Object.keys(draft.script.params).filter(k => !k.startsWith('_')).length > 0 && (
+            {Object.keys(draft.script.params).filter(k => !k.startsWith('_') && !/^(venue|venue_name|venue_id)$/.test(k)).length > 0 && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', marginBottom: 4 }}>Parameters</div>
                 {Object.entries(draft.script.params).filter(([k]) => !k.startsWith('_')).map(([key, val]) => {
@@ -429,6 +448,17 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
                       }}>{testResult.rendered_request.method}</span>
                       <span style={{ fontSize: '0.68rem', color: '#333', wordBreak: 'break-all' }}>{testResult.rendered_request.url}</span>
                     </div>
+                  </div>
+                )}
+
+                {/* Execution logs (consolidators) */}
+                {testResult.logs && testResult.logs.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    {testResult.logs.map((log, i) => (
+                      <div key={i} style={{ fontSize: '0.65rem', color: '#888', fontFamily: 'monospace', padding: '1px 0' }}>
+                        {log}
+                      </div>
+                    ))}
                   </div>
                 )}
 
@@ -734,22 +764,132 @@ function TableSettings({ spec, responseFields, onChange }: {
   onChange: (patch: Record<string, unknown>) => void;
 }) {
   const labels = (spec.field_labels as Record<string, string>) || {};
+  const rawFormats = (spec.field_formats || {}) as Record<string, string | { type?: string; decimals?: number; prefix?: string; suffix?: string; align?: string }>;
+  // Normalise: string shorthand → object
+  const getFormat = (f: string) => {
+    const v = rawFormats[f];
+    if (!v) return { type: '' };
+    if (typeof v === 'string') return { type: v };
+    return v;
+  };
+  const setFormat = (field: string, patch: Record<string, unknown>) => {
+    const current = getFormat(field);
+    const updated = { ...current, ...patch };
+    // Clean empty values
+    if (!updated.type) delete updated.type;
+    if (updated.decimals === undefined || updated.decimals === null) delete updated.decimals;
+    if (!updated.prefix) delete updated.prefix;
+    if (!updated.suffix) delete updated.suffix;
+    const isEmpty = Object.keys(updated).length === 0;
+    onChange({ field_formats: { ...rawFormats, [field]: isEmpty ? undefined : updated } });
+  };
   const hidden = new Set((spec.hidden_fields as string[]) || []);
-  const fields = responseFields.length > 0 ? responseFields : Object.keys(labels);
+  const fieldOrder = (spec.field_order as string[]) || [];
+
+  // Build ordered field list: field_order first, then any new fields from response
+  const rawFields = responseFields.length > 0 ? responseFields : Object.keys(labels);
+  const visibleFields = rawFields.filter(f => !f.startsWith('_'));
+  const orderedFields = (() => {
+    const ordered: string[] = [];
+    for (const f of fieldOrder) {
+      if (visibleFields.includes(f)) ordered.push(f);
+    }
+    for (const f of visibleFields) {
+      if (!ordered.includes(f)) ordered.push(f);
+    }
+    return ordered;
+  })();
+
+  const moveField = (from: number, to: number) => {
+    if (to < 0 || to >= orderedFields.length) return;
+    const next = [...orderedFields];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    onChange({ field_order: next });
+  };
+
+  const arrowBtn: React.CSSProperties = {
+    border: 'none', background: 'none', padding: 0, cursor: 'pointer',
+    fontSize: '0.6rem', lineHeight: 1, color: '#ccc', fontFamily: 'inherit',
+  };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      {fields.map(f => (
-        <div key={f} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={!hidden.has(f)} onChange={e => {
-            const next = new Set(hidden);
-            e.target.checked ? next.delete(f) : next.add(f);
-            onChange({ hidden_fields: Array.from(next) });
-          }} />
-          <span style={{ fontSize: '0.68rem', fontFamily: 'monospace', color: '#888', minWidth: 80 }}>{f}</span>
-          <input value={labels[f] || ''} onChange={e => onChange({ field_labels: { ...labels, [f]: e.target.value } })} style={{ ...inputStyle, flex: 1 }} placeholder="Display label" />
-        </div>
-      ))}
-      {fields.length === 0 && <span style={{ fontSize: '0.72rem', color: '#bbb' }}>Run test to see available fields</span>}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      {orderedFields.map((f, i) => {
+        const ff = getFormat(f);
+        const hasFormat = !!(ff.type || ff.decimals !== undefined || ff.prefix || ff.suffix);
+        const showDecimals = ff.type === 'number' || ff.type === 'currency' || ff.type === 'percent';
+        return (
+          <div key={f} style={{ borderBottom: '1px solid #f8f8f5', paddingBottom: 4, marginBottom: 4 }}>
+            {/* Main row: reorder + checkbox + field + label + format type */}
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0, width: 16, alignItems: 'center' }}>
+                <button onClick={() => moveField(i, i - 1)} disabled={i === 0}
+                  style={{ ...arrowBtn, opacity: i === 0 ? 0.3 : 1 }} title="Move up"
+                  onMouseEnter={e => { if (i > 0) e.currentTarget.style.color = '#888'; }}
+                  onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
+                >&#9650;</button>
+                <button onClick={() => moveField(i, i + 1)} disabled={i === orderedFields.length - 1}
+                  style={{ ...arrowBtn, opacity: i === orderedFields.length - 1 ? 0.3 : 1 }} title="Move down"
+                  onMouseEnter={e => { if (i < orderedFields.length - 1) e.currentTarget.style.color = '#888'; }}
+                  onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
+                >&#9660;</button>
+              </div>
+              <input type="checkbox" checked={!hidden.has(f)} onChange={e => {
+                const next = new Set(hidden);
+                e.target.checked ? next.delete(f) : next.add(f);
+                onChange({ hidden_fields: Array.from(next) });
+              }} />
+              <span style={{ fontSize: '0.68rem', fontFamily: 'monospace', color: '#888', minWidth: 70 }}>{f}</span>
+              <input value={labels[f] || ''} onChange={e => onChange({ field_labels: { ...labels, [f]: e.target.value } })} style={{ ...inputStyle, flex: 1 }} placeholder="Label" />
+              <select value={ff.type || ''} onChange={e => setFormat(f, { type: e.target.value || undefined })} style={{ ...selectStyle, width: 90, flex: 'none', fontSize: '0.68rem' }}>
+                <option value="">Auto</option>
+                <option value="number">Number</option>
+                <option value="currency">Currency</option>
+                <option value="percent">Percent</option>
+                <option value="time">Time</option>
+                <option value="date">Date</option>
+                <option value="datetime">Date+Time</option>
+              </select>
+              <div style={{ display: 'flex', border: '1px solid #e2ddd7', borderRadius: 4, overflow: 'hidden', flexShrink: 0 }}>
+                {(['left', 'center', 'right'] as const).map(a => (
+                  <button key={a} onClick={() => setFormat(f, { align: a === 'left' ? undefined : a })}
+                    style={{
+                      border: 'none', padding: '2px 5px', fontSize: '0.6rem', cursor: 'pointer', fontFamily: 'inherit',
+                      backgroundColor: (ff.align || 'left') === a ? '#f0ebe5' : '#fff',
+                      color: (ff.align || 'left') === a ? '#a08060' : '#ccc',
+                    }}
+                    title={`Align ${a}`}
+                  >{a === 'left' ? '\u2190' : a === 'center' ? '\u2194' : '\u2192'}</button>
+                ))}
+              </div>
+            </div>
+            {/* Format details row — shown when format type is set */}
+            {hasFormat && (showDecimals || ff.prefix || ff.suffix) && (
+              <div style={{ display: 'flex', gap: 8, marginLeft: 40, marginTop: 3, alignItems: 'center' }}>
+                {showDecimals && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.62rem', color: '#999' }}>
+                    Decimals
+                    <input type="number" min="0" max="6" value={ff.decimals ?? ''} onChange={e => setFormat(f, { decimals: e.target.value ? Number(e.target.value) : undefined })}
+                      style={{ ...inputStyle, width: 40, fontSize: '0.65rem', textAlign: 'center' }} placeholder="auto" />
+                  </label>
+                )}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.62rem', color: '#999' }}>
+                  Prefix
+                  <input value={ff.prefix || ''} onChange={e => setFormat(f, { prefix: e.target.value || undefined })}
+                    style={{ ...inputStyle, width: 44, fontSize: '0.65rem', textAlign: 'center' }} placeholder="e.g. $" />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.62rem', color: '#999' }}>
+                  Suffix
+                  <input value={ff.suffix || ''} onChange={e => setFormat(f, { suffix: e.target.value || undefined })}
+                    style={{ ...inputStyle, width: 44, fontSize: '0.65rem', textAlign: 'center' }} placeholder="e.g. hrs" />
+                </label>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {orderedFields.length === 0 && <span style={{ fontSize: '0.72rem', color: '#bbb' }}>Run test to see available fields</span>}
     </div>
   );
 }

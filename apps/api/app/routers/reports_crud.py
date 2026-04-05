@@ -202,13 +202,25 @@ async def list_reports(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    reports = (
+    own = (
         db.query(Report)
         .filter(Report.user_id == user.id)
         .order_by(Report.updated_at.desc())
         .all()
     )
-    return {"reports": [_report_to_dict(r) for r in reports]}
+    shared = (
+        db.query(Report)
+        .filter(
+            Report.is_published.is_(True),
+            Report.user_id != user.id,
+        )
+        .order_by(Report.updated_at.desc())
+        .all()
+    )
+    return {
+        "reports": [_report_to_dict(r) for r in own],
+        "shared_reports": [_report_to_dict(r) for r in shared],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -217,20 +229,28 @@ async def list_reports(
 
 
 @router.get("/templates")
-async def list_templates():
-    """List available dashboard templates."""
-    from app.db.dashboard_templates import DASHBOARD_TEMPLATES
+async def list_templates(
+    config_db: Session = Depends(get_config_db),
+):
+    """List available dashboard templates from config DB."""
+    from app.db.config_models import DashboardTemplate
 
+    templates = (
+        config_db.query(DashboardTemplate)
+        .filter(DashboardTemplate.enabled.is_(True))
+        .order_by(DashboardTemplate.agent_slug, DashboardTemplate.title)
+        .all()
+    )
     return {
         "templates": [
             {
-                "slug": t["slug"],
-                "agent_slug": t["agent_slug"],
-                "title": t["title"],
-                "description": t["description"],
-                "chart_count": len(t["charts"]),
+                "slug": t.slug,
+                "agent_slug": t.agent_slug,
+                "title": t.title,
+                "description": t.description,
+                "chart_count": len(t.charts or []),
             }
-            for t in DASHBOARD_TEMPLATES
+            for t in templates
         ]
     }
 
@@ -239,29 +259,34 @@ async def list_templates():
 async def instantiate_template(
     slug: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Create a real dashboard from a template."""
-    from app.db.dashboard_templates import get_template
+    from app.db.config_models import DashboardTemplate
 
-    template = get_template(slug)
-    if not template:
+    tmpl = (
+        config_db.query(DashboardTemplate)
+        .filter(DashboardTemplate.slug == slug)
+        .first()
+    )
+    if not tmpl:
         raise HTTPException(404, "Template not found")
 
     # Create the report
     report = Report(
         user_id=user.id,
-        title=template["title"],
-        description=template["description"],
+        title=tmpl.title,
+        description=tmpl.description,
         is_dashboard=True,
-        agent_slug=template["agent_slug"],
+        agent_slug=tmpl.agent_slug,
         refresh_interval_seconds=300,  # 5 min default
     )
     db.add(report)
     db.flush()
 
     layout = []
-    for chart_def in template["charts"]:
+    for chart_def in tmpl.charts or []:
         chart = ReportChart(
             report_id=report.id,
             title=chart_def["title"],
@@ -609,16 +634,46 @@ async def refresh_report(
             }
             any_success = False
 
-            for vid in venue_ids:
-                tool_result = execute_connector_tool(
-                    connector_name=script["connector"],
-                    action=script["action"],
-                    params=resolved,
-                    db=db,
-                    config_db=config_db,
-                    venue_id=vid,
-                )
+            # Run venue calls in parallel for faster multi-venue refresh
+            from concurrent.futures import ThreadPoolExecutor
 
+            def _run_venue(vid):
+                from app.db.engine import SessionLocal, _ConfigSessionLocal
+
+                _db = SessionLocal()
+                _cdb = _ConfigSessionLocal()
+                try:
+                    return vid, execute_connector_tool(
+                        connector_name=script["connector"],
+                        action=script["action"],
+                        params=resolved,
+                        db=_db,
+                        config_db=_cdb,
+                        venue_id=vid,
+                    )
+                finally:
+                    _db.close()
+                    _cdb.close()
+
+            if len(venue_ids) > 1:
+                with ThreadPoolExecutor(max_workers=min(len(venue_ids), 4)) as pool:
+                    venue_results_list = list(pool.map(_run_venue, venue_ids))
+            else:
+                venue_results_list = [
+                    (
+                        venue_ids[0],
+                        execute_connector_tool(
+                            connector_name=script["connector"],
+                            action=script["action"],
+                            params=resolved,
+                            db=db,
+                            config_db=config_db,
+                            venue_id=venue_ids[0],
+                        ),
+                    )
+                ]
+
+            for vid, tool_result in venue_results_list:
                 if tool_result.rendered_request:
                     chart_debug["url"] = tool_result.rendered_request.get("url")
                     chart_debug["method"] = tool_result.rendered_request.get("method")
@@ -673,6 +728,133 @@ async def refresh_report(
     return result
 
 
+@router.post("/{report_id}/charts/{chart_id}/refresh")
+def refresh_single_chart(
+    report_id: str,
+    chart_id: str,
+    body: RefreshBody | None = None,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Refresh a single chart and return its updated data."""
+    chart = (
+        db.query(ReportChart)
+        .filter(ReportChart.id == chart_id, ReportChart.report_id == report_id)
+        .first()
+    )
+    if not chart:
+        raise HTTPException(404, "Chart not found")
+
+    report = db.query(Report).filter(Report.id == report_id).first()
+    script = chart.script
+    if not script or not script.get("connector") or not script.get("action"):
+        return {"chart": _chart_to_dict(chart)}
+
+    from app.connectors.tool_executor import execute_connector_tool
+
+    gf = (body.global_filters if body else None) or {}
+
+    # Resolve day start
+    day_start = None
+    gf_venue = gf.get("venue_id")
+    venue_id_for_day = (
+        gf_venue
+        if gf_venue and gf_venue != "__all__"
+        else (report.venue_id if report else None)
+    )
+    if venue_id_for_day:
+        from app.db.models import Venue
+
+        v = db.query(Venue).filter(Venue.id == venue_id_for_day).first()
+        if v and v.day_start_time:
+            day_start = v.day_start_time
+    if not day_start:
+        from app.db.models import Venue
+
+        v = db.query(Venue).filter(Venue.day_start_time.isnot(None)).first()
+        if v:
+            day_start = v.day_start_time
+
+    raw_params = script.get("params", {})
+    resolved = _resolve_date_placeholders(raw_params, day_start_time=day_start)
+    if gf.get("start"):
+        for k in ("start_datetime", "start", "start_time", "from_date", "from"):
+            if k in resolved:
+                resolved[k] = gf["start"]
+    if gf.get("end"):
+        for k in ("end_datetime", "end", "end_time", "to_date", "to"):
+            if k in resolved:
+                resolved[k] = gf["end"]
+
+    # Resolve venue
+    if gf_venue == "__all__":
+        venue_id = None
+    elif gf_venue:
+        venue_id = gf_venue
+    else:
+        venue_id = script.get("venue_id") or (report.venue_id if report else None)
+
+    if venue_id:
+        venue_ids = [venue_id]
+    else:
+        from app.db.models import ConnectorConfig
+
+        venue_configs = (
+            db.query(ConnectorConfig.venue_id)
+            .filter(
+                ConnectorConfig.connector_name == script["connector"],
+                ConnectorConfig.enabled == "true",
+            )
+            .all()
+        )
+        venue_ids = [vc.venue_id for vc in venue_configs] or [None]
+
+    # Execute venues sequentially — charts are already parallel at the request level
+    # so we don't need nested ThreadPoolExecutors that exhaust DB connections
+    aggregated_rows: list[dict] = []
+    any_success = False
+
+    for vid in venue_ids:
+        tool_result = execute_connector_tool(
+            connector_name=script["connector"],
+            action=script["action"],
+            params=resolved,
+            db=db,
+            config_db=config_db,
+            venue_id=vid,
+        )
+
+        if tool_result.success and tool_result.payload:
+            any_success = True
+            rows = (
+                tool_result.payload
+                if isinstance(tool_result.payload, list)
+                else [tool_result.payload]
+            )
+            if not venue_id and len(venue_ids) > 1:
+                from app.db.models import Venue
+
+                venue_obj = (
+                    db.query(Venue).filter(Venue.id == vid).first() if vid else None
+                )
+                venue_name = venue_obj.name if venue_obj else (vid or "unknown")
+                for row in rows:
+                    if isinstance(row, dict):
+                        row["venue"] = venue_name
+            aggregated_rows.extend(rows)
+
+    if any_success and aggregated_rows:
+        chart.data = aggregated_rows
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(chart, "data")
+        db.commit()
+        db.refresh(chart)
+
+    return {"chart": _chart_to_dict(chart)}
+
+
 # ---------------------------------------------------------------------------
 # Dashboard endpoints
 # ---------------------------------------------------------------------------
@@ -703,7 +885,15 @@ async def get_dashboard_for_agent(
     user: User = Depends(get_current_user),
 ):
     """Get the active dashboard for a specific agent."""
-    # First try user's own dashboard, then published, then template
+    # 1. Check user's explicit preference
+    prefs = user.dashboard_preferences or {}
+    pref_id = prefs.get(agent_slug)
+    if pref_id:
+        dashboard = db.query(Report).filter(Report.id == pref_id).first()
+        if dashboard:
+            return {"dashboard": _report_to_dict(dashboard)}
+
+    # 2. Fall back to user's own dashboard
     dashboard = (
         db.query(Report)
         .filter(
@@ -715,6 +905,7 @@ async def get_dashboard_for_agent(
         .first()
     )
     if not dashboard:
+        # 3. Fall back to published dashboards
         dashboard = (
             db.query(Report)
             .filter(
@@ -727,6 +918,106 @@ async def get_dashboard_for_agent(
         )
     if not dashboard:
         return {"dashboard": None}
+    return {"dashboard": _report_to_dict(dashboard)}
+
+
+@router.get("/dashboards/{agent_slug}/available")
+async def get_available_dashboards(
+    agent_slug: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """List all dashboards available for an agent: templates, own, shared."""
+    from app.db.config_models import DashboardTemplate
+
+    # Templates from config DB
+    templates = (
+        config_db.query(DashboardTemplate)
+        .filter(
+            DashboardTemplate.agent_slug == agent_slug,
+            DashboardTemplate.enabled.is_(True),
+        )
+        .order_by(DashboardTemplate.title)
+        .all()
+    )
+
+    # User's own dashboards
+    own = (
+        db.query(Report)
+        .filter(
+            Report.is_dashboard.is_(True),
+            Report.agent_slug == agent_slug,
+            Report.user_id == user.id,
+        )
+        .order_by(Report.updated_at.desc())
+        .all()
+    )
+
+    # Shared dashboards from other users
+    shared = (
+        db.query(Report)
+        .filter(
+            Report.is_dashboard.is_(True),
+            Report.agent_slug == agent_slug,
+            Report.is_published.is_(True),
+            Report.user_id != user.id,
+        )
+        .order_by(Report.updated_at.desc())
+        .all()
+    )
+
+    prefs = user.dashboard_preferences or {}
+    return {
+        "active_id": prefs.get(agent_slug),
+        "templates": [
+            {
+                "slug": t.slug,
+                "title": t.title,
+                "description": t.description,
+                "chart_count": len(t.charts or []),
+            }
+            for t in templates
+        ],
+        "own": [_report_to_dict(r) for r in own],
+        "shared": [_report_to_dict(r) for r in shared],
+    }
+
+
+class SetActiveDashboardBody(BaseModel):
+    dashboard_id: str
+
+
+@router.post("/dashboards/{agent_slug}/set-active")
+async def set_active_dashboard(
+    agent_slug: str,
+    body: SetActiveDashboardBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Set or clear the user's active dashboard for an agent."""
+    prefs = dict(user.dashboard_preferences or {})
+
+    if not body.dashboard_id:
+        # Clear preference
+        prefs.pop(agent_slug, None)
+        user.dashboard_preferences = prefs
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(user, "dashboard_preferences")
+        db.commit()
+        return {"dashboard": None}
+
+    dashboard = db.query(Report).filter(Report.id == body.dashboard_id).first()
+    if not dashboard:
+        raise HTTPException(404, "Dashboard not found")
+
+    prefs[agent_slug] = body.dashboard_id
+    user.dashboard_preferences = prefs
+    from sqlalchemy.orm.attributes import flag_modified as _fm
+
+    _fm(user, "dashboard_preferences")
+    db.commit()
     return {"dashboard": _report_to_dict(dashboard)}
 
 
@@ -811,6 +1102,7 @@ async def test_chart_script(
     all_rows: list = []
     any_success = False
     last_rendered = None
+    all_logs: list[str] = []
 
     for vid in venue_ids:
         tool_result = execute_connector_tool(
@@ -840,6 +1132,8 @@ async def test_chart_script(
         if tool_result.rendered_request:
             vr["rendered_request"] = tool_result.rendered_request
             last_rendered = tool_result.rendered_request
+        if tool_result.logs:
+            all_logs.extend(tool_result.logs)
         venue_results.append(vr)
 
         if tool_result.success and tool_result.payload:
@@ -869,6 +1163,7 @@ async def test_chart_script(
         "row_count": len(all_rows),
         "response_preview": all_rows if all_rows else None,
         "rendered_request": last_rendered,
+        "logs": all_logs if all_logs else None,
     }
 
 
