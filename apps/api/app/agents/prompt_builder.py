@@ -235,16 +235,8 @@ Today's date is {today_str}.
             system_prompt += """
 
 ## Automated Tasks
-When a user asks to do something regularly or automatically:
-1. First, execute the request normally so the user can see the result.
-2. After presenting the result, offer to save it as an automated task.
-3. Only call `create_automated_task` after the user has seen the output and confirmed they want it automated.
-
-When calling `create_automated_task`:
-- Set `intent` to describe what the task should do, including specifics from the conversation (venue names, employee names, items, email requests). Be detailed.
-- Set `agent_slug` to the appropriate domain ("hr", "procurement", or "reports")
-- Set `schedule` if the user specified when it should run (e.g. "daily at 9am", "every monday at 8am")
-- The task will be created as a draft for the user to review and activate
+When a user asks to do something regularly or automatically, first execute the request so they can see the result, then offer to save it as an automated task.
+Call `create_automated_task` with `intent` (describe what to do — be specific with names and venues) and `agent_slug`. Schedule and prompt are auto-generated.
 """
 
         # Add chart visualization guidance if render_chart tool is available
@@ -253,30 +245,9 @@ When calling `create_automated_task`:
             system_prompt += """
 
 ## Chart Visualization
-When presenting data from a tool call, use the `render_chart` tool to create a visual chart.
-- Set `source_tool_call_id` to the tool_use ID of the GET tool call whose data you want to visualize. This is the `id` field from the tool_use block in the conversation. The chart pulls data directly from that tool call's stored result — do NOT pass the data yourself.
-- Use `select_fields` to pick only the fields needed for the chart (e.g., `["startTime", "invoices"]`). This keeps the chart clean by excluding irrelevant fields.
-- Use `field_labels` to give fields readable display names (e.g., `{"startTime": "Date", "invoices": "Sales ($)"}`). Dates are auto-formatted on the frontend but labels make axes and legends clearer.
-- Choose the most appropriate chart_type:
-  - "bar" for comparing categories or time periods
-  - "line" for trends over time
-  - "pie" for parts of a whole (< 8 categories)
-  - "stacked_bar" for multiple series comparison
-  - "scatter" for correlation between two numeric variables
-  - "table" when exact numbers matter more than visual patterns
-- Set `x_axis_key` to the field name for the x-axis (e.g., "startTime")
-- Set `series` to an array of objects with `key` and `label` for each data series
-- Always provide a clear, descriptive `title`
-- Only use render_chart for data that came from a single tool call. For computed or synthesized results, use a markdown table instead.
-
-## Large Results & Search
-When a tool result is too large to display, you'll see `_too_large` with a `_sample_item` showing available fields.
-Use `norm__search_tool_result` to search, sort, or find top items in large results:
-- **Text search**: provide `query` with a keyword (fuzzy matching). Keep it to the core keyword — e.g. "corona" not "corona beer boxes".
-- **Sort by value**: provide `sort_by` with a field name (e.g. "amount") and optionally `sort_order` ("desc" or "asc", default "desc"). No `query` needed.
-- **Top N**: provide `top_n` to limit results (default 20). Combine with `sort_by` to get e.g. "top 5 by amount".
-- **Combine**: search for a keyword AND sort the matches — e.g. query="Tuesday", sort_by="amount", sort_order="desc", top_n=10.
-Example: to find the 5 highest sales periods, use: sort_by="amount", sort_order="desc", top_n=5
+Default to **markdown tables** for data. Use `render_chart` when the user asks for a chart or the data clearly benefits from visualization.
+- Provide `source_tool_call_id` (the tool_use ID from the conversation) and a `title`. The chart type, axes, and series are auto-detected from the data — you don't need to specify them.
+- For computed or synthesized results, use a markdown table instead (render_chart only works with data from a single tool call).
 """
 
         # Add email capability guidance
@@ -301,9 +272,7 @@ Example: to find the 5 highest sales periods, use: sort_by="amount", sort_order=
                 )
             if has_system_email:
                 email_lines.append(
-                    "- **Report email** (`norm_email__send_report_email`): Email a formatted copy of your response to the user. "
-                    "Use when the user says 'email this to me' or when an automated task should email results. "
-                    "Just provide `to` and `subject` — your last response is automatically converted to a formatted email with tables and data."
+                    "- **Report email** (`norm_email__send_report_email`): Send your response as a formatted email. Just provide `to` and `subject`."
                 )
             if has_gmail and user_id:
                 cfg = (
@@ -338,10 +307,6 @@ Example: to find the 5 highest sales periods, use: sort_by="amount", sort_order=
             email_lines.append(
                 "\nUse report email to send data and results from Norm. Use the user's connected account (Gmail/Outlook) when the email should appear to come from them personally."
             )
-            if has_automated_tasks:
-                email_lines.append(
-                    "You can create automated tasks that send emails on a schedule (e.g., daily reports, weekly summaries)."
-                )
             system_prompt += "\n".join(email_lines)
 
         # Add venue guidance when multiple venues exist
@@ -520,8 +485,10 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
         )
 
     # Apply playbook tool filter — keep only tools in the filter list
+    # Always include utility tools regardless of filter
+    _ALWAYS_INCLUDE = {"resolve_dates"}  # search_tool_result injected on truncation
     if playbook and playbook.tool_filter:
-        allowed = set(playbook.tool_filter)
+        allowed = set(playbook.tool_filter) | _ALWAYS_INCLUDE
         anthropic_tools = [
             t
             for t in anthropic_tools

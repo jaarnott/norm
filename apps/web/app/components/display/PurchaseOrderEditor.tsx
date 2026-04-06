@@ -380,7 +380,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   const grandTotal = lines.reduce((sum, l) => sum + l.quantity * l.unit_price, 0);
   const hasPrice = lines.some(l => l.unit_price > 0);
   const interactive = !!onAction || !!workingDocId;
-  const isSubmitted = status === 'submitted' || status === 'approved' || status === 'processing';
+  const isSubmitted = status === 'submitted' || status === 'approved';
   const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.draft;
 
   // PATCH working document helper
@@ -544,6 +544,10 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
         setStatus('failed');
       } else {
         setStatus('submitted');
+        // Persist status to working document so it survives page refresh
+        if (workingDocId && threadId) {
+          patchDoc([{ op: 'set_status', value: 'submitted' }]);
+        }
       }
     } catch (e) {
       console.error('Submit failed:', e);
@@ -846,19 +850,28 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
         </div>
 
         {/* Submit */}
-        {interactive && !isSubmitted && (
+        {interactive && (
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button onClick={handleSubmit} disabled={saving || lines.length === 0} style={{
-              padding: '8px 24px', fontSize: '0.82rem', fontWeight: 600,
-              border: 'none', borderRadius: 8,
-              backgroundColor: lines.length === 0 ? '#e5e7eb' : '#111',
-              color: lines.length === 0 ? '#9ca3af' : '#fff',
-              cursor: saving || lines.length === 0 ? 'not-allowed' : 'pointer',
-              fontFamily: 'inherit',
-              transition: 'background-color 0.15s',
-            }}>{saving ? 'Placing order...' : 'Place Order'}</button>
+            <button
+              onClick={handleSubmit}
+              disabled={saving || isSubmitted || lines.length === 0}
+              style={{
+                padding: '8px 24px', fontSize: '0.82rem', fontWeight: 600,
+                border: 'none', borderRadius: 8,
+                backgroundColor: isSubmitted ? '#28a745' : lines.length === 0 ? '#e5e7eb' : '#111',
+                color: isSubmitted ? '#fff' : lines.length === 0 ? '#9ca3af' : '#fff',
+                cursor: saving || isSubmitted || lines.length === 0 ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
+                transition: 'background-color 0.15s',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}
+            >
+              {saving && <span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />}
+              {saving ? 'Sending...' : isSubmitted ? 'Sent \u2713' : 'Place Order'}
+            </button>
           </div>
         )}
+        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       </div>
 
       {/* Admin Debug Panel — stock items with variants */}

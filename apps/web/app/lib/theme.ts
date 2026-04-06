@@ -20,6 +20,7 @@ export const colors = {
   procurement: '#e2b94e',    // Golden yellow
   hr: '#7ca5c4',             // Soft blue
   time_attendance: '#8b7ec8', // Purple
+  marketing: '#e07c5a',      // Coral orange
   reports: '#7bc4a0',        // Green
   home: '#888',              // Neutral gray
   unknown: '#d4c4a8',        // Warm beige (unassigned)

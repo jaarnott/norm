@@ -62,6 +62,28 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
     componentProps: { agent_slug: 'reports' },
   },
+  // Marketing
+  {
+    id: 'dashboard-marketing',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    agent: 'marketing',
+    component: 'dashboard_view',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { agent_slug: 'marketing' },
+  },
+  {
+    id: 'tasks-marketing',
+    label: 'Tasks',
+    icon: Timer,
+    agent: 'marketing',
+    component: 'automated_task_board',
+    loadAction: {
+      connector: 'norm',
+      action: 'list_automated_tasks',
+      defaultParams: () => ({ agent_slug: 'marketing' }),
+    },
+  },
   // Time & Attendance
   {
     id: 'dashboard-time_attendance',

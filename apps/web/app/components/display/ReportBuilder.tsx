@@ -7,6 +7,7 @@ import Chart from './Chart';
 import DateRangePicker from './DateRangePicker';
 import ChartConfigPanel from './dashboard/ChartConfigPanel';
 import { Settings } from 'lucide-react';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 const ROW_HEIGHT = 40; // px per grid row
 const GRID_COLS = 24;
@@ -24,6 +25,7 @@ export default function ReportBuilder({ data }: Props) {
   const [titleDraft, setTitleDraft] = useState('');
   const [dateRange, setDateRange] = useState<{ start: string; end: string } | undefined>();
   const [inspectedChartId, setInspectedChartId] = useState<string | null>(null);
+  const { isMobile, isTablet } = useBreakpoint();
 
   const reportId = data?.report_id;
 
@@ -197,7 +199,7 @@ export default function ReportBuilder({ data }: Props) {
     <div data-testid="report-builder" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Header */}
       <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem',
         padding: '0.5rem 1rem', borderBottom: '1px solid #e2e8f0', backgroundColor: '#fafafa', flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -219,7 +221,7 @@ export default function ReportBuilder({ data }: Props) {
           )}
           <span style={{ fontSize: '0.7rem', color: '#aaa' }}>{report.charts.length} chart{report.charts.length !== 1 ? 's' : ''}</span>
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           {report.is_dashboard && (
             <span style={{ fontSize: '0.65rem', fontWeight: 600, color: '#4f8a5e', backgroundColor: '#f0faf2', padding: '2px 8px', borderRadius: 4 }}>
               Dashboard
@@ -304,16 +306,21 @@ export default function ReportBuilder({ data }: Props) {
             No charts yet. Ask Norm for data in the conversation below, then click &ldquo;+ Report&rdquo; on a chart to add it here.
           </div>
         ) : (
-          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <div style={isMobile ? {} : { overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           <div
             ref={gridRef}
-            style={{
+            style={isMobile ? {
+              display: 'flex',
+              flexDirection: 'column' as const,
+              gap: 8,
+              position: 'relative',
+            } : {
               display: 'grid',
-              gridTemplateColumns: `repeat(${GRID_COLS}, 1fr)`,
+              gridTemplateColumns: isTablet ? 'repeat(12, 1fr)' : `repeat(${GRID_COLS}, 1fr)`,
               gridAutoRows: ROW_HEIGHT,
               gap: 4,
               position: 'relative',
-              minWidth: 600,
+              ...(!isTablet ? { minWidth: 600 } : {}),
             }}
           >
             {layout.map(item => {
@@ -324,6 +331,8 @@ export default function ReportBuilder({ data }: Props) {
                   key={item.chart_id}
                   item={item}
                   chart={chart}
+                  isMobile={isMobile}
+                  isTablet={isTablet}
                   onResize={(patch) => updateGridItem(item.chart_id, patch)}
                   onDelete={() => setConfirmDelete(item.chart_id)}
                   onMoveStart={(e) => handleMoveStart(item.chart_id, e)}
@@ -411,10 +420,12 @@ export default function ReportBuilder({ data }: Props) {
 const MemoChart = React.memo(Chart);
 
 function GridChartCell({
-  item, chart, onResize, onDelete, onMoveStart, onInspect,
+  item, chart, isMobile, isTablet, onResize, onDelete, onMoveStart, onInspect,
 }: {
   item: ReportGridItem;
   chart: SavedReportChart;
+  isMobile: boolean;
+  isTablet: boolean;
   onResize: (patch: Partial<ReportGridItem>) => void;
   onDelete: () => void;
   onMoveStart: (e: React.MouseEvent) => void;
@@ -468,13 +479,21 @@ function GridChartCell({
     <div
       ref={cellRef}
       className="grid-chart-cell"
-      onMouseDown={(e) => {
+      onMouseDown={isMobile ? undefined : (e) => {
         const tag = (e.target as HTMLElement).tagName;
         const isInteractive = tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'LABEL';
         const isResizeHandle = (e.target as HTMLElement).closest('[data-resize-handle]');
         if (!isInteractive && !isResizeHandle) onMoveStart(e);
       }}
-      style={{
+      style={isMobile ? {
+        height: (item.rowSpan || 8) * ROW_HEIGHT,
+        width: '100%',
+        position: 'relative',
+      } : isTablet ? {
+        gridColumn: `1 / span ${Math.min(item.colSpan || 24, 12)}`,
+        gridRow: `${item.row} / span ${item.rowSpan}`,
+        position: 'relative',
+      } : {
         gridColumn: `${item.col} / span ${item.colSpan}`,
         gridRow: `${item.row} / span ${item.rowSpan}`,
         position: 'relative',
@@ -505,8 +524,8 @@ function GridChartCell({
         className="cell-chart-border"
       />
 
-      {/* Resize handles — always mounted, visibility driven by CSS :hover */}
-      <div className="cell-resize-handles">
+      {/* Resize handles — hidden on mobile */}
+      {!isMobile && <div className="cell-resize-handles">
         <div data-resize-handle onMouseDown={handleResize({ right: true })}
           style={{ position: 'absolute', top: 0, right: 0, width: 6, bottom: 0, cursor: 'col-resize', zIndex: 1 }}>
           <div style={{ position: 'absolute', top: '50%', right: 0, transform: 'translateY(-50%)', width: 3, height: 24, backgroundColor: '#ccc', borderRadius: 2 }} />
@@ -531,7 +550,7 @@ function GridChartCell({
           style={{ position: 'absolute', top: 0, right: 0, width: 10, height: 10, cursor: 'nesw-resize', zIndex: 2 }} />
         <div data-resize-handle onMouseDown={handleResize({ left: true, bottom: true })}
           style={{ position: 'absolute', bottom: 0, left: 0, width: 10, height: 10, cursor: 'nesw-resize', zIndex: 2 }} />
-      </div>
+      </div>}
     </div>
   );
 }

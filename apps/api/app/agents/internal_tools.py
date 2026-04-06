@@ -717,6 +717,83 @@ Rules:
 # ---------------------------------------------------------------------------
 
 
+def _auto_detect_chart_config(
+    rows: list[dict],
+    x_axis_key: str | None = None,
+    series: list | None = None,
+    chart_type: str | None = None,
+    field_labels: dict | None = None,
+) -> tuple[str, list, str, dict]:
+    """Infer chart configuration from data shape when the LLM doesn't specify.
+
+    Returns (x_axis_key, series, chart_type, field_labels).
+    """
+    if not rows or not isinstance(rows[0], dict):
+        return x_axis_key or "", series or [], chart_type or "bar", field_labels or {}
+
+    labels = dict(field_labels or {})
+    keys = list(rows[0].keys())
+    # Separate fields by type
+    date_keys = [k for k in keys if "time" in k.lower() or "date" in k.lower()]
+    label_keys = [
+        k
+        for k in keys
+        if k in ("label", "name", "staff", "category", "group", "venue")
+        or k.endswith("_name")
+    ]
+    numeric_keys = [
+        k
+        for k in keys
+        if isinstance(rows[0].get(k), (int, float))
+        and k not in ("id", "count")
+        and not k.startswith("_")
+    ]
+    # Exclude internal fields
+    numeric_keys = [k for k in numeric_keys if k not in date_keys]
+
+    # Determine x-axis
+    if not x_axis_key:
+        if date_keys:
+            x_axis_key = date_keys[0]
+        elif label_keys:
+            x_axis_key = label_keys[0]
+        elif keys:
+            x_axis_key = keys[0]
+        else:
+            x_axis_key = ""
+
+    # Determine series (numeric fields that aren't the x-axis)
+    if not series:
+        series_keys = [k for k in numeric_keys if k != x_axis_key]
+        if not series_keys and numeric_keys:
+            series_keys = numeric_keys[:3]
+        series = [{"key": k, "label": labels.get(k, k)} for k in series_keys[:4]]
+
+    # Determine chart type
+    if not chart_type:
+        if date_keys and x_axis_key in date_keys:
+            chart_type = "line" if len(rows) > 5 else "bar"
+        elif label_keys and x_axis_key in label_keys:
+            chart_type = "bar"
+        else:
+            chart_type = "bar"
+
+    # Auto-generate labels for common field names
+    _label_map = {
+        "startTime": "Date",
+        "amount": "Sales ($)",
+        "invoices": "Sales ($)",
+        "quantity": "Quantity",
+        "count": "Count",
+        "label": "Name",
+    }
+    for k in [x_axis_key] + [s["key"] if isinstance(s, dict) else s for s in series]:
+        if k and k not in labels and k in _label_map:
+            labels[k] = _label_map[k]
+
+    return x_axis_key, series, chart_type, labels
+
+
 @register("norm_reports", "render_chart")
 def _render_chart(params: dict, db: Session, thread_id: str | None) -> dict:
     """Render a chart by referencing a prior tool call's data.
@@ -804,13 +881,27 @@ def _render_chart(params: dict, db: Session, thread_id: str | None) -> dict:
         except (json.JSONDecodeError, TypeError):
             field_labels = {}
 
-    # Chart config
+    # Chart config — auto-detect from data if the LLM didn't specify
     title = params.get("title", "Chart")
-    chart_type = params.get("chart_type", "bar")
-    x_axis_key = params.get("x_axis_key", "")
-    x_axis_label = params.get("x_axis_label", field_labels.get(x_axis_key, x_axis_key))
-    series = params.get("series", [])
+    chart_type = params.get("chart_type")
+    x_axis_key = params.get("x_axis_key")
+    series = params.get("series")
     orientation = params.get("orientation", "vertical")
+
+    # Auto-detect chart configuration from data shape
+    if rows and (not x_axis_key or not series):
+        x_axis_key, series, chart_type, field_labels = _auto_detect_chart_config(
+            rows,
+            x_axis_key=x_axis_key,
+            series=series,
+            chart_type=chart_type,
+            field_labels=field_labels,
+        )
+
+    chart_type = chart_type or "bar"
+    x_axis_key = x_axis_key or ""
+    series = series or []
+    x_axis_label = params.get("x_axis_label", field_labels.get(x_axis_key, x_axis_key))
 
     default_colors = [
         "#d4c4ae",

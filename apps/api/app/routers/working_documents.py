@@ -82,16 +82,18 @@ async def patch_document(
     doc.version += 1
     doc.updated_at = datetime.now(timezone.utc)
 
-    # Track pending ops for sync
-    pending = doc.pending_ops or []
-    pending.extend(body.ops)
-    doc.pending_ops = pending
-    flag_modified(doc, "pending_ops")
+    # Track pending ops for sync (exclude set_status — it's local-only)
+    syncable_ops = [o for o in body.ops if o.get("op") != "set_status"]
+    if syncable_ops:
+        pending = doc.pending_ops or []
+        pending.extend(syncable_ops)
+        doc.pending_ops = pending
+        flag_modified(doc, "pending_ops")
 
-    if doc.sync_mode == "auto":
-        doc.sync_status = "dirty"
-    elif doc.sync_mode == "submit":
-        doc.sync_status = "pending_submit"
+        if doc.sync_mode == "auto":
+            doc.sync_status = "dirty"
+        elif doc.sync_mode == "submit":
+            doc.sync_status = "pending_submit"
 
     db.commit()
     db.refresh(doc)
@@ -351,6 +353,12 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
     Supports roster operations (shifts) and order operations (lines).
     """
     op_type = op.get("op", "")
+
+    # --- Status operations ---
+    if op_type == "set_status":
+        if isinstance(data, dict):
+            data["status"] = op.get("value", "draft")
+        return data
 
     # --- Order metadata operations ---
     if op_type == "update_notes":

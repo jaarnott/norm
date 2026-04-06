@@ -406,6 +406,13 @@ def _execute_loop(
                     summary_fields=summary_fields,
                     search_available=search_available,
                 )
+                # Inject search tool on first truncation
+                if '"_too_large": true' in slimmed and not search_available:
+                    search_def = _build_search_tool_schema()
+                    if search_def:
+                        anthropic_tools.append(search_def)
+                        search_available = True
+
                 # Only store slimmed_content if actual slimming occurred
                 raw_serialized = json.dumps(result)
                 tc.slimmed_content = slimmed if slimmed != raw_serialized else None
@@ -1120,6 +1127,52 @@ def _truncate_tool_result(content: str) -> str:
     return content[:MAX_TOOL_RESULT_CHARS] + "\n\n[... truncated — result too large]"
 
 
+def _build_search_tool_schema() -> dict:
+    """Build the Anthropic tool schema for norm__search_tool_result.
+
+    Called dynamically when a tool result is truncated — avoids including
+    the search tool in every request's tool list.
+    """
+    return {
+        "name": "norm__search_tool_result",
+        "description": (
+            "[GET] Search, sort, or find top items in a large tool result. "
+            "Use query for text search, sort_by for numeric sorting, or both."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tool_call_id": {
+                    "type": "string",
+                    "description": "The tool_use ID of the tool call to search",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search keyword (fuzzy matching)",
+                },
+                "sort_by": {
+                    "type": "string",
+                    "description": "Field name to sort by (e.g. 'amount')",
+                },
+                "sort_order": {
+                    "type": "string",
+                    "description": "'desc' (default) or 'asc'",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "description": "Max results to return (default 20)",
+                },
+                "fields": {
+                    "type": "string",
+                    "description": "Comma-separated field names to include in results",
+                },
+            },
+            "required": ["tool_call_id"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def _truncate_nested_arrays(obj, max_items: int = 3):
     """Recursively truncate nested arrays to max_items for preview/sample purposes."""
     if isinstance(obj, dict):
@@ -1193,9 +1246,11 @@ def _slim_tool_result(
             "_tool_call_id": tool_call_id,
             "success": raw_result.get("success"),
             "message": (
-                f"Result contains {len(data)} items and is too large to display. "
-                f"Use norm__search_tool_result with tool_call_id '{tool_call_id}' "
-                f"and a search query to find specific items. Search uses fuzzy matching."
+                f"Result contains {len(data)} items. Use norm__search_tool_result with tool_call_id='{tool_call_id}' to search or sort:\n"
+                f"- Text search: query='keyword' (fuzzy matching, keep to core keyword e.g. 'corona' not 'corona beer')\n"
+                f"- Sort by value: sort_by='amount', sort_order='desc' (or 'asc')\n"
+                f"- Top N: top_n=5 to limit results\n"
+                f"- Combine: query='keyword', sort_by='amount', top_n=10"
             ),
         }
     )

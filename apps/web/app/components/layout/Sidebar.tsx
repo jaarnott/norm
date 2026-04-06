@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Home, Package, UserRound, Clock, BarChart3, Settings, LogOut, Menu, X, type LucideIcon } from 'lucide-react';
+import { Home, Package, UserRound, Clock, BarChart3, Megaphone, Settings, LogOut, Menu, X, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 
@@ -17,6 +17,7 @@ export const AGENTS: AgentTab[] = [
   { id: 'procurement', label: 'Procurement', icon: Package, color: colors.procurement },
   { id: 'hr', label: 'HR', icon: UserRound, color: colors.hr },
   { id: 'time_attendance', label: 'Time & Att.', icon: Clock, color: colors.time_attendance },
+  { id: 'marketing', label: 'Marketing', icon: Megaphone, color: colors.marketing },
   { id: 'reports', label: 'Reports', icon: BarChart3, color: colors.reports },
 ];
 
