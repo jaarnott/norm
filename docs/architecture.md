@@ -239,14 +239,24 @@ The consolidator config contains a `function_code` key with a Python function th
 2. Matches rostered shifts with clockin entries by staff member + day
 3. Returns flat rows per day with rostered/actual hours/cost, no-shows, unrostered clockins
 
-### Legacy step-based
-Uses `steps` array with template variables (`{{step_id.field}}`). Being migrated to function-based.
+### Building consolidators — gotchas
 
-**Dashboard integration:** Consolidators work seamlessly in dashboard charts. The `execute_connector_tool()` function detects `consolidator_config` and routes to `execute_consolidator()` instead of `execute_spec()`. The dashboard test panel shows consolidator execution logs.
+The function runs in a sandboxed `exec()` environment. Key restrictions:
+
+- **No `import` statements** — `datetime`, `json`, `math` are pre-injected into the namespace
+- **`strftime()` fails** — it internally calls `__import__` which the sandbox blocks. Format dates manually: `MONTHS = {1: "Jan", 2: "Feb", ...}; day.isoformat()` works fine
+- **Max 20 API calls** — use efficient strategies. For time-window analysis, fetch monthly hourly data (few calls) and filter/sum server-side instead of per-day API calls
+- **`call_api_parallel`** — max 20 concurrent workers. Available as the 4th arg: `def run(params, call_api, log, call_api_parallel)`
+- **`f-strings` work**, but avoid complex expressions inside `{}`
+- **No file I/O, no network** except through `call_api`
+
+### Dashboard integration
+
+Consolidators work seamlessly in dashboard charts. `execute_connector_tool()` detects `consolidator_config` and routes to `execute_consolidator()` → `execute_function()`.
 
 **Key files:**
-- `app/agents/internal_tools.py` — `execute_consolidator()`
-- `app/connectors/function_executor.py` — sandboxed Python execution
+- `app/agents/internal_tools.py` — `execute_consolidator()` (dispatches to function executor)
+- `app/connectors/function_executor.py` — sandboxed Python execution with `call_api`, `log`, `call_api_parallel`
 - `app/connectors/tool_executor.py` — consolidator detection + routing
 
 ---

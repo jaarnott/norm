@@ -411,6 +411,11 @@ def _execute_loop(
                     search_def = _build_search_tool_schema()
                     if search_def:
                         anthropic_tools.append(search_def)
+                        tool_meta["norm__search_tool_result"] = {
+                            "method": "GET",
+                            "connector": "norm",
+                            "action": "search_tool_result",
+                        }
                         search_available = True
 
                 # Only store slimmed_content if actual slimming occurred

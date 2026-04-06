@@ -430,13 +430,13 @@ def _build_tools_context(config_db: Session) -> str:
     return "\n".join(tools_context)
 
 
-_TEMPLATE_VARS_TEXT = """- {{today_iso}} — today's date in ISO format with timezone (e.g., 2026-03-21T00:00:00%2B13:00)
-- {{four_weeks_ago_iso}} — 4 weeks ago in same format
-- {{one_week_ago_iso}} — 1 week ago in same format
-- {{today}} — today's date as YYYY-MM-DD
-- {{<any_input_param>}} — any field from required_fields
-- {{step_id.field}} — reference a field from a completed step's result (auto-skips into .data wrapper). Parallel steps cannot reference each other — only steps that ran before the parallel group.
-- {{step_id.nested.field}} — dotted path navigation; use [N] for array indexing e.g. {{step.items[0].id}}"""
+_CONSOLIDATOR_GOTCHAS_TEXT = """IMPORTANT — known sandbox restrictions:
+- NO import statements — datetime, json, math are pre-injected into scope
+- strftime() FAILS (uses __import__ internally) — format dates manually with dicts e.g. MONTHS = {1: "Jan", ...}
+- f-strings work but date.isoformat() is safe to use for ISO format strings
+- call_api_parallel(calls) for concurrent API calls — max 20 workers, batches of 20 calls
+- Max 20 total API calls per execution — use efficient strategies (fetch monthly hourly data + filter, not per-day calls)
+- For 4-arg functions: def run(params, call_api, log, call_api_parallel)"""
 
 _CONFIG_SCHEMA_TEXT = """- action: a snake_case name for this consolidator tool
 - description: what this tool does (shown to the LLM)
@@ -508,7 +508,7 @@ Available connector tools:
 {tools_text}
 
 Template variables available:
-{_TEMPLATE_VARS_TEXT}
+{_CONSOLIDATOR_GOTCHAS_TEXT}
 
 Generate a JSON object with these fields:
 {_CONFIG_SCHEMA_TEXT}
@@ -552,7 +552,7 @@ Available connector tools:
 {tools_text}
 
 Template variables available:
-{_TEMPLATE_VARS_TEXT}
+{_CONSOLIDATOR_GOTCHAS_TEXT}
 
 Current tool definition:
 {current_json}
@@ -657,7 +657,7 @@ Available connector tools:
 {tools_text}
 
 Template variables available:
-{_TEMPLATE_VARS_TEXT}
+{_CONSOLIDATOR_GOTCHAS_TEXT}
 
 Generate a JSON object with these fields:
 {_CONFIG_SCHEMA_TEXT}
@@ -751,7 +751,7 @@ Available connector tools:
 {tools_text}
 
 Template variables available:
-{_TEMPLATE_VARS_TEXT}
+{_CONSOLIDATOR_GOTCHAS_TEXT}
 
 Current tool definition:
 {json_mod.dumps(tool_config, indent=2)}
@@ -1006,7 +1006,7 @@ async def consolidator_chat(
 You have DIRECT ACCESS to all the connector tools listed below. You can call them to explore the APIs, see response shapes, and understand what data is available.
 
 Template variables available in params:
-{_TEMPLATE_VARS_TEXT}
+{_CONSOLIDATOR_GOTCHAS_TEXT}
 
 Consolidator config schema:
 {_CONFIG_SCHEMA_TEXT}

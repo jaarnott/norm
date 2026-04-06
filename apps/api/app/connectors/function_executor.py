@@ -251,7 +251,7 @@ def execute_function(
                 worker_db.close()
 
         t0_parallel = time.time()
-        with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+        with ThreadPoolExecutor(max_workers=min(len(calls), 20)) as pool:
             futures = list(pool.map(_worker, calls))
         total_ms = int((time.time() - t0_parallel) * 1000)
 
