@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, memo } from 'react';
-import { Package, UserRound, BarChart3, HelpCircle, Timer, type LucideIcon } from 'lucide-react';
+import { Timer } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -10,30 +10,7 @@ import ActivityTimeline from './ActivityTimeline';
 import DisplayBlockRenderer, { FULL_WIDTH_COMPONENTS } from '../display/DisplayBlockRenderer';
 import SplitDragHandle from '../layout/SplitDragHandle';
 import { useSplitPane } from '../../hooks/useSplitPane';
-import { colors } from '../../lib/theme';
-
-const DOMAIN_ICONS: Record<string, LucideIcon> = {
-  procurement: Package,
-  hr: UserRound,
-  reports: BarChart3,
-};
-
-function getDomainColor(domain: string): string {
-  return (colors as unknown as Record<string, string>)[domain] || colors.unknown;
-}
-
-const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
-  awaiting_approval: { bg: '#fff3cd', color: '#856404' },
-  awaiting_tool_approval: { bg: '#e8daef', color: '#6c3483' },
-  awaiting_user_input: { bg: '#f5f0ea', color: '#8a7356' },
-  needs_clarification: { bg: '#f5f0ea', color: '#8a7356' },
-};
-
-const ss = (s: string) => STATUS_STYLES[s] || { bg: '#e2e3e5', color: '#383d41' };
-
-function getThreadTitle(thread: Thread): string {
-  return thread.title || '';
-}
+import { getStoredUser } from '../../lib/api';
 
 // -- Tab types --
 
@@ -444,17 +421,17 @@ function ToolCallHistory({ toolCalls }: { toolCalls: ToolCallRecord[] }) {
 
 // -- Conversation extras (thinking, approvals, summary cards) --
 
-function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTerminal }: {
+function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTerminal, isAdmin }: {
   task: Thread; loading: boolean; onAction: (threadId: string, action: string) => void;
-  isProcurement: boolean; isHr: boolean; isTerminal: boolean;
+  isProcurement: boolean; isHr: boolean; isTerminal: boolean; isAdmin: boolean;
 }) {
   return (
     <>
       {loading && task.thinking_steps && task.thinking_steps.length > 0 && (
         <ThinkingSteps steps={task.thinking_steps} isStreaming={loading} />
       )}
-      {/* Tool approval is now handled inline via ToolApprovalCard display block */}
-      {task.tool_calls && task.tool_calls.filter(tc => tc.status === 'executed' || tc.status === 'failed').length > 0 &&
+      {/* Tool call history — admin only */}
+      {isAdmin && task.tool_calls && task.tool_calls.filter(tc => tc.status === 'executed' || tc.status === 'failed').length > 0 &&
         (() => { try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; } })() && (
         <ToolCallHistory toolCalls={task.tool_calls.filter(tc => tc.status === 'executed' || tc.status === 'failed')} />
       )}
@@ -826,10 +803,9 @@ interface ThreadDetailProps {
 }
 
 export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend, loading, openThread }: ThreadDetailProps) {
+  const storedUser = getStoredUser();
+  const isAdmin = storedUser?.role === 'admin';
   const [activeTab, setActiveTab] = useState<TabKey>('conversation');
-  const dc = getDomainColor(thread.domain);
-  const DomainIcon = DOMAIN_ICONS[thread.domain] || HelpCircle;
-  const stl = ss(thread.status);
   const isProcurement = thread.domain === 'procurement';
   const isHr = thread.domain === 'hr';
   const isTerminal = thread.status === 'submitted' || thread.status === 'rejected';
@@ -895,36 +871,17 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
       backgroundColor: '#fff',
       userSelect: isDragging ? 'none' : undefined,
     }}>
-      {/* Header — hidden when split layout is active */}
+      {/* Header — minimal: only AutomatedTaskHeader + admin tabs if needed */}
       {!hasSplitLayout && (
         <div data-split-header style={{
-          padding: '1rem 1.5rem 0',
-          borderBottom: '1px solid #eee',
+          ...(thread.automated_task || isAdmin ? { borderBottom: '1px solid #eee' } : {}),
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
-            <DomainIcon size={18} strokeWidth={1.75} style={{ color: dc }} />
-            <span style={{
-              fontSize: '0.72rem', fontWeight: 600, color: dc,
-              textTransform: 'uppercase', letterSpacing: '0.04em',
-            }}>
-              {thread.domain}
-            </span>
-            <span style={{
-              fontSize: '0.65rem', fontWeight: 600,
-              padding: '0.15rem 0.5rem', borderRadius: 10,
-              backgroundColor: stl.bg, color: stl.color,
-              textTransform: 'capitalize', marginLeft: 'auto',
-            }}>
-              {thread.status.replace(/_/g, ' ')}
-            </span>
-          </div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', marginBottom: thread.automated_task ? '0.3rem' : '0.6rem' }}>
-            {getThreadTitle(thread)}
-          </div>
           {thread.automated_task && (
-            <AutomatedTaskHeader at={thread.automated_task} onUpdate={() => onAction(thread.id, 'reload')} onRun={onSend} />
+            <div style={{ padding: '0.5rem 1.5rem 0' }}>
+              <AutomatedTaskHeader at={thread.automated_task} onUpdate={() => onAction(thread.id, 'reload')} onRun={onSend} />
+            </div>
           )}
-          {tabsRow}
+          {isAdmin && tabsRow}
         </div>
       )}
       {/* Minimal header for split pane (needed for useSplitPane to find) */}
@@ -964,7 +921,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
             overflow: 'hidden',
             minHeight: 0,
           }}>
-            {tabsRow}
+            {isAdmin && tabsRow}
             <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
               {activeTab === 'conversation' && (
                 <>
@@ -975,7 +932,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
                     hideFullWidthBlocks
                   />
                   <div style={{ maxWidth: 768, margin: '0 auto' }}>
-                    <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+                    <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} isAdmin={!!isAdmin} />
                   </div>
                 </>
               )}
@@ -1002,7 +959,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
                   threadId={thread.id}
                 />
                 <div style={{ maxWidth: 768, margin: '0 auto' }}>
-                  <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} />
+                  <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} isAdmin={!!isAdmin} />
                 </div>
               </>
             )}
