@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { apiFetch } from '../../lib/api';
 import type { ConversationMessage, LlmCall, ToolCallRecord } from '../../types';
 
 function classifyMessage(msg: ConversationMessage, index: number): {
@@ -131,7 +132,7 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
         </DetailBox>
       ) : (
         <div style={{ color: '#bbb', fontSize: '0.7rem', marginBottom: '0.5rem', fontStyle: 'italic' }}>
-          System prompt not available (open Activity tab after the call completes to load full data)
+          Loading system prompt...
         </div>
       )}
 
@@ -294,6 +295,7 @@ interface ActivityTimelineProps {
   messages: ConversationMessage[];
   createdAt: string;
   domain: string;
+  threadId?: string;
   llmCalls?: LlmCall[];
   toolCalls?: ToolCallRecord[];
   thinkingSteps?: string[];
@@ -309,9 +311,32 @@ const LLM_CALL_TYPE_LABELS: Record<string, string> = {
   spec_generation: 'Spec generation LLM call',
 };
 
-export default function ActivityTimeline({ messages, createdAt, domain, llmCalls, toolCalls, thinkingSteps, approval, integrationRun }: ActivityTimelineProps) {
+export default function ActivityTimeline({ messages, createdAt, domain, threadId, llmCalls, toolCalls, thinkingSteps, approval, integrationRun }: ActivityTimelineProps) {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
+  // Enriched LLM calls — keyed by call ID, populated lazily when any call lacks system_prompt
+  const [enrichedCalls, setEnrichedCalls] = useState<Record<string, LlmCall>>({});
+  const fetchingRef = useRef(false);
+
+  // Fetch full call data if any displayed llm_call is missing system_prompt
+  const needsFetch = (llmCalls || []).some(c => !c.system_prompt);
+
+  useEffect(() => {
+    if (!needsFetch || !threadId || fetchingRef.current) return;
+    fetchingRef.current = true;
+    apiFetch(`/api/threads/${threadId}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data) {
+          const calls: LlmCall[] = data.llm_calls || [];
+          const byId: Record<string, LlmCall> = {};
+          for (const c of calls) byId[c.id] = c;
+          setEnrichedCalls(byId);
+        }
+      })
+      .catch(() => {})
+      .finally(() => { fetchingRef.current = false; });
+  }, [needsFetch, threadId]);
 
   const summary = useMemo(() => {
     const calls = llmCalls || [];
@@ -335,10 +360,15 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
 
   if (!messages || messages.length === 0) return null;
 
-  const toggle = (id: string) => {
+  const toggle = (id: string, callId?: string) => {
     setExpandedItems(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+        // useEffect handles fetching full data when system_prompt is missing
+      }
       return next;
     });
   };
@@ -524,9 +554,12 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
           if (evt.type === 'llm') {
             const key = `llm-${evt.call.id}`;
             const isExpanded = expandedItems.has(key);
+            // Use enriched call data if available (has system_prompt etc.)
+            const enrichedCall = enrichedCalls[evt.call.id];
+            const displayCall = enrichedCall ?? evt.call;
             return (
               <div key={key} style={{ marginBottom: '0.5rem', position: 'relative', marginLeft: evt.nested ? '1.5rem' : 0 }}>
-                <div onClick={() => toggle(key)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
+                <div onClick={() => toggle(key, evt.call.id)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
                   <div style={{
                     position: 'absolute', left: '-1.15rem', top: 2,
                     width: evt.nested ? 6 : 8, height: evt.nested ? 6 : 8, borderRadius: '50%',
@@ -535,21 +568,21 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
                   }} />
                   <div style={{ flex: 1 }}>
                     <span style={{ fontSize: '0.78rem', color: '#333' }}>{evt.icon} {evt.label}</span>
-                    <span style={{ fontSize: '0.65rem', color: '#aaa', marginLeft: '0.35rem' }}>{evt.call.model}</span>
-                    {evt.call.duration_ms != null && (
+                    <span style={{ fontSize: '0.65rem', color: '#aaa', marginLeft: '0.35rem' }}>{displayCall.model}</span>
+                    {displayCall.duration_ms != null && (
                       <span style={{
                         fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
                         borderRadius: 8, backgroundColor: '#fefcbf', color: '#975a16', marginLeft: '0.4rem',
                       }}>
-                        {evt.call.duration_ms}ms
+                        {displayCall.duration_ms}ms
                       </span>
                     )}
-                    {evt.call.input_tokens != null && (
+                    {displayCall.input_tokens != null && (
                       <span style={{
                         fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
                         borderRadius: 8, backgroundColor: '#f0f0f0', color: '#666', marginLeft: '0.3rem',
                       }}>
-                        {((evt.call.input_tokens ?? 0) + (evt.call.output_tokens ?? 0)).toLocaleString()} tokens
+                        {((displayCall.input_tokens ?? 0) + (displayCall.output_tokens ?? 0)).toLocaleString()} tokens
                       </span>
                     )}
                   </div>
@@ -557,7 +590,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, llmCalls
                     {evt.time}
                   </span>
                 </div>
-                {isExpanded && <LlmCallDetail call={evt.call} />}
+                {isExpanded && <LlmCallDetail call={displayCall} />}
               </div>
             );
           }

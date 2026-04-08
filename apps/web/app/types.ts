@@ -205,8 +205,8 @@ export interface LlmCall {
   id: string;
   call_type: 'routing' | 'interpretation' | 'execution' | 'spec_generation' | 'tool_use';
   model: string;
-  system_prompt: string;
-  user_prompt: string;
+  system_prompt: string | null | undefined;
+  user_prompt: string | null | undefined;
   raw_response: string | null;
   parsed_response: Record<string, unknown> | null;
   status: 'success' | 'error';

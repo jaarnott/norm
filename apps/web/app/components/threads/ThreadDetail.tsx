@@ -865,7 +865,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
 
   return (
     <div ref={containerRef} style={{
-      height: '100vh',
+      height: '100dvh',
       display: 'flex',
       flexDirection: 'column',
       backgroundColor: '#fff',
@@ -939,6 +939,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
               {activeTab === 'details' && <DetailsView task={thread} onAction={onAction} />}
               {activeTab === 'activity' && (
                 <ActivityTimeline messages={messages} createdAt={thread.created_at} domain={thread.domain}
+                  threadId={thread.id}
                   llmCalls={thread.llm_calls}
                   toolCalls={thread.tool_calls}
                   thinkingSteps={thread.thinking_steps}
@@ -966,6 +967,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
             {activeTab === 'details' && <DetailsView task={thread} onAction={onAction} />}
             {activeTab === 'activity' && (
               <ActivityTimeline messages={messages} createdAt={thread.created_at} domain={thread.domain}
+                threadId={thread.id}
                 llmCalls={thread.llm_calls}
                 toolCalls={thread.tool_calls}
                 thinkingSteps={thread.thinking_steps}
