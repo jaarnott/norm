@@ -360,15 +360,10 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
 
   if (!messages || messages.length === 0) return null;
 
-  const toggle = (id: string, callId?: string) => {
+  const toggle = (id: string) => {
     setExpandedItems(prev => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-        // useEffect handles fetching full data when system_prompt is missing
-      }
+      if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   };
@@ -559,7 +554,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
             const displayCall = enrichedCall ?? evt.call;
             return (
               <div key={key} style={{ marginBottom: '0.5rem', position: 'relative', marginLeft: evt.nested ? '1.5rem' : 0 }}>
-                <div onClick={() => toggle(key, evt.call.id)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
+                <div onClick={() => toggle(key)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
                   <div style={{
                     position: 'absolute', left: '-1.15rem', top: 2,
                     width: evt.nested ? 6 : 8, height: evt.nested ? 6 : 8, borderRadius: '50%',

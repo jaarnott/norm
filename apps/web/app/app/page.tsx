@@ -521,6 +521,7 @@ export default function Home() {
 
   const handleSelectThreadMobile = useCallback((id: string) => {
     setSelectedThreadId(id);
+    setActivePage(null);
     setMobileView('detail');
   }, []);
 
@@ -770,7 +771,7 @@ export default function Home() {
         <ThreadList
           threads={threads}
           selectedId={selectedThreadId}
-          onSelectThread={setSelectedThreadId}
+          onSelectThread={(id) => { setSelectedThreadId(id); if (activePage) setActivePage(null); }}
           onRemoveThread={removeThread}
           activeAgent={activeAgent}
           filter={filter}

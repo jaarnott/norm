@@ -47,3 +47,6 @@ infra/terraform/*.tfplan
 infra/terraform/tfplan
 infra/terraform/*.tfstate
 infra/terraform/.terraform.lock.hcl
+
+# Claude Code local settings (per-developer permissions)
+.claude/settings.local.json

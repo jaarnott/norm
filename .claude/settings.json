@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"exit: $?\")",
+      "Bash(curl -s http://localhost:8000/api/v1/agent-configs/)",
+      "Bash(python3 -c \"import sys,json; configs=json.load\\(sys.stdin\\); print\\(json.dumps\\([{'id': c['id'], 'name': c['name']} for c in configs], indent=2\\)\\)\")",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(.venv/bin/python -c ':*)",
+      "Bash(docker start:*)",
+      "Bash(docker compose:*)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

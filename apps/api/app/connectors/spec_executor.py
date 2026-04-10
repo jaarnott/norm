@@ -7,6 +7,7 @@ Supports two execution modes:
 
 import json
 import logging
+import re
 from dataclasses import dataclass, asdict
 
 import httpx
@@ -142,11 +143,13 @@ def render_request(
     )
     url = base_url.rstrip("/") + path
 
-    # URL-encode '+' in query parameter values (e.g., +13:00 → %2B13:00)
-    # The '+' sign means space in URL query strings, so it must be percent-encoded.
+    # URL-encode '+' ONLY when it appears in an ISO 8601 timezone offset
+    # (e.g. "T08:30:45+13:00" → "T08:30:45%2B13:00"). Literal '+' in other
+    # parameters (search terms, filters, etc.) is preserved.
     if "?" in url:
         base_part, qs = url.split("?", 1)
-        url = base_part + "?" + qs.replace("+", "%2B")
+        qs = re.sub(r"(\d{2}:\d{2}:\d{2})\+(\d{1,2}:\d{2})", r"\1%2B\2", qs)
+        url = base_part + "?" + qs
 
     if ":///" in url:
         raise ValueError(
@@ -407,8 +410,6 @@ def execute_via_agent(
 
 def _normalize_fields(extracted_fields: dict, operation: dict) -> dict:
     """Normalize field values to fix common LLM formatting mistakes."""
-    import re
-
     field_descs = operation.get("field_descriptions", {})
     normalized = dict(extracted_fields)
     for key, value in normalized.items():

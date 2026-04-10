@@ -9,15 +9,14 @@ logger = logging.getLogger(__name__)
 
 
 def _collect_tools(
-    domain: str,
     db: Session,
     user_id: str | None = None,
     config_db: Session | None = None,
 ) -> list[dict]:
-    """Collect all enabled tools from connector specs bound to a domain agent.
+    """Collect all enabled tools from all connector specs.
 
-    Returns a list of dicts with keys: action, connector, required_fields,
-    field_mapping, method, description.
+    Returns a deduplicated list of dicts with keys: action, connector,
+    required_fields, field_mapping, method, description.
 
     config_db is used for AgentConnectorBinding and ConnectorSpec queries.
     db is used for ConnectorConfig (credentials) queries.
@@ -33,7 +32,6 @@ def _collect_tools(
     bindings = (
         _cdb.query(AgentConnectorBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == domain,
             AgentConnectorBinding.enabled == True,  # noqa: E712
         )
         .all()
@@ -113,7 +111,15 @@ def _collect_tools(
                 }
             )
 
-    return tools
+    # Deduplicate — same connector+action may appear in multiple agent bindings
+    seen: set[tuple[str, str]] = set()
+    unique_tools: list[dict] = []
+    for t in tools:
+        key = (t["connector"], t["action"])
+        if key not in seen:
+            seen.add(key)
+            unique_tools.append(t)
+    return unique_tools
 
 
 def build_dynamic_prompt(
@@ -129,7 +135,7 @@ def build_dynamic_prompt(
         raise RuntimeError(
             "config_db is required — check that config_db is passed through the call chain"
         )
-    tools = _collect_tools(domain, db, config_db=_cdb)
+    tools = _collect_tools(db, config_db=_cdb)
     if not tools:
         return None
 
@@ -148,11 +154,15 @@ def build_tool_definitions(
     config_db: Session | None = None,
     page_context: dict | None = None,
     playbook=None,
+    tool_filter: list[str] | None = None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
     Returns (system_prompt, anthropic_tools) where anthropic_tools is a list
     of tool dicts in the format expected by the Anthropic tool-use API.
+
+    tool_filter takes priority over playbook.tool_filter, which takes priority
+    over the agent's default (derived from its connector bindings).
 
     Returns ("", []) if no tools are bound.
     """
@@ -161,7 +171,7 @@ def build_tool_definitions(
         raise RuntimeError(
             "config_db is required — check that config_db is passed through the call chain"
         )
-    tools = _collect_tools(domain, db, user_id=user_id, config_db=_cdb)
+    tools = _collect_tools(db, user_id=user_id, config_db=_cdb)
     if not tools:
         return "", []
 
@@ -236,7 +246,8 @@ Today's date is {today_str}.
 
 ## Automated Tasks
 When a user asks to do something regularly or automatically, first execute the request so they can see the result, then offer to save it as an automated task.
-Call `create_automated_task` with `intent` (describe what to do — be specific with names and venues) and `agent_slug`. Schedule and prompt are auto-generated.
+Call `create_automated_task` with `intent` (describe what to do — be specific with names and venues). The `agent_slug` is auto-detected from the current agent. Schedule and prompt are auto-generated.
+After creating a task, tell the user which agent/domain it was created under (from the response's `agent_slug`) so they can find it in the Tasks page.
 """
 
         # Add chart visualization guidance if render_chart tool is available
@@ -484,16 +495,45 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             }
         )
 
-    # Apply playbook tool filter — keep only tools in the filter list
-    # Always include utility tools regardless of filter
+    # Unified tool filtering — priority: explicit tool_filter > playbook > agent default
     _ALWAYS_INCLUDE = {"resolve_dates"}  # search_tool_result injected on truncation
-    if playbook and playbook.tool_filter:
-        allowed = set(playbook.tool_filter) | _ALWAYS_INCLUDE
+    active_filter = tool_filter or (
+        playbook.tool_filter
+        if playbook and getattr(playbook, "tool_filter", None)
+        else None
+    )
+    if active_filter:
+        allowed = set(active_filter) | _ALWAYS_INCLUDE
         anthropic_tools = [
             t
             for t in anthropic_tools
             if t["name"].split("__", 1)[-1] in allowed or t["name"] in allowed
         ]
+    else:
+        # Agent default: derive allowed actions from this agent's connector bindings
+        from app.db.models import AgentConnectorBinding
+
+        agent_bindings = (
+            _cdb.query(AgentConnectorBinding)
+            .filter(
+                AgentConnectorBinding.agent_slug == domain,
+                AgentConnectorBinding.enabled == True,  # noqa: E712
+            )
+            .all()
+        )
+        if agent_bindings:
+            agent_actions: set[str] = set()
+            for ab in agent_bindings:
+                for cap in ab.capabilities or []:
+                    if cap.get("enabled", True):
+                        agent_actions.add(cap["action"])
+            if agent_actions:
+                allowed = agent_actions | _ALWAYS_INCLUDE
+                anthropic_tools = [
+                    t
+                    for t in anthropic_tools
+                    if t["name"].split("__", 1)[-1] in allowed or t["name"] in allowed
+                ]
 
     logger.info(
         "Built %d Anthropic tool definitions for domain=%s (playbook=%s)",

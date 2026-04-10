@@ -6,6 +6,7 @@ LLM tool system entirely).
 """
 
 import logging
+import re
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -222,7 +223,9 @@ def _render_request(
                 parts.scheme,
                 parts.netloc,
                 parts.path,
-                parts.query.replace("+", "%2B"),
+                re.sub(
+                    r"(\d{2}:\d{2}:\d{2})\+(\d{1,2}:\d{2})", r"\1%2B\2", parts.query
+                ),
                 parts.fragment,
             )
         )
@@ -413,7 +416,9 @@ async def execute_component_api(
 
     parts = urlsplit(url)
     if parts.query:
-        encoded_query = parts.query.replace("+", "%2B")
+        encoded_query = re.sub(
+            r"(\d{2}:\d{2}:\d{2})\+(\d{1,2}:\d{2})", r"\1%2B\2", parts.query
+        )
         url = urlunsplit(
             (parts.scheme, parts.netloc, parts.path, encoded_query, parts.fragment)
         )

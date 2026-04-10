@@ -179,9 +179,7 @@ def update_employee_setup(
 
 
 def get_hr_thread(db: Session, thread_id: str) -> dict | None:
-    task = (
-        db.query(Thread).filter(Thread.id == thread_id, Thread.domain == "hr").first()
-    )
+    task = db.query(Thread).filter(Thread.id == thread_id).first()
     if not task:
         return None
     return _thread_to_dict(task)

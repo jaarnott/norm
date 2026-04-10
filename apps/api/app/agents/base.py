@@ -86,6 +86,7 @@ class BaseDomainAgent(ABC):
         config_db: Session | None = None,
         page_context: dict | None = None,
         playbook=None,
+        tool_filter: list[str] | None = None,
     ) -> tuple[str, list[dict]]:
         """Return (system_prompt, anthropic_tools) for the agentic tool loop.
 
@@ -103,6 +104,7 @@ class BaseDomainAgent(ABC):
             config_db=config_db,
             page_context=page_context,
             playbook=playbook,
+            tool_filter=tool_filter,
         )
 
     def handle_message_with_tools(

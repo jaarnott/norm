@@ -6,6 +6,7 @@ compatible with the standard tool result format:
     {"success": bool, "data": ..., "error": str | None}
 """
 
+import html
 import logging
 import uuid
 from typing import Callable
@@ -436,7 +437,7 @@ def _gmail_send_email(params: dict, db: Session, thread_id: str | None) -> dict:
     to = params.get("to", "")
     if isinstance(to, str):
         to = [addr.strip() for addr in to.split(",") if addr.strip()]
-    subject = params.get("subject", "")
+    subject = html.unescape(params.get("subject", ""))
     body_html = params.get("body_html", "")
     cc = params.get("cc")
     if isinstance(cc, str):
@@ -475,7 +476,7 @@ def _outlook_send_email(params: dict, db: Session, thread_id: str | None) -> dic
     to = params.get("to", "")
     if isinstance(to, str):
         to = [addr.strip() for addr in to.split(",") if addr.strip()]
-    subject = params.get("subject", "")
+    subject = html.unescape(params.get("subject", ""))
     body_html = params.get("body_html", "")
     cc = params.get("cc")
     if isinstance(cc, str):
@@ -1089,25 +1090,31 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
 
     intent = params.get("intent", "").strip()
     agent_slug = params.get("agent_slug", "").strip()
+
+    schedule_hint = params.get("schedule", "").strip()
+
+    # Look up user context and auto-detect agent_slug from the thread's domain
+    created_by = None
+    user_email = "the user"
+    parent = None
+    if thread_id:
+        parent = db.query(Thread).filter(Thread.id == thread_id).first()
+        if parent:
+            # Always use the thread's domain as agent_slug — the LLM often guesses wrong
+            if parent.domain:
+                agent_slug = parent.domain
+            if parent.user_id:
+                created_by = parent.user_id
+                user = db.query(User).filter(User.id == parent.user_id).first()
+                if user:
+                    user_email = user.email
+
     if not intent or not agent_slug:
         return {
             "success": False,
             "data": {},
             "error": "intent and agent_slug are required",
         }
-
-    schedule_hint = params.get("schedule", "").strip()
-
-    # Look up user context from the thread
-    created_by = None
-    user_email = "the user"
-    if thread_id:
-        parent = db.query(Thread).filter(Thread.id == thread_id).first()
-        if parent and parent.user_id:
-            created_by = parent.user_id
-            user = db.query(User).filter(User.id == parent.user_id).first()
-            if user:
-                user_email = user.email
 
     # Gather playbooks used in the conversation
     playbook_section = ""

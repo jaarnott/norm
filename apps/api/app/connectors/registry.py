@@ -60,11 +60,10 @@ def resolve_connector(
             "config_db is required — check that config_db is passed through the call chain"
         )
 
-    # Get ALL enabled bindings for this domain
+    # Get ALL enabled bindings (tools are no longer agent-scoped)
     bindings = (
         _cdb.query(AgentConnectorBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == domain,
             AgentConnectorBinding.enabled == True,  # noqa: E712
         )
         .all()

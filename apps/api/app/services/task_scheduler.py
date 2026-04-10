@@ -173,25 +173,13 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 raise ValueError(f"Agent not found: {task.agent_slug}")
 
             system_prompt, anthropic_tools = agent.get_tool_definitions(
-                db, user_id=task.created_by, config_db=config_db
+                db,
+                user_id=task.created_by,
+                config_db=config_db,
+                tool_filter=task.tool_filter,
             )
             if not system_prompt:
                 system_prompt = f"You are the {task.agent_slug} agent for Norm."
-
-            # Apply task-level tool filter
-            if task.tool_filter:
-                allowed = set(task.tool_filter)
-                anthropic_tools = [
-                    t
-                    for t in anthropic_tools
-                    if t["name"].split("__", 1)[-1] in allowed or t["name"] in allowed
-                ]
-                logger.info(
-                    "Task %s tool_filter applied: %d -> %d tools",
-                    task.id,
-                    len(anthropic_tools) + len(allowed),
-                    len(anthropic_tools),
-                )
 
             ctx = agent.build_context(db)
             at_context = _build_task_context(task, ctx)

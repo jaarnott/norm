@@ -84,7 +84,12 @@ Return ONLY valid JSON:
 If a playbook listed above matches this message, include its slug in "playbook".
 If no playbook matches, set playbook to null (agent gets full tool access).
 If action is "new_thread", set domain to the appropriate domain.
-Default to "continue" — only use "new_thread" for clear domain switches (e.g., HR question in a procurement thread)."""
+These capabilities are available in EVERY agent and NEVER require a domain switch:
+- Automated task creation/scheduling ("set up a task", "do this daily", "automate this")
+- Email sending ("email me this", "send this to...")
+- Chart rendering ("make a chart", "visualize this")
+
+Default to "continue" — only use "new_thread" for genuine domain switches (e.g., asking about inventory in an HR thread)."""
 
     client = anthropic.Anthropic(api_key=api_key)
     t0 = time.time()

@@ -84,19 +84,8 @@ def handle_message(
                             active_venue_name=venue_name,
                             venue_timezone=venue_timezone,
                             config_db=_cdb,
+                            tool_filter=at.tool_filter,
                         )
-                        if at.tool_filter:
-                            allowed = set(at.tool_filter)
-                            anthropic_tools = [
-                                t
-                                for t in anthropic_tools
-                                if t["name"].split("__", 1)[-1] in allowed
-                                or t["name"] in allowed
-                            ]
-                            logger.info(
-                                "Task tool_filter applied: %d tools",
-                                len(anthropic_tools),
-                            )
                         from app.agents.tool_loop import run_tool_loop
 
                         return run_tool_loop(
@@ -147,9 +136,13 @@ def handle_message(
             )
 
             if action == "new_thread":
-                # User switched topics — fall through to normal routing below
+                # User switched topics — fall through to normal routing below.
+                # Prepend conversation context so the full classifier can
+                # still infer venue, names, etc. from the prior exchange.
                 thread_id = None
                 prior_thread = thread
+                if recent_summary:
+                    message = f"[Prior conversation]\n{recent_summary}\n\n[New request]\n{message}"
             else:
                 # Load playbook for THIS message if the classifier matched one
                 message_playbook = None
@@ -427,7 +420,7 @@ def handle_message(
         return result
 
     # 4. Unknown domain — return clarification
-    return _create_unknown(message, db, user_id)
+    return _create_unknown(message, db, user_id, routing=routing)
 
 
 def _llm_call_to_dict(llm_call: LlmCall) -> dict:
@@ -442,6 +435,8 @@ def _llm_call_to_dict(llm_call: LlmCall) -> dict:
         "status": llm_call.status,
         "error_message": llm_call.error_message,
         "duration_ms": llm_call.duration_ms,
+        "input_tokens": llm_call.input_tokens,
+        "output_tokens": llm_call.output_tokens,
         "tools_provided": llm_call.tools_provided,
         "created_at": llm_call.created_at.isoformat() if llm_call.created_at else None,
     }
@@ -586,6 +581,17 @@ def _create_venue_clarification(
             display_blocks=display_blocks,
         )
     )
+    # Backfill routing LLM call onto the new thread
+    llm_calls_list = []
+    if routing.get("llm_call_id"):
+        routing_call = (
+            db.query(LlmCall).filter(LlmCall.id == routing["llm_call_id"]).first()
+        )
+        if routing_call:
+            routing_call.thread_id = thread.id
+            db.flush()
+            llm_calls_list.append(_llm_call_to_dict(routing_call))
+
     db.commit()
     db.refresh(thread)
 
@@ -608,10 +614,13 @@ def _create_venue_clarification(
             },
         ],
         "clarification_question": question,
+        "llm_calls": llm_calls_list,
     }
 
 
-def _create_unknown(message: str, db: Session, user_id: str | None = None) -> dict:
+def _create_unknown(
+    message: str, db: Session, user_id: str | None = None, routing: dict | None = None
+) -> dict:
     """Handle unknown intent."""
     question = "I'm not sure what you need. Try asking me to order stock, set up a new employee, or generate a report."
 
@@ -627,6 +636,17 @@ def _create_unknown(message: str, db: Session, user_id: str | None = None) -> di
     )
     db.add(thread)
     db.flush()
+
+    # Backfill routing LLM call onto the new thread
+    llm_calls_list = []
+    if routing and routing.get("llm_call_id"):
+        routing_call = (
+            db.query(LlmCall).filter(LlmCall.id == routing["llm_call_id"]).first()
+        )
+        if routing_call:
+            routing_call.thread_id = thread.id
+            db.flush()
+            llm_calls_list.append(_llm_call_to_dict(routing_call))
 
     db.add(Message(thread_id=thread.id, role="user", content=message))
     db.add(Message(thread_id=thread.id, role="assistant", content=question))
@@ -647,4 +667,5 @@ def _create_unknown(message: str, db: Session, user_id: str | None = None) -> di
             {"role": "assistant", "text": question},
         ],
         "clarification_question": question,
+        "llm_calls": llm_calls_list,
     }
