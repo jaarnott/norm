@@ -523,7 +523,16 @@ def run_tests(
         import subprocess
 
         runner_script = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "apps", "e2e", "run-local.sh")
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "..",
+                "..",
+                "..",
+                "apps",
+                "e2e",
+                "run-local.sh",
+            )
         )
         if os.path.exists(runner_script):
             subprocess.Popen(

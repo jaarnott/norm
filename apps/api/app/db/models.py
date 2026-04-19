@@ -768,7 +768,9 @@ class E2ETestRun(Base):
     __tablename__ = "e2e_test_runs"
 
     id = Column(String, primary_key=True, default=_uuid)
-    test_id = Column(String, nullable=True)  # null for suite runs; references E2ETest.id in config DB
+    test_id = Column(
+        String, nullable=True
+    )  # null for suite runs; references E2ETest.id in config DB
     environment = Column(String, nullable=False)
     status = Column(
         String, nullable=False, default="pending"
