@@ -31,7 +31,18 @@ jobs:
           API_URL: ${{ inputs.target_url }}
           ENVIRONMENT: ${{ inputs.environment }}
           GIT_SHA: ${{ github.sha }}
-        run: node runner.mjs
+          E2E_ADMIN_EMAIL: ${{ secrets.E2E_ADMIN_EMAIL || 'admin@norm.local' }}
+          E2E_ADMIN_PASSWORD: ${{ secrets.E2E_ADMIN_PASSWORD || 'changeme123' }}
+        run: |
+          API_TOKEN=$(curl -s -X POST "$API_URL/api/auth/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\":\"$E2E_ADMIN_EMAIL\",\"password\":\"$E2E_ADMIN_PASSWORD\"}" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('access_token',''))")
+          if [ -z "$API_TOKEN" ]; then
+            echo "Failed to log in to $API_URL as $E2E_ADMIN_EMAIL"
+            exit 1
+          fi
+          API_TOKEN=$API_TOKEN node runner.mjs
         continue-on-error: true
 
       - name: Upload test artifacts
