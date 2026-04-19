@@ -8,6 +8,13 @@ import rehypeRaw from 'rehype-raw';
 import type { Thread, ProcurementThread, HrThread, ConversationMessage, ToolCallRecord, DisplayBlock, WidgetAction } from '../../types';
 import ActivityTimeline from './ActivityTimeline';
 import DisplayBlockRenderer, { FULL_WIDTH_COMPONENTS } from '../display/DisplayBlockRenderer';
+
+/** Check if a display block should render full-width above conversation. */
+function isFullWidthBlock(b: DisplayBlock): boolean {
+  if (FULL_WIDTH_COMPONENTS.has(b.component)) return true;
+  if (b.component === 'mcp_embed' && b.props?.container_hint === 'full_page') return true;
+  return false;
+}
 import SplitDragHandle from '../layout/SplitDragHandle';
 import { useSplitPane } from '../../hooks/useSplitPane';
 import { getStoredUser } from '../../lib/api';
@@ -119,7 +126,7 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
         const hasTable = !isUser && /\|.+\|/.test(m.text);
         const displayBlocks = (!isUser && m.display_blocks && m.display_blocks.length > 0)
           ? (hideFullWidthBlocks
-              ? m.display_blocks.filter(b => !FULL_WIDTH_COMPONENTS.has(b.component))
+              ? m.display_blocks.filter(b => !isFullWidthBlock(b))
               : m.display_blocks)
           : [];
 
@@ -797,12 +804,13 @@ interface ThreadDetailProps {
   thread: Thread;
   onAction: (threadId: string, action: string) => void;
   onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
-  onSend: (message: string) => void;
+  onSend?: (message: string) => void;
   loading: boolean;
-  openThread: Thread | null;
+  openThread?: Thread | null;
+  readOnly?: boolean;
 }
 
-export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend, loading, openThread }: ThreadDetailProps) {
+export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend, loading, openThread, readOnly }: ThreadDetailProps) {
   const storedUser = getStoredUser();
   const isAdmin = storedUser?.role === 'admin';
   const [activeTab, setActiveTab] = useState<TabKey>('conversation');
@@ -822,7 +830,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.display_blocks && m.display_blocks.length > 0) {
-      const fw = m.display_blocks.find(b => FULL_WIDTH_COMPONENTS.has(b.component));
+      const fw = m.display_blocks.find(b => isFullWidthBlock(b));
       if (fw && !foundNewerInlineBlock) {
         latestFullWidthBlock = fw;
         break;
@@ -861,7 +869,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
     </div>
   );
 
-  const inputBar = <InputBar onSend={onSend} loading={loading} highlight={!!openThread} />;
+  const inputBar = !readOnly && onSend ? <InputBar onSend={onSend} loading={loading} highlight={!!openThread} /> : null;
 
   return (
     <div ref={containerRef} style={{
@@ -878,7 +886,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
         }}>
           {thread.automated_task && (
             <div style={{ padding: '0.5rem 1.5rem 0' }}>
-              <AutomatedTaskHeader at={thread.automated_task} onUpdate={() => onAction(thread.id, 'reload')} onRun={onSend} />
+              <AutomatedTaskHeader at={thread.automated_task} onUpdate={() => onAction(thread.id, 'reload')} onRun={onSend || (() => {})} />
             </div>
           )}
           {isAdmin && tabsRow}

@@ -756,30 +756,19 @@ class Deployment(Base):
     triggered_by = Column(String, nullable=True)  # ci|manual|webhook
 
 
-class E2ETest(Base):
-    __tablename__ = "e2e_tests"
-
-    id = Column(String, primary_key=True, default=_uuid)
-    name = Column(String, nullable=False)
-    description = Column(Text, nullable=False)  # The natural language input
-    playwright_script = Column(Text, nullable=False)
-    steps_json = Column(
-        JSON, default=list
-    )  # [{step: 1, description: "...", selector: "..."}]
-    created_by = Column(String, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_now)
-    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
-    last_run_status = Column(String, nullable=True)  # passed | failed | error | null
-    last_run_at = Column(DateTime(timezone=True), nullable=True)
-
-
 class E2ETestRun(Base):
+    """Per-environment run history for E2E tests.
+
+    Test definitions live in the shared config DB (see E2ETest in
+    config_models.py); this table tracks executions and stays per-env.
+    test_id is a plain string reference — no DB-level FK since the
+    referenced table is in a different database.
+    """
+
     __tablename__ = "e2e_test_runs"
 
     id = Column(String, primary_key=True, default=_uuid)
-    test_id = Column(
-        String, ForeignKey("e2e_tests.id"), nullable=True
-    )  # null for suite runs
+    test_id = Column(String, nullable=True)  # null for suite runs; references E2ETest.id in config DB
     environment = Column(String, nullable=False)
     status = Column(
         String, nullable=False, default="pending"
@@ -788,6 +777,7 @@ class E2ETestRun(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
     duration_ms = Column(Integer, nullable=True)
     error_message = Column(Text, nullable=True)
+    stdout = Column(Text, nullable=True)  # combined stdout/stderr from test run
     screenshots_json = Column(JSON, default=list)
     video_url = Column(String, nullable=True)
     triggered_by = Column(String, nullable=True)  # ci | manual

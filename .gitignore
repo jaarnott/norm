@@ -50,3 +50,13 @@ infra/terraform/.terraform.lock.hcl
 
 # Claude Code local settings (per-developer permissions)
 .claude/settings.local.json
+
+# Playwright MCP artifacts (local session screenshots, console logs)
+.playwright-mcp/
+
+# E2E test artifacts and runtime-generated specs
+apps/e2e/results/
+apps/e2e/tests/
+
+# Ad-hoc screenshots (should not be committed)
+/*.png

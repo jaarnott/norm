@@ -123,7 +123,21 @@ uv run pytest tests/ -v          # 228 tests
 cd apps/web
 pnpm lint                        # ESLint (0 errors expected)
 pnpm exec tsc --noEmit          # TypeScript check
+
+# E2E tests (requires dev servers running)
+cd apps/e2e
+./run-local.sh                   # fetch saved tests from local API, run them, report results
+npx playwright test tests/foo.ts # run a specific generated spec file
 ```
+
+## Browser Access (Playwright MCP)
+
+Claude has access to a headless Chromium browser via the Playwright MCP server (configured in `.mcp.json`).
+Use it to visually verify UI changes on `http://localhost:3000`:
+
+- Navigate to a page and take a screenshot to verify layout
+- Click through user flows to test interactions
+- Run `npx playwright test` in `apps/e2e/` for the full E2E suite
 
 ## Auth & Permissions
 

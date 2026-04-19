@@ -132,6 +132,26 @@ def _load_system_secrets() -> None:
 
 
 @app.on_event("startup")
+def _ensure_config_tables() -> None:
+    """Idempotently create any missing tables in the shared config DB.
+
+    The config DB is shared across all environments and doesn't use Alembic,
+    so newly added ConfigBase models need CREATE TABLE on first deploy. This
+    only creates tables that don't exist; existing tables are untouched.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    try:
+        from app.db.config_models import ConfigBase
+        from app.db.engine import _config_engine
+
+        ConfigBase.metadata.create_all(_config_engine)
+    except Exception as exc:
+        log.warning("Could not ensure config DB tables: %s", exc)
+
+
+@app.on_event("startup")
 def _start_scheduler() -> None:
     from app.services.task_scheduler import init_scheduler
 

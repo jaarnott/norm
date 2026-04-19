@@ -225,6 +225,7 @@ export interface DisplayBlock {
 }
 
 export interface WidgetAction {
+  type?: string;
   connector_name: string;
   action: string;
   params: Record<string, unknown>;
@@ -319,6 +320,11 @@ export interface ReportsThread extends BaseThread {
 }
 
 export type Thread = ProcurementThread | HrThread | ReportsThread | BaseThread;
+
+export interface AdminThread extends BaseThread {
+  user_name: string | null;
+  user_email: string | null;
+}
 
 export interface AgentBinding {
   connector_name: string;

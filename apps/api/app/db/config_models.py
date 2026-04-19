@@ -163,3 +163,26 @@ class SystemSecret(ConfigBase):
     description = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class E2ETest(ConfigBase):
+    """E2E test definitions — shared across all environments.
+
+    Stored in the config DB so a test written once runs everywhere. Run
+    history lives in the main DB per-env (see E2ETestRun in models.py).
+    """
+
+    __tablename__ = "e2e_tests"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    playwright_script = Column(Text, nullable=False)
+    steps_json = Column(JSON, default=list)
+    # created_by is a plain string (user email or id) — no DB-level FK since
+    # users live in the main DB.
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+    last_run_status = Column(String, nullable=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)

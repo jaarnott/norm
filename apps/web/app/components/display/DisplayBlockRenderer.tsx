@@ -17,6 +17,7 @@ import ToolApprovalCard from './ToolApprovalCard';
 import DashboardView from './DashboardView';
 import VenuePicker from './VenuePicker';
 import StockPicker from './StockPicker';
+import McpEmbed from './McpEmbed';
 
 export interface DisplayBlockProps {
   data: Record<string, unknown>;
@@ -45,6 +46,7 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   venue_picker: VenuePicker,
   stock_picker: StockPicker,
   dashboard_view: DashboardView,
+  mcp_embed: McpEmbed,
 };
 
 interface DisplayBlockRendererProps {

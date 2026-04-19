@@ -467,6 +467,31 @@ def execute_spec(
             error_message=f"Missing required fields: {', '.join(missing)}",
         ), RenderedRequest(method="", url="", headers={}, body=None)
 
+    if spec.execution_mode == "mcp":
+        from app.connectors.mcp_executor import mcp_call_tool
+
+        result = mcp_call_tool(
+            mcp_url=spec.base_url_template,
+            tool_name=operation.get("action"),
+            arguments=extracted_fields,
+            credentials=credentials,
+            auth_type=spec.auth_type,
+            auth_config=spec.auth_config or {},
+        )
+        rendered = RenderedRequest(
+            method="POST",
+            url=spec.base_url_template,
+            headers={"Content-Type": "application/json"},
+            body={
+                "method": "tools/call",
+                "params": {
+                    "name": operation.get("action"),
+                    "arguments": extracted_fields,
+                },
+            },
+        )
+        return result, rendered
+
     if spec.execution_mode == "agent":
         rendered = execute_via_agent(
             spec, operation, extracted_fields, credentials, db, thread_id

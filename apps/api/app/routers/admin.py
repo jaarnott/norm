@@ -9,11 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import require_permission
 from app.db.engine import get_db, get_config_db_rw
+from app.db.config_models import E2ETest
 from app.db.models import (
     Deployment,
-    E2ETest,
     E2ETestRun,
     SystemSecret,
+    Thread,
     User,
 )
 
@@ -344,6 +345,7 @@ class TestRunWebhookPayload(BaseModel):
     status: str
     duration_ms: int | None = None
     error_message: str | None = None
+    stdout: str | None = None
     screenshots: list = []
     video_url: str | None = None
     git_sha: str | None = None
@@ -368,9 +370,9 @@ async def generate_test(
 def save_test(
     body: SaveTestRequest,
     user: User = Depends(require_permission("admin:tests")),
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
 ):
-    """Save a generated test to the suite."""
+    """Save a generated test to the shared config DB (available in all envs)."""
     test = E2ETest(
         name=body.name,
         description=body.description,
@@ -378,9 +380,9 @@ def save_test(
         steps_json=body.steps,
         created_by=user.id,
     )
-    db.add(test)
-    db.commit()
-    db.refresh(test)
+    config_db.add(test)
+    config_db.commit()
+    config_db.refresh(test)
     return {
         "id": test.id,
         "name": test.name,
@@ -394,10 +396,10 @@ def save_test(
 @router.get("/admin/tests")
 def list_tests(
     user: User = Depends(require_permission("admin:tests")),
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
 ):
     """List all E2E tests with last run status."""
-    rows = db.query(E2ETest).order_by(E2ETest.created_at.desc()).all()
+    rows = config_db.query(E2ETest).order_by(E2ETest.created_at.desc()).all()
     return {
         "tests": [
             {
@@ -420,10 +422,10 @@ def list_tests(
 def get_test(
     test_id: str,
     user: User = Depends(require_permission("admin:tests")),
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
 ):
     """Get a single E2E test detail."""
-    test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
+    test = config_db.query(E2ETest).filter(E2ETest.id == test_id).first()
     if not test:
         raise HTTPException(404, "Test not found")
     return {
@@ -444,10 +446,10 @@ def update_test(
     test_id: str,
     body: UpdateTestRequest,
     user: User = Depends(require_permission("admin:tests")),
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
 ):
     """Update an existing E2E test."""
-    test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
+    test = config_db.query(E2ETest).filter(E2ETest.id == test_id).first()
     if not test:
         raise HTTPException(404, "Test not found")
     if body.name is not None:
@@ -456,8 +458,8 @@ def update_test(
         test.playwright_script = body.playwright_script
     if body.steps is not None:
         test.steps_json = body.steps
-    db.commit()
-    db.refresh(test)
+    config_db.commit()
+    config_db.refresh(test)
     return {
         "id": test.id,
         "name": test.name,
@@ -472,14 +474,14 @@ def update_test(
 def delete_test(
     test_id: str,
     user: User = Depends(require_permission("admin:tests")),
-    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
 ):
     """Delete an E2E test."""
-    test = db.query(E2ETest).filter(E2ETest.id == test_id).first()
+    test = config_db.query(E2ETest).filter(E2ETest.id == test_id).first()
     if not test:
         raise HTTPException(404, "Test not found")
-    db.delete(test)
-    db.commit()
+    config_db.delete(test)
+    config_db.commit()
     return {"ok": True}
 
 
@@ -488,12 +490,13 @@ def run_tests(
     body: RunTestsRequest,
     user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
 ):
-    """Create pending test run records. Actual execution happens externally (CI/CD)."""
+    """Create pending test run records. In local dev, also spawns the runner."""
     if body.test_ids:
-        tests = db.query(E2ETest).filter(E2ETest.id.in_(body.test_ids)).all()
+        tests = config_db.query(E2ETest).filter(E2ETest.id.in_(body.test_ids)).all()
     else:
-        tests = db.query(E2ETest).all()
+        tests = config_db.query(E2ETest).all()
 
     if not tests:
         raise HTTPException(404, "No tests found")
@@ -510,6 +513,30 @@ def run_tests(
         runs.append(run)
 
     db.commit()
+
+    # Local dev: spawn the runner subprocess so tests actually execute.
+    # In non-local envs, CI picks up pending runs and executes them.
+    from app.config import settings
+
+    if settings.is_local:
+        import os
+        import subprocess
+
+        runner_script = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "apps", "e2e", "run-local.sh")
+        )
+        if os.path.exists(runner_script):
+            subprocess.Popen(
+                ["bash", runner_script],
+                cwd=os.path.dirname(runner_script),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            log.info("Spawned local test runner: %s", runner_script)
+        else:
+            log.warning("Local runner script not found: %s", runner_script)
+
     return {
         "ok": True,
         "runs": [{"id": r.id, "test_id": r.test_id, "status": r.status} for r in runs],
@@ -519,15 +546,18 @@ def run_tests(
 @router.get("/admin/test-runs")
 def list_test_runs(
     environment: str | None = None,
+    test_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     user: User = Depends(require_permission("admin:tests")),
     db: Session = Depends(get_db),
 ):
-    """List test runs, optionally filtered by environment."""
+    """List test runs, optionally filtered by environment and/or test_id."""
     q = db.query(E2ETestRun).order_by(E2ETestRun.started_at.desc())
     if environment:
         q = q.filter(E2ETestRun.environment == environment)
+    if test_id:
+        q = q.filter(E2ETestRun.test_id == test_id)
     total = q.count()
     rows = q.offset(offset).limit(limit).all()
     return {
@@ -542,6 +572,7 @@ def list_test_runs(
                 "completed_at": r.completed_at.isoformat() if r.completed_at else None,
                 "duration_ms": r.duration_ms,
                 "error_message": r.error_message,
+                "stdout": r.stdout,
                 "screenshots": r.screenshots_json,
                 "video_url": r.video_url,
                 "triggered_by": r.triggered_by,
@@ -571,6 +602,7 @@ def get_test_run(
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
         "duration_ms": run.duration_ms,
         "error_message": run.error_message,
+        "stdout": run.stdout,
         "screenshots": run.screenshots_json,
         "video_url": run.video_url,
         "triggered_by": run.triggered_by,
@@ -582,6 +614,7 @@ def get_test_run(
 def test_run_webhook(
     payload: TestRunWebhookPayload,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
 ):
     """Receive test run results from CI/CD.
 
@@ -600,6 +633,7 @@ def test_run_webhook(
         run.status = payload.status
         run.duration_ms = payload.duration_ms
         run.error_message = payload.error_message
+        run.stdout = payload.stdout
         run.screenshots_json = payload.screenshots
         run.video_url = payload.video_url
         run.git_sha = payload.git_sha
@@ -612,6 +646,7 @@ def test_run_webhook(
             status=payload.status,
             duration_ms=payload.duration_ms,
             error_message=payload.error_message,
+            stdout=payload.stdout,
             screenshots_json=payload.screenshots,
             video_url=payload.video_url,
             git_sha=payload.git_sha,
@@ -621,12 +656,109 @@ def test_run_webhook(
             run.completed_at = datetime.now(timezone.utc)
         db.add(run)
 
-    # Update the test's last_run fields
+    db.commit()
+
+    # Update last_run fields on the config-DB E2ETest (separate session)
     if payload.test_id:
-        test = db.query(E2ETest).filter(E2ETest.id == payload.test_id).first()
+        test = config_db.query(E2ETest).filter(E2ETest.id == payload.test_id).first()
         if test:
             test.last_run_status = payload.status
             test.last_run_at = datetime.now(timezone.utc)
+            config_db.commit()
 
-    db.commit()
     return {"ok": True}
+
+
+# ── Admin Thread Viewer ────────────────────────────────────────────
+
+
+@router.get("/admin/threads")
+def list_all_threads(
+    page: int = 1,
+    page_size: int = 50,
+    user_id: str | None = None,
+    domain: str | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    search: str | None = None,
+    user: User = Depends(require_permission("admin:system")),
+    db: Session = Depends(get_db),
+):
+    """List all threads across all users with pagination and filters."""
+    from sqlalchemy import or_
+
+    from app.routers.threads import _thread_summary
+
+    query = db.query(Thread).filter(
+        or_(Thread.intent.is_(None), ~Thread.intent.like("%.automated_task")),
+    )
+
+    if user_id:
+        query = query.filter(Thread.user_id == user_id)
+    if domain:
+        query = query.filter(Thread.domain == domain)
+    if status:
+        query = query.filter(Thread.status == status)
+    if date_from:
+        query = query.filter(Thread.created_at >= date_from)
+    if date_to:
+        query = query.filter(Thread.created_at <= date_to + "T23:59:59")
+    if search:
+        query = query.filter(
+            or_(
+                Thread.title.ilike(f"%{search}%"),
+                Thread.raw_prompt.ilike(f"%{search}%"),
+            )
+        )
+
+    total = query.count()
+    threads = (
+        query.order_by(Thread.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    # Batch-resolve user info
+    thread_user_ids = {t.user_id for t in threads if t.user_id}
+    users_map: dict[str, User] = {}
+    if thread_user_ids:
+        for u in db.query(User).filter(User.id.in_(thread_user_ids)).all():
+            users_map[u.id] = u
+
+    result = []
+    for t in threads:
+        summary = _thread_summary(t, db)
+        u = users_map.get(t.user_id) if t.user_id else None
+        summary["user_name"] = u.full_name if u else None
+        summary["user_email"] = u.email if u else None
+        result.append(summary)
+
+    return {"threads": result, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/admin/threads/{thread_id}")
+def get_admin_thread_detail(
+    thread_id: str,
+    user: User = Depends(require_permission("admin:system")),
+    db: Session = Depends(get_db),
+):
+    """Full thread detail for any thread (admin only, no user_id filter)."""
+    from app.routers.threads import _find
+
+    data, domain = _find(db, thread_id)
+    if not data:
+        raise HTTPException(404, "Thread not found")
+
+    # Add user info
+    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    if thread and thread.user_id:
+        u = db.query(User).filter(User.id == thread.user_id).first()
+        data["user_name"] = u.full_name if u else None
+        data["user_email"] = u.email if u else None
+    else:
+        data["user_name"] = None
+        data["user_email"] = None
+
+    return data

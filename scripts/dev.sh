@@ -21,6 +21,14 @@ echo "Installing API dependencies …"
 echo "Installing frontend dependencies …"
 (cd "$WEB_DIR" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
 
+# ── 3b. E2E deps + Playwright browser ────────────────────────────
+echo "Installing E2E dependencies …"
+(cd "$ROOT/apps/e2e" && npm install --silent)
+if ! npx --prefix "$ROOT/apps/e2e" playwright install --dry-run chromium >/dev/null 2>&1; then
+  echo "Installing Playwright Chromium …"
+  npx --prefix "$ROOT/apps/e2e" playwright install --with-deps chromium
+fi
+
 # ── 4. Docker services (Postgres) ─────────────────────────────────
 # Clean up stale containers from previous Codespace sessions
 docker compose -f "$ROOT/docker-compose.yml" rm -f postgres 2>/dev/null || true

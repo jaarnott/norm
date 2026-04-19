@@ -352,6 +352,140 @@ async def test_spec(
         }
 
 
+@router.post("/{name}/preview-mcp-tools")
+async def preview_mcp_tools(
+    name: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """Discover tools from an MCP server without saving them."""
+    from app.connectors.mcp_executor import (
+        mcp_discover_tools,
+        convert_mcp_tools_to_spec,
+    )
+
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
+    if not spec:
+        raise HTTPException(404, f"Spec not found: {name}")
+    if spec.execution_mode != "mcp":
+        raise HTTPException(
+            400, f"Spec {name} is not an MCP connector (mode={spec.execution_mode})"
+        )
+
+    config_row = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == name, ConnectorConfig.enabled == "true"
+        )
+        .first()
+    )
+    if not config_row:
+        raise HTTPException(400, f"No credentials configured for {name}")
+
+    try:
+        raw_tools = mcp_discover_tools(
+            mcp_url=spec.base_url_template,
+            credentials=config_row.config,
+            auth_type=spec.auth_type,
+            auth_config=spec.auth_config or {},
+        )
+        converted = convert_mcp_tools_to_spec(raw_tools)
+        return {"raw_tool_count": len(raw_tools), "converted_tools": converted}
+    except Exception as exc:
+        raise HTTPException(502, f"MCP discovery failed: {exc}")
+
+
+@router.post("/{name}/sync-mcp-tools")
+async def sync_mcp_tools(
+    name: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """Discover tools from an MCP server and save them to the connector spec.
+
+    Preserves manual overrides (method, display_component, display_props)
+    on existing tools by merging rather than replacing.
+    """
+    from app.connectors.mcp_executor import (
+        mcp_discover_tools,
+        convert_mcp_tools_to_spec,
+    )
+    from sqlalchemy.orm.attributes import flag_modified
+
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == name)
+        .first()
+    )
+    if not spec:
+        raise HTTPException(404, f"Spec not found: {name}")
+    if spec.execution_mode != "mcp":
+        raise HTTPException(
+            400, f"Spec {name} is not an MCP connector (mode={spec.execution_mode})"
+        )
+
+    config_row = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == name, ConnectorConfig.enabled == "true"
+        )
+        .first()
+    )
+    if not config_row:
+        raise HTTPException(400, f"No credentials configured for {name}")
+
+    try:
+        raw_tools = mcp_discover_tools(
+            mcp_url=spec.base_url_template,
+            credentials=config_row.config,
+            auth_type=spec.auth_type,
+            auth_config=spec.auth_config or {},
+        )
+        new_tools = convert_mcp_tools_to_spec(raw_tools)
+    except Exception as exc:
+        raise HTTPException(502, f"MCP discovery failed: {exc}")
+
+    # Merge: preserve manual overrides from existing tools
+    existing_by_action = {
+        t["action"]: t for t in (spec.tools or []) if isinstance(t, dict)
+    }
+    preserve_keys = {
+        "method",
+        "display_component",
+        "display_props",
+        "response_transform",
+        "consolidator_config",
+    }
+    for tool in new_tools:
+        existing = existing_by_action.get(tool["action"])
+        if existing:
+            for key in preserve_keys:
+                if key in existing:
+                    tool[key] = existing[key]
+
+    spec.tools = new_tools
+    flag_modified(spec, "tools")
+    config_db.commit()
+
+    return {
+        "synced_tool_count": len(new_tools),
+        "tools": [
+            {
+                "action": t["action"],
+                "method": t["method"],
+                "description": t.get("description", ""),
+            }
+            for t in new_tools
+        ],
+    }
+
+
 @router.post("/{name}/preview-transform")
 async def preview_transform(
     name: str,

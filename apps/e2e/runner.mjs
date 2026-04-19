@@ -61,30 +61,33 @@ async function fetchTests() {
 }
 
 // ── Report results back to API ──────────────────────────────────
-async function reportResults(results) {
+// The webhook updates one E2ETestRun per call, keyed by test_id — so we
+// post once per test rather than an aggregate.
+async function reportResults(testResults) {
   const url = `${API_URL}/api/admin/test-runs/webhook`;
   const headers = { 'Content-Type': 'application/json' };
   if (API_TOKEN) headers['Authorization'] = `Bearer ${API_TOKEN}`;
 
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        environment: ENVIRONMENT,
-        git_sha: GIT_SHA,
-        status: results.failed === 0 ? 'passed' : 'failed',
-        total: results.total,
-        passed: results.passed,
-        failed: results.failed,
-        duration_ms: results.duration_ms,
-        test_results: results.tests,
-      }),
-    });
-    console.log('Results reported to API');
-  } catch (err) {
-    console.warn('Failed to report results:', err.message);
+  for (const r of testResults) {
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          test_id: r.test_id,
+          environment: ENVIRONMENT,
+          status: r.status,
+          duration_ms: r.duration_ms,
+          error_message: r.error,
+          stdout: r.stdout,
+          git_sha: GIT_SHA,
+        }),
+      });
+    } catch (err) {
+      console.warn(`Failed to report result for ${r.name}:`, err.message);
+    }
   }
+  console.log(`Results reported to API (${testResults.length} test${testResults.length === 1 ? '' : 's'})`);
 }
 
 // ── Main ────────────────────────────────────────────────────────
@@ -107,28 +110,36 @@ async function main() {
 
   console.log(`Found ${tests.length} saved test(s)`);
 
-  // Write each test as a Playwright test file
+  // Write each test as a Playwright test file; track filename → test_id
+  const filenameToTestId = {};
   for (const [i, test] of tests.entries()) {
     const filename = `test_${i + 1}_${test.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}.spec.ts`;
     writeFileSync(join(testsDir, filename), test.playwright_script);
+    filenameToTestId[filename] = test.id;
     console.log(`  Written: ${filename}`);
   }
 
-  // Run Playwright
+  // Run Playwright, capturing stdout so we can show it per-test in the UI
   const startTime = Date.now();
   let exitCode = 0;
+  let playwrightOutput = '';
   try {
-    execSync(`npx playwright test --reporter=json,list`, {
+    playwrightOutput = execSync(`npx playwright test --reporter=json,list`, {
       cwd: resolve('.'),
-      stdio: 'inherit',
       env: {
         ...process.env,
         BASE_URL,
         PLAYWRIGHT_JSON_OUTPUT_NAME: 'results/results.json',
+        FORCE_COLOR: '0',
       },
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
     });
+    console.log(playwrightOutput);
   } catch (err) {
     exitCode = err.status || 1;
+    playwrightOutput = (err.stdout || '') + (err.stderr || '');
+    console.log(playwrightOutput);
   }
   const duration_ms = Date.now() - startTime;
 
@@ -142,15 +153,33 @@ async function main() {
     try {
       const raw = JSON.parse(readFileSync(resultsFile, 'utf-8'));
       for (const suite of raw.suites || []) {
+        // Each suite corresponds to one spec file; map it back to the saved test
+        const specFile = suite.file || '';
+        const filename = specFile.split('/').pop();
+        const testId = filenameToTestId[filename] || null;
         for (const spec of suite.specs || []) {
           const status = spec.ok ? 'passed' : 'failed';
           if (spec.ok) passed++;
           else failed++;
+          const result = spec.tests?.[0]?.results?.[0];
+          // Grab the portion of Playwright's output that references this test file.
+          const specLogLines = playwrightOutput
+            .split('\n')
+            .filter(line => !filename || line.includes(filename) || line.includes(spec.title));
+          const consoleOutput = [
+            ...(result?.stdout || []).map(e => `[stdout] ${e.text || ''}`),
+            ...(result?.stderr || []).map(e => `[stderr] ${e.text || ''}`),
+          ].join('');
+          const errors = (result?.errors || [])
+            .map(e => e.message || e.stack || '').filter(Boolean).join('\n\n');
+          const combined = [specLogLines.join('\n'), errors, consoleOutput].filter(Boolean).join('\n\n');
           testResults.push({
+            test_id: testId,
             name: spec.title,
             status,
-            duration_ms: spec.tests?.[0]?.results?.[0]?.duration || 0,
-            error: spec.ok ? null : spec.tests?.[0]?.results?.[0]?.error?.message || 'Unknown error',
+            duration_ms: result?.duration || 0,
+            error: spec.ok ? null : result?.error?.message || errors || 'Unknown error',
+            stdout: combined || null,
           });
         }
       }
@@ -163,7 +192,7 @@ async function main() {
   console.log(`\nResults: ${passed}/${total} passed, ${failed} failed (${duration_ms}ms)`);
 
   // Report results back to API
-  await reportResults({ total, passed, failed, duration_ms, tests: testResults });
+  await reportResults(testResults);
 
   process.exit(exitCode);
 }

@@ -485,6 +485,21 @@ export default function Home() {
       return { ok: true };
     }
 
+    // Handle MCP embed actions by converting to conversation messages
+    if (action.type === 'mcp_action') {
+      const mcpAction = action.action as string;
+      const params = action.params as Record<string, unknown> || {};
+      const messages: Record<string, string> = {
+        select_post: `Show me the details for social post ${params.postId || ''}`.trim(),
+        select_date: `Show me marketing calendar items for ${params.date || 'that date'}`,
+        approve_post: `Please approve social post ${params.postId || ''}`.trim(),
+        save_caption: `Update the caption for post ${params.postId || ''}`.trim(),
+      };
+      const msg = messages[mcpAction] || `Handle marketing action: ${mcpAction}`;
+      sendMessage(msg);
+      return { ok: true };
+    }
+
     try {
       const res = await apiFetch(`/api/threads/${threadId}/widget-action`, {
         method: 'POST',

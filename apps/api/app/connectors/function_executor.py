@@ -292,6 +292,7 @@ def execute_function(
         "four_weeks_ago_iso": (now - datetime.timedelta(days=28))
         .strftime(f"%Y-%m-%dT00:00:00{tz_offset}")
         .replace("+", "%2B"),
+        "tz_offset": tz_offset.replace("+", "%2B"),
     }
 
     # Execute the function

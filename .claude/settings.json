@@ -7,7 +7,13 @@
       "Bash(curl -s http://localhost:8000/health)",
       "Bash(.venv/bin/python -c ':*)",
       "Bash(docker start:*)",
-      "Bash(docker compose:*)"
+      "Bash(docker compose:*)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(python -c \"import app.routers.admin\")",
+      "Bash(npm install:*)",
+      "Bash(npx playwright:*)",
+      "Bash(cd /workspaces/norm/apps/e2e && npx playwright:*)",
+      "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"admin@norm.local\",\"password\":\"changeme123\"}')"
     ],
     "additionalDirectories": [
       "/tmp"

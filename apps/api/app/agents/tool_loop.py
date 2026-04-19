@@ -473,6 +473,29 @@ def _execute_loop(
                         if block_data:
                             display_blocks.append(block_data)
 
+                # MCP embed blocks (iframe URLs from resource content)
+                if (
+                    tc.result_payload
+                    and isinstance(tc.result_payload, dict)
+                    and "_embed" in tc.result_payload
+                ):
+                    for embed in tc.result_payload["_embed"]:
+                        display_blocks.append(
+                            {
+                                "component": "mcp_embed",
+                                "data": {
+                                    "url": embed.get("url", ""),
+                                    "uri": embed.get("uri", ""),
+                                },
+                                "props": {
+                                    "container_hint": embed.get(
+                                        "container_hint", "inline_card"
+                                    ),
+                                    "connector_name": connector,
+                                },
+                            }
+                        )
+
             # --- Phase E: Process write blocks (unchanged logic) ---
             write_tool_results: dict[str, dict] = {}
             for block, connector, action, method in write_blocks:

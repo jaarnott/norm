@@ -27,6 +27,27 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const { containerRef, topPaneHeight, isDragging, handleDragStart, handleSplitDoubleClick } = useSplitPane();
 
+  // Local venue override for pages that need a venue selector
+  const [localVenueId, setLocalVenueId] = useState<string | null>(activeVenueId || null);
+  const [venues, setVenues] = useState<Array<{ id: string; name: string }>>([]);
+  const needsVenueSelector = config.component === 'mcp_embed';
+
+  useEffect(() => {
+    if (needsVenueSelector) {
+      apiFetch('/api/venues').then(async res => {
+        if (res.ok) {
+          const data = await res.json();
+          setVenues(data.venues || data || []);
+        }
+      }).catch(() => {});
+    }
+  }, [needsVenueSelector]);
+
+  // Sync with parent venue when it changes externally
+  useEffect(() => { if (activeVenueId) setLocalVenueId(activeVenueId); }, [activeVenueId]);
+
+  const effectiveVenueId = needsVenueSelector ? localVenueId : activeVenueId;
+
   // Reset report view when switching pages
   useEffect(() => { setActiveReportId(null); }, [config.id]);
 
@@ -45,9 +66,9 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       body: JSON.stringify({
         connector_name: config.loadAction.connector,
         action: config.loadAction.action,
-        params: { ...params, ...(activeVenueId ? { venue_id: activeVenueId } : {}) },
+        params: { ...params, ...(effectiveVenueId ? { venue_id: effectiveVenueId } : {}) },
         doc_type: config.id,
-        venue_id: activeVenueId || undefined,
+        venue_id: effectiveVenueId || undefined,
       }),
     })
       .then(async res => {
@@ -67,7 +88,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       })
       .catch(err => setLoadError(err.message))
       .finally(() => setLoadingData(false));
-  }, [config.id, activeVenueId]);
+  }, [config.id, effectiveVenueId]);
 
   const handleAction = useCallback(async (action: WidgetAction): Promise<Record<string, unknown> | void> => {
     // Handle report builder open locally
@@ -134,12 +155,30 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     </div>
   );
 
+  const venueSelector = needsVenueSelector && venues.length > 1 ? (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: '0.5rem',
+      padding: '0.5rem 1.5rem', borderBottom: '1px solid #f0ede8',
+    }}>
+      <select
+        value={localVenueId || ''}
+        onChange={e => setLocalVenueId(e.target.value)}
+        style={{
+          padding: '4px 8px', fontSize: '0.75rem',
+          border: '1px solid #e2ddd7', borderRadius: 6, fontFamily: 'inherit',
+        }}
+      >
+        {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+      </select>
+    </div>
+  ) : null;
+
   const componentBlock = (data || config.loadAction.connector === '_none') ? (
     <DisplayBlockRenderer
       block={{
         component: config.component,
         data: data || {},
-        props: { ...config.componentProps, activeVenueId },
+        props: { ...config.componentProps, activeVenueId: effectiveVenueId },
       }}
       onAction={handleAction}
       threadId={thread?.id}
@@ -187,7 +226,8 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   if (!hasConversation) {
     return (
       <div style={{ height: '100dvh', position: 'relative', backgroundColor: '#fff' }}>
-        <div style={{ height: '100%', overflowY: 'auto', paddingTop: '1rem', paddingLeft: '1.5rem', paddingRight: '1.5rem', paddingBottom: '100px' }}>
+        {venueSelector}
+        <div style={{ height: '100%', overflowY: 'auto', paddingTop: venueSelector ? '0.5rem' : '1rem', paddingLeft: '1.5rem', paddingRight: '1.5rem', paddingBottom: '100px' }}>
           {loadingData && (
             <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading...</div>
           )}
@@ -219,6 +259,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
         flexShrink: 0,
         overflowY: 'scroll',
       }}>
+        {venueSelector}
         <div style={{ padding: '0.75rem 0.5rem 0.75rem 1.5rem' }}>
           {loadingData && <div style={{ padding: '1rem', color: '#999' }}>Loading...</div>}
           {loadError && <div style={{ padding: '1rem', color: '#e53e3e' }}>{loadError}</div>}

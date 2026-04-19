@@ -73,6 +73,26 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     componentProps: { agent_slug: 'marketing' },
   },
   {
+    id: 'marketing-calendar',
+    label: 'Calendar',
+    icon: Calendar,
+    agent: 'marketing',
+    component: 'mcp_embed',
+    loadAction: {
+      connector: 'orbit_marketing',
+      action: 'get_calendar_items',
+      defaultParams: () => {
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return {
+          start_date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`,
+          end_date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate())}`,
+        };
+      },
+    },
+    componentProps: { container_hint: 'full_page', connector_name: 'orbit_marketing' },
+  },
+  {
     id: 'tasks-marketing',
     label: 'Tasks',
     icon: Timer,

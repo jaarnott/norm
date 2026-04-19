@@ -29,6 +29,8 @@ interface TestRun {
   completed_at: string | null;
   duration_ms: number | null;
   error_message: string | null;
+  stdout: string | null;
+  triggered_by: string | null;
 }
 
 export default function TestsPanel() {
@@ -43,9 +45,15 @@ export default function TestsPanel() {
   // Test Suite state
   const [tests, setTests] = useState<E2ETest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [environment, setEnvironment] = useState('testing');
+  const [environment, setEnvironment] = useState(
+    typeof window !== 'undefined' && window.location.hostname === 'localhost'
+      ? 'local'
+      : 'testing'
+  );
   const [runningAll, setRunningAll] = useState(false);
   const [runningTest, setRunningTest] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [runsByTest, setRunsByTest] = useState<Record<string, TestRun[]>>({});
 
   const fetchTests = useCallback(async () => {
     try {
@@ -58,8 +66,56 @@ export default function TestsPanel() {
     setLoading(false);
   }, []);
 
+  const fetchRunsForTest = useCallback(async (testId: string) => {
+    try {
+      const res = await apiFetch(`/api/admin/test-runs?test_id=${testId}&limit=10`);
+      if (res.ok) {
+        const data = await res.json();
+        setRunsByTest(prev => ({ ...prev, [testId]: data.runs || [] }));
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchTests(); }, [fetchTests]);
+
+  // Poll while any test is running (pending/running status)
+  useEffect(() => {
+    const hasRunning = runningAll || runningTest !== null;
+    if (!hasRunning) return;
+    const interval = setInterval(() => {
+      fetchTests();
+      if (expandedId) fetchRunsForTest(expandedId);
+    }, 2000);
+    // Stop polling after 60s
+    const timeout = setTimeout(() => {
+      setRunningAll(false);
+      setRunningTest(null);
+    }, 60000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [runningAll, runningTest, expandedId, fetchTests, fetchRunsForTest]);
+
+  // Clear running flags when last run completes
+  useEffect(() => {
+    if (!runningTest && !runningAll) return;
+    const t = tests.find(t => t.id === runningTest);
+    if (t && t.last_run_status && t.last_run_status !== 'pending' && t.last_run_status !== 'running') {
+      // Check if the last_run_at is recent (within last 2 min) to confirm this run completed
+      const last = t.last_run_at ? new Date(t.last_run_at).getTime() : 0;
+      if (Date.now() - last < 120000) {
+        setRunningTest(null);
+      }
+    }
+    if (runningAll && tests.every(t => t.last_run_status && t.last_run_status !== 'pending' && t.last_run_status !== 'running')) {
+      const mostRecent = Math.max(...tests.map(t => t.last_run_at ? new Date(t.last_run_at).getTime() : 0));
+      if (Date.now() - mostRecent < 120000) {
+        setRunningAll(false);
+      }
+    }
+  }, [tests, runningTest, runningAll]);
 
   const handleGenerate = async () => {
     if (!description.trim()) return;
@@ -290,6 +346,7 @@ export default function TestsPanel() {
               borderRadius: 6, fontFamily: 'inherit', backgroundColor: '#fff',
             }}
           >
+            <option value="local">local</option>
             <option value="testing">testing</option>
             <option value="staging">staging</option>
           </select>
@@ -319,51 +376,115 @@ export default function TestsPanel() {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {tests.map(t => (
-            <div
-              key={t.id}
-              style={{
-                display: 'flex', alignItems: 'center', gap: '0.75rem',
-                padding: '0.6rem 0.75rem', backgroundColor: '#fff',
-                border: '1px solid #e5e7eb', borderRadius: 6,
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.82rem', fontWeight: 500, color: '#111' }}>{t.name}</div>
-                <div style={{ fontSize: '0.7rem', color: '#999', marginTop: 2 }}>
-                  {t.last_run_at
-                    ? `Last run: ${new Date(t.last_run_at).toLocaleString()}`
-                    : 'Never run'}
+          {tests.map(t => {
+            const isExpanded = expandedId === t.id;
+            const runs = runsByTest[t.id] || [];
+            const latestRun = runs[0];
+            return (
+              <div
+                key={t.id}
+                style={{
+                  backgroundColor: '#fff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 6,
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  onClick={() => {
+                    const next = isExpanded ? null : t.id;
+                    setExpandedId(next);
+                    if (next) fetchRunsForTest(next);
+                  }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '0.75rem',
+                    padding: '0.6rem 0.75rem', cursor: 'pointer',
+                  }}
+                >
+                  <span style={{ fontSize: '0.7rem', color: '#999', width: 10 }}>{isExpanded ? '▾' : '▸'}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '0.82rem', fontWeight: 500, color: '#111' }}>{t.name}</div>
+                    <div style={{ fontSize: '0.7rem', color: '#999', marginTop: 2 }}>
+                      {t.last_run_at
+                        ? `Last run: ${new Date(t.last_run_at).toLocaleString()}`
+                        : 'Never run'}
+                    </div>
+                  </div>
+                  {statusBadge(t.last_run_status)}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleRunSingle(t.id); }}
+                    disabled={runningTest === t.id}
+                    title="Run test"
+                    style={{
+                      width: 28, height: 28, border: '1px solid #ddd', borderRadius: 6,
+                      backgroundColor: '#fff', cursor: 'pointer', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', fontSize: '0.82rem',
+                      color: runningTest === t.id ? '#ccc' : '#333',
+                    }}
+                  >
+                    {runningTest === t.id ? '...' : '\u25B6'}
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}
+                    title="Delete test"
+                    style={{
+                      width: 28, height: 28, border: '1px solid #ddd', borderRadius: 6,
+                      backgroundColor: '#fff', cursor: 'pointer', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem',
+                      color: '#999',
+                    }}
+                  >
+                    &times;
+                  </button>
                 </div>
+                {isExpanded && (
+                  <div style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem', backgroundColor: '#fafafa', fontSize: '0.75rem' }}>
+                    {latestRun ? (
+                      <>
+                        <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem', color: '#666' }}>
+                          <span>Duration: <strong>{latestRun.duration_ms ? (latestRun.duration_ms / 1000).toFixed(2) + 's' : '—'}</strong></span>
+                          <span>Environment: <strong>{latestRun.environment}</strong></span>
+                          <span>Triggered by: <strong>{latestRun.triggered_by || 'unknown'}</strong></span>
+                        </div>
+                        {latestRun.error_message && (
+                          <div style={{ marginBottom: '0.5rem' }}>
+                            <div style={{ fontWeight: 600, color: '#991b1b', marginBottom: 2 }}>Error</div>
+                            <pre style={{ margin: 0, padding: '0.5rem', backgroundColor: '#fff', border: '1px solid #fecaca', borderRadius: 4, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: '0.7rem' }}>{latestRun.error_message}</pre>
+                          </div>
+                        )}
+                        {latestRun.stdout && (
+                          <div style={{ marginBottom: '0.5rem' }}>
+                            <div style={{ fontWeight: 600, color: '#333', marginBottom: 2 }}>Logs</div>
+                            <pre style={{ margin: 0, padding: '0.5rem', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: 4, overflow: 'auto', maxHeight: 300, whiteSpace: 'pre-wrap', fontSize: '0.7rem' }}>{latestRun.stdout}</pre>
+                          </div>
+                        )}
+                        {!latestRun.error_message && !latestRun.stdout && (
+                          <div style={{ color: '#999', fontStyle: 'italic' }}>No output captured.</div>
+                        )}
+                        {runs.length > 1 && (
+                          <div style={{ marginTop: '0.75rem' }}>
+                            <div style={{ fontWeight: 600, color: '#333', marginBottom: 4 }}>Recent runs</div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              {runs.slice(1, 6).map(r => (
+                                <div key={r.id} style={{ display: 'flex', gap: '0.75rem', fontSize: '0.7rem', color: '#666' }}>
+                                  <span style={{ width: 60 }}>{statusBadge(r.status)}</span>
+                                  <span>{r.started_at ? new Date(r.started_at).toLocaleString() : '—'}</span>
+                                  <span>{r.duration_ms ? (r.duration_ms / 1000).toFixed(2) + 's' : '—'}</span>
+                                  <span style={{ color: '#999' }}>{r.environment}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div style={{ color: '#999', fontStyle: 'italic' }}>No runs yet. Click the play button to run this test.</div>
+                    )}
+                  </div>
+                )}
               </div>
-              {statusBadge(t.last_run_status)}
-              <button
-                onClick={() => handleRunSingle(t.id)}
-                disabled={runningTest === t.id}
-                title="Run test"
-                style={{
-                  width: 28, height: 28, border: '1px solid #ddd', borderRadius: 6,
-                  backgroundColor: '#fff', cursor: 'pointer', display: 'flex',
-                  alignItems: 'center', justifyContent: 'center', fontSize: '0.82rem',
-                  color: runningTest === t.id ? '#ccc' : '#333',
-                }}
-              >
-                {runningTest === t.id ? '...' : '\u25B6'}
-              </button>
-              <button
-                onClick={() => handleDelete(t.id)}
-                title="Delete test"
-                style={{
-                  width: 28, height: 28, border: '1px solid #ddd', borderRadius: 6,
-                  backgroundColor: '#fff', cursor: 'pointer', display: 'flex',
-                  alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem',
-                  color: '#999',
-                }}
-              >
-                &times;
-              </button>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Summary */}
           <div style={{
