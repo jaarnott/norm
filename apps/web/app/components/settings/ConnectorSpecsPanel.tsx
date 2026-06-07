@@ -406,6 +406,11 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
             );
           })()}
 
+          {/* Per-venue OAuth connections (only for oauth2 specs) */}
+          {spec.auth_type === 'oauth2' && (
+            <VenueOAuthSection connectorName={spec.connector_name} />
+          )}
+
           {/* Actions */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button
@@ -446,4 +451,201 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
       ))}
     </>
   );
+}
+
+// ─── Per-venue OAuth connection panel ────────────────────────────────────────
+
+interface VenueOAuthRow {
+  venue_id: string;
+  venue_name: string;
+  connected: boolean;
+  expired: boolean;
+  has_refresh_token: boolean;
+  expires_at: string | null;
+}
+
+function VenueOAuthSection({ connectorName }: { connectorName: string }) {
+  const [rows, setRows] = useState<VenueOAuthRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);  // venue_id currently in flight
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await apiFetch(`/api/oauth/venues/${connectorName}`);
+      if (!res.ok) {
+        setError(`Failed to load venue status (${res.status})`);
+        return;
+      }
+      const data = await res.json();
+      setRows(data.venues || []);
+      setError(null);
+    } catch (err) {
+      setError(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [connectorName]);
+
+  useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  // Listen for postMessage from the OAuth callback popup
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const msg = event.data;
+      if (msg?.type === 'oauth-complete') {
+        // Refresh status — the callback HTML already closed itself
+        fetchStatus();
+        setBusy(null);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [fetchStatus]);
+
+  const handleConnect = async () => {
+    // OAuth flow: no venue_id passed — LoadedHub returns it after the user picks
+    // their venue inside the LoadedHub authorize page. Backend matches it to a
+    // Norm venue via x_loaded_company_id.
+    setBusy('__connecting__');
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/oauth/authorize/${connectorName}`);
+      if (!res.ok) {
+        const text = await res.text();
+        setError(`Failed to start OAuth: ${text.slice(0, 200)}`);
+        setBusy(null);
+        return;
+      }
+      const { authorize_url } = await res.json();
+      const popup = window.open(
+        authorize_url,
+        'oauth-popup',
+        'width=600,height=700,resizable=yes,scrollbars=yes'
+      );
+      if (!popup) {
+        setError('Popup was blocked. Please allow popups for this site.');
+        setBusy(null);
+        return;
+      }
+      const pollClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(pollClosed);
+          fetchStatus();
+          setBusy(null);
+        }
+      }, 1000);
+    } catch (err) {
+      setError(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setBusy(null);
+    }
+  };
+
+  const handleDisconnect = async (venueId: string, venueName: string) => {
+    if (!confirm(`Disconnect ${connectorName} for ${venueName}?`)) return;
+    setBusy(venueId);
+    try {
+      const res = await apiFetch(
+        `/api/oauth/disconnect/${connectorName}?venue_id=${encodeURIComponent(venueId)}`,
+        { method: 'POST' }
+      );
+      if (!res.ok) setError(`Failed to disconnect (${res.status})`);
+      await fetchStatus();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{ fontSize: '0.78rem', color: '#888', marginBottom: '0.75rem' }}>
+        Loading venue connections...
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      fontSize: '0.78rem',
+      marginBottom: '0.75rem',
+      padding: '0.6rem 0.75rem',
+      backgroundColor: '#fafafa',
+      border: '1px solid #edf2f7',
+      borderRadius: 6,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <div style={{ fontWeight: 500, color: '#444' }}>
+          Per-venue OAuth Connections
+        </div>
+        <button
+          onClick={handleConnect}
+          disabled={busy === '__connecting__'}
+          style={oauthBtnStyle('primary', busy === '__connecting__')}
+          title="Open the OAuth flow. The venue is selected inside LoadedHub during authorization."
+        >
+          {busy === '__connecting__' ? 'Opening OAuth...' : 'Connect a venue'}
+        </button>
+      </div>
+      {error && (
+        <div style={{ color: '#c53030', marginBottom: 6, fontSize: '0.75rem' }}>{error}</div>
+      )}
+      <div style={{ fontSize: '0.72rem', color: '#888', marginBottom: 8 }}>
+        Click <strong>Connect a venue</strong> to start the OAuth flow.
+        The venue is selected inside LoadedHub; tokens are stored against the matching
+        Norm venue using the x_loaded_company_id mapping.
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ color: '#888' }}>No venues found.</div>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <tbody>
+            {rows.map(r => {
+              const status = !r.connected
+                ? { label: 'Not connected', color: '#888' }
+                : r.expired && !r.has_refresh_token
+                ? { label: 'Expired', color: '#c53030' }
+                : r.expired && r.has_refresh_token
+                ? { label: 'Connected (auto-refresh)', color: '#92400e' }
+                : { label: 'Connected', color: '#38a169' };
+              return (
+                <tr key={r.venue_id} style={{ borderTop: '1px solid #edf2f7' }}>
+                  <td style={{ padding: '6px 4px', fontWeight: 500 }}>{r.venue_name}</td>
+                  <td style={{ padding: '6px 4px', color: status.color, fontSize: '0.75rem' }}>
+                    {status.label}
+                  </td>
+                  <td style={{ padding: '6px 4px', textAlign: 'right' }}>
+                    {r.connected && (
+                      <button
+                        onClick={() => handleDisconnect(r.venue_id, r.venue_name)}
+                        disabled={busy === r.venue_id}
+                        style={oauthBtnStyle('danger', busy === r.venue_id)}
+                      >
+                        Disconnect
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function oauthBtnStyle(variant: 'primary' | 'secondary' | 'danger', disabled: boolean): React.CSSProperties {
+  const base: React.CSSProperties = {
+    padding: '4px 10px',
+    fontSize: '0.72rem',
+    fontWeight: 500,
+    border: '1px solid',
+    borderRadius: 5,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    fontFamily: 'inherit',
+    opacity: disabled ? 0.6 : 1,
+  };
+  if (variant === 'primary') return { ...base, borderColor: '#2b6cb0', backgroundColor: '#2b6cb0', color: '#fff' };
+  if (variant === 'danger') return { ...base, borderColor: '#e53e3e', backgroundColor: '#fff', color: '#e53e3e' };
+  return { ...base, borderColor: '#ddd', backgroundColor: '#fff', color: '#333' };
 }

@@ -99,7 +99,10 @@ def exchange_code(
             "client_id": client_id,
             "client_secret": client_secret,
         },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
         timeout=15.0,
     )
 
@@ -146,16 +149,25 @@ def refresh_access_token(
     token_url = oauth.get("token_url", "")
     client_id = oauth.get("client_id", "")
     client_secret = oauth.get("client_secret", "")
+    scopes = oauth.get("scopes", "")
+
+    refresh_body = {
+        "grant_type": "refresh_token",
+        "refresh_token": config_row.refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    # LoadedHub expects scope on refresh requests; include if configured
+    if scopes:
+        refresh_body["scope"] = scopes
 
     resp = httpx.post(
         token_url,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": config_row.refresh_token,
-            "client_id": client_id,
-            "client_secret": client_secret,
+        data=refresh_body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
         },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=15.0,
     )
 
