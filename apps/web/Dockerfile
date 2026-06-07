@@ -1,7 +1,7 @@
 # ── Stage 1: Dependencies ──────────────────────────────────────
 FROM node:22-alpine AS deps
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@10.23.0 --activate
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ RUN pnpm install --frozen-lockfile --filter @norm/web... 2>/dev/null || \
 # ── Stage 2: Builder ──────────────────────────────────────────
 FROM node:22-alpine AS builder
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@10.23.0 --activate
 
 WORKDIR /app
 
