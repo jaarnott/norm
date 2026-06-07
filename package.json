@@ -9,8 +9,5 @@
     "lint": "pnpm --filter @norm/web lint",
     "test:e2e": "cd apps/e2e && npx playwright test",
     "test:e2e:ui": "cd apps/e2e && npx playwright test --ui"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["sharp", "unrs-resolver"]
   }
 }
