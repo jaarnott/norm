@@ -336,6 +336,7 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 anthropic_tools,
                 context=at_context,
                 test_mode=test_mode,
+                config_db=config_db,
                 messages_override=messages,
             )
 

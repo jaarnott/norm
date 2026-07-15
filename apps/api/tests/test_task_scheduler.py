@@ -6,7 +6,7 @@ authentication on the /internal/run-due-tasks endpoint.
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.config import settings
 from app.db.models import AutomatedTask
@@ -65,6 +65,39 @@ class TestApplySchedule:
         task = _make_task(db_session, status="active", schedule_type="manual")
         task_scheduler.apply_schedule(task)
         assert task.next_run_at is None
+
+
+class TestExecuteTaskNow:
+    def test_config_db_is_threaded_into_the_tool_loop(self, db_session, admin_user):
+        """execute_task_now must pass config_db through to run_tool_loop.
+
+        Without it, _execute_tool_call raises "config_db is required" the moment
+        an automated task invokes a connector tool — so the task fails every run
+        while still looking correctly scheduled.
+        """
+        task = _make_task(db_session, schedule_type="daily")
+        task.created_by = admin_user.id
+        db_session.flush()
+
+        agent = MagicMock()
+        agent.get_tool_definitions.return_value = ("system prompt", [])
+        agent.build_context.return_value = {}
+
+        with (
+            patch("app.agents.registry.get_agent", return_value=agent),
+            patch("app.agents.tool_loop.run_tool_loop") as mock_loop,
+            patch(
+                "app.agents.context_builder.build_conversation_messages",
+                return_value=[],
+            ),
+        ):
+            mock_loop.return_value = {"message": "done", "tool_calls": []}
+            task_scheduler.execute_task_now(task.id, mode="live", db=db_session)
+
+        assert mock_loop.called, "run_tool_loop was never invoked"
+        assert mock_loop.call_args.kwargs.get("config_db") is not None, (
+            "config_db must be passed to run_tool_loop"
+        )
 
 
 class TestRunDueTasks:
