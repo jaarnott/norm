@@ -183,6 +183,22 @@ resource "google_cloud_run_v2_service" "api" {
 
     timeout = "300s"
   }
+
+  # The image and runtime env vars are managed out-of-band by the deploy
+  # pipeline and operational gcloud updates, not by Terraform. Without this,
+  # an apply would revert the running image and strip env vars (e.g.
+  # CONFIG_DATABASE_URL) that Terraform doesn't declare, breaking the service.
+  lifecycle {
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].containers[0].image,
+      template[0].containers[0].env,
+      # The norm-config Cloud SQL instance is mounted operationally (it lives
+      # outside this stack), so Terraform must not manage the volume set.
+      template[0].volumes,
+    ]
+  }
 }
 
 resource "google_cloud_run_v2_service_iam_member" "api_public" {
@@ -220,6 +236,17 @@ resource "google_cloud_run_v2_service" "web" {
         container_port = 3000
       }
     }
+  }
+
+  # Image + env are managed by the deploy pipeline, not Terraform (see the API
+  # service above for rationale).
+  lifecycle {
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].containers[0].image,
+      template[0].containers[0].env,
+    ]
   }
 }
 

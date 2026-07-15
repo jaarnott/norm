@@ -56,6 +56,11 @@ variable "db_cross_region_backup" {
   type        = string
   default     = ""
 }
+variable "db_point_in_time_recovery" {
+  description = "Enable Cloud SQL point-in-time recovery (WAL archiving). Toggling forces an instance restart."
+  type        = bool
+  default     = true
+}
 
 # ── Cloud Run ───────────────────────────────────────────────────
 variable "cloudrun_api_min" {

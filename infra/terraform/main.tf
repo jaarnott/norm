@@ -55,6 +55,7 @@ module "database" {
   disk_size             = var.db_disk_size
   read_replica_enabled  = var.db_read_replica_enabled
   cross_region_backup   = var.db_cross_region_backup
+  point_in_time_recovery_enabled = var.db_point_in_time_recovery
   network_id            = module.networking.network_id
 
   depends_on = [google_project_service.apis, module.networking]

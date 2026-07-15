@@ -6,19 +6,15 @@
 # Run autoscaling.
 #
 # Auth: the endpoint is gated by a shared secret sent as a request header. The
-# secret is internal-only (nothing outside this config needs to know it), so we
-# generate it here and store it in Secret Manager. Cloud Run reads it as the
-# SCHEDULER_SECRET env var (see the cloud-run module) and Cloud Scheduler sends
-# it as the X-Scheduler-Secret header.
+# SCHEDULER_SECRET secret + its value are created out-of-band (Secret Manager);
+# we read the current version here to configure the Cloud Scheduler header so
+# Terraform never rotates it. The secret container itself is declared in the
+# secrets module.
 
-resource "random_password" "scheduler_secret" {
-  length  = 40
-  special = false
-}
-
-resource "google_secret_manager_secret_version" "scheduler_secret" {
-  secret      = "projects/${var.project_id}/secrets/SCHEDULER_SECRET"
-  secret_data = random_password.scheduler_secret.result
+data "google_secret_manager_secret_version" "scheduler_secret" {
+  secret  = "SCHEDULER_SECRET"
+  project = var.project_id
+  version = "latest"
 
   depends_on = [module.secrets]
 }
@@ -41,14 +37,13 @@ resource "google_cloud_scheduler_job" "run_due_tasks" {
     uri         = "${module.cloud_run.api_url}/internal/run-due-tasks"
 
     headers = {
-      "X-Scheduler-Secret" = random_password.scheduler_secret.result
+      "X-Scheduler-Secret" = data.google_secret_manager_secret_version.scheduler_secret.secret_data
       "Content-Type"       = "application/json"
     }
   }
 
   depends_on = [
     google_project_service.apis,
-    google_secret_manager_secret_version.scheduler_secret,
     module.cloud_run,
   ]
 }

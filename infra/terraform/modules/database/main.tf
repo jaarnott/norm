@@ -36,6 +36,10 @@ variable "cross_region_backup" {
   default = ""
   description = "If set, enables cross-region backup to this location (e.g. australia-southeast2)"
 }
+variable "point_in_time_recovery_enabled" {
+  type    = bool
+  default = true
+}
 
 resource "random_password" "db_password" {
   length  = 32
@@ -62,7 +66,7 @@ resource "google_sql_database_instance" "main" {
 
     backup_configuration {
       enabled                        = true
-      point_in_time_recovery_enabled = true
+      point_in_time_recovery_enabled = var.point_in_time_recovery_enabled
       transaction_log_retention_days = min(var.backup_retention, 7)
       backup_retention_settings {
         retained_backups = var.backup_retention
