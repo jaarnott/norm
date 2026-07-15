@@ -2,7 +2,7 @@
 
 import sys
 import uuid
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 
 # Mock the task_scheduler module since apscheduler isn't installed in test env
@@ -166,12 +166,8 @@ class TestCreateAutomatedTask:
 class TestUpdateAutomatedTask:
     """PUT /api/automated-tasks/{task_id}"""
 
-    @patch("app.services.task_scheduler.schedule_task")
-    @patch("app.services.task_scheduler.unschedule_task")
     def test_update_task(
         self,
-        mock_unsched,
-        mock_sched,
         client,
         db_session,
         admin_user,
@@ -213,10 +209,7 @@ class TestUpdateAutomatedTask:
 class TestPauseResumeAutomatedTask:
     """POST /api/automated-tasks/{task_id}/pause and /resume"""
 
-    @patch("app.services.task_scheduler.unschedule_task")
-    def test_pause_task(
-        self, mock_unsched, client, db_session, admin_user, admin_headers
-    ):
+    def test_pause_task(self, client, db_session, admin_user, admin_headers):
         task = AutomatedTask(
             id=str(uuid.uuid4()),
             title="Active Task",
@@ -234,10 +227,7 @@ class TestPauseResumeAutomatedTask:
         assert resp.status_code == 200
         assert resp.json()["status"] == "paused"
 
-    @patch("app.services.task_scheduler.schedule_task")
-    def test_resume_task(
-        self, mock_sched, client, db_session, admin_user, admin_headers
-    ):
+    def test_resume_task(self, client, db_session, admin_user, admin_headers):
         task = AutomatedTask(
             id=str(uuid.uuid4()),
             title="Paused Task",
@@ -271,10 +261,7 @@ class TestPauseResumeAutomatedTask:
 class TestDeleteAutomatedTask:
     """DELETE /api/automated-tasks/{task_id}"""
 
-    @patch("app.services.task_scheduler.unschedule_task")
-    def test_delete_task(
-        self, mock_unsched, client, db_session, admin_user, admin_headers
-    ):
+    def test_delete_task(self, client, db_session, admin_user, admin_headers):
         task = AutomatedTask(
             id=str(uuid.uuid4()),
             title="To Delete",

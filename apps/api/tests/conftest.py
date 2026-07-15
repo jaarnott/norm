@@ -67,6 +67,10 @@ _test_app.include_router(agents.router, prefix="/api")
 _test_app.include_router(roles.router, prefix="/api")
 _test_app.include_router(component_apis.router, prefix="/api")
 
+from app.routers import internal as _internal  # noqa: E402
+
+_test_app.include_router(_internal.router)
+
 
 # ---------------------------------------------------------------------------
 # Database engine & session scoped to the test run

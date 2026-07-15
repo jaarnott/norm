@@ -9,6 +9,7 @@ locals {
     "STRIPE_SECRET_KEY",
     "STRIPE_WEBHOOK_SECRET",
     "SENTRY_DSN",
+    "SCHEDULER_SECRET",
   ]
 }
 

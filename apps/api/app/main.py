@@ -38,6 +38,7 @@ from app.routers import (  # noqa: E402
     component_apis,
     playbooks,
     templates,
+    internal,
 )
 
 app = FastAPI(
@@ -87,6 +88,7 @@ app.include_router(email.router, prefix="/api")
 app.include_router(component_apis.router, prefix="/api")
 app.include_router(playbooks.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
+app.include_router(internal.router)
 
 
 @app.on_event("startup")
@@ -152,17 +154,21 @@ def _ensure_config_tables() -> None:
 
 
 @app.on_event("startup")
-def _start_scheduler() -> None:
-    from app.services.task_scheduler import init_scheduler
+def _init_task_schedules() -> None:
+    """Initialise next_run_at for active tasks.
 
-    init_scheduler()
+    Execution itself is driven externally by Cloud Scheduler hitting
+    /internal/run-due-tasks — there is no in-process scheduler thread.
+    """
+    import logging
 
+    from app.services.task_scheduler import backfill_next_run_times
 
-@app.on_event("shutdown")
-def _stop_scheduler() -> None:
-    from app.services.task_scheduler import scheduler
-
-    scheduler.shutdown(wait=False)
+    log = logging.getLogger(__name__)
+    try:
+        backfill_next_run_times()
+    except Exception:
+        log.exception("Failed to backfill task schedules at startup")
 
 
 @app.on_event("startup")

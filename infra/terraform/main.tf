@@ -30,6 +30,7 @@ resource "google_project_service" "apis" {
     "compute.googleapis.com",
     "dns.googleapis.com",
     "certificatemanager.googleapis.com",
+    "cloudscheduler.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false

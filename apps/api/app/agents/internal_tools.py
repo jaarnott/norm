@@ -1291,7 +1291,7 @@ def _list_automated_tasks(params: dict, db: Session, thread_id: str | None) -> d
 def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update an automated task's fields."""
     from app.db.models import AutomatedTask
-    from app.services.task_scheduler import schedule_task, unschedule_task
+    from app.services.task_scheduler import apply_schedule
 
     atask_id = params.get("task_id")
     if not atask_id:
@@ -1316,13 +1316,9 @@ def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> 
         if field in params:
             setattr(task, field, params[field])
 
+    # Refresh next_run_at from the new status/schedule before persisting.
+    apply_schedule(task)
     db.flush()
-
-    # Update scheduler
-    if task.status == "active":
-        schedule_task(task)
-    else:
-        unschedule_task(task.id)
 
     return {"success": True, "data": _automated_task_to_dict(task)}
 

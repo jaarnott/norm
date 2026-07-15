@@ -1,93 +1,188 @@
-"""APScheduler-based task scheduler for automated agent workflows.
+"""Scheduling and execution for automated agent workflows.
 
-Manages scheduling, execution, and lifecycle of AutomatedTask records.
-Started at FastAPI startup, loads active tasks from DB, and runs them
-on their configured schedules.
+Execution is driven by an external trigger (Cloud Scheduler) that calls the
+``/internal/run-due-tasks`` endpoint on a fixed cadence. Each AutomatedTask
+carries a ``next_run_at`` timestamp; the runner atomically claims due tasks
+(advancing ``next_run_at`` under a row lock) and then executes them.
+
+This replaces the previous in-process ``BackgroundScheduler``, which was
+unreliable under gunicorn's multiple workers and Cloud Run autoscaling
+(jobs lived only in the worker/instance that happened to schedule them, and
+were lost on every recycle), and which computed cron times in the container's
+UTC local time rather than the business timezone.
 """
 
 import logging
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-scheduler = BackgroundScheduler()
+
+def _resolve_timezone(config: dict) -> ZoneInfo:
+    """Timezone for a task's schedule: per-task override or the global default."""
+    tzname = (config or {}).get("timezone") or settings.SCHEDULER_TIMEZONE
+    try:
+        return ZoneInfo(tzname)
+    except Exception:
+        logger.warning("Unknown scheduler timezone %r; falling back to UTC", tzname)
+        return ZoneInfo("UTC")
 
 
-def init_scheduler():
-    """Start the scheduler and load active tasks from DB."""
+def compute_next_run_at(
+    schedule_type: str, config: dict | None, after: datetime | None = None
+) -> datetime | None:
+    """Return the next UTC fire time strictly after ``after`` (default: now).
+
+    Returns None for manual tasks (never auto-fire). Cron-style schedules are
+    evaluated in the task's configured timezone so "daily at 9:00" means 9am
+    local, not 9am UTC.
+    """
+    config = config or {}
+    now = after or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    if schedule_type == "manual":
+        return None
+    if schedule_type == "hourly":
+        return now.astimezone(timezone.utc) + timedelta(hours=1)
+
+    tz = _resolve_timezone(config)
+    hour = int(config.get("hour", 9))
+    minute = int(config.get("minute", 0))
+
+    if schedule_type == "daily":
+        trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
+    elif schedule_type == "weekly":
+        day = str(config.get("day_of_week", "monday"))[:3].lower()
+        trigger = CronTrigger(day_of_week=day, hour=hour, minute=minute, timezone=tz)
+    elif schedule_type == "monthly":
+        day = int(config.get("day_of_month", 1))
+        trigger = CronTrigger(day=day, hour=hour, minute=minute, timezone=tz)
+    else:
+        return None
+
+    nxt = trigger.get_next_fire_time(None, now.astimezone(tz))
+    return nxt.astimezone(timezone.utc) if nxt else None
+
+
+def apply_schedule(task) -> None:
+    """Refresh ``task.next_run_at`` from its current status + schedule.
+
+    Active, non-manual tasks get the next fire time; everything else is cleared
+    so it won't be picked up by the runner. The caller is responsible for
+    committing.
+    """
+    if task.status == "active" and task.schedule_type != "manual":
+        task.next_run_at = compute_next_run_at(task.schedule_type, task.schedule_config)
+    else:
+        task.next_run_at = None
+
+
+def backfill_next_run_times() -> None:
+    """Initialise ``next_run_at`` for active tasks that are missing it.
+
+    Run at startup so tasks activated before this trigger model existed (or
+    while next_run_at was unused) begin firing without needing to be re-saved.
+    """
     from app.db.engine import SessionLocal
     from app.db.models import AutomatedTask
 
-    scheduler.start()
-
     db = SessionLocal()
     try:
-        active_tasks = (
-            db.query(AutomatedTask).filter(AutomatedTask.status == "active").all()
+        tasks = (
+            db.query(AutomatedTask)
+            .filter(
+                AutomatedTask.status == "active",
+                AutomatedTask.schedule_type != "manual",
+                AutomatedTask.next_run_at.is_(None),
+            )
+            .all()
         )
-        for task in active_tasks:
-            schedule_task(task)
-        logger.info("Scheduler started with %d active tasks", len(active_tasks))
+        for task in tasks:
+            task.next_run_at = compute_next_run_at(
+                task.schedule_type, task.schedule_config
+            )
+        if tasks:
+            db.commit()
+        logger.info("Backfilled next_run_at for %d active task(s)", len(tasks))
     finally:
         db.close()
 
 
-def schedule_task(task) -> None:
-    """Add or replace a scheduler job for an AutomatedTask."""
-    trigger = _build_trigger(task.schedule_type, task.schedule_config or {})
-    if trigger is None:
-        return  # manual tasks don't get scheduled
+def _claim_due_tasks(db=None) -> list[str]:
+    """Atomically claim all currently-due tasks, returning their ids.
 
-    scheduler.add_job(
-        _execute_automated_task,
-        trigger=trigger,
-        args=[task.id],
-        id=task.id,
-        replace_existing=True,
-    )
-    logger.info(
-        "Scheduled task %s (%s) with %s trigger",
-        task.id[:12],
-        task.title,
-        task.schedule_type,
-    )
+    Uses ``SELECT ... FOR UPDATE SKIP LOCKED`` and advances ``next_run_at`` for
+    each claimed task before committing, so concurrent runner invocations (across
+    workers or instances) never execute the same task twice.
+    """
+    from app.db.engine import SessionLocal
+    from app.db.models import AutomatedTask
 
-
-def unschedule_task(task_id: str) -> None:
-    """Remove a scheduler job."""
+    owns_session = db is None
+    if owns_session:
+        db = SessionLocal()
     try:
-        scheduler.remove_job(task_id)
-        logger.info("Unscheduled task %s", task_id[:12])
-    except Exception:
-        pass  # job might not exist
+        now = datetime.now(timezone.utc)
+        due = (
+            db.query(AutomatedTask)
+            .filter(
+                AutomatedTask.status == "active",
+                AutomatedTask.schedule_type != "manual",
+                AutomatedTask.next_run_at.isnot(None),
+                AutomatedTask.next_run_at <= now,
+            )
+            .order_by(AutomatedTask.next_run_at)
+            .with_for_update(skip_locked=True)
+            .all()
+        )
+        claimed = []
+        for task in due:
+            claimed.append(task.id)
+            task.next_run_at = compute_next_run_at(
+                task.schedule_type, task.schedule_config, after=now
+            )
+        db.commit()
+        return claimed
+    finally:
+        if owns_session:
+            db.close()
 
 
-def _build_trigger(schedule_type: str, config: dict):
-    """Build an APScheduler trigger from schedule_type + config."""
-    hour = config.get("hour", 9)
-    minute = config.get("minute", 0)
-
-    if schedule_type == "hourly":
-        return IntervalTrigger(hours=1)
-    if schedule_type == "daily":
-        return CronTrigger(hour=hour, minute=minute)
-    if schedule_type == "weekly":
-        day = config.get("day_of_week", "monday")
-        return CronTrigger(day_of_week=day[:3].lower(), hour=hour, minute=minute)
-    if schedule_type == "monthly":
-        day = config.get("day_of_month", 1)
-        return CronTrigger(day=day, hour=hour, minute=minute)
-    return None  # manual
+def _execute_claimed(task_ids: list[str]) -> None:
+    """Run each claimed task in sequence. Intended to run off the request thread."""
+    for task_id in task_ids:
+        try:
+            execute_task_now(task_id, mode="live")
+        except Exception:
+            logger.exception("run_due_tasks: task %s failed", task_id[:12])
 
 
-def _execute_automated_task(task_id: str):
-    """Worker function: run an automated task. Called by APScheduler."""
-    execute_task_now(task_id, mode="live")
+def run_due_tasks(background: bool = True, db=None) -> dict:
+    """Claim due tasks and execute them.
+
+    Claiming is synchronous (fast, and it's what prevents double-runs). By
+    default execution is dispatched to a background thread so the HTTP caller
+    (Cloud Scheduler) gets a quick response and isn't blocked for the length of
+    an agent tool-loop. Pass ``background=False`` to run inline (used by tests).
+    """
+    claimed = _claim_due_tasks(db=db)
+    if claimed:
+        if background:
+            threading.Thread(
+                target=_execute_claimed, args=(claimed,), daemon=True
+            ).start()
+        else:
+            _execute_claimed(claimed)
+    return {"claimed": len(claimed), "task_ids": claimed}
 
 
 def _ensure_conversation_task(automated_task, db) -> str:

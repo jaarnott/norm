@@ -190,14 +190,10 @@ async def update_task(
         if val is not None:
             setattr(task, field, val)
 
+    from app.services.task_scheduler import apply_schedule
+
+    apply_schedule(task)
     db.commit()
-
-    from app.services.task_scheduler import schedule_task, unschedule_task
-
-    if task.status == "active":
-        schedule_task(task)
-    else:
-        unschedule_task(task.id)
 
     return _automated_task_to_dict(task)
 
@@ -231,11 +227,11 @@ async def pause_task(
     if not task:
         raise HTTPException(404, "Automated task not found")
     task.status = "paused"
+
+    from app.services.task_scheduler import apply_schedule
+
+    apply_schedule(task)
     db.commit()
-
-    from app.services.task_scheduler import unschedule_task
-
-    unschedule_task(task.id)
     return _automated_task_to_dict(task)
 
 
@@ -247,11 +243,11 @@ async def resume_task(
     if not task:
         raise HTTPException(404, "Automated task not found")
     task.status = "active"
+
+    from app.services.task_scheduler import apply_schedule
+
+    apply_schedule(task)
     db.commit()
-
-    from app.services.task_scheduler import schedule_task
-
-    schedule_task(task)
     return _automated_task_to_dict(task)
 
 
@@ -262,10 +258,6 @@ async def delete_task(
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
         raise HTTPException(404, "Automated task not found")
-
-    from app.services.task_scheduler import unschedule_task
-
-    unschedule_task(task.id)
 
     db.delete(task)
     db.commit()

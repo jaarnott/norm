@@ -24,9 +24,17 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "dev-secret-change-in-production"
     CORS_ALLOWED_ORIGINS: str = "*"  # comma-separated list; "*" for dev only
 
+    # ── Scheduler ───────────────────────────────────────────────────────
+    # Shared secret required to invoke /internal/run-due-tasks (set by Cloud
+    # Scheduler as a request header). Empty ⇒ endpoint rejects all callers.
+    SCHEDULER_SECRET: str = ""
+    # Timezone for cron-style schedules (daily/weekly/monthly) unless a task
+    # overrides it via schedule_config["timezone"].
+    SCHEDULER_TIMEZONE: str = "Pacific/Auckland"
+
     # ── LLM ─────────────────────────────────────────────────────────────
     ANTHROPIC_API_KEY: str = ""
-    LLM_INTERPRETER_MODEL: str = "claude-opus-4-20250514"
+    LLM_INTERPRETER_MODEL: str = "claude-opus-4-8"
     ROUTER_MODEL: str = "claude-haiku-4-5-20251001"
     DATE_RESOLVER_MODEL: str = "claude-haiku-4-5-20251001"
 
