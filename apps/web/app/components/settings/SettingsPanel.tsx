@@ -15,6 +15,7 @@ import PlaybooksPanel from './PlaybooksPanel';
 import TemplatesPanel from './TemplatesPanel';
 import AgentsPanel from './AgentsPanel';
 import AdminThreadsPanel from './AdminThreadsPanel';
+import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
 import type { User } from '../../types';
 
@@ -63,7 +64,7 @@ function VenueCard({ venue, onDelete, onUpdate }: { venue: VenueDetail; onDelete
   const [loadingConnectors, setLoadingConnectors] = useState(false);
   const [editingConnector, setEditingConnector] = useState<string | null>(null);
   const [editingVenue, setEditingVenue] = useState(false);
-  const [venueForm, setVenueForm] = useState({ timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' });
+  const [venueForm, setVenueForm] = useState({ location: venue.location || '', timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' });
   const [savingVenue, setSavingVenue] = useState(false);
 
   const loadConnectors = useCallback(async () => {
@@ -165,7 +166,7 @@ function VenueCard({ venue, onDelete, onUpdate }: { venue: VenueDetail; onDelete
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
               <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase' }}>Venue Settings</span>
               {!editingVenue && (
-                <button onClick={() => { setVenueForm({ timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' }); setEditingVenue(true); }} style={{
+                <button onClick={() => { setVenueForm({ location: venue.location || '', timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' }); setEditingVenue(true); }} style={{
                   padding: '2px 8px', fontSize: '0.68rem', border: '1px solid #ddd', borderRadius: 4,
                   backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit',
                 }}>Edit</button>
@@ -173,6 +174,16 @@ function VenueCard({ venue, onDelete, onUpdate }: { venue: VenueDetail; onDelete
             </div>
             {editingVenue ? (
               <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+                <div style={{ flex: 1.4 }}>
+                  <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>Address</label>
+                  <AddressSearch
+                    value={venueForm.location}
+                    onChange={loc => setVenueForm(f => ({ ...f, location: loc }))}
+                    onSelect={sel => setVenueForm(f => ({ ...f, location: sel.address, timezone: sel.timezone || f.timezone }))}
+                    placeholder="Search address"
+                    inputStyle={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit', boxSizing: 'border-box' }}
+                  />
+                </div>
                 <div style={{ flex: 1 }}>
                   <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>Timezone</label>
                   <input value={venueForm.timezone} onChange={e => setVenueForm(f => ({ ...f, timezone: e.target.value }))}
@@ -189,7 +200,7 @@ function VenueCard({ venue, onDelete, onUpdate }: { venue: VenueDetail; onDelete
                   try {
                     await apiFetch(`/api/venues/${venue.id}`, {
                       method: 'PUT',
-                      body: JSON.stringify({ timezone: venueForm.timezone || null, day_start_time: venueForm.day_start_time || null }),
+                      body: JSON.stringify({ location: venueForm.location || null, timezone: venueForm.timezone || null, day_start_time: venueForm.day_start_time || null }),
                     });
                     setEditingVenue(false);
                     onUpdate();
@@ -331,6 +342,8 @@ function VenuesTab() {
   const [newLocation, setNewLocation] = useState('');
   const [newTimezone, setNewTimezone] = useState('');
   const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -351,16 +364,36 @@ function VenuesTab() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleAdd = async () => {
-    if (!newName.trim() || !org) return;
-    await apiFetch(`/api/organizations/${org.id}/venues`, {
-      method: 'POST',
-      body: JSON.stringify({ name: newName, location: newLocation || null, timezone: newTimezone || null }),
-    });
-    setNewName('');
-    setNewLocation('');
-    setNewTimezone('');
-    setAdding(false);
-    loadData();
+    if (!newName.trim()) {
+      setError('Please enter a venue name.');
+      return;
+    }
+    if (!org) {
+      setError('No organization found for your account — contact your administrator.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/organizations/${org.id}/venues`, {
+        method: 'POST',
+        body: JSON.stringify({ name: newName, location: newLocation || null, timezone: newTimezone || null }),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        setError(detail?.detail || `Failed to create venue (${res.status})`);
+        return;
+      }
+      setNewName('');
+      setNewLocation('');
+      setNewTimezone('');
+      setAdding(false);
+      loadData();
+    } catch {
+      setError('Network error — could not create venue.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDelete = async (venueId: string) => {
@@ -387,33 +420,45 @@ function VenuesTab() {
         <div style={{
           padding: '0.75rem', border: '1px solid #dbeafe', borderRadius: 8,
           backgroundColor: '#f8fafc', marginBottom: '1rem',
-          display: 'flex', gap: '0.5rem', alignItems: 'flex-end',
         }}>
-          <div style={{ flex: 1 }}>
-            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Name</label>
-            <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Venue name"
-              style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Name</label>
+              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Venue name"
+                style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ flex: 1.4 }}>
+              <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Address</label>
+              <AddressSearch
+                value={newLocation}
+                onChange={setNewLocation}
+                onSelect={sel => { if (sel.timezone) setNewTimezone(sel.timezone); }}
+                placeholder="Search address (optional)"
+                inputStyle={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Timezone</label>
+              <input value={newTimezone} onChange={e => setNewTimezone(e.target.value)} placeholder="Auto-set from address"
+                style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+            </div>
+            <button onClick={handleAdd} disabled={saving} style={{
+              padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
+              backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
+              cursor: saving ? 'default' : 'pointer', fontFamily: 'inherit', opacity: saving ? 0.6 : 1,
+            }}>{saving ? 'Adding…' : 'Add'}</button>
+            <button onClick={() => { setAdding(false); setError(null); }} style={{
+              padding: '5px 12px', fontSize: '0.75rem',
+              backgroundColor: 'transparent', color: '#666', border: '1px solid #ddd', borderRadius: 6,
+              cursor: 'pointer', fontFamily: 'inherit',
+            }}>Cancel</button>
           </div>
-          <div style={{ flex: 1 }}>
-            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Location</label>
-            <input value={newLocation} onChange={e => setNewLocation(e.target.value)} placeholder="Address (optional)"
-              style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Timezone</label>
-            <input value={newTimezone} onChange={e => setNewTimezone(e.target.value)} placeholder="e.g. Pacific/Auckland"
-              style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit' }} />
-          </div>
-          <button onClick={handleAdd} style={{
-            padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
-            backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
-            cursor: 'pointer', fontFamily: 'inherit',
-          }}>Add</button>
-          <button onClick={() => setAdding(false)} style={{
-            padding: '5px 12px', fontSize: '0.75rem',
-            backgroundColor: 'transparent', color: '#666', border: '1px solid #ddd', borderRadius: 6,
-            cursor: 'pointer', fontFamily: 'inherit',
-          }}>Cancel</button>
+          {error && (
+            <div style={{
+              marginTop: '0.5rem', padding: '6px 10px', fontSize: '0.75rem',
+              color: '#b91c1c', backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6,
+            }}>{error}</div>
+          )}
         </div>
       )}
 
@@ -423,7 +468,9 @@ function VenuesTab() {
         ))}
         {venues.length === 0 && (
           <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.82rem' }}>
-            No venues yet. Click "Add Venue" to create one.
+            {org
+              ? 'No venues yet. Click "Add Venue" to create one.'
+              : 'Your account isn’t linked to an organization yet, so venues can’t be created. Contact your administrator.'}
           </div>
         )}
       </div>

@@ -4,6 +4,7 @@ import json
 import logging
 from anthropic import Anthropic
 from app.config import settings
+from app.services.models import agent_model
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ async def generate_test(description: str) -> dict:
     selectors_str = json.dumps(AVAILABLE_SELECTORS, indent=2)
 
     response = client.messages.create(
-        model=settings.LLM_INTERPRETER_MODEL or "claude-sonnet-4-20250514",
+        model=agent_model(),
         max_tokens=4096,
         system=SYSTEM_PROMPT.format(selectors=selectors_str),
         messages=[

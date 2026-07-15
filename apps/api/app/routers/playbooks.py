@@ -11,6 +11,7 @@ from app.auth.dependencies import get_current_user, require_permission
 from app.db.config_models import Playbook
 from app.db.engine import get_config_db, get_config_db_rw, get_db
 from app.db.models import User
+from app.services.models import agent_model
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +261,7 @@ Return ONLY valid JSON, no markdown fences."""
 
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=agent_model(db),
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )

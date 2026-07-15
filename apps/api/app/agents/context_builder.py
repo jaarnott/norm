@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_THRESHOLD = 20  # Trigger LLM summarisation after this many messages
 RECENT_AFTER_SUMMARY = 10  # Keep this many recent messages in full after summary
-SUMMARY_MODEL = "claude-haiku-4-5-20251001"
 
 _SUMMARY_SYSTEM_PROMPT = (
     "You are a conversation summariser for a hospitality operations platform. "
@@ -125,6 +124,7 @@ def _get_or_create_summary(older_messages: list, thread, db) -> str:
 def _summarise_with_llm(messages: list, db, existing_summary: str | None = None) -> str:
     """Call Haiku to summarise conversation messages."""
     from app.interpreter.llm_interpreter import call_llm
+    from app.services.models import router_model
 
     formatted = _format_messages_for_summary(messages)
 
@@ -142,7 +142,7 @@ def _summarise_with_llm(messages: list, db, existing_summary: str | None = None)
     parsed, _ = call_llm(
         system_prompt=_SUMMARY_SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        model=SUMMARY_MODEL,
+        model=router_model(db),
         db=db,
         call_type="summarisation",
         max_tokens=1024,

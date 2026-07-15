@@ -11,8 +11,8 @@ router = APIRouter()
 # Platform-level connectors that are not spec-driven (e.g. the LLM API key).
 # Domain connectors (BambooHR, Deputy, etc.) are managed as ConnectorSpecs in the DB.
 AVAILABLE_MODELS = [
-    {"id": "claude-sonnet-4-20250514", "label": "Claude Sonnet 4"},
-    {"id": "claude-opus-4-20250514", "label": "Claude Opus 4 (Recommended)"},
+    {"id": "claude-sonnet-5", "label": "Claude Sonnet 5"},
+    {"id": "claude-opus-4-8", "label": "Claude Opus 4.8 (Recommended)"},
     {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (Fast)"},
 ]
 

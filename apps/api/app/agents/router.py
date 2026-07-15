@@ -46,12 +46,12 @@ def classify_followup(
     """
     import anthropic
     from app.services.secrets import get_api_key
-    from app.config import settings
+    from app.services.models import router_model
 
     api_key = get_api_key("anthropic", "api_key", db) or ""
     _cdb = config_db or db
 
-    model = settings.ROUTER_MODEL
+    model = router_model(db)
 
     # Load available playbooks for this domain
     playbook_section = ""
@@ -206,10 +206,9 @@ def _llm_classify(
             "\n- Omit the venue field entirely if the request doesn't need a venue (e.g. recipe lookups, general questions)"
         )
 
-    from app.config import settings
-    from app.services.secrets import get_api_key as _get_config
+    from app.services.models import router_model
 
-    model = _get_config("anthropic", "router_model", db) or settings.ROUTER_MODEL
+    model = router_model(db)
 
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None

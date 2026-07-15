@@ -126,18 +126,21 @@ def _get_user_org(user: User, db: Session) -> Organization | None:
 async def list_organizations(
     db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    """List organizations the current user belongs to."""
-    memberships = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .all()
-    )
-    org_ids = [m.organization_id for m in memberships]
-    orgs = (
-        db.query(Organization).filter(Organization.id.in_(org_ids)).all()
-        if org_ids
-        else []
-    )
+    """List organizations the current user belongs to (all orgs for platform admins)."""
+    if user.role == "admin":
+        orgs = db.query(Organization).all()
+    else:
+        memberships = (
+            db.query(OrganizationMembership)
+            .filter(OrganizationMembership.user_id == user.id)
+            .all()
+        )
+        org_ids = [m.organization_id for m in memberships]
+        orgs = (
+            db.query(Organization).filter(Organization.id.in_(org_ids)).all()
+            if org_ids
+            else []
+        )
     return {"organizations": [_org_to_dict(o, db) for o in orgs]}
 
 
