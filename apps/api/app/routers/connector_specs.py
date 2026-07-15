@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db.engine import get_db, get_config_db, get_config_db_rw, SessionLocal
 from app.db.models import ConnectorSpec, ConnectorConfig, User
 from app.auth.dependencies import get_current_user, require_permission
+from app.services.models import agent_model
 
 router = APIRouter(prefix="/connector-specs", tags=["connector-specs"])
 
@@ -653,7 +654,7 @@ Return ONLY valid JSON, no markdown fences."""
 
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=agent_model(db),
         max_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -701,7 +702,7 @@ Return ONLY valid JSON, no markdown fences."""
 
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=agent_model(db),
         max_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -801,7 +802,7 @@ User description: {body.description}
 Return ONLY valid JSON, no markdown fences."""
 
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=agent_model(db),
             max_tokens=2048,
             messages=[{"role": "user", "content": gen_prompt}],
         )
@@ -909,7 +910,7 @@ Return ONLY valid JSON, no markdown fences."""
 
         try:
             fix_response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=agent_model(db),
                 max_tokens=2048,
                 messages=[{"role": "user", "content": fix_prompt}],
             )
@@ -1170,7 +1171,7 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                     )
 
                     response = client.messages.create(
-                        model="claude-sonnet-4-20250514",
+                        model=agent_model(db),
                         max_tokens=4096,
                         system=system_prompt,
                         messages=messages,

@@ -57,6 +57,41 @@ if [ -f "$ROOT/.env" ]; then
   source "$ROOT/.env"
   set +a
 fi
+
+# ── 7a. Cloud SQL Auth Proxy for the central config DB ────────────
+# The API reads agents/connectors/playbooks/templates/secrets from the
+# shared norm-config Cloud SQL instance. When CONFIG_DATABASE_URL points
+# at the local proxy port, ensure the Auth Proxy is running first — the
+# API tests config-DB connectivity at import time and exits if it can't.
+PROXY_PID=""
+if [[ "${CONFIG_DATABASE_URL:-}" == *"127.0.0.1:5433"* ]]; then
+  CONFIG_SA_KEY="${CONFIG_SA_KEY:-$ROOT/norm-config-sa.json}"
+  CONFIG_INSTANCE="${CONFIG_INSTANCE:-norm-production-491101:australia-southeast1:norm-config}"
+  PROXY_BIN="$(command -v cloud-sql-proxy || echo "$HOME/.local/bin/cloud-sql-proxy")"
+
+  if (exec 3<>/dev/tcp/127.0.0.1/5433) 2>/dev/null; then
+    exec 3>&- 3<&-
+    echo "Cloud SQL proxy already running on 127.0.0.1:5433 — reusing."
+  elif [ ! -x "$PROXY_BIN" ]; then
+    echo "  WARNING: cloud-sql-proxy not found (looked at '$PROXY_BIN')."
+    echo "           Install it from https://cloud.google.com/sql/docs/postgres/sql-proxy"
+    echo "           or the API will fail to reach the central config DB."
+  elif [ ! -f "$CONFIG_SA_KEY" ]; then
+    echo "  WARNING: service-account key not found at $CONFIG_SA_KEY."
+    echo "           The API will fail to reach the central config DB."
+  else
+    echo "Starting Cloud SQL Auth Proxy for $CONFIG_INSTANCE …"
+    "$PROXY_BIN" --address 127.0.0.1 --port 5433 \
+      --credentials-file "$CONFIG_SA_KEY" "$CONFIG_INSTANCE" &
+    PROXY_PID=$!
+    for _ in $(seq 1 30); do
+      if (exec 3<>/dev/tcp/127.0.0.1/5433) 2>/dev/null; then exec 3>&- 3<&-; break; fi
+      sleep 0.5
+    done
+    echo "Config DB proxy ready on 127.0.0.1:5433."
+  fi
+fi
+
 (cd "$API_DIR" && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000) &
 API_PID=$!
 
@@ -77,5 +112,5 @@ echo "  Swagger  : http://localhost:8000/docs"
 echo ""
 echo "Press Ctrl+C to stop."
 
-trap "kill $API_PID $WEB_PID 2>/dev/null" EXIT
+trap "kill $API_PID $WEB_PID $PROXY_PID 2>/dev/null" EXIT
 wait

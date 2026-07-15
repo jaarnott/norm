@@ -19,8 +19,10 @@ class TestListOrganizations:
         assert resp.status_code == 200
         data = resp.json()
         assert "organizations" in data
-        assert len(data["organizations"]) == 1
-        assert data["organizations"][0]["id"] == organization.id
+        # Platform admins see every org (not just ones they're a member of),
+        # so assert the member's org is present rather than an exact count.
+        ids = {o["id"] for o in data["organizations"]}
+        assert organization.id in ids
 
     def test_list_organizations_empty_for_no_membership(
         self,
@@ -36,6 +38,37 @@ class TestListOrganizations:
     def test_list_organizations_without_auth_returns_401(self, client):
         resp = client.get("/api/organizations")
         assert resp.status_code in (401, 403)
+
+    def test_platform_admin_sees_all_orgs_without_membership(
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+    ):
+        """Platform admins can manage any org, so listing must return every
+        org even when the admin has no membership row (this is what makes the
+        Settings > Venues 'Add Venue' flow work for platform admins)."""
+        # admin_user has NO membership to `organization`.
+        resp = client.get("/api/organizations", headers=admin_headers)
+        assert resp.status_code == 200
+        ids = {o["id"] for o in resp.json()["organizations"]}
+        assert organization.id in ids
+
+    def test_non_admin_does_not_see_unaffiliated_orgs(
+        self,
+        client,
+        db_session,
+        manager_user,
+        manager_headers,
+        organization,
+    ):
+        """A non-admin with no membership must not see other orgs."""
+        resp = client.get("/api/organizations", headers=manager_headers)
+        assert resp.status_code == 200
+        ids = {o["id"] for o in resp.json()["organizations"]}
+        assert organization.id not in ids
 
 
 class TestCreateOrganization:
