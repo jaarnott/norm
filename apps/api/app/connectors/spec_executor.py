@@ -20,6 +20,19 @@ from app.connectors.template_filters import TEMPLATE_FILTERS
 logger = logging.getLogger(__name__)
 
 
+class ConnectorAuthError(Exception):
+    """Raised when a connector's credentials cannot be resolved.
+
+    Distinct from a transport error: the request is never dispatched, because we
+    have no usable token. Callers turn this into an actionable auth message.
+
+    This exists so we never put an empty token on the wire. ``Bearer `` (with no
+    value) is rejected by httpx as a malformed header, which surfaces as
+    "Network error: Illegal header value b'Bearer '" and completely hides the
+    real cause (an expired/revoked token needing re-authorization).
+    """
+
+
 @dataclass
 class RenderedRequest:
     method: str
@@ -95,21 +108,31 @@ def _apply_auth(
         httpx_auth = (credentials.get(username_field, ""), password)
 
     elif auth_type == "oauth2":
-        token = ""
+        connector = getattr(spec, "connector_name", None) or "connector"
         if spec and db and spec.oauth_config:
-            try:
-                from app.services.oauth_service import get_valid_access_token
+            from app.services.oauth_service import get_valid_access_token
 
+            try:
                 token = get_valid_access_token(spec, db, venue_id=venue_id)
             except Exception as exc:
-                logger.warning(
-                    "OAuth token retrieval failed, falling back to credentials: %s", exc
-                )
-                token = credentials.get(
-                    auth_config.get("token_field", "access_token"), ""
-                )
+                # Deliberately do NOT fall back to the config JSON here. OAuth
+                # tokens live in ConnectorConfig columns, so that fallback
+                # returns "" and we would send an empty `Bearer `, masking a
+                # real auth failure as a network error.
+                raise ConnectorAuthError(
+                    f"{connector} authorization failed: {exc}. "
+                    f"Reconnect {connector} in Settings → Connectors."
+                ) from exc
         else:
+            # No spec/db/oauth_config available (e.g. preview paths) — the token
+            # can only come from the config JSON.
             token = credentials.get(auth_config.get("token_field", "access_token"), "")
+
+        if not token:
+            raise ConnectorAuthError(
+                f"No {connector} access token available. "
+                f"Reconnect {connector} in Settings → Connectors."
+            )
         headers["Authorization"] = f"Bearer {token}"
 
     return headers, httpx_auth
@@ -492,14 +515,24 @@ def execute_spec(
         )
         return result, rendered
 
-    if spec.execution_mode == "agent":
-        rendered = execute_via_agent(
-            spec, operation, extracted_fields, credentials, db, thread_id
-        )
-    else:
-        rendered = render_request(
-            spec, operation, extracted_fields, credentials, db=db, venue_id=venue_id
-        )
+    empty_request = RenderedRequest(method="", url="", headers={}, body=None)
+
+    try:
+        if spec.execution_mode == "agent":
+            rendered = execute_via_agent(
+                spec, operation, extracted_fields, credentials, db, thread_id
+            )
+        else:
+            rendered = render_request(
+                spec, operation, extracted_fields, credentials, db=db, venue_id=venue_id
+            )
+    except ConnectorAuthError as exc:
+        return ConnectorResult(
+            success=False,
+            reference=None,
+            response_payload={},
+            error_message=str(exc),
+        ), empty_request
 
     result = execute_http(
         rendered,
@@ -508,4 +541,80 @@ def execute_spec(
         auth_type=spec.auth_type,
         auth_config=spec.auth_config,
     )
+
+    if _should_retry_after_refresh(result, spec, db):
+        result = _refresh_and_retry(
+            result, rendered, spec, operation, credentials, db, venue_id
+        )
+
     return result, rendered
+
+
+def _should_retry_after_refresh(result: ConnectorResult, spec, db: Session) -> bool:
+    """True when a failed response looks like an expired access token.
+
+    A 401 can occur even though the proactive expiry check passed — e.g. when
+    ``token_expires_at`` was never stored (so refresh never fires), or the
+    provider revoked the token early. Refreshing reactively on 401 covers that.
+    """
+    return (
+        not result.success
+        and result.response_payload.get("status_code") == 401
+        and spec.auth_type == "oauth2"
+        and bool(spec.oauth_config)
+        and db is not None
+    )
+
+
+def _refresh_and_retry(
+    result: ConnectorResult,
+    rendered: RenderedRequest,
+    spec,
+    operation: dict,
+    credentials: dict,
+    db: Session,
+    venue_id: str | None,
+) -> ConnectorResult:
+    """Refresh the access token once and replay the request exactly once.
+
+    Retries at most once — never loops. Only the auth header is rebuilt, so an
+    ``agent``-mode request is not re-generated (which would re-invoke the LLM).
+    """
+    from app.services.oauth_service import refresh_access_token
+
+    connector = getattr(spec, "connector_name", None) or "connector"
+    logger.info("Got 401 from %s; refreshing access token and retrying once", connector)
+
+    try:
+        refresh_access_token(spec, db, venue_id=venue_id)
+        rendered.headers, _ = _apply_auth(
+            rendered.headers,
+            spec.auth_type,
+            spec.auth_config or {},
+            credentials,
+            spec=spec,
+            db=db,
+            venue_id=venue_id,
+        )
+    except ConnectorAuthError as exc:
+        return ConnectorResult(
+            success=False, reference=None, response_payload={}, error_message=str(exc)
+        )
+    except Exception as exc:
+        return ConnectorResult(
+            success=False,
+            reference=None,
+            response_payload={},
+            error_message=(
+                f"{connector} authorization expired and could not be refreshed: {exc}. "
+                f"Reconnect {connector} in Settings → Connectors."
+            ),
+        )
+
+    return execute_http(
+        rendered,
+        operation,
+        credentials=credentials,
+        auth_type=spec.auth_type,
+        auth_config=spec.auth_config,
+    )

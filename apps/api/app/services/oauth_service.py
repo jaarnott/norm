@@ -133,7 +133,20 @@ def refresh_access_token(
     venue_id: str | None = None,
     user_id: str | None = None,
 ) -> str:
-    """Refresh an expired access token. Returns the new access_token."""
+    """Refresh an expired access token. Returns the new access_token.
+
+    Providers such as LoadedHub *rotate* refresh tokens: each successful refresh
+    returns a new refresh token and invalidates the previous one. Two concurrent
+    refreshes would therefore race, and the loser's token would be dead — which
+    eventually locks us out entirely.
+
+    To prevent that we take a row lock on the ConnectorConfig for the duration of
+    the exchange, so refreshes are serialised. After acquiring the lock we
+    re-check expiry: if another caller already refreshed while we were blocked,
+    we reuse their token instead of burning a second exchange. (Same shape as the
+    ``with_for_update`` claim in ``task_scheduler._claim_due_tasks``; blocking
+    rather than ``skip_locked`` so the loser waits and reuses the winner's token.)
+    """
     query = db.query(ConnectorConfig).filter(
         ConnectorConfig.connector_name == spec.connector_name
     )
@@ -141,9 +154,18 @@ def refresh_access_token(
         query = query.filter(ConnectorConfig.user_id == user_id)
     elif venue_id:
         query = query.filter(ConnectorConfig.venue_id == venue_id)
-    config_row = query.first()
+    config_row = query.with_for_update().first()
     if not config_row or not config_row.refresh_token:
         raise ValueError("No refresh token available")
+
+    # Re-check under the lock — another caller may have just refreshed.
+    if config_row.access_token and config_row.token_expires_at:
+        if datetime.now(timezone.utc) < config_row.token_expires_at - timedelta(
+            seconds=60
+        ):
+            return config_row.access_token
+
+    previous_refresh_token = config_row.refresh_token
 
     oauth = spec.oauth_config or {}
     token_url = oauth.get("token_url", "")
@@ -180,6 +202,17 @@ def refresh_access_token(
         )
 
     token_data = resp.json()
+
+    # A rotated refresh token resets the refresh-token lifetime. Log it so the
+    # token's liveness is observable: if a connector goes long enough without a
+    # refresh, the provider expires the refresh token and we get locked out
+    # (which is exactly how LoadedHub broke — months of no runs, no rotation).
+    new_refresh = token_data.get("refresh_token")
+    if new_refresh and new_refresh != previous_refresh_token:
+        logger.info(
+            "%s issued a rotated refresh token (lifetime reset)", spec.connector_name
+        )
+
     _store_tokens(
         db, spec.connector_name, token_data, venue_id=venue_id, user_id=user_id
     )

@@ -60,3 +60,11 @@ apps/e2e/tests/
 
 # Ad-hoc screenshots (should not be committed)
 /*.png
+
+# Local credentials — never commit. `pat` holds a GitHub Personal Access Token
+# used to read the loadedreports/timeclock-v2 reference implementation.
+/pat
+/pat.txt
+*.pat
+.env
+.env.local
