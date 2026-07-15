@@ -95,6 +95,10 @@ resource "google_cloud_run_v2_service" "api" {
           cpu    = var.api_cpu
           memory = var.api_memory
         }
+        # CPU must stay allocated when no request is in flight: scheduled tasks
+        # execute in a background thread after /internal/run-due-tasks returns,
+        # and CPU throttling would freeze that thread mid-run.
+        cpu_idle = false
       }
 
       volume_mounts {

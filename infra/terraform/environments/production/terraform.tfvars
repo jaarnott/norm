@@ -11,8 +11,9 @@ db_disk_size            = 20
 db_read_replica_enabled = false
 db_cross_region_backup  = ""
 
-# Cloud Run — scale to zero, right-sized for early stage
-cloudrun_api_min    = 0
+# Cloud Run — API keeps 1 warm instance so scheduled-task background execution
+# isn't torn down between requests; web can scale to zero.
+cloudrun_api_min    = 1
 cloudrun_api_max    = 3
 cloudrun_web_min    = 0
 cloudrun_web_max    = 2
