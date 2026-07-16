@@ -13,6 +13,35 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _access_token_for(connector_name: str, db: Session, user_id: str) -> str | None:
+    """Return a valid access token for a per-user email connector, refreshing if due.
+
+    ``get_valid_access_token`` needs the ConnectorSpec (for oauth_config) from the
+    **config** database, while the tokens live in the per-environment database —
+    so this opens the config session the rest of this module doesn't need.
+
+    Email connectors are scoped per user, not per venue (see the
+    ``category == "email"`` branch in ``routers/oauth.py``), hence ``user_id``.
+    """
+    from app.db.config_models import ConnectorSpec
+    from app.db.engine import _ConfigSessionLocal
+    from app.services.oauth_service import get_valid_access_token
+
+    config_db = _ConfigSessionLocal()
+    try:
+        spec = (
+            config_db.query(ConnectorSpec)
+            .filter(ConnectorSpec.connector_name == connector_name)
+            .first()
+        )
+        if not spec:
+            logger.warning("No connector spec found for %s", connector_name)
+            return None
+        return get_valid_access_token(spec, db, user_id=user_id)
+    finally:
+        config_db.close()
+
+
 def send_system_email(
     template_name: str,
     to: list[str],
@@ -89,7 +118,6 @@ def send_on_behalf_gmail(
 ) -> dict:
     """Send an email from a user's Gmail account via the Gmail API."""
     from app.db.models import ConnectorConfig, EmailLog, User
-    from app.services.oauth_service import get_valid_access_token
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -111,7 +139,11 @@ def send_on_behalf_gmail(
         }
 
     # Get a valid access token (auto-refreshes if expired)
-    access_token = get_valid_access_token(db, config)
+    try:
+        access_token = _access_token_for("gmail", db, user_id)
+    except Exception as exc:
+        logger.warning("Gmail token retrieval failed for user %s: %s", user_id, exc)
+        access_token = None
     if not access_token:
         return {
             "success": False,
@@ -193,7 +225,6 @@ def send_on_behalf_outlook(
 ) -> dict:
     """Send an email from a user's Outlook account via Microsoft Graph API."""
     from app.db.models import ConnectorConfig, EmailLog, User
-    from app.services.oauth_service import get_valid_access_token
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -213,7 +244,11 @@ def send_on_behalf_outlook(
             "error": "Outlook not connected. Please connect your Outlook account in Settings.",
         }
 
-    access_token = get_valid_access_token(db, config)
+    try:
+        access_token = _access_token_for("microsoft_outlook", db, user_id)
+    except Exception as exc:
+        logger.warning("Outlook token retrieval failed for user %s: %s", user_id, exc)
+        access_token = None
     if not access_token:
         return {
             "success": False,

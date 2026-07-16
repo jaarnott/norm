@@ -9,8 +9,10 @@ db_ha_enabled       = false
 db_backup_retention = 3
 db_disk_size        = 10
 
-# Cloud Run — scale to zero
-cloudrun_api_min    = 0
+# Cloud Run — the API keeps one warm instance because scheduled tasks execute in
+# a background thread after /internal/run-due-tasks returns; with min=0 the
+# instance can be torn down mid-run. Web can still scale to zero.
+cloudrun_api_min    = 1
 cloudrun_api_max    = 2
 cloudrun_web_min    = 0
 cloudrun_web_max    = 2

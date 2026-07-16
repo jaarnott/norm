@@ -1,3 +1,29 @@
+# ── Cloud Scheduler jobs ────────────────────────────────────────
+#
+# These are fully environment-parameterised, but as of writing they exist in
+# **production only**. Testing and staging run the same code — which no longer
+# has an in-process scheduler — so until these are applied there, automated
+# tasks in those environments never fire and their OAuth tokens are never kept
+# alive.
+#
+# To apply to testing/staging (needs credentials for those projects, which the
+# github-deploy SA does not have):
+#
+#   1. Ensure a SCHEDULER_SECRET secret exists in the target project with a
+#      value — the data source below reads it, and the API rejects every
+#      request when it's unset (fail-closed). The secrets module creates the
+#      container; the value must be added separately:
+#        openssl rand -hex 32 | gcloud secrets versions add SCHEDULER_SECRET \
+#          --data-file=- --project=norm-testing
+#   2. terraform init -reconfigure -backend-config="bucket=norm-tfstate-491101" \
+#        -backend-config="prefix=testing"
+#   3. terraform plan -var-file=environments/testing/terraform.tfvars
+#   4. **Read the plan before applying.** Production's config had drifted far
+#      from live and a naive apply would have replaced the database and stripped
+#      Cloud Run env vars. Expect only the three jobs below to be created; if the
+#      plan wants to change or replace anything else, stop and reconcile first
+#      (see the lifecycle ignore_changes in modules/cloud-run/main.tf).
+#
 # ── Automated-task scheduler ────────────────────────────────────
 # Cloud Scheduler drives execution of AutomatedTasks by calling the API's
 # /internal/run-due-tasks endpoint on a fixed cadence. The endpoint atomically
