@@ -57,6 +57,45 @@ resource "google_cloud_scheduler_job" "run_due_tasks" {
 #
 # Every 6h rather than every minute: the endpoint is a no-op for tokens that are
 # still valid, and the short access-token lifetime sets the real rotation cadence.
+# ── Config drift check ──────────────────────────────────────────
+# Connector specs, agent prompts and model selections live in the database and
+# are edited through the Settings UI. CI cannot see any of it (it runs against a
+# throwaway Postgres with zero rows), and a bad edit lands with no code change
+# and no deploy — so there is nothing to review and nothing to fail.
+#
+# Every incident so far lived in that blind spot: a retired model id sitting in
+# connector_configs, a consolidator left on a deleted executor's format. This is
+# the only thing that watches for it. Daily is enough — config changes at human
+# pace, and failures are latent rather than urgent.
+resource "google_cloud_scheduler_job" "validate_config" {
+  name      = "norm-validate-config-${var.environment}"
+  project   = var.project_id
+  region    = var.region
+  schedule  = "0 19 * * *" # daily, 07:00 NZ
+  time_zone = "Etc/UTC"
+
+  attempt_deadline = "120s"
+
+  retry_config {
+    retry_count = 1
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${module.cloud_run.api_url}/internal/validate-config"
+
+    headers = {
+      "X-Scheduler-Secret" = data.google_secret_manager_secret_version.scheduler_secret.secret_data
+      "Content-Type"       = "application/json"
+    }
+  }
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
+  ]
+}
+
 resource "google_cloud_scheduler_job" "refresh_tokens" {
   name      = "norm-refresh-tokens-${var.environment}"
   project   = var.project_id

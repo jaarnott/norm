@@ -47,6 +47,37 @@ async def run_due_tasks_endpoint(
     return result
 
 
+@router.post("/internal/validate-config")
+async def validate_config_endpoint(
+    x_scheduler_secret: str = Header(default=""),
+):
+    """Check the database-held configuration for known breakages.
+
+    Connector specs, agent prompts and model selections live in the database and
+    are edited via the Settings UI, so CI cannot see them — and config can drift
+    long after a deploy with no code change at all. This runs the same checks CI
+    unit-tests, but against the real databases.
+    """
+    _authorize(x_scheduler_secret)
+
+    from app.services.config_validator import validate_config
+
+    result = validate_config()
+    if result["ok"]:
+        logger.info("validate-config: no issues")
+    else:
+        logger.error("validate-config: %d issue(s) found", result["issue_count"])
+        for issue in result["issues"]:
+            logger.error(
+                "validate-config: [%s] %s — %s | fix: %s",
+                issue["severity"],
+                issue["where"],
+                issue["problem"],
+                issue["fix"],
+            )
+    return result
+
+
 @router.post("/internal/refresh-tokens")
 async def refresh_tokens_endpoint(
     x_scheduler_secret: str = Header(default=""),
