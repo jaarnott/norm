@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 import httpx
 from sqlalchemy.orm import Session
 
-from app.db.models import ConnectorConfig, ConnectorSpec, OAuthState
+from app.db.models import ConnectorConfig, ConnectorSpec, OAuthState, Venue
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +293,16 @@ def refresh_all_tokens(
         )
 
         for row in rows:
-            label = f"{row.connector_name}"
+            # Label by venue, not just connector name: the same connector is
+            # configured per-venue, so "loadedhub" alone doesn't tell an operator
+            # which venue to reconnect.
+            label = row.connector_name
+            if row.venue_id:
+                venue = db.query(Venue).filter(Venue.id == row.venue_id).first()
+                label = (
+                    f"{row.connector_name} ({venue.name if venue else row.venue_id})"
+                )
+
             spec = (
                 config_db.query(ConnectorSpec)
                 .filter(ConnectorSpec.connector_name == row.connector_name)
