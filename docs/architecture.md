@@ -429,6 +429,44 @@ All system configuration lives in a dedicated shared Cloud SQL instance (`norm-c
 - ConnectorConfig (per-venue credentials, OAuth tokens)
 - Roles, permissions, approvals, orders
 
+### How environments reach it — and why it has no public IP
+
+All three environments connect through the **Cloud SQL socket/proxy**
+(`CONFIG_DATABASE_URL` is `...@/norm_config?host=/cloudsql/norm-production-491101:australia-southeast1:norm-config`).
+Testing and staging live in their own GCP projects and reach it cross-project via
+`roles/cloudsql.client` on `norm-production-491101` — Google's internal path, not
+the public internet. Local dev uses the same socket through the Cloud SQL proxy
+(`scripts/dev.sh`, `CONFIG_SA_KEY`).
+
+**`norm-config` requires SSL (`sslMode: ENCRYPTED_ONLY`) and its public IP is
+allow-listed to specific addresses — never `0.0.0.0/0`.** The deployed
+environments don't need the public IP at all (they use the socket); it exists
+only so local dev can reach it, because the Cloud SQL proxy connects to the
+**public** IP by default and the private IP (`10.31.0.7`) is VPC-only, so a
+Codespace cannot route to it.
+
+**Working on local dev:** if `scripts/dev.sh` can't reach the config DB, your
+Codespace's egress IP (`curl ifconfig.me`) probably isn't allow-listed — it
+changes. Add it:
+
+```bash
+gcloud sql instances patch norm-config --project=norm-production-491101 \
+  --authorized-networks="$(curl -s ifconfig.me)/32" --quiet
+```
+
+Note that this **replaces** the whole list, so include any other addresses that
+must keep access. Never widen it to `0.0.0.0/0`.
+
+⚠️ **This instance is not Terraform-managed** (unlike `norm-production`, which the
+`database` module creates with `ipv4_enabled = false`). It was created by hand,
+which is exactly how it ended up open to `0.0.0.0/0` with unencrypted connections
+allowed — a bot was found spraying generic usernames (`postgres`, `airflow`,
+`n8n`, `superset`, …) at the database holding `system_secrets` and OAuth client
+secrets: 500+ failed logins in one week. It never attempted the real
+`norm_config` role, and the hole is closed, but **because nothing manages this
+instance, that configuration can silently drift back.** Bringing it under
+Terraform would remove the drift risk for good.
+
 **No fallback:** If the config DB is unreachable, the API fails at startup with a clear error. There is no silent fallback to the local database — this prevents stale config from being used accidentally.
 
 ### The config blind spot (read this before deleting code)
