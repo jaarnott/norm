@@ -478,7 +478,7 @@ cp -r infra/terraform/environments/hrlite-*/ ~/hrlite/infra/terraform/environmen
 
 ### Phase 1: Create Shared SDK + First Lite App in Monorepo (6-8 weeks)
 1. Create `packages/app-sdk/` — extract generic auth, tenancy, middleware from `apps/api/`
-2. Refactor `apps/api/` to use `app-sdk` — all 228 existing tests must pass
+2. Refactor `apps/api/` to use `app-sdk` — all existing tests must pass
 3. Create `apps/{app}-api/` + `apps/{app}-web/` using `app-sdk`
 4. Design data model, REST API, standalone frontend with own branding
 5. Create `infra/terraform/modules/lite-app/` reusable module
@@ -529,7 +529,7 @@ Each new app is built in the monorepo during development, then extracted when sh
 ## Verification
 
 1. **Phase 1 (SDK + Lite App)**:
-   - `uv run pytest tests/ -v` — all 228 Norm tests pass after SDK refactoring
+   - `uv run pytest tests/ -v` — all Norm tests pass after SDK refactoring
    - Lite app has its own passing test suite
    - `./scripts/dev-{app}.sh` starts the app independently on ports 8001/3001
    - `./scripts/dev-all.sh` starts everything, all services accessible

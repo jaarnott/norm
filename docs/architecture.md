@@ -59,7 +59,7 @@ A connector is a configuration-driven definition of an external API. Connectors 
 
 **Current connectors:** LoadedHub, BambooHR, Deputy, Gmail, Microsoft Outlook, Bidfood + internal connectors (norm, norm_reports, norm_email)
 
-**Example:** The LoadedHub connector has 33 tools including `get_roster`, `get_sales_data`, `get_stock_items`, `get_purchase_orders_summary`, `get_roster_summary` (consolidator). Each tool defines the HTTP method, URL path template, required fields, and response transform.
+**Example:** The LoadedHub connector has 34 tools including `get_roster`, `get_sales_data`, `get_stock_items`, `get_purchase_orders_summary`, `get_roster_summary` (consolidator). Each tool defines the HTTP method, URL path template, required fields, and response transform.
 
 **Key files:**
 - `app/db/config_models.py` — ConnectorSpec model
@@ -431,6 +431,19 @@ All system configuration lives in a dedicated shared Cloud SQL instance (`norm-c
 
 **No fallback:** If the config DB is unreachable, the API fails at startup with a clear error. There is no silent fallback to the local database — this prevents stale config from being used accidentally.
 
+### The config blind spot (read this before deleting code)
+
+Config being data is the platform's strength — a new integration ships with no deploy. It is also its sharpest edge: **no test, type checker or code review can see any of it.** CI points `CONFIG_DATABASE_URL` at a throwaway Postgres with zero rows, and config is edited through the Settings UI *after* deploy, so there is no commit to review and nothing to fail.
+
+Every production incident so far has come from this gap:
+
+- A retired Claude model id sat in `connector_configs`. Every agent call 404'd for months; the code default in `config.py` was perfectly current, so nothing in the repo looked wrong.
+- The commit that deleted the legacy `steps` consolidator executor shipped with a green build — it could not see that a spec row still held a `steps` blob. That tool now errors whenever it is called.
+
+**Practical rule:** when you remove or rename anything that config can reference — a consolidator format, a tool field, an execution mode, a model id — the matching rows in the config DB do not move with your commit. Check them, and add a case to `app/services/config_validator.py`.
+
+`POST /internal/validate-config` runs those checks against the real databases (daily via Cloud Scheduler); the pure functions are unit-tested in `tests/test_config_validator.py`.
+
 **Key files:**
 - `app/db/config_models.py` — ConfigBase + ConnectorSpec, AgentConfig, AgentConnectorBinding, ComponentApiConfig, DashboardTemplate, Playbook, SystemSecret
 - `app/db/engine.py` — `get_config_db()`, `get_config_db_rw()`, startup connectivity test
@@ -440,12 +453,12 @@ All system configuration lives in a dedicated shared Cloud SQL instance (`norm-c
 
 ## 14. Automated Tasks (Saved Threads)
 
-Automated tasks are prompts that run on a schedule via APScheduler. They are created through conversation — the user asks an agent (e.g. "set up a daily sales report for Bessie") and the LLM calls the `create_automated_task` internal tool. There is no "Save as Task" button in the UI.
+Automated tasks are prompts that run on a schedule, driven by **Cloud Scheduler** (not an in-process scheduler). They are created through conversation — the user asks an agent (e.g. "set up a daily sales report for Bessie") and the LLM calls the `create_automated_task` internal tool. There is no "Save as Task" button in the UI.
 
 **How it works:**
 1. User asks an agent to create a scheduled task → LLM calls `create_automated_task` → creates an AutomatedTask record as a **draft**
 2. User tests the draft, then activates it
-3. APScheduler triggers the task on the cron schedule
+3. Activating computes `next_run_at`. Cloud Scheduler POSTs `/internal/run-due-tasks` every minute; that endpoint atomically **claims** any task whose `next_run_at` has passed (`SELECT … FOR UPDATE SKIP LOCKED`, advancing `next_run_at` before releasing the lock) and executes it off the request thread
 4. Each run creates a **new execution thread** containing the full tool calls and results for that run
 5. A run summary is posted to the task's **persistent conversation thread** (created once, reused across all runs)
 6. The persistent conversation thread is visible in the thread list — users can also type into it directly
@@ -458,13 +471,17 @@ Automated tasks are prompts that run on a schedule via APScheduler. They are cre
 
 **Task states:** `active` (running on schedule), `paused` (user paused), `draft` (not yet scheduled)
 
-**Schedule format:** Cron expressions (e.g. `0 8 * * 1-5` = 8am weekdays)
+**Schedule format:** `schedule_type` (`hourly` | `daily` | `weekly` | `monthly` | `manual`) plus a `schedule_config` of `{hour, minute, day_of_week?, day_of_month?}` — **not** cron. Times are evaluated in `SCHEDULER_TIMEZONE` (default `Pacific/Auckland`), overridable per task via `schedule_config.timezone`, so "daily at 9:00" means 9am local rather than 9am UTC.
+
+**Why Cloud Scheduler and not an in-process scheduler:** the API runs as gunicorn with 4 workers across an autoscaling Cloud Run service. An in-process scheduler put jobs in whichever worker/instance happened to serve the "Activate" click; they were lost on every recycle and duplicated across workers at cold start. Claiming from the database is the only thing that is correct across workers, instances and restarts. The API also keeps CPU always allocated and one warm instance (see `infra/terraform/modules/cloud-run/main.tf`), because a run executes in a background thread after the HTTP response returns.
 
 **Example:** "Bessie Morning Sales Check" — runs daily at 8am, calls the ReportsAgent with "Generate a sales report for Bessie & Engineers for yesterday", emails the result.
 
 **Key files:**
-- `app/db/models.py` — AutomatedTask, AutomatedTaskRun models
-- `app/services/task_scheduler.py` — APScheduler integration, `schedule_task()`, `execute_task_now()`
+- `app/db/models.py` — AutomatedTask (`next_run_at` drives execution), AutomatedTaskRun models
+- `app/services/task_scheduler.py` — `compute_next_run_at()`, `apply_schedule()`, `run_due_tasks()`, `execute_task_now()`
+- `app/routers/internal.py` — `/internal/run-due-tasks`, gated by a fail-closed `X-Scheduler-Secret`
+- `infra/terraform/scheduler.tf` — the Cloud Scheduler jobs
 - `app/agents/context_builder.py` — unified conversation context builder (shared with normal threads)
 - `app/routers/automated_tasks.py` — CRUD + run/pause/resume endpoints
 - `app/agents/internal_tools.py` — `create_automated_task`, `list_automated_tasks`, `toggle_automated_task`
@@ -619,7 +636,8 @@ Dashboard loads → cached data shown immediately
 | **Components** | `apps/web/app/components/display/DisplayBlockRenderer.tsx`, `apps/web/app/components/pages/` |
 | **Working Documents** | `app/routers/working_documents.py`, `app/services/document_sync.py` |
 | **Config DB** | `app/db/config_models.py`, `app/db/engine.py` (get_config_db) |
-| **Automated Tasks** | `app/services/task_scheduler.py`, `app/routers/automated_tasks.py` |
+| **Automated Tasks** | `app/services/task_scheduler.py`, `app/routers/automated_tasks.py`, `app/routers/internal.py` (run-due-tasks), `infra/terraform/scheduler.tf` |
+| **Config validation** | `app/services/config_validator.py`, `app/routers/internal.py` (validate-config), `tests/test_config_validator.py` |
 | **Auth & Permissions** | `app/auth/permissions.py`, `app/auth/dependencies.py`, `app/routers/roles.py` |
 | **SSE Streaming** | `app/routers/messages.py`, `apps/web/app/lib/api.ts` (apiStream) |
 | **Display Blocks** | `app/agents/tool_loop.py` (_build_display_block), `DisplayBlockRenderer.tsx` |
