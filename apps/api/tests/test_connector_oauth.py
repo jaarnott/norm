@@ -52,7 +52,9 @@ class TestApplyAuthNeverSendsEmptyBearer:
 
         with patch(
             "app.services.oauth_service.get_valid_access_token",
-            side_effect=ValueError('Token refresh failed (400): "Refresh token is invalid or expired."'),
+            side_effect=ValueError(
+                'Token refresh failed (400): "Refresh token is invalid or expired."'
+            ),
         ):
             with pytest.raises(ConnectorAuthError) as exc:
                 _apply_auth({}, "oauth2", {}, {}, spec=spec, db=db)
@@ -207,6 +209,132 @@ class TestRetryOn401:
         assert "Reconnect" in result.error_message
 
 
+class TestKeepAliveRefresh:
+    """The scheduled keep-alive — what stops idle tokens from rotting.
+
+    LoadedHub only resets a refresh token's lifetime when a rotation happens, so
+    a connector nobody calls eventually expires and locks us out. Lazy refresh
+    can't prevent that; this job is what makes refresh reliable.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, db_session):
+        """Clear pre-existing connector rows.
+
+        refresh_all_tokens scans every connector, so leftover rows in a shared
+        dev database would otherwise bleed into these assertions. Safe: the
+        db_session fixture rolls back, and the refresh calls are mocked so
+        nothing commits.
+        """
+        from app.db.models import ConnectorConfig
+
+        db_session.query(ConnectorConfig).delete()
+        db_session.flush()
+
+    def _spec_row(self, db_session, connector="loadedhub", expires_at=None):
+        from app.db.models import ConnectorConfig
+
+        row = ConnectorConfig(
+            connector_name=connector,
+            venue_id=None,
+            config={},
+            enabled="true",
+            access_token="access",
+            refresh_token="refresh",
+            token_expires_at=expires_at,
+        )
+        db_session.add(row)
+        db_session.flush()
+        return row
+
+    def test_null_expiry_forces_a_refresh(self, db_session):
+        """token_expires_at IS NULL ⇒ lazy refresh never fires ⇒ token would rot."""
+        from app.services.oauth_service import refresh_all_tokens
+
+        self._spec_row(db_session, expires_at=None)
+        config_db = MagicMock()
+        config_db.query.return_value.filter.return_value.first.return_value = (
+            _oauth_spec()
+        )
+
+        with (
+            patch("app.services.oauth_service.refresh_access_token") as mock_refresh,
+            patch("app.services.oauth_service.get_valid_access_token") as mock_lazy,
+        ):
+            result = refresh_all_tokens(db=db_session, config_db=config_db)
+
+        mock_refresh.assert_called_once()
+        mock_lazy.assert_not_called()
+        assert "loadedhub" in result["refreshed"]
+
+    def test_known_expiry_uses_the_lazy_path(self, db_session):
+        """A live token is a no-op; get_valid_access_token only refreshes if due."""
+        from app.services.oauth_service import refresh_all_tokens
+
+        self._spec_row(
+            db_session, expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+        )
+        config_db = MagicMock()
+        config_db.query.return_value.filter.return_value.first.return_value = (
+            _oauth_spec()
+        )
+
+        with (
+            patch("app.services.oauth_service.refresh_access_token") as mock_refresh,
+            patch("app.services.oauth_service.get_valid_access_token") as mock_lazy,
+        ):
+            refresh_all_tokens(db=db_session, config_db=config_db)
+
+        mock_lazy.assert_called_once()
+        mock_refresh.assert_not_called()
+
+    def test_one_dead_connector_does_not_stop_the_others(self, db_session):
+        """A connector needing re-auth must not block keeping the rest alive."""
+        from app.services.oauth_service import refresh_all_tokens
+
+        self._spec_row(
+            db_session,
+            connector="loadedhub",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        self._spec_row(
+            db_session,
+            connector="gmail",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        config_db = MagicMock()
+        config_db.query.return_value.filter.return_value.first.return_value = (
+            _oauth_spec()
+        )
+
+        def _fail_loadedhub(spec, db, venue_id=None, user_id=None):
+            raise ValueError("Refresh token is invalid or expired.")
+
+        with patch(
+            "app.services.oauth_service.get_valid_access_token",
+            side_effect=_fail_loadedhub,
+        ):
+            result = refresh_all_tokens(db=db_session, config_db=config_db)
+
+        assert len(result["failed"]) == 2
+        assert all("invalid or expired" in f["error"] for f in result["failed"])
+
+    def test_non_oauth_connector_is_skipped(self, db_session):
+        from app.services.oauth_service import refresh_all_tokens
+
+        self._spec_row(db_session, connector="bamboohr")
+        spec = _oauth_spec(connector_name="bamboohr")
+        spec.auth_type = "api_key_header"
+        config_db = MagicMock()
+        config_db.query.return_value.filter.return_value.first.return_value = spec
+
+        with patch("app.services.oauth_service.refresh_access_token") as mock_refresh:
+            result = refresh_all_tokens(db=db_session, config_db=config_db)
+
+        mock_refresh.assert_not_called()
+        assert "bamboohr" in result["skipped"]
+
+
 class TestRefreshTokenRotation:
     """LoadedHub rotates refresh tokens; a rotated token must be persisted."""
 
@@ -248,9 +376,7 @@ class TestRefreshTokenRotation:
         )
         assert row.access_token == "new-access"
         assert row.refresh_token == "rotated-refresh"
-        assert row.token_expires_at > datetime.now(timezone.utc) + timedelta(
-            minutes=50
-        )
+        assert row.token_expires_at > datetime.now(timezone.utc) + timedelta(minutes=50)
 
     def test_omitted_refresh_token_preserves_existing(self, db_session):
         """Providers that omit refresh_token on refresh must not blank ours."""

@@ -47,3 +47,41 @@ resource "google_cloud_scheduler_job" "run_due_tasks" {
     module.cloud_run,
   ]
 }
+
+# ── OAuth token keep-alive ──────────────────────────────────────
+# LoadedHub rotates refresh tokens, and a rotation is the only thing that resets
+# the refresh token's lifetime. Lazy refresh only happens when a task actually
+# calls the connector, so an idle connector's refresh token silently expires and
+# locks us out (requiring a manual reconnect). This keeps tokens alive on a
+# cadence, independent of whether any task ran.
+#
+# Every 6h rather than every minute: the endpoint is a no-op for tokens that are
+# still valid, and the short access-token lifetime sets the real rotation cadence.
+resource "google_cloud_scheduler_job" "refresh_tokens" {
+  name      = "norm-refresh-tokens-${var.environment}"
+  project   = var.project_id
+  region    = var.region
+  schedule  = "0 */6 * * *" # every 6 hours
+  time_zone = "Etc/UTC"
+
+  attempt_deadline = "180s"
+
+  retry_config {
+    retry_count = 1
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${module.cloud_run.api_url}/internal/refresh-tokens"
+
+    headers = {
+      "X-Scheduler-Secret" = data.google_secret_manager_secret_version.scheduler_secret.secret_data
+      "Content-Type"       = "application/json"
+    }
+  }
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
+  ]
+}

@@ -45,3 +45,34 @@ async def run_due_tasks_endpoint(
             ", ".join(t[:12] for t in result["task_ids"]),
         )
     return result
+
+
+@router.post("/internal/refresh-tokens")
+async def refresh_tokens_endpoint(
+    x_scheduler_secret: str = Header(default=""),
+):
+    """Keep OAuth connector tokens alive.
+
+    Called on a schedule by Cloud Scheduler. Rotating refresh tokens (LoadedHub)
+    only have their lifetime reset when a refresh actually happens, so an idle
+    connector expires and locks us out. Refreshing on a cadence — rather than
+    only when a task happens to run — is what makes this reliable.
+    """
+    _authorize(x_scheduler_secret)
+
+    from app.services.oauth_service import refresh_all_tokens
+
+    result = refresh_all_tokens()
+    logger.info(
+        "refresh-tokens: refreshed=%d failed=%d skipped=%d",
+        len(result["refreshed"]),
+        len(result["failed"]),
+        len(result["skipped"]),
+    )
+    for failure in result["failed"]:
+        logger.warning(
+            "refresh-tokens: %s needs re-authorization: %s",
+            failure["connector"],
+            failure["error"],
+        )
+    return result

@@ -247,6 +247,93 @@ def get_valid_access_token(
     return config_row.access_token
 
 
+def refresh_all_tokens(
+    db: Session | None = None, config_db: Session | None = None
+) -> dict:
+    """Proactively refresh every OAuth connector's tokens. Returns a summary.
+
+    Providers such as LoadedHub *rotate* refresh tokens, and each rotation resets
+    the refresh token's lifetime. A connector that goes unrefreshed for longer
+    than that lifetime is permanently locked out and needs a manual
+    re-authorization — which is exactly how LoadedHub broke here: months of
+    failing task runs meant Loaded was never called, so the token was never
+    rotated and quietly expired.
+
+    Lazy refresh (``get_valid_access_token``) only fires when something actually
+    uses the connector, so it cannot protect an idle one. This runs on a
+    schedule instead, independent of task activity, and is what makes refresh
+    reliable rather than a side effect of traffic.
+
+    Normally a no-op for still-valid tokens: the short access-token lifetime
+    (~1h) sets the real rotation cadence. Per-connector failures are logged and
+    collected rather than aborting the run, so one dead connector can't stop the
+    others from being kept alive.
+    """
+    from app.db.engine import SessionLocal, _ConfigSessionLocal
+
+    owns_db = db is None
+    owns_config_db = config_db is None
+    if owns_db:
+        db = SessionLocal()
+    if owns_config_db:
+        config_db = _ConfigSessionLocal()
+
+    refreshed: list[str] = []
+    failed: list[dict] = []
+    skipped: list[str] = []
+
+    try:
+        rows = (
+            db.query(ConnectorConfig)
+            .filter(
+                ConnectorConfig.refresh_token.isnot(None),
+                ConnectorConfig.enabled == "true",
+            )
+            .all()
+        )
+
+        for row in rows:
+            label = f"{row.connector_name}"
+            spec = (
+                config_db.query(ConnectorSpec)
+                .filter(ConnectorSpec.connector_name == row.connector_name)
+                .first()
+            )
+            if not spec or spec.auth_type != "oauth2" or not spec.oauth_config:
+                skipped.append(label)
+                continue
+
+            try:
+                if row.token_expires_at is None:
+                    # With no expiry recorded, the lazy path never refreshes this
+                    # connector (see get_valid_access_token), so its refresh token
+                    # would rot. Force a rotation — which also establishes an
+                    # expiry if the provider returns expires_in.
+                    refresh_access_token(
+                        spec, db, venue_id=row.venue_id, user_id=row.user_id
+                    )
+                else:
+                    get_valid_access_token(
+                        spec, db, venue_id=row.venue_id, user_id=row.user_id
+                    )
+                refreshed.append(label)
+            except Exception as exc:
+                logger.warning(
+                    "Keep-alive refresh failed for %s (venue=%s): %s",
+                    row.connector_name,
+                    row.venue_id,
+                    exc,
+                )
+                failed.append({"connector": label, "error": str(exc)[:200]})
+
+        return {"refreshed": refreshed, "failed": failed, "skipped": skipped}
+    finally:
+        if owns_db:
+            db.close()
+        if owns_config_db:
+            config_db.close()
+
+
 def _store_tokens(
     db: Session,
     connector_name: str,
