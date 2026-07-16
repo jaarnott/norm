@@ -374,16 +374,75 @@ async def delete_venue(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("org:venues")),
 ):
-    """Delete a venue and its connector configs."""
+    """Delete a venue, its access grants and its connector configs.
+
+    Thirteen tables carry a venues.id foreign key, and none of them cascade
+    (``ON DELETE NO ACTION``). Clearing only some of them means the final
+    ``DELETE FROM venues`` raises a FK violation and the venue can't be removed
+    at all — which is exactly what happened: a venue with tool_call history was
+    undeletable.
+
+    So each referencing table is handled explicitly, and the split is deliberate:
+
+    * **Venue-scoped config is deleted** — access grants and connector configs
+      (including OAuth tokens) are meaningless once the venue is gone, and the
+      tokens should not outlive it.
+    * **History keeps its rows and drops the reference** — threads, orders, tool
+      calls, reports, email logs. Deleting a venue is not a reason to erase the
+      record of what was ordered or what an agent did; those columns are all
+      nullable precisely so the history can outlive the venue.
+    """
+    from app.db.models import (
+        AutomatedTask,
+        EmailLog,
+        HiringCriteria,
+        HrSetup,
+        Job,
+        OAuthState,
+        Order,
+        Report,
+        Thread,
+        ToolCall,
+        WorkingDocument,
+    )
+
     venue = db.query(Venue).filter(Venue.id == venue_id).first()
     if not venue:
         raise HTTPException(404, "Venue not found")
 
     org_id = venue.organization_id
-    # Remove venue access entries
-    db.query(UserVenueAccess).filter(UserVenueAccess.venue_id == venue_id).delete()
-    # Remove venue connector configs
-    db.query(ConnectorConfig).filter(ConnectorConfig.venue_id == venue_id).delete()
+
+    # Venue-scoped config — remove entirely.
+    # (user_venue_access.venue_id is NOT NULL, so it must be deleted, not nulled.)
+    db.query(UserVenueAccess).filter(UserVenueAccess.venue_id == venue_id).delete(
+        synchronize_session=False
+    )
+    db.query(ConnectorConfig).filter(ConnectorConfig.venue_id == venue_id).delete(
+        synchronize_session=False
+    )
+    db.query(OAuthState).filter(OAuthState.venue_id == venue_id).delete(
+        synchronize_session=False
+    )
+    db.query(HrSetup).filter(HrSetup.venue_id == venue_id).delete(
+        synchronize_session=False
+    )
+
+    # History and user-owned records — keep the row, drop the venue reference.
+    for model in (
+        Thread,
+        Order,
+        ToolCall,
+        Report,
+        EmailLog,
+        Job,
+        HiringCriteria,
+        AutomatedTask,
+        WorkingDocument,
+    ):
+        db.query(model).filter(model.venue_id == venue_id).update(
+            {model.venue_id: None}, synchronize_session=False
+        )
+
     db.delete(venue)
     db.commit()
 
