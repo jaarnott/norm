@@ -6,6 +6,7 @@ except through `call_api`.
 """
 
 import datetime
+import decimal
 import json
 import logging
 import math
@@ -16,6 +17,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+# Default ceiling on connector API calls per function execution. A consolidator
+# can raise it via consolidator_config.max_api_calls when its workload is
+# legitimately larger (e.g. per-invoice fan-out), bounded by _HARD_MAX_API_CALLS.
+_DEFAULT_MAX_API_CALLS = 20
+_HARD_MAX_API_CALLS = 200
 
 # Builtins allowed in function execution
 _SAFE_BUILTINS = {
@@ -72,6 +79,7 @@ _SAFE_MODULES = {
     "math": math,
     "json": json,
     "datetime": datetime,
+    "decimal": decimal,
 }
 
 
@@ -80,22 +88,37 @@ def execute_function(
     input_params: dict,
     db: Session,
     thread_id: str | None,
+    options: dict | None = None,
 ) -> dict:
     """Execute a consolidator Python function.
 
     The function must define `run(params, call_api, log)` and return the result.
+    An `extract_document(connector, action, params, schema, instructions)` helper
+    is available as a global inside the function for LLM-backed structured
+    extraction from binary connector responses (e.g. invoice PDFs).
 
     Args:
         function_code: Python source code containing a `run` function
         input_params: Parameters from the LLM tool call
         db: Database session for API calls
         thread_id: Thread ID for context
+        options: The consolidator_config dict. Honored keys:
+            max_api_calls (int, default 20, hard cap 200) and
+            allowed_write_actions (list of "connector.action" or bare action
+            names allowed to use non-GET methods — default: none).
 
     Returns:
         {"success": bool, "data": Any, "_logs": list[str], "error": str | None}
     """
     from app.db.models import ConnectorSpec, ConnectorConfig, Venue
     from app.connectors.spec_executor import execute_spec
+
+    options = options or {}
+    max_api_calls = min(
+        int(options.get("max_api_calls") or _DEFAULT_MAX_API_CALLS),
+        _HARD_MAX_API_CALLS,
+    )
+    allowed_write_actions = set(options.get("allowed_write_actions") or [])
 
     logs: list[str] = []
     api_call_count = 0
@@ -132,6 +155,18 @@ def execute_function(
                 raise ValueError(f"Tool not found: {connector}.{action}")
         finally:
             cfg_db.close()
+
+        # Write actions are deny-by-default: a consolidator may only call a
+        # non-GET tool when consolidator_config.allowed_write_actions names it.
+        method = str(tool_def.get("method", "GET")).upper()
+        if method != "GET" and not (
+            action in allowed_write_actions
+            or f"{connector}.{action}" in allowed_write_actions
+        ):
+            raise PermissionError(
+                f"Write action {connector}.{action} ({method}) is not declared in "
+                "consolidator_config.allowed_write_actions"
+            )
 
         # Resolve venue credentials
         from app.agents.tool_loop import _resolve_venue_config
@@ -206,8 +241,8 @@ def execute_function(
         nonlocal api_call_count
         api_call_count += 1
 
-        if api_call_count > 20:
-            raise RuntimeError("Too many API calls (max 20)")
+        if api_call_count > max_api_calls:
+            raise RuntimeError(f"Too many API calls (max {max_api_calls})")
 
         api_params = dict(api_params or {})
 
@@ -231,8 +266,8 @@ def execute_function(
         nonlocal api_call_count
         api_call_count += len(calls)
 
-        if api_call_count > 20:
-            raise RuntimeError("Too many API calls (max 20)")
+        if api_call_count > max_api_calls:
+            raise RuntimeError(f"Too many API calls (max {max_api_calls})")
 
         from app.db.engine import SessionLocal
 
@@ -269,6 +304,80 @@ def execute_function(
         log(f"Parallel batch: {len(calls)} calls in {total_ms}ms")
         return results
 
+    def extract_document(
+        connector: str,
+        action: str,
+        api_params: dict | None = None,
+        schema: dict | None = None,
+        instructions: str | None = None,
+    ) -> Any:
+        """Fetch a binary document via a connector tool and LLM-extract fields.
+
+        The target tool must declare ``response_format: "binary"`` so the
+        executor returns ``{content_base64, content_type}``. The document is
+        passed to the LLM with ``schema`` (a JSON object describing the fields
+        to extract) and the extracted dict is returned. Counts as one API call.
+        Returns {"error": ...} on failure — callers must treat that as
+        "could not read the document", never as a successful extraction.
+        """
+        nonlocal api_call_count
+        api_call_count += 1
+        if api_call_count > max_api_calls:
+            raise RuntimeError(f"Too many API calls (max {max_api_calls})")
+
+        try:
+            payload, call_ms = _do_api_call(
+                connector, action, dict(api_params or {}), db
+            )
+            if not isinstance(payload, dict) or "content_base64" not in payload:
+                raise ValueError(
+                    f"{connector}.{action} did not return binary content — "
+                    'the tool needs response_format: "binary"'
+                )
+
+            from app.interpreter.llm_interpreter import call_llm
+
+            schema_text = json.dumps(schema or {}, indent=1)
+            system_prompt = (
+                "You extract structured data from a document exactly as printed. "
+                "Return ONLY a JSON object matching this schema (no markdown, no "
+                f"commentary):\n{schema_text}\n"
+                "Rules: copy amounts, quantities and identifiers exactly as they "
+                "appear in the document; use null for any field that is not "
+                "present or not legible; never guess or compute values."
+            )
+            user_prompt = (
+                instructions or "Extract the fields from the attached document."
+            )
+            documents = [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": payload.get("content_type", "application/pdf"),
+                        "data": payload["content_base64"],
+                    },
+                }
+            ]
+            extract_t0 = time.time()
+            parsed, _ = call_llm(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                db=db,
+                thread_id=thread_id,
+                call_type="extraction",
+                max_tokens=4096,
+                documents=documents,
+            )
+            total_ms = call_ms + int((time.time() - extract_t0) * 1000)
+            log(
+                f"extract_document: {connector}.{action} → {_describe_data(parsed)} ({total_ms}ms)"
+            )
+            return parsed
+        except Exception as exc:
+            log(f"extract_document {connector}.{action} failed: {exc}")
+            return {"error": str(exc)}
+
     # Build enriched params with template variables
     try:
         from zoneinfo import ZoneInfo
@@ -300,6 +409,7 @@ def execute_function(
         namespace: dict[str, Any] = {
             "__builtins__": _SAFE_BUILTINS,
             **_SAFE_MODULES,
+            "extract_document": extract_document,
         }
         exec(function_code, namespace)
 

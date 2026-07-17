@@ -17,8 +17,10 @@ databases via POST /internal/validate-config — that is the half CI can't do.
 """
 
 from app.services.config_validator import (
+    check_binding_capabilities,
     check_connector_tools,
     check_model_selection,
+    check_playbook_tool_filter,
 )
 
 CURRENT_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
@@ -144,6 +146,128 @@ class TestModelSelection:
 
     def test_other_connectors_config_is_ignored(self):
         assert check_model_selection("bamboohr", {"api_key": "x"}, CURRENT_MODELS) == []
+
+
+class TestConsolidatorSafety:
+    """Checks added with the invoice-receiving workflow: function_code must
+    compile, and declared write actions must exist on the connector."""
+
+    def test_syntax_error_in_function_code_is_flagged(self):
+        tools = [
+            {
+                "action": "broken",
+                "consolidator_config": {"function_code": "def run(:\n"},
+            }
+        ]
+        issues = check_connector_tools("loadedhub", "template", tools)
+        assert len(issues) == 1
+        assert "syntax error" in issues[0].problem
+
+    def test_unknown_allowed_write_action_is_flagged(self):
+        tools = [
+            {
+                "action": "review",
+                "consolidator_config": {
+                    "function_code": "def run(params, call_api, log):\n    return {}\n",
+                    "allowed_write_actions": ["recieve_invoice"],  # typo
+                },
+            }
+        ]
+        issues = check_connector_tools("loadedhub", "template", tools)
+        assert len(issues) == 1
+        assert "recieve_invoice" in issues[0].problem
+
+    def test_declared_write_action_that_exists_passes(self):
+        tools = [
+            {
+                "action": "receive_invoice",
+                "method": "PUT",
+                "path_template": "//api.example.com/i/{{ id }}",
+            },
+            {
+                "action": "review",
+                "consolidator_config": {
+                    "function_code": "def run(params, call_api, log):\n    return {}\n",
+                    "allowed_write_actions": ["receive_invoice"],
+                },
+            },
+        ]
+        assert check_connector_tools("loadedhub", "template", tools) == []
+
+
+class TestResponseFormat:
+    def test_binary_is_allowed(self):
+        tools = [
+            {
+                "action": "download_invoice_file",
+                "method": "GET",
+                "path_template": "//api.example.com/f/{{ id }}",
+                "response_format": "binary",
+            }
+        ]
+        assert check_connector_tools("loadedhub", "template", tools) == []
+
+    def test_unknown_format_is_flagged(self):
+        tools = [
+            {
+                "action": "download",
+                "method": "GET",
+                "path_template": "//api.example.com/f/{{ id }}",
+                "response_format": "csv",
+            }
+        ]
+        issues = check_connector_tools("loadedhub", "template", tools)
+        assert len(issues) == 1
+        assert "unknown response_format 'csv'" in issues[0].problem
+
+
+class TestPlaybookToolFilter:
+    KNOWN = {"review_and_receive_invoices", "get_invoice_detail"}
+
+    def test_known_actions_pass(self):
+        issues = check_playbook_tool_filter(
+            "receive_loadedhub_invoices",
+            ["review_and_receive_invoices", "loadedhub__get_invoice_detail"],
+            self.KNOWN,
+        )
+        assert issues == []
+
+    def test_unknown_action_is_flagged(self):
+        issues = check_playbook_tool_filter(
+            "receive_loadedhub_invoices", ["reconcile_invoices"], self.KNOWN
+        )
+        assert len(issues) == 1
+        assert "reconcile_invoices" in issues[0].problem
+        assert issues[0].where == "playbook.receive_loadedhub_invoices"
+
+    def test_empty_filter_is_fine(self):
+        assert check_playbook_tool_filter("p", None, self.KNOWN) == []
+        assert check_playbook_tool_filter("p", [], self.KNOWN) == []
+
+
+class TestBindingCapabilities:
+    """A bare-string capability entry 500s the Agents tab and breaks tool
+    building for every chat with that agent — real incident, 17 Jul 2026."""
+
+    def test_dict_entries_pass(self):
+        caps = [{"action": "get_roster", "label": "Get roster", "enabled": True}]
+        assert check_binding_capabilities("procurement", "loadedhub", caps) == []
+
+    def test_string_entry_is_an_error(self):
+        issues = check_binding_capabilities(
+            "procurement", "loadedhub", ["review_and_receive_invoices"]
+        )
+        assert len(issues) == 1
+        assert issues[0].where == "binding.procurement.loadedhub"
+        assert "review_and_receive_invoices" in issues[0].problem
+
+    def test_dict_without_action_is_an_error(self):
+        issues = check_binding_capabilities("hr", "bamboohr", [{"enabled": True}])
+        assert len(issues) == 1
+
+    def test_empty_is_fine(self):
+        assert check_binding_capabilities("hr", "bamboohr", None) == []
+        assert check_binding_capabilities("hr", "bamboohr", []) == []
 
 
 class TestAvailableModelsStayCurrent:

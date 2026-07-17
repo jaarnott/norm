@@ -3,6 +3,7 @@
 import pytest
 
 from app.config import Settings
+from app.services.models import RETIRED_MODEL_IDS
 
 
 class TestDefaultConfig:
@@ -42,39 +43,25 @@ class TestLLMModelConfig:
     typecheck. These tests fail fast if a dead ID is reintroduced.
     """
 
-    # Snapshot IDs that have been retired and now 404. The Haiku full ID
-    # ``claude-haiku-4-5-20251001`` is intentionally NOT here — it is current.
-    RETIRED_MODEL_IDS = frozenset(
-        {
-            "claude-opus-4-20250514",
-            "claude-sonnet-4-20250514",
-            "claude-3-opus-20240229",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-7-sonnet-20250219",
-            "claude-3-5-haiku-20241022",
-        }
-    )
-
     def test_interpreter_default_is_a_current_model(self, monkeypatch):
         monkeypatch.delenv("LLM_INTERPRETER_MODEL", raising=False)
         s = Settings(_env_file=None)
-        assert s.LLM_INTERPRETER_MODEL not in self.RETIRED_MODEL_IDS
+        assert s.LLM_INTERPRETER_MODEL not in RETIRED_MODEL_IDS
         assert s.LLM_INTERPRETER_MODEL == "claude-opus-4-8"
 
     def test_router_and_date_resolver_defaults_are_current(self, monkeypatch):
         monkeypatch.delenv("ROUTER_MODEL", raising=False)
         monkeypatch.delenv("DATE_RESOLVER_MODEL", raising=False)
         s = Settings(_env_file=None)
-        assert s.ROUTER_MODEL not in self.RETIRED_MODEL_IDS
-        assert s.DATE_RESOLVER_MODEL not in self.RETIRED_MODEL_IDS
+        assert s.ROUTER_MODEL not in RETIRED_MODEL_IDS
+        assert s.DATE_RESOLVER_MODEL not in RETIRED_MODEL_IDS
 
     def test_available_models_list_has_no_retired_ids(self):
         from app.routers.connectors import AVAILABLE_MODELS
 
         ids = {m["id"] for m in AVAILABLE_MODELS}
-        assert ids.isdisjoint(self.RETIRED_MODEL_IDS), (
-            f"AVAILABLE_MODELS contains retired IDs: {ids & self.RETIRED_MODEL_IDS}"
+        assert ids.isdisjoint(RETIRED_MODEL_IDS), (
+            f"AVAILABLE_MODELS contains retired IDs: {ids & RETIRED_MODEL_IDS}"
         )
 
     def test_no_retired_model_ids_referenced_in_source(self):
@@ -82,10 +69,15 @@ class TestLLMModelConfig:
         import pathlib
 
         app_dir = pathlib.Path(__file__).resolve().parent.parent / "app"
+        # models.py is where RETIRED_MODEL_IDS is defined, so it necessarily
+        # contains these strings — it's the denylist, not a usage.
+        definition_file = app_dir / "services" / "models.py"
         offenders = []
         for path in app_dir.rglob("*.py"):
+            if path == definition_file:
+                continue
             text = path.read_text(encoding="utf-8")
-            for retired in self.RETIRED_MODEL_IDS:
+            for retired in RETIRED_MODEL_IDS:
                 if retired in text:
                     offenders.append(f"{path.relative_to(app_dir.parent)}: {retired}")
         assert not offenders, "Retired model IDs found in source:\n" + "\n".join(

@@ -51,11 +51,16 @@ def call_llm(
     thread_id: str | None = None,
     call_type: str = "interpretation",
     max_tokens: int = 4096,
+    documents: list[dict] | None = None,
 ) -> tuple[dict, str | None]:
     """Make a single Anthropic API call and return (parsed_json, llm_call_id).
 
     This is the shared entry-point that domain agents use with their
     own prompts.  Raises on missing API key or parse failure.
+
+    ``documents`` accepts Anthropic content blocks (e.g. base64 PDF
+    ``{"type": "document", "source": {...}}``) prepended to the user turn,
+    for structured extraction from files.
     """
     from app.services.circuit_breaker import anthropic_breaker
     from app.services.secrets import get_api_key
@@ -79,6 +84,14 @@ def call_llm(
     today = datetime.date.today().isoformat()
     dated_user_prompt = f"[{today}] {user_prompt}"
 
+    if documents:
+        user_content: str | list = [
+            *documents,
+            {"type": "text", "text": dated_user_prompt},
+        ]
+    else:
+        user_content = dated_user_prompt
+
     client = anthropic.Anthropic(api_key=api_key)
     llm_call_id = None
     t0 = time.time()
@@ -88,7 +101,7 @@ def call_llm(
             model=resolved_model,
             max_tokens=max_tokens,
             system=system_prompt,
-            messages=[{"role": "user", "content": dated_user_prompt}],
+            messages=[{"role": "user", "content": user_content}],
         )
         raw = response.content[0].text
         duration_ms = int((time.time() - t0) * 1000)

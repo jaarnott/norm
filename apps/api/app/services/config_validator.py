@@ -104,8 +104,52 @@ def check_connector_tools(
                         ),
                     )
                 )
+            elif isinstance(consolidator, dict):
+                # A syntax error in function_code otherwise surfaces only when
+                # an agent calls the tool.
+                try:
+                    compile(consolidator["function_code"], where, "exec")
+                except SyntaxError as exc:
+                    issues.append(
+                        ConfigIssue(
+                            severity="error",
+                            where=where,
+                            problem=f"function_code has a syntax error: {exc}",
+                            fix="Fix the consolidator code in Settings → Connectors.",
+                        )
+                    )
+                # Write actions the consolidator declares must exist on this
+                # spec — a typo here means the write is denied at runtime.
+                spec_actions = {
+                    t.get("action") for t in tools or [] if isinstance(t, dict)
+                }
+                for declared in consolidator.get("allowed_write_actions") or []:
+                    bare = str(declared).split(".", 1)[-1]
+                    if bare not in spec_actions:
+                        issues.append(
+                            ConfigIssue(
+                                severity="error",
+                                where=where,
+                                problem=(
+                                    f"allowed_write_actions names '{declared}' "
+                                    "which is not a tool on this connector"
+                                ),
+                                fix="Fix the action name in consolidator_config.",
+                            )
+                        )
             # A consolidator legitimately has no URL of its own.
             continue
+
+        response_format = tool.get("response_format")
+        if response_format not in (None, "binary"):
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=f"unknown response_format '{response_format}'",
+                    fix='Use "binary" for file downloads, or remove the field.',
+                )
+            )
 
         if execution_mode == "template" and not tool.get("path_template"):
             issues.append(
@@ -120,6 +164,59 @@ def check_connector_tools(
                 )
             )
 
+    return issues
+
+
+def check_binding_capabilities(
+    agent_slug: str, connector_name: str, capabilities: list | None
+) -> list[ConfigIssue]:
+    """Binding capability entries must be dicts with an 'action' key.
+
+    The agents router and prompt_builder index into each entry
+    (``cap["action"]``, ``cap.get("enabled")``) — a bare string 500s the
+    Agents settings tab AND breaks tool building for every chat with that
+    agent. This shipped as a real incident on 17 Jul 2026.
+    """
+    issues: list[ConfigIssue] = []
+    for cap in capabilities or []:
+        if not isinstance(cap, dict) or "action" not in cap:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"binding.{agent_slug}.{connector_name}",
+                    problem=(
+                        f"capability entry {cap!r} is not an object with an "
+                        "'action' key"
+                    ),
+                    fix=(
+                        'Rewrite the entry as {"action": ..., "label": ..., '
+                        '"enabled": true} in Settings → Agents.'
+                    ),
+                )
+            )
+    return issues
+
+
+def check_playbook_tool_filter(
+    playbook_slug: str, tool_filter: list | None, known_actions: set[str]
+) -> list[ConfigIssue]:
+    """Every action a playbook's tool_filter names must exist on some spec.
+
+    A stale name silently strips the tool from the agent, so the playbook's
+    instructions reference a capability the agent no longer has.
+    """
+    issues: list[ConfigIssue] = []
+    for entry in tool_filter or []:
+        bare = str(entry).split("__", 1)[-1]
+        if bare not in known_actions:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"playbook.{playbook_slug}",
+                    problem=f"tool_filter names '{entry}' which no connector defines",
+                    fix="Fix or remove the entry in Settings → Playbooks.",
+                )
+            )
     return issues
 
 
@@ -159,7 +256,7 @@ def validate_config(db=None, config_db=None) -> dict:
     config can be edited through the Settings UI long after deploy.
     """
     from app.db.engine import SessionLocal, _ConfigSessionLocal
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import AgentConnectorBinding, ConnectorSpec, Playbook
     from app.db.models import ConnectorConfig
     from app.routers.connectors import AVAILABLE_MODELS
 
@@ -174,10 +271,28 @@ def validate_config(db=None, config_db=None) -> dict:
     issues: list[ConfigIssue] = []
 
     try:
+        known_actions: set[str] = set()
         for spec in config_db.query(ConnectorSpec).all():
             issues.extend(
                 check_connector_tools(
                     spec.connector_name, spec.execution_mode, spec.tools
+                )
+            )
+            for tool in spec.tools or []:
+                if isinstance(tool, dict) and tool.get("action"):
+                    known_actions.add(tool["action"])
+
+        for playbook in config_db.query(Playbook).all():
+            issues.extend(
+                check_playbook_tool_filter(
+                    playbook.slug, playbook.tool_filter, known_actions
+                )
+            )
+
+        for binding in config_db.query(AgentConnectorBinding).all():
+            issues.extend(
+                check_binding_capabilities(
+                    binding.agent_slug, binding.connector_name, binding.capabilities
                 )
             )
 

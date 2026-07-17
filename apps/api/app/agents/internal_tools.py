@@ -1665,7 +1665,7 @@ def execute_consolidator(
 
     from app.connectors.function_executor import execute_function
 
-    return execute_function(function_code, input_params, db, thread_id)
+    return execute_function(function_code, input_params, db, thread_id, options=config)
 
 
 # Legacy consolidator code removed — all consolidators now use function_code

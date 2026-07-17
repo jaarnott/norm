@@ -14,11 +14,35 @@ Resolution order for each role:
 The two selector keys (``interpreter_model``, ``router_model``) match the
 ``fields`` defined on the Anthropic platform connector in
 ``app/routers/connectors.py``.
+
+A stored selection that names a retired model is ignored in favour of the
+current default: these values are persisted per-environment, so a model picked
+in the UI long ago outlives its own retirement and would otherwise pin the
+environment to an ID the API answers with HTTP 404.
 """
+
+import logging
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# Snapshot IDs Anthropic has retired — the API returns 404 ``not_found_error``
+# for these. Never select one, even if it is what the operator last saved.
+# The Haiku full ID ``claude-haiku-4-5-20251001`` is current and NOT retired.
+RETIRED_MODEL_IDS = frozenset(
+    {
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-20250514",
+        "claude-3-opus-20240229",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-sonnet-20240620",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
+    }
+)
 
 
 def _resolve(
@@ -30,7 +54,16 @@ def _resolve(
         from app.services.secrets import get_api_key
 
         selected = get_api_key("anthropic", selector_key, db)
-        if selected:
+        if selected and selected in RETIRED_MODEL_IDS:
+            logger.warning(
+                "Ignoring retired model %r saved in the %r selector; "
+                "falling back to %r. Re-pick the model in Settings → Anthropic "
+                "to clear the stale value.",
+                selected,
+                selector_key,
+                default,
+            )
+        elif selected:
             return selected
     return default
 
