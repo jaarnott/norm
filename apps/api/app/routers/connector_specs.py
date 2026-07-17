@@ -276,7 +276,15 @@ async def dry_run(
     credentials = config_row.config if config_row else {}
 
     try:
-        rendered = render_request(spec, operation, body.extracted_fields, credentials)
+        # A dry-run never reaches the wire and to_audit_dict redacts the auth
+        # header, so don't demand a live OAuth token just to preview a template.
+        rendered = render_request(
+            spec,
+            operation,
+            body.extracted_fields,
+            credentials,
+            require_token=False,
+        )
         return {"rendered_request": rendered.to_audit_dict()}
     except Exception as exc:
         raise HTTPException(400, f"Template rendering failed: {exc}")
@@ -329,12 +337,18 @@ async def test_spec(
         raise HTTPException(400, f"No credentials configured for {name}")
 
     try:
+        # Pass the venue of the row we selected: OAuth tokens are per-venue, and
+        # without this get_valid_access_token falls back to an unfiltered
+        # .first() and authenticates as an arbitrary venue — which for LoadedHub
+        # (it scopes by token, ignoring x-loaded-company-id) silently returns
+        # another venue's data, or none.
         result, rendered = execute_spec(
             spec,
             operation,
             body.extracted_fields,
             config_row.config,
             db,
+            venue_id=config_row.venue_id,
         )
         return {
             "success": result.success,

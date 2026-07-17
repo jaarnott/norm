@@ -23,6 +23,7 @@ from app.connectors.spec_executor import (
     _apply_auth,
     _should_retry_after_refresh,
     execute_spec,
+    render_request,
 )
 from app.connectors.base import ConnectorResult
 
@@ -93,6 +94,73 @@ class TestApplyAuthNeverSendsEmptyBearer:
         assert "Reconnect" in result.error_message
         assert "Illegal header value" not in (result.error_message or "")
         assert "Network error" not in (result.error_message or "")
+
+
+class TestPreviewRenderDoesNotNeedALiveToken:
+    """The dry-run regression introduced alongside ConnectorAuthError.
+
+    Requiring a token to *execute* is right; requiring one to *preview* is not.
+    A dry-run never reaches the wire, and to_audit_dict redacts the auth header
+    anyway — so demanding a live OAuth token only broke the preview button.
+    """
+
+    def _operation(self):
+        return {"method": "GET", "path_template": "/stock", "required_fields": []}
+
+    def test_preview_renders_a_placeholder_instead_of_raising(self):
+        headers, _ = _apply_auth(
+            {}, "oauth2", {}, {}, spec=None, db=None, require_token=False
+        )
+        assert headers["Authorization"].startswith("Bearer ")
+        assert headers["Authorization"] != "Bearer "
+
+    def test_render_request_without_db_still_previews(self):
+        """Exactly what the dry-run router does: no db, empty credentials."""
+        rendered = render_request(
+            _oauth_spec(), self._operation(), {}, {}, require_token=False
+        )
+        assert rendered.url == "https://api.example.com/stock"
+
+    def test_preview_never_reveals_the_token(self):
+        with patch(
+            "app.services.oauth_service.get_valid_access_token",
+            return_value="secret-tok",
+        ):
+            rendered = render_request(
+                _oauth_spec(),
+                self._operation(),
+                {},
+                {},
+                db=MagicMock(),
+                venue_id="v1",
+            )
+        assert rendered.headers["Authorization"] == "Bearer secret-tok"
+        assert "secret-tok" not in str(rendered.to_audit_dict())
+
+    def test_execution_still_requires_a_real_token(self):
+        """The placeholder must never leak into a request that goes on the wire."""
+        with pytest.raises(ConnectorAuthError):
+            render_request(_oauth_spec(), self._operation(), {}, {})
+
+
+class TestVenueScopedTokenSelection:
+    """LoadedHub scopes data by the token itself — it ignores x-loaded-company-id.
+
+    So an unfiltered token lookup doesn't just pick a random row, it silently
+    authenticates as the wrong venue and returns that venue's data. venue_id
+    must reach get_valid_access_token on every executing path.
+    """
+
+    def test_execute_spec_passes_venue_id_through_to_token_lookup(self):
+        spec = _oauth_spec()
+        operation = {"method": "GET", "path_template": "/stock", "required_fields": []}
+
+        with patch(
+            "app.services.oauth_service.get_valid_access_token", return_value="tok"
+        ) as get_token:
+            execute_spec(spec, operation, {}, {}, MagicMock(), venue_id="venue-abc")
+
+        assert get_token.call_args.kwargs.get("venue_id") == "venue-abc"
 
 
 class TestRetryOn401:

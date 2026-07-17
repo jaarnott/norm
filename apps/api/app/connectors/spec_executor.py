@@ -87,8 +87,12 @@ def _apply_auth(
     spec=None,
     db: Session | None = None,
     venue_id: str | None = None,
+    require_token: bool = True,
 ) -> tuple[dict, tuple | None]:
-    """Apply authentication to request headers. Returns (headers, httpx_auth_tuple_or_None)."""
+    """Apply authentication to request headers. Returns (headers, httpx_auth_tuple_or_None).
+
+    `require_token=False` is for preview-only renders that never reach the wire.
+    """
     httpx_auth = None
 
     if auth_type == "bearer":
@@ -129,10 +133,16 @@ def _apply_auth(
             token = credentials.get(auth_config.get("token_field", "access_token"), "")
 
         if not token:
-            raise ConnectorAuthError(
-                f"No {connector} access token available. "
-                f"Reconnect {connector} in Settings → Connectors."
-            )
+            if not require_token:
+                # Preview-only render (dry-run): nothing goes on the wire, and
+                # to_audit_dict redacts this header regardless, so a missing
+                # token must not block rendering the template.
+                token = "<not resolved — preview only>"
+            else:
+                raise ConnectorAuthError(
+                    f"No {connector} access token available. "
+                    f"Reconnect {connector} in Settings → Connectors."
+                )
         headers["Authorization"] = f"Bearer {token}"
 
     return headers, httpx_auth
@@ -150,8 +160,13 @@ def render_request(
     credentials: dict,
     db: Session | None = None,
     venue_id: str | None = None,
+    require_token: bool = True,
 ) -> RenderedRequest:
-    """Render a deterministic HTTP request from a connector spec + operation template."""
+    """Render a deterministic HTTP request from a connector spec + operation template.
+
+    `require_token=False` renders a preview that never reaches the wire, so a
+    missing OAuth token yields a placeholder rather than an auth error.
+    """
     template_ctx = {
         "creds": credentials,
         **extracted_fields,
@@ -195,6 +210,7 @@ def render_request(
         spec=spec,
         db=db,
         venue_id=venue_id,
+        require_token=require_token,
     )
 
     # Render request body
@@ -269,10 +285,24 @@ def execute_http(
     # Determine success
     if resp.status_code in success_codes:
         reference = _extract_reference(resp, ref_path)
-        try:
-            payload = resp.json()
-        except Exception:
-            payload = {"body": resp.text[:500]}
+        if operation.get("response_format") == "binary":
+            # Binary downloads (PDFs, images) can't be JSON-parsed — return the
+            # raw bytes base64-encoded so callers (e.g. consolidator
+            # extract_document) can feed them to an LLM or store them.
+            import base64
+
+            payload = {
+                "content_base64": base64.b64encode(resp.content).decode("ascii"),
+                "content_type": resp.headers.get(
+                    "content-type", "application/octet-stream"
+                ),
+                "size_bytes": len(resp.content),
+            }
+        else:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {"body": resp.text[:500]}
         return ConnectorResult(
             success=True,
             reference=reference,
