@@ -211,6 +211,11 @@ def _execute_loop(
     iteration = start_iteration
     while iteration <= MAX_ITERATIONS:
         display_blocks_before = len(display_blocks)
+        # Set when a display block added THIS iteration came from a tool that
+        # opted out of the "display-only early-exit" (suppress_display_early_exit)
+        # — its card accompanies a written report, so the report must still be
+        # narrated instead of the turn ending on the pre-tool preamble.
+        needs_narration_block = False
         try:
             response, llm_call_id = call_llm_with_tools(
                 system_prompt=system_prompt,
@@ -472,7 +477,17 @@ def _execute_loop(
                     else:
                         block_data = _build_display_block(tool_def, tc.result_payload)
                         if block_data:
+                            # Interactive cards need the venue to write back.
+                            if tc.venue_id:
+                                block_data["props"]["activeVenueId"] = tc.venue_id
+                                if isinstance(block_data.get("data"), dict):
+                                    block_data["data"]["venue_id"] = tc.venue_id
                             display_blocks.append(block_data)
+                            # A tool whose card sits BELOW a written report
+                            # (e.g. invoice_fixes) opts out of the display-only
+                            # early-exit so the report still gets narrated.
+                            if tool_def.get("suppress_display_early_exit"):
+                                needs_narration_block = True
 
                 # MCP embed blocks (iframe URLs from resource content)
                 if (
@@ -733,7 +748,12 @@ def _execute_loop(
             # answer alongside these tool calls, treat as end_turn —
             # skip the extra LLM call that would just say "Done.".
             new_display_blocks = len(display_blocks) - display_blocks_before
-            if not pending_writes and reasoning and new_display_blocks > 0:
+            if (
+                not pending_writes
+                and reasoning
+                and new_display_blocks > 0
+                and not needs_narration_block
+            ):
                 # At least one display-only tool ran.  The LLM's text
                 # is the real answer — strip [Tool] prefix if present.
                 answer = reasoning.lstrip()

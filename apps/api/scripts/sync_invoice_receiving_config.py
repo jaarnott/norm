@@ -265,7 +265,13 @@ CONSOLIDATOR_TOOL = {
         "max_api_calls": 80,
         "allowed_write_actions": ["receive_invoice"],
     },
-    # NOTE: deliberately NO display_component — see the reconcile tool above.
+    # The interactive "Fix & Receive" card renders from result.fixes. Unlike
+    # the summary generic_table (removed earlier), this component MUST coexist
+    # with the narrated markdown report, so it opts out of the tool loop's
+    # display-only early-exit rather than suppressing narration.
+    "display_component": "invoice_fixes",
+    "display_props": {"title": "Proposed fixes"},
+    "suppress_display_early_exit": True,
 }
 
 PLAYBOOK = {
@@ -295,6 +301,7 @@ ROLLOUT: ALWAYS pass dry_run=true. (Remove this line after production verificati
      f. Its reasons, if any, as a markdown bulleted list.
    - Invoices WITHOUT details.lines were skipped before any comparison ran (no PO linked, credit note, fetch failure) — list each as one bold line "**{reference_number}** — {supplier_name} — {total}" followed by the tool's reasons as bullets. No tables for these; the tool reports only the first blocking problem, so present the bullets as-is without speculating.
 3. Close with the summary counts and what manual work remains in Loaded (linking POs, adding freight lines, credit notes). Mention that the header comparison for any skipped invoice is available on request (it is in details.header of the same result).
+4. If the tool returns a non-empty `fixes` list, an interactive "Proposed fixes" card is shown beneath your report where the user can select fixes and click Apply — Norm then links the purchase order and/or corrects the unit (and matching stock-item variant) in Loaded. Add one sentence inviting the user to use it and to re-run the review afterwards to receive any newly-fixable invoices. Never claim you have already applied the fixes — the user applies them from the card.
 
 If the user asks why a specific invoice was skipped, use get_invoice_detail together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
     "tool_filter": [

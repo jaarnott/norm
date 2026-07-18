@@ -305,6 +305,11 @@ def run(params, call_api, log, call_api_parallel=None):
 
         reasons = []
         checks = {}
+        # Proposed one-click fixes for the interactive card (applied later by
+        # the invoice_fixes component-API). Built ONLY from data already in
+        # hand — no extra API calls during review. The card/handler resolve
+        # ids (PO, unit, variant) at apply time.
+        fixes = []
         ref = detail.get("referenceNumber") or "(no number)"
         total = dec(detail.get("total"))
         lines = [ln for ln in detail.get("lines") or [] if not ln.get("deletedAt")]
@@ -483,6 +488,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 "po_number": (po or {}).get("orderNumber") or po_number_hint,
                 "total": money(total),
                 "reasons": reasons,
+                "fixes": list(fixes),
                 "checklist": (
                     "All " + str(len(checklist_rows)) + " checks passed ✓"
                     if all(r["result"] == "✓" for r in checklist_rows)
@@ -533,6 +539,19 @@ def run(params, call_api, log, call_api_parallel=None):
                     " (invoice references "
                     + str(po_number_hint)
                     + " — needs matching in Loaded)"
+                )
+                # Fixable: link the referenced PO number to this invoice.
+                fixes.append(
+                    {
+                        "type": "link_po",
+                        "invoice_id": inv_id,
+                        "reference": ref,
+                        "po_number": str(po_number_hint),
+                        "summary": "Link purchase order "
+                        + str(po_number_hint)
+                        + " to invoice "
+                        + ref,
+                    }
                 )
             _fail(checks, reasons, "po_linked", msg)
             skipped.append(verdict_now())
@@ -808,6 +827,35 @@ def run(params, call_api, log, call_api_parallel=None):
                             + "' — correct the unit in Loaded (on the stock "
                             + "item) or on the invoice line"
                         )
+                        # Fixable: set the line unit to the derived unit and
+                        # update the matched supplier variant (Loaded's own
+                        # "update variant?" flow). Needs the line's item +
+                        # supplier + code to resolve the variant at apply time.
+                        if ln.get("linkedItemId") and detail.get("linkedSupplierId"):
+                            fixes.append(
+                                {
+                                    "type": "unit",
+                                    "invoice_id": inv_id,
+                                    "reference": ref,
+                                    "line_id": ln.get("id"),
+                                    "line_code": ln.get("code"),
+                                    "description": str(ln.get("description")),
+                                    "linked_item_id": ln.get("linkedItemId"),
+                                    "linked_supplier_id": detail.get(
+                                        "linkedSupplierId"
+                                    ),
+                                    "current_unit": str(ln.get("unit")),
+                                    "proposed_unit": str(derived),
+                                    "summary": ref
+                                    + " · "
+                                    + str(ln.get("description"))
+                                    + ": unit "
+                                    + str(ln.get("unit"))
+                                    + " → "
+                                    + str(derived)
+                                    + " (updates the variant too)",
+                                }
+                            )
                 if dec(match.get("quantity")) != dec(ln.get("quantityReceived")):
                     pdf_ok = False
                     if rec:
@@ -984,6 +1032,15 @@ def run(params, call_api, log, call_api_parallel=None):
         }
         for v in received + skipped
     ]
+    # Flat list of every proposed fix across skipped invoices, each with a
+    # stable id the interactive card selects by and the handler applies by.
+    all_fixes = []
+    for v in skipped:
+        for i, fx in enumerate(v.get("fixes") or []):
+            fx = dict(fx)
+            fx["id"] = str(fx.get("invoice_id")) + ":" + fx["type"] + ":" + str(i)
+            all_fixes.append(fx)
+
     return {
         "venue": venue,
         "dry_run": dry_run,
@@ -993,6 +1050,7 @@ def run(params, call_api, log, call_api_parallel=None):
         "results": rows,
         "received": received,
         "skipped": skipped,
+        "fixes": all_fixes,
         "summary": {"received": len(received), "skipped": len(skipped)},
     }
 

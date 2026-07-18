@@ -1665,7 +1665,31 @@ def execute_consolidator(
 
     from app.connectors.function_executor import execute_function
 
-    return execute_function(function_code, input_params, db, thread_id, options=config)
+    result = execute_function(
+        function_code, input_params, db, thread_id, options=config
+    )
+
+    # Stamp the venue_id onto the result so the tool loop can set tc.venue_id
+    # (interactive cards need it to write back). Prefer the venue named in the
+    # tool params; otherwise fall back to the thread's active venue.
+    data = result.get("data")
+    if isinstance(data, dict) and not data.get("venue_id"):
+        from app.db.models import Thread, Venue
+
+        venue_id = None
+        venue_name = input_params.get("venue")
+        if venue_name:
+            venue_obj = (
+                db.query(Venue).filter(Venue.name.ilike(f"%{venue_name}%")).first()
+            )
+            venue_id = venue_obj.id if venue_obj else None
+        if not venue_id and thread_id:
+            thread = db.query(Thread).filter(Thread.id == thread_id).first()
+            venue_id = thread.venue_id if thread else None
+        if venue_id:
+            data["venue_id"] = venue_id
+
+    return result
 
 
 # Legacy consolidator code removed — all consolidators now use function_code

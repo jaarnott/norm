@@ -21,6 +21,26 @@ sync overwrites it.
 | `reconcile_received_invoices.py` | `loadedhub` spec → tool `reconcile_received_invoices` | `scripts/sync_invoice_receiving_config.py` |
 | `calculate_template_stock_requirements.py` | `loadedhub` spec → tool `calculate_template_stock_requirements` | `scripts/sync_stock_requirements_config.py` |
 
+## Interactive "Fix & Receive" card
+
+`review_and_receive_invoices` also returns a `fixes` list (link a PO; correct a
+line's unit + supplier variant). The tool declares `display_component:
+invoice_fixes` + `suppress_display_early_exit` so the card renders **beneath**
+the narrated report (the flag opts out of the tool loop's display-only
+early-exit). Apply is NOT a config write — the `InvoiceFixesCard` POSTs to
+`/api/invoice-fixes/apply` (`app/routers/invoice_fixes.py`), which orchestrates
+the multi-step LoadedHub writes with the venue connector token. Contracts
+(verified live in the test env, 18 Jul 2026):
+
+- **link_po**: `GET /1.0/stock/internal/purchase-orders` (filter client-side on
+  `orderNumber`, drop a leading `PO`), then `PUT /1.0/stock/internal/invoices/{id}`
+  with `linkedPurchaseOrderId` + `purchaseOrderNumber` set. Does not re-match lines.
+- **unit**: resolve the unit name via `GET /1.0/stock/internal/units`, `PUT` the
+  invoice with the line's `unit`/`linkedUnitId`/`linkedUnitRatio`, then
+  `PATCH /1.0/stock/internal/item-supplier-variant/{id}` `{unitId}` where the
+  variant is `items/{linkedItemId}.suppliers[]` matched by `supplierId` + `stockCode`.
+  If the proposed unit has no matching Loaded unit, the fix fails (create it first).
+
 `calculate_template_stock_requirements` also depends on a plain connector
 action, **`get_stock_item_minimums`** (loadedhub → `/1.0/stock/internal/items`),
 which returns each item's par level plus the unit ratios to convert it into

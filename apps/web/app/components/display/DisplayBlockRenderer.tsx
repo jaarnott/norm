@@ -14,6 +14,7 @@ import Chart from './Chart';
 import ReportBuilder from './ReportBuilder';
 import SavedReportsBoard from './SavedReportsBoard';
 import ToolApprovalCard from './ToolApprovalCard';
+import InvoiceFixesCard from './InvoiceFixesCard';
 import DashboardView from './DashboardView';
 import VenuePicker from './VenuePicker';
 import StockPicker from './StockPicker';
@@ -43,6 +44,7 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   saved_reports_board: SavedReportsBoard,
   orders_dashboard: OrdersDashboard,
   tool_approval: ToolApprovalCard,
+  invoice_fixes: InvoiceFixesCard,
   venue_picker: VenuePicker,
   stock_picker: StockPicker,
   dashboard_view: DashboardView,

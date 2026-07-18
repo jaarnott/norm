@@ -852,3 +852,47 @@ class TestUnitOfMeasureGate:
         by_label = {c["check"]: c["result"] for c in result["received"][0]["checklist"]}
         assert by_label["Unit of measure matches the copy"] == "—"
         assert by_label["Lines match the invoice copy"] == "✓"
+
+
+class TestFixDerivation:
+    """Skipped invoices carry structured one-click fixes for the card."""
+
+    def test_unlinked_with_po_number_yields_link_po_fix(self):
+        api = api_for(make_invoice(linkedPurchaseOrderId=None))  # references PO#1520987
+        result = run_consolidator(api)
+        fixes = result["fixes"]
+        assert len(fixes) == 1
+        fx = fixes[0]
+        assert fx["type"] == "link_po"
+        assert fx["po_number"] == "PO#1520987"
+        assert fx["invoice_id"] == INV_ID
+        assert fx["id"]  # stable id present
+
+    def test_unlinked_without_po_number_yields_no_fix(self):
+        api = api_for(
+            make_invoice(linkedPurchaseOrderId=None, purchaseOrderNumber=None)
+        )
+        assert run_consolidator(api)["fixes"] == []
+
+    def test_unit_mismatch_yields_unit_fix_with_variant_context(self):
+        api = api_for(
+            make_invoice(lines=[make_line(unit="Each")]),
+            pdf=self._pdf_uom("100 piece"),
+        )
+        fixes = run_consolidator(api)["fixes"]
+        assert len(fixes) == 1
+        fx = fixes[0]
+        assert fx["type"] == "unit"
+        assert fx["current_unit"] == "Each"
+        assert fx["proposed_unit"] == "100 piece"
+        assert fx["line_code"] == "PBO0.7-0.99"
+        assert fx["linked_item_id"] == ITEM_SALMON
+        assert fx["linked_supplier_id"] == "supplier-akaroa"
+
+    def test_received_invoice_has_no_fixes(self):
+        assert run_consolidator(api_for(make_invoice()))["fixes"] == []
+
+    def _pdf_uom(self, uom):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure=uom)
+        return pdf
