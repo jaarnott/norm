@@ -238,7 +238,9 @@ CONSOLIDATOR_TOOL = {
         "the receive screen would tag NEW), line arithmetic and totals "
         "consistent, and every line verified against the attached invoice copy "
         "(quantities, unit costs, units and totals; totals within $0.02; every "
-        "line on the copy must be on the invoice). Invoices failing a check "
+        "line on the copy must be on the invoice; the copy's guideline-derived "
+        "delivered unit of measure must agree with Loaded's unit — a mismatch "
+        "reports the recommended unit to fix in Loaded). Invoices failing a check "
         "are never modified — they are reported with the first blocking "
         "problem only (later checks are not run). Pass dry_run=true to review "
         "without receiving."
@@ -288,8 +290,9 @@ ROLLOUT: ALWAYS pass dry_run=true. (Remove this line after production verificati
      a. Heading: ### {reference_number} — {supplier_name} — {total}
      b. details.header as a markdown table — | Field | Invoice (Loaded) | PO | Invoice copy | Result | — one row per header field.
      c. details.lines as a markdown table — | Line | In Loaded | PO line | On copy | Unit | Quantity | Unit cost | Line total | Arithmetic | — one row per line (the stock_item field is the "In Loaded" column: ✗ means the stock item, brand or unit would be created as NEW; "PO line" is informational only — invoices may legitimately differ from their PO). The unit/quantity/cost/total cells arrive as ready-made comparison strings (e.g. "ord 5.0 / inv 4.95 / copy 4.95 ✓"); copy each cell verbatim. Include the "on copy only" rows and any "…more lines omitted" marker verbatim.
-     d. Its checklist: when it is a string ("All 12 checks passed ✓"), print exactly that line; otherwise a compact | Check | Result | table.
-     e. Its reasons, if any, as a markdown bulleted list.
+     d. Its checklist: when it is a string ("All 13 checks passed ✓"), print exactly that line; otherwise a compact | Check | Result | table.
+     e. Unit cells may carry a "rec …" value — the delivered unit derived from the copy per the venue's unit guidelines. When a unit-of-measure reason appears, relay its fix advice verbatim (correct the unit in Loaded on the stock item, or on the invoice line).
+     f. Its reasons, if any, as a markdown bulleted list.
    - Invoices WITHOUT details.lines were skipped before any comparison ran (no PO linked, credit note, fetch failure) — list each as one bold line "**{reference_number}** — {supplier_name} — {total}" followed by the tool's reasons as bullets. No tables for these; the tool reports only the first blocking problem, so present the bullets as-is without speculating.
 3. Close with the summary counts and what manual work remains in Loaded (linking POs, adding freight lines, credit notes). Mention that the header comparison for any skipped invoice is available on request (it is in details.header of the same result).
 

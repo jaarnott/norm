@@ -29,7 +29,12 @@ PDF_SCHEMA = {
             "code": "string or null — the product/item code column",
             "description": "string",
             "quantity": "number — exactly as printed",
-            "unit": "string or null",
+            "unit": "string or null — EXACTLY as printed on the document",
+            "unit_of_measure": (
+                "string or null — the DELIVERED unit of ONE item, per the "
+                "unit rules in the instructions (e.g. 'Kilo', '5L', '500g', "
+                "'750ml', '12 pack', '100 piece'); null if not determinable"
+            ),
             "unit_price_ex_tax": "number — exactly as printed",
             "line_total_ex_tax": "number — exactly as printed",
         }
@@ -63,6 +68,7 @@ CHECK_LABELS = [
     ("pdf_readable", "Invoice copy readable"),
     ("pdf_invoice_number", "Invoice number matches the copy"),
     ("pdf_lines", "Lines match the invoice copy"),
+    ("unit_of_measure", "Unit of measure matches the copy"),
     ("pdf_total", "Total matches the invoice copy"),
 ]
 
@@ -126,6 +132,96 @@ UNIT_ALIASES = {
     "bunch": "bunch",
     "bunches": "bunch",
 }
+
+# Unit-of-measure parsing for the guideline-derived unit check. A unit string
+# resolves to (type, magnitude) — weight in grams, volume in mls, count in
+# items — or None when it can't be confidently interpreted (bare packaging
+# words, lengths, free text). Comparison then requires same type AND same
+# magnitude; anything unparseable is "not checked", never a failure.
+_UOM_WORDS = {
+    # word: (type, factor per 1 unit)
+    "kg": ("weight", 1000),
+    "kgs": ("weight", 1000),
+    "kilo": ("weight", 1000),
+    "kilos": ("weight", 1000),
+    "kilogram": ("weight", 1000),
+    "kilograms": ("weight", 1000),
+    "g": ("weight", 1),
+    "gm": ("weight", 1),
+    "gr": ("weight", 1),
+    "gram": ("weight", 1),
+    "grams": ("weight", 1),
+    "l": ("volume", 1000),
+    "lt": ("volume", 1000),
+    "ltr": ("volume", 1000),
+    "litre": ("volume", 1000),
+    "liter": ("volume", 1000),
+    "litres": ("volume", 1000),
+    "liters": ("volume", 1000),
+    "ml": ("volume", 1),
+    "mls": ("volume", 1),
+    "ea": ("count", 1),
+    "each": ("count", 1),
+    "pc": ("count", 1),
+    "pcs": ("count", 1),
+    "piece": ("count", 1),
+    "pieces": ("count", 1),
+    "pack": ("count", 1),
+    "pk": ("count", 1),
+    "doz": ("count", 12),
+    "dozen": ("count", 12),
+    "dz": ("count", 12),
+    "pair": ("count", 2),
+}
+# Bare packaging words: never confidently comparable without a count.
+_UOM_VAGUE = {
+    "pkt",
+    "packet",
+    "box",
+    "carton",
+    "ctn",
+    "outer",
+    "unit",
+    "case",
+    "cs",
+    "bx",
+    "un",
+}
+
+
+def parse_unit(text):
+    """'500g' → ('weight', 500); '5L' → ('volume', 5000); '12 pack' →
+    ('count', 12); 'Kilo' → ('weight', 1000); 'pkt' → None."""
+    s = str(text or "").strip().lower()
+    if not s:
+        return None
+    # split into leading number + word, e.g. "5.6 kg", "100piece", "12 pack"
+    num, word = "", ""
+    for ch in s:
+        if ch.isdigit() or (ch == "." and num and "." not in num):
+            if word:
+                return None  # number after word ("ctn8") — not confident
+            num += ch
+        elif ch.isalpha():
+            word += ch
+        elif ch in (" ", "-"):
+            continue
+        else:
+            return None  # "2x5l" and other compounds are the LLM's job
+    if word in _UOM_VAGUE:
+        return None
+    entry = _UOM_WORDS.get(word)
+    if not entry:
+        return None
+    utype, factor = entry
+    if not num:
+        return (utype, factor)
+    try:
+        magnitude = float(num) * factor
+    except ValueError:
+        return None
+    return (utype, magnitude)
+
 
 # Line-level detail is capped so a 200-line invoice can't blow out the report;
 # every line is still CHECKED — only the per-line display rows are capped.
@@ -299,7 +395,11 @@ def run(params, call_api, log, call_api_parallel=None):
                     "po_line": rec.get("po_line", "—"),
                     "on_copy": rec.get("on_copy", "—"),
                     "unit": cell(
-                        [("inv", unit.get("invoice")), ("copy", unit.get("copy"))],
+                        [
+                            ("inv", unit.get("invoice")),
+                            ("copy", unit.get("copy")),
+                            ("rec", unit.get("derived")),
+                        ],
                         unit.get("result"),
                     ),
                     "quantity": cell(
@@ -610,7 +710,29 @@ def run(params, call_api, log, call_api_parallel=None):
             "download_invoice_file",
             dict(base, file_id=detail["fileId"]),
             schema=PDF_SCHEMA,
-            instructions="Extract every product line, every separate charge (freight etc.), and the totals from this supplier invoice.",
+            instructions=(
+                "Extract every product line, every separate charge (freight "
+                "etc.), and the totals from this supplier invoice.\n\n"
+                "For each line also derive unit_of_measure — the unit ONE "
+                "delivered item is used in for recipe costing. Rules:\n"
+                "- It must be a weight, volume or count (never a length or a "
+                "bare packaging word like pkt/box/carton/outer/unit).\n"
+                "- Check the unit/size columns first; if unhelpful, look for "
+                "a size in the description (e.g. '900ml', '500g', '4 Litre').\n"
+                "- Multipacks ('2x5L', '10x1kg', '500x100pc'): use the unit "
+                "of the INDIVIDUAL item (→ '5L', '1kg', '100pc').\n"
+                "- Random weight billed at a per-kg price (e.g. 14.96 kg at "
+                "$20.56/kg — common for meat/seafood/produce): use 'Kilo', "
+                "never the total weight.\n"
+                "- Counted formats where the count matters: 'N piece' / "
+                "'N pack' (e.g. '100 piece', '12 pack').\n"
+                "- Keep the specific delivered size ('500g', '5L') — do NOT "
+                "convert to a base unit.\n"
+                "- Exactly 1 of a base unit drops the 1: '1kg' → 'Kilo', "
+                "'1L' → 'Litre', '1 each' → 'each'. Use 'Kilo' and 'Litre' "
+                "(not 'KG'/'L') for those base units.\n"
+                "- If no confident unit can be derived, return null."
+            ),
         )
         if not isinstance(pdf, dict) or pdf.get("error"):
             err = pdf.get("error") if isinstance(pdf, dict) else "unreadable"
@@ -646,6 +768,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 checks["pdf_invoice_number"] = "pass"
 
             pdf_ok = True
+            uom_ok, uom_compared = True, False
             pdf_lines = list(pdf.get("lines") or [])
             unclaimed = list(pdf_lines)
             for ln in lines:
@@ -705,6 +828,33 @@ def run(params, call_api, log, call_api_parallel=None):
                             + str(inv_unit)
                             + " does not match the document's unit "
                             + str(copy_unit)
+                        )
+                # Unit of measure: Loaded's unit vs the guideline-derived
+                # delivered unit from the copy. Both sides must parse to a
+                # (type, magnitude) before a mismatch counts — otherwise
+                # the check stays "not checked" for this line.
+                derived = match.get("unit_of_measure")
+                if rec:
+                    rec["unit"]["derived"] = derived
+                pi, pd = parse_unit(ln.get("unit")), parse_unit(derived)
+                if pi and pd:
+                    uom_compared = True
+                    if pi[0] == pd[0] and abs(pi[1] - pd[1]) < 0.001:
+                        if rec and rec["unit"]["result"] != "✗":
+                            rec["unit"]["result"] = "✓"
+                    else:
+                        uom_ok = False
+                        if rec:
+                            rec["unit"]["result"] = "✗"
+                        reasons.append(
+                            "Line '"
+                            + str(ln.get("description"))
+                            + "': Loaded unit '"
+                            + str(ln.get("unit"))
+                            + "' but the copy indicates the delivered unit is '"
+                            + str(derived)
+                            + "' — correct the unit in Loaded (on the stock "
+                            + "item) or on the invoice line"
                         )
                 if dec(match.get("quantity")) != dec(ln.get("quantityReceived")):
                     pdf_ok = False
@@ -813,6 +963,10 @@ def run(params, call_api, log, call_api_parallel=None):
                         + " with no matching invoice line"
                     )
             checks["pdf_lines"] = "pass" if pdf_ok else "fail"
+            # Only set when at least one line was confidently comparable;
+            # otherwise the checklist honestly shows "—" (not checked).
+            if uom_compared or not uom_ok:
+                checks["unit_of_measure"] = "pass" if uom_ok else "fail"
 
             # Gate 11 (PDF side): document total vs invoice total
             if not close(dec(pdf.get("total_incl_tax")), total, totals_tol):

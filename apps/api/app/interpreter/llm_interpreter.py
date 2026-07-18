@@ -215,7 +215,10 @@ def call_llm_with_tools(
     db: Session | None = None,
     thread_id: str | None = None,
     call_type: str = "tool_use",
-    max_tokens: int = 4096,
+    # 4096 truncated table-heavy reports mid-table (~1.7 chars/token for
+    # markdown tables): an 11-invoice audit report needs well over 4k output
+    # tokens. Cap, not cost — streaming only pays for tokens actually emitted.
+    max_tokens: int = 16384,
 ):
     """Make an Anthropic API call with native tool use.
 

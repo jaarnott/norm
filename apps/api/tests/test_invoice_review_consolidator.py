@@ -169,6 +169,7 @@ def make_pdf(**over):
                 "description": "Chilled Skin On Fillet Bone Out 0.7-0.99kg",
                 "quantity": 4.95,
                 "unit": "Kg",
+                "unit_of_measure": "Kilo",
                 "unit_price_ex_tax": 44.40,
                 "line_total_ex_tax": 219.78,
             }
@@ -573,7 +574,7 @@ class TestChecklist:
         verdict = run_consolidator(api)["received"][0]
         # All-pass checklists collapse to a single string — keeps the report
         # payload under the tool-result slim threshold on large runs.
-        assert verdict["checklist"] == "All 12 checks passed ✓"
+        assert verdict["checklist"] == "All 13 checks passed ✓"
 
     def test_unlinked_invoice_shows_cross_then_unchecked(self):
         api = api_for(make_invoice(linkedPurchaseOrderId=None))
@@ -609,9 +610,9 @@ class TestChecklist:
             pdfs={FILE_ID: make_pdf()},
         )
         rows = {r["reference"]: r for r in run_consolidator(api)["results"]}
-        assert rows["F55755100"]["checks"] == "12✓"
+        assert rows["F55755100"]["checks"] == "13✓"
         # unlinked invoice: credit ✓, copy attached ✓, po_linked ✗, rest unchecked
-        assert rows["X-1"]["checks"] == "2✓ 1✗ 9 not checked"
+        assert rows["X-1"]["checks"] == "2✓ 1✗ 10 not checked"
 
 
 class TestAuditDetails:
@@ -647,7 +648,7 @@ class TestAuditDetails:
         assert rec["po_line"] == "✓"
         assert rec["on_copy"] == "✓"
         # Cells are display-ready comparison strings (payload compactness)
-        assert rec["unit"] == "inv Kilo / copy Kg ✓"  # normalised match
+        assert rec["unit"] == "inv Kilo / copy Kg / rec Kilo ✓"  # normalised
         assert rec["quantity"] == "ord 5.0 / inv 4.95 / copy 4.95 ✓"
         assert rec["unit_cost"] == "inv $44.40 / copy $44.40 ✓"
         assert rec["line_total"] == "inv $219.78 / copy $219.78 ✓"
@@ -778,3 +779,82 @@ class TestPayloadSize:
         # script sets on the tool (clamped by HARD_MAX_TOOL_RESULT_CHARS).
         size = self.make_run(15)
         assert size < 100_000, f"report payload {size} chars would be slimmed"
+
+
+class TestUnitParser:
+    """parse_unit implements the venue's unit-of-measure guidelines."""
+
+    def parse(self, text):
+        namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
+        exec(FUNCTION_CODE, namespace)
+        return namespace["parse_unit"](text)
+
+    def test_good_examples_from_guidelines(self):
+        assert self.parse("2.5kg") == ("weight", 2500)
+        assert self.parse("5L") == ("volume", 5000)
+        assert self.parse("750ml") == ("volume", 750)
+        assert self.parse("12 pack") == ("count", 12)
+        assert self.parse("500g") == ("weight", 500)
+        assert self.parse("100 piece") == ("count", 100)
+        assert self.parse("24 pack") == ("count", 24)
+
+    def test_bad_examples_are_not_confidently_parseable(self):
+        for bad in ("pkt", "box", "carton", "unit", "outer", "CTN", "ctn8"):
+            assert self.parse(bad) is None, bad
+
+    def test_base_unit_equivalences(self):
+        assert self.parse("Kilo") == self.parse("1kg") == self.parse("KG")
+        assert self.parse("Litre") == self.parse("1L") == self.parse("l")
+        assert self.parse("5.6 KG") == self.parse("5.6kg") == ("weight", 5600)
+        assert self.parse("each") == ("count", 1)
+        assert self.parse("dozen") == ("count", 12)
+
+    def test_junk_returns_none(self):
+        assert self.parse(None) is None
+        assert self.parse("") is None
+        assert self.parse("150x200mm piece") is None  # compound — LLM's job
+        assert self.parse("2x5L") is None
+
+
+class TestUnitOfMeasureGate:
+    """Loaded's unit vs the guideline-derived delivered unit from the copy."""
+
+    def pdf_with_uom(self, uom):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure=uom)
+        return pdf
+
+    def test_matching_uom_passes(self):
+        api = api_for(make_invoice(), pdf=self.pdf_with_uom("Kilo"))
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+        assert result["received"][0]["checklist"] == "All 13 checks passed ✓"
+
+    def test_count_mismatch_blocks_with_fix_advice(self):
+        # The real napkins case: Loaded says Each, copy is a 100-pack.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="Each")]),
+            pdf=self.pdf_with_uom("100 piece"),
+        )
+        verdict = sole_skip(run_consolidator(api))
+        reason = next(r for r in verdict["reasons"] if "delivered unit" in r)
+        assert "Loaded unit 'Each'" in reason
+        assert "'100 piece'" in reason
+        assert "correct the unit in Loaded" in reason
+        rec = verdict["details"]["lines"][0]
+        assert "rec 100 piece" in rec["unit"]
+        assert rec["unit"].endswith("✗")
+
+    def test_type_conflict_blocks(self):
+        api = api_for(make_invoice(), pdf=self.pdf_with_uom("750ml"))
+        verdict = sole_skip(run_consolidator(api))
+        assert any("delivered unit" in r for r in verdict["reasons"])
+
+    def test_underivable_uom_is_not_checked(self):
+        api = api_for(make_invoice(), pdf=self.pdf_with_uom(None))
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+        # not all-pass: the uom check honestly reads "—"
+        by_label = {c["check"]: c["result"] for c in result["received"][0]["checklist"]}
+        assert by_label["Unit of measure matches the copy"] == "—"
+        assert by_label["Lines match the invoice copy"] == "✓"
