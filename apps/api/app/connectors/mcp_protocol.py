@@ -105,7 +105,9 @@ def resource_content(url: str, uri: str = "", mime_type: str = "text/html") -> d
     }
 
 
-def tools_call_result(payload: Any, is_error: bool = False) -> dict[str, Any]:
+def tools_call_result(
+    payload: Any, is_error: bool = False, structured: Any = None
+) -> dict[str, Any]:
     """Build a ``tools/call`` result.
 
     ``structuredContent`` is emitted for dict payloads without declaring an
@@ -113,13 +115,22 @@ def tools_call_result(payload: Any, is_error: bool = False) -> dict[str, Any]:
     validate every payload against it, and connector responses are shaped by
     config (``response_transform``) — i.e. by rows no test can see. Don't sign
     a contract that config can break.
+
+    ``structured`` lets the two halves diverge, which matters for MCP Apps:
+    ``content`` is what the *model* reads (so it stays within the model's size
+    budget), while ``structuredContent`` is what the *app* renders. Shrinking
+    the app's copy to fit the model's budget is what made a week-long roster
+    arrive as a "too large" stub with nothing left to draw.
     """
     result: dict[str, Any] = {
         "content": [text_content(payload)],
         "isError": is_error,
     }
-    if isinstance(payload, dict) and not is_error:
-        result["structuredContent"] = payload
+    if is_error:
+        return result
+    body = structured if structured is not None else payload
+    if isinstance(body, dict):
+        result["structuredContent"] = body
     return result
 
 

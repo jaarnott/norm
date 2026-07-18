@@ -139,6 +139,9 @@
     }
     if (params && params.isError) return fail("Norm returned an error for this roster.");
     if (data == null) return fail("No roster data to display.");
+    var trunc = NormApp.truncationMessage(data);
+    if (trunc) return fail(trunc);
+    data = NormApp.unwrap(data);
 
     var rows = findShifts(data);
     if (!rows || !rows.length) return fail("No shifts found in this result.");

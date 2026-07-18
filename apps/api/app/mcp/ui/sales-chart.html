@@ -100,6 +100,9 @@
     }
     if (params && params.isError) return fail("Norm returned an error for this request.");
     if (data == null) return fail("No data to display.");
+    var trunc = NormApp.truncationMessage(data);
+    if (trunc) return fail(trunc);
+    data = NormApp.unwrap(data);
 
     var rows = findSeries(data);
     if (!rows || !rows.length) {

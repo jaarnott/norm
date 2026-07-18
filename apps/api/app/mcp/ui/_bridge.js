@@ -95,5 +95,18 @@
     },
     openLink: function (url) { rpc("ui/open-link", { url: url }); },
     reportSize: reportSize,
+    // Norm shapes oversized results into an envelope rather than the data.
+    // Apps show this message instead of claiming they found nothing.
+    truncationMessage: function (d) {
+      if (d && typeof d === "object" && (d._too_large || d._truncated) && d.message) {
+        return String(d.message);
+      }
+      return null;
+    },
+    // Unwrap the `_slimmed` envelope so apps still see their array.
+    unwrap: function (d) {
+      if (d && typeof d === "object" && d._slimmed && Array.isArray(d.data)) return d.data;
+      return d;
+    },
   };
 })();

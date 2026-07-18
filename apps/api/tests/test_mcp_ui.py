@@ -6,7 +6,6 @@ shape, the ``text/html;profile=mcp-app`` mime type, the extension capability in
 ``MCP_UI_ENABLED`` kill switch actually removing all of it.
 """
 
-
 from app.config import settings
 from app.mcp.server import McpContext, handle_jsonrpc
 from app.mcp.ui_apps import (
@@ -167,3 +166,71 @@ class TestKillSwitch:
 
         assert _rpc("resources/list")["result"]["resources"] == []
         assert "error" in _rpc("resources/read", {"uri": SALES_CHART_URI})
+
+
+# ── UI payload vs model payload ──────────────────────────────────────────
+
+
+class TestUiPayloadSeparation:
+    """A UI tool's data must not be shrunk to fit the MODEL's budget.
+
+    This is the bug that made a week-long roster arrive as a "_too_large" stub
+    with no shifts left to draw: `content` and `structuredContent` were both
+    the shaped payload.
+    """
+
+    def _roster(self, n):
+        return {
+            "id": 1,
+            "rosteredShifts": [
+                {
+                    "staffMemberFirstName": f"Staff{i}",
+                    "staffMemberLastName": "X",
+                    "roleName": "Bar",
+                    "totalHours": 7.5,
+                    "rules": [
+                        {
+                            "startTime": "2026-07-20T16:00:00+12:00",
+                            "endTime": "2026-07-20T23:30:00+12:00",
+                        }
+                    ],
+                    "breaks": [{"breakStart": "x" * 200}],
+                }
+                for i in range(n)
+            ],
+        }
+
+    def test_big_payload_is_shaped_for_the_model(self):
+        from app.mcp.results import shape_result
+
+        shaped, truncated = shape_result(self._roster(400))
+        assert truncated
+        assert "rosteredShifts" not in shaped  # the model gets a stub
+
+    def test_but_the_app_still_gets_the_real_data(self):
+        from app.mcp.results import ui_payload
+
+        full = self._roster(400)
+        assert ui_payload(full) is full  # unshaped, array intact
+
+    def test_result_carries_both_halves(self):
+        from app.connectors.mcp_protocol import tools_call_result
+        from app.mcp.results import shape_result, ui_payload
+
+        full = self._roster(400)
+        shaped, _ = shape_result(full)
+        res = tools_call_result(shaped, structured=ui_payload(full))
+        # model-facing text is the stub; the app's copy has the shifts
+        assert "rosteredShifts" not in res["content"][0]["text"]
+        assert len(res["structuredContent"]["rosteredShifts"]) == 400
+
+    def test_absurd_payload_falls_back_rather_than_shipping_megabytes(self):
+        from app.mcp.results import ui_payload
+
+        assert ui_payload({"x": "y" * 500_000}) is None
+
+    def test_non_ui_tool_is_unchanged(self):
+        from app.connectors.mcp_protocol import tools_call_result
+
+        res = tools_call_result({"a": 1})
+        assert res["structuredContent"] == {"a": 1}

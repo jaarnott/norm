@@ -26,7 +26,7 @@ from app.connectors.mcp_protocol import INVALID_PARAMS, error_result, tools_call
 from app.mcp.principal import McpPrincipal
 from app.mcp.projection import McpTool, project_tools, to_mcp_tool_dict
 from app.mcp.audit import reset_touched, write_audit
-from app.mcp.results import shape_result
+from app.mcp.results import shape_result, ui_payload
 from app.mcp.server import McpContext, McpDispatchError
 
 logger = logging.getLogger(__name__)
@@ -224,7 +224,13 @@ class NormMcpContext(McpContext):
         if not result.success:
             return error_result(result.error or "Tool execution failed")
 
-        return tools_call_result(payload)
+        # A tool with an embedded UI renders from `structuredContent`, so give
+        # the app the FULL payload — the shaping above exists to protect the
+        # model's context, and applying it to the app's copy is what left a
+        # week-long roster with nothing to draw. Falls back to the shaped
+        # payload if even the UI budget can't hold it.
+        structured = ui_payload(result.payload) if tool.ui_resource else None
+        return tools_call_result(payload, structured=structured)
 
     def _audit(
         self,

@@ -33,6 +33,28 @@ from app.agents.tool_loop import (
 
 MCP_MAX_RESULT_CHARS = MAX_TOOL_RESULT_CHARS_NO_SEARCH
 
+# A tool bound to an MCP App sends its data twice: a shaped copy in ``content``
+# for the model to read, and a copy in ``structuredContent`` for the app to
+# render. Only the first is context — the app's copy is transport, so it gets a
+# far larger budget. Still bounded: an unbounded payload would be posted into
+# the host's iframe, and some hosts do surface structuredContent to the model.
+MCP_MAX_UI_RESULT_CHARS = 400_000
+
+
+def ui_payload(payload: Any, max_chars: int = MCP_MAX_UI_RESULT_CHARS) -> Any | None:
+    """The full payload for an app to render, or None if even that is too big.
+
+    Returning None makes the caller fall back to the shaped payload, so a
+    pathological result degrades to the model-facing summary rather than
+    shipping megabytes into an iframe.
+    """
+    if not isinstance(payload, dict):
+        return None
+    serialized = _serialize(payload)
+    if serialized is None or len(serialized) > max_chars:
+        return None
+    return payload
+
 
 def _serialize(payload: Any) -> str | None:
     try:
