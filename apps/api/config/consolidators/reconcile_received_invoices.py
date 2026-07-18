@@ -506,7 +506,7 @@ def run(params, call_api, log, call_api_parallel=None):
             "total_loaded": cell(v, "total_incl_tax", "loaded"),
             "total_doc": doc_cell(v, "total_incl_tax"),
             "outcome": v.get("outcome", "not reconciled"),
-            "notes": "; ".join(v["reasons"]) if v.get("reasons") else "—",
+            "notes": " • ".join(v["reasons"]) if v.get("reasons") else "—",
         }
         for v in reconciled + not_reconciled + needs_statement_rows
     ]

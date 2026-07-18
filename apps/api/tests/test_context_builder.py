@@ -90,7 +90,9 @@ class TestBuildConversationMessages:
         assert "Conversation summary" in result[0]["content"]
         assert "sales data for Bessie" in result[0]["content"]
         # Thread should have been updated
-        assert thread.conversation_summary == "The user asked about sales data for Bessie."
+        assert (
+            thread.conversation_summary == "The user asked about sales data for Bessie."
+        )
 
     @patch("app.agents.context_builder._summarise_with_llm")
     def test_existing_summary_reused_when_current(self, mock_llm):
@@ -101,9 +103,7 @@ class TestBuildConversationMessages:
             msgs.append(_make_msg(role, f"msg {i}", minutes_ago=100 - i))
 
         older_count = len(msgs) - RECENT_AFTER_SUMMARY
-        thread = _make_thread(
-            summary="Existing summary.", summary_count=older_count
-        )
+        thread = _make_thread(summary="Existing summary.", summary_count=older_count)
         db = MagicMock()
 
         result = build_conversation_messages(msgs, "new", thread=thread, db=db)
@@ -225,7 +225,9 @@ class TestSummariseOlderMessages:
     def test_basic_summary(self):
         msgs = [
             _make_msg("user", "How do I order tomatoes?", minutes_ago=100),
-            _make_msg("assistant", "You can use the procurement agent.", minutes_ago=99),
+            _make_msg(
+                "assistant", "You can use the procurement agent.", minutes_ago=99
+            ),
             _make_msg("user", "What about lettuce?", minutes_ago=98),
             _make_msg("assistant", "Same process.", minutes_ago=97),
         ]

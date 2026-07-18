@@ -294,10 +294,12 @@ class TestSkips:
             for r in verdict["reasons"]
         )
 
-    def test_unit_cost_differs_from_po(self):
+    def test_po_price_difference_does_not_block(self):
+        # User decision: PO prices move between ordering and invoicing — the
+        # attached invoice document is the source of truth for what's billed.
         api = api_for(make_invoice(), po=make_po(lines=[make_po_line(unitCost=42.00)]))
-        verdict = sole_skip(run_consolidator(api))
-        assert any("$44.40" in r and "$42.00" in r for r in verdict["reasons"])
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
 
     def test_unit_differs_from_po(self):
         api = api_for(
@@ -407,23 +409,243 @@ class TestSkips:
             for r in verdict["reasons"]
         )
 
-    def test_multiple_failures_all_reported(self):
-        api = api_for(
-            make_invoice(
-                linkedPurchaseOrderId=None,
-                fileId=None,
-                total=-5,
-                subtotal=-5,
-                taxAmount=0,
-            )
-        )
-        verdict = sole_skip(run_consolidator(api))
-        assert len(verdict["reasons"]) >= 3
-
     def test_receive_failure_demotes_to_skipped(self):
         api = api_for(make_invoice(), receive_error="API error 500: boom")
         verdict = sole_skip(run_consolidator(api))
         assert any(r.startswith("Receive failed:") for r in verdict["reasons"])
+
+
+class TestLayeredReporting:
+    """Reasons short-circuit at the first failing layer: an unlinked invoice
+    reports ONLY that, and the expensive PDF extraction never runs for it."""
+
+    def test_unlinked_invoice_reports_only_the_po_reason(self):
+        api = api_for(
+            make_invoice(
+                linkedPurchaseOrderId=None,
+                fileId=None,  # would previously add PDF noise too
+                subtotal=999.0,  # and totals noise
+            )
+        )
+        verdict = sole_skip(run_consolidator(api))
+        assert len(verdict["reasons"]) == 1
+        assert "Not linked to a purchase order" in verdict["reasons"][0]
+
+    def test_credit_note_reports_only_the_credit_reason(self):
+        api = api_for(
+            make_invoice(
+                total=-25.30,
+                subtotal=-22.0,
+                taxAmount=-3.30,
+                linkedPurchaseOrderId=None,  # would previously pile on
+            )
+        )
+        verdict = sole_skip(run_consolidator(api))
+        assert len(verdict["reasons"]) == 1
+        assert "Credit note" in verdict["reasons"][0]
+
+    def test_blocked_invoices_skip_pdf_extraction(self):
+        extractions = []
+
+        class SpyApi(Api):
+            def extract_document(
+                self, connector, action, params=None, schema=None, instructions=None
+            ):
+                extractions.append(params)
+                return super().extract_document(
+                    connector, action, params, schema, instructions
+                )
+
+        inv = make_invoice(linkedPurchaseOrderId=None)
+        api = SpyApi(
+            invoices=[inv],
+            details={inv["id"]: inv},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        run_consolidator(api)
+        assert extractions == [], "PDF extraction ran for a blocked invoice"
+
+    def test_same_layer_failures_are_all_reported(self):
+        # Two independent line problems in the same layer (vs the PO) both show.
+        extra = make_line(
+            id="line-2",
+            code="XTRA",
+            description="EXTRA THING",
+            linkedItemId="item-extra",
+            linkedUnitId="unit-each",
+        )
+        bad_unit = make_line(id="line-3", description="WRONG UNIT ITEM")
+        api = api_for(
+            make_invoice(lines=[extra, bad_unit]),
+            po=make_po(lines=[make_po_line(unitId="unit-gram", unitName="Gram")]),
+        )
+        verdict = sole_skip(run_consolidator(api))
+        text = " | ".join(verdict["reasons"])
+        assert "'EXTRA THING' has no matching purchase-order line" in text
+        assert "unit differs from PO" in text
+
+    def test_internal_totals_block_before_pdf_runs(self):
+        extractions = []
+
+        class SpyApi(Api):
+            def extract_document(
+                self, connector, action, params=None, schema=None, instructions=None
+            ):
+                extractions.append(params)
+                return super().extract_document(
+                    connector, action, params, schema, instructions
+                )
+
+        inv = make_invoice(subtotal=226.28, taxAmount=33.95, total=260.23)
+        api = SpyApi(
+            invoices=[inv],
+            details={inv["id"]: inv},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        verdict = sole_skip(run_consolidator(api))
+        assert extractions == []
+        assert any("Line items sum to" in r for r in verdict["reasons"])
+
+    def test_notes_are_bullet_joined(self):
+        api = api_for(make_invoice(linkedPurchaseOrderId=None))
+        row = run_consolidator(api)["results"][0]
+        assert ";" not in row["reasons"]
+
+
+class TestChecklist:
+    """Every verdict carries an ordered tick/cross checklist of all gates."""
+
+    def test_perfect_invoice_collapses_to_all_passed_string(self):
+        api = api_for(make_invoice())
+        verdict = run_consolidator(api)["received"][0]
+        # All-pass checklists collapse to a single string — keeps the report
+        # payload under the tool-result slim threshold on large runs.
+        assert verdict["checklist"] == "All 14 checks passed ✓"
+
+    def test_unlinked_invoice_shows_cross_then_unchecked(self):
+        api = api_for(make_invoice(linkedPurchaseOrderId=None))
+        verdict = run_consolidator(api)["skipped"][0]
+        by_label = {c["check"]: c["result"] for c in verdict["checklist"]}
+        assert by_label["Not a credit note"] == "✓"
+        assert by_label["Linked to a purchase order"] == "✗"
+        # everything after the failing layer is explicitly "not checked"
+        assert by_label["Purchase order retrieved"] == "—"
+        assert by_label["Lines match the invoice copy"] == "—"
+        assert by_label["Total matches the invoice copy"] == "—"
+
+    def test_pdf_failure_shows_earlier_ticks(self):
+        api = api_for(make_invoice(), pdf={"error": "corrupt"})
+        verdict = run_consolidator(api)["skipped"][0]
+        by_label = {c["check"]: c["result"] for c in verdict["checklist"]}
+        assert by_label["Linked to a purchase order"] == "✓"
+        assert by_label["Purchase order retrieved"] == "✓"
+        assert by_label["Invoice copy attached"] == "✓"
+        assert by_label["Invoice copy readable"] == "✗"
+        assert by_label["Lines match the invoice copy"] == "—"
+
+    def test_rows_carry_checks_summary(self):
+        good = make_invoice()
+        bad = make_invoice(
+            id="inv-2", referenceNumber="X-1", linkedPurchaseOrderId=None
+        )
+        api = Api(
+            invoices=[good, bad],
+            details={good["id"]: good, "inv-2": bad},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        rows = {r["reference"]: r for r in run_consolidator(api)["results"]}
+        assert rows["F55755100"]["checks"] == "14✓"
+        assert rows["X-1"]["checks"] == "1✓ 1✗ 12 not checked"
+
+
+class TestAuditDetails:
+    """Every verdict carries the invoice's actual values with the compared
+    PO / invoice-copy values and per-item ✓/✗, for manual review."""
+
+    def test_header_shows_all_sources_on_perfect_invoice(self):
+        api = api_for(make_invoice())
+        header = run_consolidator(api)["received"][0]["details"]["header"]
+        by_field = {h["field"]: h for h in header}
+        inv_no = by_field["Invoice number"]
+        assert inv_no["invoice"] == "F55755100"
+        assert inv_no["copy"] == "F55755100"
+        assert inv_no["result"] == "✓"
+        po_row = by_field["PO number"]
+        assert po_row["invoice"] == "PO#1520987"
+        assert po_row["po"] == "1520987"
+        total_row = by_field["Total incl tax"]
+        assert total_row["invoice"] == "$252.75"
+        assert total_row["copy"] == "$252.75"
+        assert total_row["result"] == "✓"
+        supplier_row = by_field["Supplier"]
+        assert supplier_row["po"] == "Akaroa Salmon"
+        assert supplier_row["result"] == "✓"
+
+    def test_line_detail_full_comparison_on_perfect_invoice(self):
+        api = api_for(make_invoice())
+        lines = run_consolidator(api)["received"][0]["details"]["lines"]
+        assert len(lines) == 1
+        rec = lines[0]
+        assert rec["line"] == "SALMON FILLET"
+        assert rec["stock_item"] == "✓"
+        assert rec["po_line"] == "✓"
+        assert rec["on_copy"] == "✓"
+        # Cells are display-ready comparison strings (payload compactness)
+        assert rec["unit"] == "inv Kilo / po Kilo ✓"
+        assert rec["quantity"] == "ord 5.0 / inv 4.95 / copy 4.95 ✓"
+        assert rec["unit_cost"] == "inv $44.40 / copy $44.40 ✓"
+        assert rec["line_total"] == "inv $219.78 / copy $219.78 ✓"
+        assert rec["arithmetic"] == "✓"
+
+    def test_blocked_invoice_still_shows_loaded_values_unchecked(self):
+        api = api_for(make_invoice(linkedPurchaseOrderId=None))
+        verdict = run_consolidator(api)["skipped"][0]
+        rec = verdict["details"]["lines"][0]
+        # Loaded's own values still shown; trailing "—" marks "not checked"
+        assert rec["quantity"] == "inv 4.95 —"
+        assert rec["po_line"] == "—"
+        assert rec["arithmetic"] == "—"
+        header = {h["field"]: h for h in verdict["details"]["header"]}
+        assert header["Total incl tax"]["invoice"] == "$252.75"
+        assert header["Total incl tax"]["copy"] == "—"
+
+    def test_price_mismatch_vs_copy_marks_the_cell(self):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_price_ex_tax=45.40)
+        api = api_for(make_invoice(), pdf=pdf)
+        rec = run_consolidator(api)["skipped"][0]["details"]["lines"][0]
+        assert rec["unit_cost"] == "inv $44.40 / copy $45.40 ✗"
+        assert rec["quantity"].endswith("✓")  # other cells unaffected
+
+    def test_copy_only_lines_and_charges_appear_in_detail(self):
+        pdf = make_pdf(
+            charges=[{"description": "Freight (ex GST)", "amount_ex_tax": 6.50}]
+        )
+        api = api_for(make_invoice(), pdf=pdf)
+        lines = run_consolidator(api)["skipped"][0]["details"]["lines"]
+        charge_rows = [r for r in lines if "charge on copy only" in r["line"]]
+        assert len(charge_rows) == 1
+        assert charge_rows[0]["line_total"] == "copy $6.50 ✗"
+        assert charge_rows[0]["on_copy"] == "✗"
+
+    def test_wrong_attachment_fails_invoice_number_check(self):
+        api = api_for(make_invoice(), pdf=make_pdf(invoice_number="9999"))
+        verdict = run_consolidator(api)["skipped"][0]
+        by_label = {c["check"]: c["result"] for c in verdict["checklist"]}
+        assert by_label["Invoice number matches the copy"] == "✗"
+        assert any(
+            "Attached copy is for invoice '9999'" in r for r in verdict["reasons"]
+        )
+
+    def test_long_invoices_cap_line_detail(self):
+        many = [make_line(id=f"line-{i}", description=f"ITEM {i}") for i in range(30)]
+        api = api_for(make_invoice(linkedPurchaseOrderId=None, lines=many))
+        lines = run_consolidator(api)["skipped"][0]["details"]["lines"]
+        assert len(lines) == 26  # 25 detail rows + omission marker
+        assert "5 more lines checked but omitted" in lines[-1]["line"]
 
 
 class TestReport:
@@ -447,3 +669,47 @@ class TestReport:
         assert outcomes["X-1"] == "skipped"
         skipped_row = next(r for r in rows if r["reference"] == "X-1")
         assert "Not linked to a purchase order" in skipped_row["reasons"]
+
+
+class TestPayloadSize:
+    """The full report must survive the tool-result slim threshold, or the
+    LLM sees a "_too_large" stub instead of the audit detail (the prod
+    "less detail coming through" bug of 18 Jul 2026)."""
+
+    def make_run(self, count):
+        import json
+
+        invoices, details = [], {}
+        for i in range(count):
+            lines = [
+                make_line(id=f"l{i}-{j}", description=f"ITEM {i}-{j}")
+                for j in range(4)
+            ]
+            inv = make_invoice(
+                id=f"inv-{i}",
+                referenceNumber=f"INV-{1000 + i}",
+                linkedPurchaseOrderId=(PO_ID if i % 2 == 0 else None),
+                lines=lines,
+            )
+            invoices.append(inv)
+            details[inv["id"]] = inv
+        api = Api(
+            invoices=invoices,
+            details=details,
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        result = run_consolidator(api, dry_run=True)
+        return len(json.dumps({"success": True, "data": result}))
+
+    def test_modest_run_fits_default_slim_threshold(self):
+        # 8 invoices × 4 lines must fit the 30k default cap, so environments
+        # without the max_result_chars override still get the full report.
+        size = self.make_run(8)
+        assert size < 30_000, f"report payload {size} chars would be slimmed"
+
+    def test_large_run_fits_the_configured_override(self):
+        # 15 invoices × 4 lines must fit the 100k max_result_chars the sync
+        # script sets on the tool (clamped by HARD_MAX_TOOL_RESULT_CHARS).
+        size = self.make_run(15)
+        assert size < 100_000, f"report payload {size} chars would be slimmed"

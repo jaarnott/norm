@@ -48,6 +48,30 @@ PDF_SCHEMA = {
 TOTALS_TOL = "0.02"  # user decision: differences <= 2c count as matching
 LINE_TOL = "0.01"
 
+# Ordered, human-readable labels for every gate — drives the per-invoice
+# tick/cross checklist in reports. Keys match the `checks` map; a key absent
+# from `checks` means an earlier layer failed first, shown as "—" (not checked).
+CHECK_LABELS = [
+    ("credit_note", "Not a credit note"),
+    ("po_linked", "Linked to a purchase order"),
+    ("po_fetch", "Purchase order retrieved"),
+    ("po_supplier", "Supplier matches the purchase order"),
+    ("items_matched", "All lines matched to stock items"),
+    ("po_line_set", "Every line has a purchase-order line"),
+    ("po_line_fields", "Units match the purchase order"),
+    ("line_arithmetic", "Line arithmetic (qty × cost = line total)"),
+    ("totals", "Invoice totals consistent"),
+    ("pdf_present", "Invoice copy attached"),
+    ("pdf_readable", "Invoice copy readable"),
+    ("pdf_invoice_number", "Invoice number matches the copy"),
+    ("pdf_lines", "Lines match the invoice copy"),
+    ("pdf_total", "Total matches the invoice copy"),
+]
+
+# Line-level detail is capped so a 200-line invoice can't blow out the report;
+# every line is still CHECKED — only the per-line display rows are capped.
+MAX_DETAIL_LINES = 25
+
 
 def run(params, call_api, log, call_api_parallel=None):
     D = decimal.Decimal
@@ -128,8 +152,190 @@ def run(params, call_api, log, call_api_parallel=None):
         ref = detail.get("referenceNumber") or "(no number)"
         total = dec(detail.get("total"))
         lines = [ln for ln in detail.get("lines") or [] if not ln.get("deletedAt")]
+        po = None
+        pdf = None
+        po_number_hint = detail.get("purchaseOrderNumber")
 
-        # Gate 2: credit notes are out of scope
+        def opt_money(value):
+            return money(value) if dec(value) is not None else None
+
+        def opt_num(value):
+            return str(value) if value is not None else None
+
+        # Per-line audit records: the invoice's ACTUAL values, filled in with
+        # the compared PO / invoice-copy values and ✓/✗ as each layer runs.
+        # "—" always means "not checked" (an earlier layer failed first).
+        line_records = []
+        rec_by_id = {}
+        for ln in lines[:MAX_DETAIL_LINES]:
+            rec = {
+                "line": str(ln.get("description") or ln.get("code") or "?"),
+                "code": ln.get("code"),
+                "stock_item": "✓"
+                if (ln.get("linkedItemId") and ln.get("linkedUnitId"))
+                else "✗",
+                "po_line": "—",
+                "on_copy": "—",
+                "unit": {"invoice": ln.get("unit"), "po": None, "result": "—"},
+                "quantity": {
+                    "ordered": None,
+                    "invoice": opt_num(ln.get("quantityReceived")),
+                    "copy": None,
+                    "result": "—",
+                },
+                "unit_cost": {
+                    "invoice": opt_money(ln.get("unitCost")),
+                    "copy": None,
+                    "result": "—",
+                },
+                "line_total": {
+                    "invoice": opt_money(ln.get("totalCost")),
+                    "copy": None,
+                    "result": "—",
+                },
+                "arithmetic": "—",
+            }
+            line_records.append(rec)
+            rec_by_id[ln.get("id")] = rec
+        if len(lines) > MAX_DETAIL_LINES:
+            line_records.append(
+                {
+                    "line": "… "
+                    + str(len(lines) - MAX_DETAIL_LINES)
+                    + " more lines checked but omitted from this detail view"
+                }
+            )
+
+        def verdict_now():
+            symbol = {"pass": "✓", "fail": "✗"}
+
+            # Compact each line record's nested comparison dicts into the
+            # display-ready cell strings the playbook renders (e.g.
+            # "ord 5.0 / inv 4.95 / copy 4.95 ✓"). Keeps the LLM payload small
+            # enough to survive the tool-result size cap without losing values.
+            def cell(pairs, result):
+                vals = [lbl + " " + str(v) for lbl, v in pairs if v not in (None, "")]
+                sym = result if result in ("✓", "✗") else "—"
+                if not vals:
+                    return sym
+                return " / ".join(vals) + " " + sym
+
+            def compact_line(rec):
+                if "stock_item" not in rec:
+                    return rec  # the "… N more lines" omission marker
+                unit = rec.get("unit") or {}
+                qty = rec.get("quantity") or {}
+                cost = rec.get("unit_cost") or {}
+                tot = rec.get("line_total") or {}
+                return {
+                    "line": rec.get("line"),
+                    "stock_item": rec.get("stock_item", "—"),
+                    "po_line": rec.get("po_line", "—"),
+                    "on_copy": rec.get("on_copy", "—"),
+                    "unit": cell(
+                        [("inv", unit.get("invoice")), ("po", unit.get("po"))],
+                        unit.get("result"),
+                    ),
+                    "quantity": cell(
+                        [
+                            ("ord", qty.get("ordered")),
+                            ("inv", qty.get("invoice")),
+                            ("copy", qty.get("copy")),
+                        ],
+                        qty.get("result"),
+                    ),
+                    "unit_cost": cell(
+                        [("inv", cost.get("invoice")), ("copy", cost.get("copy"))],
+                        cost.get("result"),
+                    ),
+                    "line_total": cell(
+                        [("inv", tot.get("invoice")), ("copy", tot.get("copy"))],
+                        tot.get("result"),
+                    ),
+                    "arithmetic": rec.get("arithmetic", "—"),
+                }
+
+            def hdr(field, invoice_val, po_val, copy_val, key):
+                return {
+                    "field": field,
+                    "invoice": invoice_val if invoice_val not in (None, "") else "—",
+                    "po": po_val if po_val not in (None, "") else "—",
+                    "copy": copy_val if copy_val not in (None, "") else "—",
+                    "result": symbol.get(checks.get(key), "—"),
+                }
+
+            checklist_rows = [
+                {"check": label, "result": symbol.get(checks.get(key), "—")}
+                for key, label in CHECK_LABELS
+            ]
+            return {
+                "invoice_id": inv_id,
+                "reference_number": ref,
+                "supplier_name": detail.get("supplierName"),
+                "po_number": (po or {}).get("orderNumber") or po_number_hint,
+                "total": money(total),
+                "reasons": reasons,
+                "checklist": (
+                    "All " + str(len(checklist_rows)) + " checks passed ✓"
+                    if all(r["result"] == "✓" for r in checklist_rows)
+                    else checklist_rows
+                ),
+                "details": {
+                    "header": [
+                        hdr(
+                            "Invoice number",
+                            ref,
+                            None,
+                            (pdf or {}).get("invoice_number"),
+                            "pdf_invoice_number",
+                        ),
+                        hdr(
+                            "Supplier",
+                            detail.get("supplierName"),
+                            (po or {}).get("supplierName"),
+                            (pdf or {}).get("supplier_name"),
+                            "po_supplier",
+                        ),
+                        hdr(
+                            "PO number",
+                            po_number_hint,
+                            (po or {}).get("orderNumber"),
+                            (pdf or {}).get("purchase_order_number"),
+                            "po_linked",
+                        ),
+                        hdr(
+                            "Subtotal (ex tax)",
+                            opt_money(detail.get("subtotal")),
+                            None,
+                            opt_money((pdf or {}).get("subtotal_ex_tax")),
+                            "totals",
+                        ),
+                        hdr(
+                            "Tax",
+                            opt_money(detail.get("taxAmount")),
+                            None,
+                            opt_money((pdf or {}).get("tax_amount")),
+                            "totals",
+                        ),
+                        hdr(
+                            "Total incl tax",
+                            opt_money(detail.get("total")),
+                            None,
+                            opt_money((pdf or {}).get("total_incl_tax")),
+                            "pdf_total",
+                        ),
+                    ],
+                    "lines": [compact_line(rec) for rec in line_records],
+                },
+            }
+
+        # Gates are evaluated in LAYERS that short-circuit: once a layer fails,
+        # later layers are neither evaluated nor reported — "not linked to a
+        # PO" is the whole story, not a prelude to line-level noise. This also
+        # means the (expensive) PDF extraction only runs for invoices that
+        # pass every cheaper gate.
+
+        # Layer 1: credit notes are out of scope
         if total is not None and total < 0:
             _fail(
                 checks,
@@ -139,13 +345,12 @@ def run(params, call_api, log, call_api_parallel=None):
                 + money(total)
                 + ") — out of scope for auto-receiving",
             )
-        else:
-            checks["credit_note"] = "pass"
+            skipped.append(verdict_now())
+            continue
+        checks["credit_note"] = "pass"
 
-        # Gate 3: must be automatched to a purchase order
-        po = None
+        # Layer 2: must be automatched to a purchase order
         po_id = detail.get("linkedPurchaseOrderId")
-        po_number_hint = detail.get("purchaseOrderNumber")
         if not po_id:
             msg = "Not linked to a purchase order"
             if po_number_hint:
@@ -155,23 +360,27 @@ def run(params, call_api, log, call_api_parallel=None):
                     + " — needs matching in Loaded)"
                 )
             _fail(checks, reasons, "po_linked", msg)
-        else:
-            checks["po_linked"] = "pass"
-            po = call_api(
-                "loadedhub",
-                "get_stock_purchase_order",
-                dict(base, purchase_order_id=po_id),
+            skipped.append(verdict_now())
+            continue
+        checks["po_linked"] = "pass"
+        po = call_api(
+            "loadedhub",
+            "get_stock_purchase_order",
+            dict(base, purchase_order_id=po_id),
+        )
+        if isinstance(po, dict) and po.get("error"):
+            _fail(
+                checks,
+                reasons,
+                "po_fetch",
+                "Could not fetch linked purchase order: " + po["error"],
             )
-            if isinstance(po, dict) and po.get("error"):
-                _fail(
-                    checks,
-                    reasons,
-                    "po_fetch",
-                    "Could not fetch linked purchase order: " + po["error"],
-                )
-                po = None
+            po = None
+            skipped.append(verdict_now())
+            continue
+        checks["po_fetch"] = "pass"
 
-        # Gate 4: PO supplier must match the invoice supplier
+        # Layer 3: PO supplier + every line matched to the PO
         if po:
             if (
                 po.get("supplierId")
@@ -191,7 +400,7 @@ def run(params, call_api, log, call_api_parallel=None):
             else:
                 checks["po_supplier"] = "pass"
 
-        # Gate 7: every line must be matched to a stock item + unit
+        # Layer 3 (cont.): every line matched to a stock item + unit
         unmatched = [
             ln
             for ln in lines
@@ -213,23 +422,35 @@ def run(params, call_api, log, call_api_parallel=None):
         else:
             checks["items_matched"] = "pass"
 
-        # Gates 5+6: line-by-line vs the purchase order
+        # Layer 3 (cont.): line-by-line vs the purchase order. NOTE: the PO
+        # unit PRICE is deliberately NOT checked — prices move between ordering
+        # and invoicing; the attached invoice document (layer 5) is the source
+        # of truth for what is actually billed.
         if po:
             po_lines = {ln.get("itemId"): ln for ln in po.get("lines") or []}
             line_set_ok, per_line_ok = True, True
             for ln in lines:
+                rec = rec_by_id.get(ln.get("id"))
                 pol = po_lines.get(ln.get("linkedItemId"))
                 if not pol:
                     line_set_ok = False
+                    if rec:
+                        rec["po_line"] = "✗"
                     reasons.append(
                         "Line '"
                         + str(ln.get("description"))
                         + "' has no matching purchase-order line"
                     )
                     continue
+                if rec:
+                    rec["po_line"] = "✓"
+                    rec["unit"]["po"] = pol.get("unitName")
+                    rec["quantity"]["ordered"] = opt_num(pol.get("quantityOrdered"))
                 # unit must be identical
                 if pol.get("unitId") != ln.get("linkedUnitId"):
                     per_line_ok = False
+                    if rec:
+                        rec["unit"]["result"] = "✗"
                     reasons.append(
                         "Line '"
                         + str(ln.get("description"))
@@ -239,19 +460,8 @@ def run(params, call_api, log, call_api_parallel=None):
                         + str(pol.get("unitName"))
                         + ")"
                     )
-                # unit cost must match the PO price (±1c)
-                if not close(
-                    dec(ln.get("unitCost")), dec(pol.get("unitCost")), line_tol
-                ):
-                    per_line_ok = False
-                    reasons.append(
-                        "Line '"
-                        + str(ln.get("description"))
-                        + "': unit cost "
-                        + money(ln.get("unitCost"))
-                        + " differs from PO price "
-                        + money(pol.get("unitCost"))
-                    )
+                elif rec:
+                    rec["unit"]["result"] = "✓"
                 # quantity variance is allowed (catch weight) but reported
                 qo, qr = (
                     dec(pol.get("quantityOrdered")),
@@ -271,15 +481,25 @@ def run(params, call_api, log, call_api_parallel=None):
             checks["po_line_set"] = "pass" if line_set_ok else "fail"
             checks["po_line_fields"] = "pass" if per_line_ok else "fail"
 
-        # Gate 8: per-line arithmetic
+        if reasons:
+            skipped.append(verdict_now())
+            continue
+
+        # Layer 4: internal consistency — per-line arithmetic
         arith_ok = True
         for ln in lines:
+            rec = rec_by_id.get(ln.get("id"))
             q, uc, tc = (
                 dec(ln.get("quantityReceived")),
                 dec(ln.get("unitCost")),
                 dec(ln.get("totalCost")),
             )
-            if q is None or uc is None or tc is None or not close(q * uc, tc, line_tol):
+            line_ok = not (
+                q is None or uc is None or tc is None or not close(q * uc, tc, line_tol)
+            )
+            if rec:
+                rec["arithmetic"] = "✓" if line_ok else "✗"
+            if not line_ok:
                 arith_ok = False
                 reasons.append(
                     "Line '"
@@ -295,136 +515,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 )
         checks["line_arithmetic"] = "pass" if arith_ok else "fail"
 
-        # Gate 10: the supplier's PDF must be attached
-        pdf = None
-        if not detail.get("fileId"):
-            _fail(
-                checks,
-                reasons,
-                "pdf_present",
-                "No invoice document attached — cannot verify against the source invoice",
-            )
-        else:
-            checks["pdf_present"] = "pass"
-            # Gate 9: extract the PDF and compare line-by-line
-            pdf = extract_document(
-                "loadedhub",
-                "download_invoice_file",
-                dict(base, file_id=detail["fileId"]),
-                schema=PDF_SCHEMA,
-                instructions="Extract every product line, every separate charge (freight etc.), and the totals from this supplier invoice.",
-            )
-            if not isinstance(pdf, dict) or pdf.get("error"):
-                err = pdf.get("error") if isinstance(pdf, dict) else "unreadable"
-                _fail(
-                    checks,
-                    reasons,
-                    "pdf_readable",
-                    "Could not read the attached invoice document: " + str(err),
-                )
-                pdf = None
-
-        if pdf:
-            pdf_ok = True
-            pdf_lines = list(pdf.get("lines") or [])
-            unclaimed = list(pdf_lines)
-            for ln in lines:
-                match = None
-                for cand in unclaimed:
-                    if norm(cand.get("code")) and norm(cand.get("code")) == norm(
-                        ln.get("code")
-                    ):
-                        match = cand
-                        break
-                if match is None:
-                    for cand in unclaimed:
-                        if norm(cand.get("description")) and (
-                            norm(cand.get("description")) in norm(ln.get("description"))
-                            or norm(ln.get("description"))
-                            in norm(cand.get("description"))
-                        ):
-                            match = cand
-                            break
-                if match is None:
-                    pdf_ok = False
-                    reasons.append(
-                        "Line '"
-                        + str(ln.get("description"))
-                        + "' not found on the attached invoice document"
-                    )
-                    continue
-                unclaimed.remove(match)
-                if dec(match.get("quantity")) != dec(ln.get("quantityReceived")):
-                    pdf_ok = False
-                    reasons.append(
-                        "Line '"
-                        + str(ln.get("description"))
-                        + "': quantity "
-                        + str(ln.get("quantityReceived"))
-                        + " does not equal the document's quantity "
-                        + str(match.get("quantity"))
-                    )
-                if dec(match.get("unit_price_ex_tax")) != dec(ln.get("unitCost")):
-                    pdf_ok = False
-                    reasons.append(
-                        "Line '"
-                        + str(ln.get("description"))
-                        + "': unit cost "
-                        + money(ln.get("unitCost"))
-                        + " does not equal the document's unit price "
-                        + money(match.get("unit_price_ex_tax"))
-                    )
-                if not close(
-                    dec(match.get("line_total_ex_tax")),
-                    dec(ln.get("totalCost")),
-                    line_tol,
-                ):
-                    pdf_ok = False
-                    reasons.append(
-                        "Line '"
-                        + str(ln.get("description"))
-                        + "': line total "
-                        + money(ln.get("totalCost"))
-                        + " does not equal the document's line total "
-                        + money(match.get("line_total_ex_tax"))
-                    )
-            for cand in unclaimed:
-                pdf_ok = False
-                reasons.append(
-                    "Document line '"
-                    + str(cand.get("description"))
-                    + "' ("
-                    + money(cand.get("line_total_ex_tax"))
-                    + ") has no matching invoice line"
-                )
-            for charge in pdf.get("charges") or []:
-                amt = dec(charge.get("amount_ex_tax"))
-                if amt and amt != D(0):
-                    pdf_ok = False
-                    reasons.append(
-                        "Document includes charge '"
-                        + str(charge.get("description"))
-                        + "' "
-                        + money(amt)
-                        + " with no matching invoice line"
-                    )
-            checks["pdf_lines"] = "pass" if pdf_ok else "fail"
-
-            # Gate 11 (PDF side): document total vs invoice total
-            if not close(dec(pdf.get("total_incl_tax")), total, totals_tol):
-                _fail(
-                    checks,
-                    reasons,
-                    "pdf_total",
-                    "Invoice total "
-                    + money(total)
-                    + " does not match the document total "
-                    + money(pdf.get("total_incl_tax")),
-                )
-            else:
-                checks["pdf_total"] = "pass"
-
-        # Gate 11: internal totals
+        # Layer 4 (cont.): internal totals
         subtotal, tax = dec(detail.get("subtotal")), dec(detail.get("taxAmount"))
         line_sum = sum((dec(ln.get("totalCost")) or D(0)) for ln in lines)
         if not close(line_sum, subtotal, totals_tol):
@@ -457,15 +548,226 @@ def run(params, call_api, log, call_api_parallel=None):
         else:
             checks["totals"] = "pass"
 
-        verdict = {
-            "invoice_id": inv_id,
-            "reference_number": ref,
-            "supplier_name": detail.get("supplierName"),
-            "po_number": (po or {}).get("orderNumber") or po_number_hint,
-            "total": money(total),
-            "reasons": reasons,
-            "checks": checks,
-        }
+        if reasons:
+            skipped.append(verdict_now())
+            continue
+
+        # Layer 5: verify against the supplier's attached invoice document
+        # (only reached when every cheaper gate passed — this is the one
+        # LLM-extraction call per invoice)
+        pdf = None
+        if not detail.get("fileId"):
+            _fail(
+                checks,
+                reasons,
+                "pdf_present",
+                "No invoice document attached — cannot verify against the source invoice",
+            )
+        else:
+            checks["pdf_present"] = "pass"
+            # Gate 9: extract the PDF and compare line-by-line
+            pdf = extract_document(
+                "loadedhub",
+                "download_invoice_file",
+                dict(base, file_id=detail["fileId"]),
+                schema=PDF_SCHEMA,
+                instructions="Extract every product line, every separate charge (freight etc.), and the totals from this supplier invoice.",
+            )
+            if not isinstance(pdf, dict) or pdf.get("error"):
+                err = pdf.get("error") if isinstance(pdf, dict) else "unreadable"
+                _fail(
+                    checks,
+                    reasons,
+                    "pdf_readable",
+                    "Could not read the attached invoice document: " + str(err),
+                )
+                pdf = None
+            else:
+                checks["pdf_readable"] = "pass"
+
+        if pdf:
+            # The copy must be for THIS invoice (only fails on a live conflict —
+            # a copy with no printed number is caught by the line-level checks)
+            if (
+                norm(pdf.get("invoice_number"))
+                and norm(ref)
+                and norm(pdf.get("invoice_number")) != norm(ref)
+            ):
+                _fail(
+                    checks,
+                    reasons,
+                    "pdf_invoice_number",
+                    "Attached copy is for invoice '"
+                    + str(pdf.get("invoice_number"))
+                    + "' but this invoice is '"
+                    + ref
+                    + "'",
+                )
+            else:
+                checks["pdf_invoice_number"] = "pass"
+
+            pdf_ok = True
+            pdf_lines = list(pdf.get("lines") or [])
+            unclaimed = list(pdf_lines)
+            for ln in lines:
+                rec = rec_by_id.get(ln.get("id"))
+                match = None
+                for cand in unclaimed:
+                    if norm(cand.get("code")) and norm(cand.get("code")) == norm(
+                        ln.get("code")
+                    ):
+                        match = cand
+                        break
+                if match is None:
+                    for cand in unclaimed:
+                        if norm(cand.get("description")) and (
+                            norm(cand.get("description")) in norm(ln.get("description"))
+                            or norm(ln.get("description"))
+                            in norm(cand.get("description"))
+                        ):
+                            match = cand
+                            break
+                if match is None:
+                    pdf_ok = False
+                    if rec:
+                        rec["on_copy"] = "✗"
+                    reasons.append(
+                        "Line '"
+                        + str(ln.get("description"))
+                        + "' not found on the attached invoice document"
+                    )
+                    continue
+                unclaimed.remove(match)
+                if rec:
+                    rec["on_copy"] = "✓"
+                    rec["quantity"]["copy"] = opt_num(match.get("quantity"))
+                    rec["unit_cost"]["copy"] = opt_money(match.get("unit_price_ex_tax"))
+                    rec["line_total"]["copy"] = opt_money(
+                        match.get("line_total_ex_tax")
+                    )
+                if dec(match.get("quantity")) != dec(ln.get("quantityReceived")):
+                    pdf_ok = False
+                    if rec:
+                        rec["quantity"]["result"] = "✗"
+                    reasons.append(
+                        "Line '"
+                        + str(ln.get("description"))
+                        + "': quantity "
+                        + str(ln.get("quantityReceived"))
+                        + " does not equal the document's quantity "
+                        + str(match.get("quantity"))
+                    )
+                elif rec:
+                    rec["quantity"]["result"] = "✓"
+                if dec(match.get("unit_price_ex_tax")) != dec(ln.get("unitCost")):
+                    pdf_ok = False
+                    if rec:
+                        rec["unit_cost"]["result"] = "✗"
+                    reasons.append(
+                        "Line '"
+                        + str(ln.get("description"))
+                        + "': unit cost "
+                        + money(ln.get("unitCost"))
+                        + " does not equal the document's unit price "
+                        + money(match.get("unit_price_ex_tax"))
+                    )
+                elif rec:
+                    rec["unit_cost"]["result"] = "✓"
+                if not close(
+                    dec(match.get("line_total_ex_tax")),
+                    dec(ln.get("totalCost")),
+                    line_tol,
+                ):
+                    pdf_ok = False
+                    if rec:
+                        rec["line_total"]["result"] = "✗"
+                    reasons.append(
+                        "Line '"
+                        + str(ln.get("description"))
+                        + "': line total "
+                        + money(ln.get("totalCost"))
+                        + " does not equal the document's line total "
+                        + money(match.get("line_total_ex_tax"))
+                    )
+                elif rec:
+                    rec["line_total"]["result"] = "✓"
+            for cand in unclaimed:
+                pdf_ok = False
+                line_records.append(
+                    {
+                        "line": str(cand.get("description")) + " — on copy only",
+                        "stock_item": "—",
+                        "po_line": "—",
+                        "on_copy": "✗",
+                        "quantity": {
+                            "ordered": None,
+                            "invoice": None,
+                            "copy": opt_num(cand.get("quantity")),
+                            "result": "✗",
+                        },
+                        "unit_cost": {
+                            "invoice": None,
+                            "copy": opt_money(cand.get("unit_price_ex_tax")),
+                            "result": "✗",
+                        },
+                        "line_total": {
+                            "invoice": None,
+                            "copy": opt_money(cand.get("line_total_ex_tax")),
+                            "result": "✗",
+                        },
+                        "arithmetic": "—",
+                    }
+                )
+                reasons.append(
+                    "Document line '"
+                    + str(cand.get("description"))
+                    + "' ("
+                    + money(cand.get("line_total_ex_tax"))
+                    + ") has no matching invoice line"
+                )
+            for charge in pdf.get("charges") or []:
+                amt = dec(charge.get("amount_ex_tax"))
+                if amt and amt != D(0):
+                    pdf_ok = False
+                    line_records.append(
+                        {
+                            "line": str(charge.get("description"))
+                            + " — charge on copy only",
+                            "stock_item": "—",
+                            "po_line": "—",
+                            "on_copy": "✗",
+                            "line_total": {
+                                "invoice": None,
+                                "copy": money(amt),
+                                "result": "✗",
+                            },
+                            "arithmetic": "—",
+                        }
+                    )
+                    reasons.append(
+                        "Document includes charge '"
+                        + str(charge.get("description"))
+                        + "' "
+                        + money(amt)
+                        + " with no matching invoice line"
+                    )
+            checks["pdf_lines"] = "pass" if pdf_ok else "fail"
+
+            # Gate 11 (PDF side): document total vs invoice total
+            if not close(dec(pdf.get("total_incl_tax")), total, totals_tol):
+                _fail(
+                    checks,
+                    reasons,
+                    "pdf_total",
+                    "Invoice total "
+                    + money(total)
+                    + " does not match the document total "
+                    + money(pdf.get("total_incl_tax")),
+                )
+            else:
+                checks["pdf_total"] = "pass"
+
+        verdict = verdict_now()
 
         if reasons:
             skipped.append(verdict)
@@ -494,14 +796,29 @@ def run(params, call_api, log, call_api_parallel=None):
             verdict["outcome"] = "received"
             received.append(verdict)
 
+    def checks_summary(v):
+        checklist = v.get("checklist")
+        if isinstance(checklist, str):  # "All N checks passed ✓"
+            return str(len(CHECK_LABELS)) + "✓"
+        results = [c["result"] for c in checklist or []]
+        if not results:
+            return "—"
+        parts = [str(results.count("✓")) + "✓"]
+        if "✗" in results:
+            parts.append(str(results.count("✗")) + "✗")
+        if "—" in results:
+            parts.append(str(results.count("—")) + " not checked")
+        return " ".join(parts)
+
     rows = [
         {
             "reference": v["reference_number"],
             "supplier": v.get("supplier_name"),
             "po": v.get("po_number") or "—",
             "total": v["total"],
+            "checks": checks_summary(v),
             "outcome": v.get("outcome", "skipped"),
-            "reasons": "; ".join(v["reasons"]) if v.get("reasons") else "—",
+            "reasons": " • ".join(v["reasons"]) if v.get("reasons") else "—",
         }
         for v in received + skipped
     ]
@@ -531,5 +848,4 @@ def _verdict(stub, reasons):
         "po_number": None,
         "total": "$" + str(stub.get("total")),
         "reasons": reasons,
-        "checks": {},
     }

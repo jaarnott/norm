@@ -79,6 +79,27 @@ def check_connector_tools(
             )
             continue
 
+        max_result_chars = tool.get("max_result_chars")
+        if max_result_chars is not None and not (
+            isinstance(max_result_chars, int)
+            and not isinstance(max_result_chars, bool)
+            and max_result_chars > 0
+        ):
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=(
+                        f"max_result_chars is {max_result_chars!r}, "
+                        "expected a positive integer"
+                    ),
+                    fix=(
+                        "Set a positive integer (clamped to "
+                        "HARD_MAX_TOOL_RESULT_CHARS at runtime) or remove it."
+                    ),
+                )
+            )
+
         consolidator = tool.get("consolidator_config")
         if consolidator:
             # The legacy `steps` executor was deleted (see the 2026-04-06

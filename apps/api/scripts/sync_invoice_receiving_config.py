@@ -206,6 +206,9 @@ RECONCILE_CONSOLIDATOR_TOOL = {
             "description": "Restrict the run to these supplier names",
         },
     },
+    # Audit report the LLM must relay in full — raise the tool-result slim
+    # threshold (clamped by HARD_MAX_TOOL_RESULT_CHARS in tool_loop.py).
+    "max_result_chars": 100_000,
     "consolidator_config": {
         # function_code injected from RECONCILE_FUNCTION_CODE_PATH at sync time
         "max_api_calls": 120,
@@ -242,11 +245,13 @@ CONSOLIDATOR_TOOL = {
     "description": (
         "Reviews outstanding draft supplier invoices and AUTOMATICALLY RECEIVES "
         "any that pass every deterministic check: linked to a purchase order, "
-        "every line matches the PO (stock item, unit, unit cost), every line and "
-        "total verified against the attached invoice PDF (quantities and prices "
-        "exactly; totals within $0.02). Invoices failing any check are never "
-        "modified — they are reported with exact reasons. Pass dry_run=true to "
-        "review without receiving."
+        "every line matches a PO line (stock item and unit — PO prices are NOT "
+        "checked, since prices move between ordering and invoicing), and every "
+        "line and total verified against the attached invoice PDF (quantities "
+        "and prices exactly; totals within $0.02). Invoices failing a check are "
+        "never modified — they are reported with the first blocking problem "
+        "only (later checks are not run). Pass dry_run=true to review without "
+        "receiving."
     ),
     "required_fields": [],
     "optional_fields": ["from_date", "to_date", "dry_run"],
@@ -260,6 +265,9 @@ CONSOLIDATOR_TOOL = {
             "description": "Report what would be received without changing anything",
         }
     },
+    # Audit report the LLM must relay in full — raise the tool-result slim
+    # threshold (clamped by HARD_MAX_TOOL_RESULT_CHARS in tool_loop.py).
+    "max_result_chars": 100_000,
     "consolidator_config": {
         # function_code injected from FUNCTION_CODE_PATH at sync time
         "max_api_calls": 80,
@@ -273,6 +281,7 @@ CONSOLIDATOR_TOOL = {
             {"key": "supplier", "label": "Supplier"},
             {"key": "po", "label": "PO"},
             {"key": "total", "label": "Total", "align": "right"},
+            {"key": "checks", "label": "Checks"},
             {"key": "outcome", "label": "Outcome"},
             {"key": "reasons", "label": "Notes"},
         ],
@@ -294,9 +303,11 @@ ROLLOUT: ALWAYS pass dry_run=true. (Remove this line after production verificati
 
 1. Call review_and_receive_invoices for the venue (default range: last 60 days).
    - If the user only asks to "check", "review" or "look at" invoices, pass dry_run=true.
-2. Report the results in two sections:
-   - "Received" (or "Would receive" on a dry run): invoice number, supplier, PO number, total.
-   - "Needs attention": invoice number, supplier, total, and the tool's exact reasons. Never soften, summarise away, or re-derive the reasons — show the numbers the tool returned.
+2. Report the results in two sections ("Received" / "Would receive" on a dry run, then "Needs attention"). For EVERY invoice render, from the tool's data and copying every value and ✓/✗/— exactly as returned (never invent, reformat or fill in a "—"; "—" means that check was not run because an earlier one failed):
+   a. Its details.header as a markdown table — | Field | Invoice (Loaded) | PO | Invoice copy | Result | — one row per header field (invoice number, supplier, PO number, subtotal, tax, total).
+   b. Its details.lines as a markdown table — | Line | Stock item | PO line | On copy | Unit | Quantity | Unit cost | Line total | Arithmetic | — one row per line. The unit/quantity/cost/total cells arrive as ready-made comparison strings (e.g. "ord 5.0 / inv 4.95 / copy 4.95 ✓"); copy each cell into the table verbatim. Include the "on copy only" rows and any "…more lines omitted" marker verbatim.
+   c. Its checklist: when it is the string "All 14 checks passed ✓", print exactly that line; otherwise render it as a compact | Check | Result | table.
+   d. For "Needs attention" invoices only: the tool's exact reasons as a markdown bulleted list (one bullet per reason). The tool reports only the first blocking problem per invoice, so present the bullets as-is without speculating about other issues.
 3. Close with the summary counts and what manual work remains in Loaded (linking POs, adding freight lines, credit notes).
 
 If the user asks why a specific invoice was skipped, use get_invoice_detail together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",

@@ -53,6 +53,32 @@ function formatTime(dateStr?: string | null): string {
   }
 }
 
+export function CopyableThreadId({ threadId }: { threadId: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard?.writeText(threadId).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+      title="Click to copy the thread ID"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '2px 8px', border: '1px solid #e2e2e2', borderRadius: 4,
+        backgroundColor: copied ? '#ecfdf5' : '#f8fafc',
+        color: copied ? '#047857' : '#888',
+        fontSize: '0.65rem', fontFamily: 'ui-monospace, monospace',
+        cursor: 'pointer', whiteSpace: 'nowrap',
+      }}
+    >
+      <span style={{ fontFamily: 'inherit' }}>Thread {threadId}</span>
+      <span>{copied ? '✓ copied' : '⧉'}</span>
+    </button>
+  );
+}
+
 const CODE_STYLE: React.CSSProperties = {
   backgroundColor: '#f5f5f5',
   border: '1px solid #e2e2e2',
@@ -519,10 +545,16 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
   return (
     <div style={{ marginBottom: '1rem' }}>
       <div style={{
-        fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
-        letterSpacing: '0.06em', color: '#999', marginBottom: '0.6rem',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: 8, marginBottom: '0.6rem',
       }}>
-        Activity
+        <div style={{
+          fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
+          letterSpacing: '0.06em', color: '#999',
+        }}>
+          Activity
+        </div>
+        {threadId && <CopyableThreadId threadId={threadId} />}
       </div>
       {summary.totalTokens > 0 && (
         <div style={{

@@ -6,6 +6,7 @@ import { apiFetch } from '../../lib/api';
 import { colors } from '../../lib/theme';
 import type { AdminThread, Thread } from '../../types';
 import ThreadDetail from '../threads/ThreadDetail';
+import { CopyableThreadId } from '../threads/ActivityTimeline';
 
 const DOMAIN_OPTIONS = [
   { value: '', label: 'All agents' },
@@ -239,6 +240,13 @@ export default function AdminThreadsPanel() {
                     {t.created_at ? timeAgo(t.created_at) : ''}
                   </span>
                 </div>
+                {/* Thread id (for debugging reference) */}
+                <div style={{
+                  fontSize: '0.62rem', color: '#b5b5b5', fontFamily: 'ui-monospace, monospace',
+                  marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {t.id}
+                </div>
                 {/* Domain + status badges */}
                 <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
                   <span style={{
@@ -306,6 +314,9 @@ export default function AdminThreadsPanel() {
               </span>
               <span style={{ fontSize: '0.78rem', color: colors.textMuted }}>
                 {(selectedThread as unknown as { user_email?: string }).user_email || ''}
+              </span>
+              <span style={{ marginLeft: 'auto' }}>
+                <CopyableThreadId threadId={selectedThread.id} />
               </span>
             </div>
             {/* Thread detail */}

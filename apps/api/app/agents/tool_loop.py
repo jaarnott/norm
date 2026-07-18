@@ -404,6 +404,7 @@ def _execute_loop(
                     result,
                     block.id,
                     summary_fields=summary_fields,
+                    max_chars=_tool_max_result_chars(tool_def),
                     search_available=search_available,
                 )
                 # Inject search tool on first truncation
@@ -1146,6 +1147,24 @@ MAX_TOOL_RESULT_CHARS = 30_000  # ~7-8k tokens — with search tool active
 MAX_TOOL_RESULT_CHARS_NO_SEARCH = (
     40_000  # ~10k tokens per result — room for multiple results + history
 )
+# Ceiling for a per-tool `max_result_chars` override (~30k tokens). Audit-style
+# tools (e.g. invoice review) legitimately return reports the LLM must relay in
+# full; the clamp keeps a config typo from blowing out the context window.
+HARD_MAX_TOOL_RESULT_CHARS = 120_000
+
+
+def _tool_max_result_chars(tool_def: dict | None) -> int:
+    """Result-size budget for a tool: its `max_result_chars` override (clamped
+    to [MAX_TOOL_RESULT_CHARS, HARD_MAX_TOOL_RESULT_CHARS]) or the default."""
+    if not tool_def:
+        return MAX_TOOL_RESULT_CHARS
+    try:
+        override = int(tool_def.get("max_result_chars") or 0)
+    except (TypeError, ValueError):
+        return MAX_TOOL_RESULT_CHARS
+    if override <= 0:
+        return MAX_TOOL_RESULT_CHARS
+    return max(MAX_TOOL_RESULT_CHARS, min(override, HARD_MAX_TOOL_RESULT_CHARS))
 
 
 def _truncate_tool_result(content: str) -> str:
