@@ -574,7 +574,7 @@ class TestChecklist:
         verdict = run_consolidator(api)["received"][0]
         # All-pass checklists collapse to a single string — keeps the report
         # payload under the tool-result slim threshold on large runs.
-        assert verdict["checklist"] == "All 13 checks passed ✓"
+        assert verdict["checklist"] == "All 11 checks passed ✓"
 
     def test_unlinked_invoice_shows_cross_then_unchecked(self):
         api = api_for(make_invoice(linkedPurchaseOrderId=None))
@@ -584,7 +584,6 @@ class TestChecklist:
         assert by_label["Invoice copy attached"] == "✓"  # checked EARLY now
         assert by_label["Linked to a purchase order"] == "✗"
         # everything after the failing layer is explicitly "not checked"
-        assert by_label["Purchase order retrieved"] == "—"
         assert by_label["Lines match the invoice copy"] == "—"
         assert by_label["Total matches the invoice copy"] == "—"
 
@@ -593,7 +592,6 @@ class TestChecklist:
         verdict = run_consolidator(api)["skipped"][0]
         by_label = {c["check"]: c["result"] for c in verdict["checklist"]}
         assert by_label["Linked to a purchase order"] == "✓"
-        assert by_label["Purchase order retrieved"] == "✓"
         assert by_label["Invoice copy attached"] == "✓"
         assert by_label["Invoice copy readable"] == "✗"
         assert by_label["Lines match the invoice copy"] == "—"
@@ -610,9 +608,9 @@ class TestChecklist:
             pdfs={FILE_ID: make_pdf()},
         )
         rows = {r["reference"]: r for r in run_consolidator(api)["results"]}
-        assert rows["F55755100"]["checks"] == "13✓"
+        assert rows["F55755100"]["checks"] == "11✓"
         # unlinked invoice: credit ✓, copy attached ✓, po_linked ✗, rest unchecked
-        assert rows["X-1"]["checks"] == "2✓ 1✗ 10 not checked"
+        assert rows["X-1"]["checks"] == "2✓ 1✗ 8 not checked"
 
 
 class TestAuditDetails:
@@ -645,14 +643,13 @@ class TestAuditDetails:
         rec = lines[0]
         assert rec["line"] == "SALMON FILLET"
         assert rec["stock_item"] == "✓"
-        assert rec["po_line"] == "✓"
         assert rec["on_copy"] == "✓"
         # Cells are display-ready comparison strings (payload compactness)
         assert rec["unit"] == "inv Kilo / copy Kg / rec Kilo ✓"  # normalised
-        assert rec["quantity"] == "ord 5.0 / inv 4.95 / copy 4.95 ✓"
+        assert rec["quantity"] == "inv 4.95 / copy 4.95 ✓"
         assert rec["unit_cost"] == "inv $44.40 / copy $44.40 ✓"
         assert rec["line_total"] == "inv $219.78 / copy $219.78 ✓"
-        assert rec["arithmetic"] == "✓"
+        assert "po_line" not in rec and "arithmetic" not in rec  # trimmed columns
 
     def test_blocked_invoice_has_header_but_no_line_detail(self):
         api = api_for(make_invoice(linkedPurchaseOrderId=None))
@@ -665,18 +662,15 @@ class TestAuditDetails:
         assert header["Total incl tax"]["invoice"] == "$252.75"
         assert header["Total incl tax"]["copy"] == "—"
 
-    def test_po_line_column_is_informational(self):
-        # No matching PO line is NOT a failure — the cell just shows "—"
-        # (and "✓" when a PO line exists, carrying the ordered quantity).
+    def test_po_lines_not_compared_or_displayed(self):
+        # PO lines are neither compared nor shown — an empty PO line set
+        # changes nothing, and the trimmed columns are gone.
         api = api_for(make_invoice(), po=make_po(lines=[]))
         result = run_consolidator(api)
         assert result["summary"] == {"received": 1, "skipped": 0}
         rec = result["received"][0]["details"]["lines"][0]
-        assert rec["po_line"] == "—"
-        matched = api_for(make_invoice())
-        rec2 = run_consolidator(matched)["received"][0]["details"]["lines"][0]
-        assert rec2["po_line"] == "✓"
-        assert rec2["quantity"].startswith("ord 5.0")
+        assert "po_line" not in rec
+        assert "ord" not in rec["quantity"]
 
     def test_price_mismatch_vs_copy_marks_the_cell(self):
         pdf = make_pdf()
@@ -828,7 +822,7 @@ class TestUnitOfMeasureGate:
         api = api_for(make_invoice(), pdf=self.pdf_with_uom("Kilo"))
         result = run_consolidator(api)
         assert result["summary"] == {"received": 1, "skipped": 0}
-        assert result["received"][0]["checklist"] == "All 13 checks passed ✓"
+        assert result["received"][0]["checklist"] == "All 11 checks passed ✓"
 
     def test_count_mismatch_blocks_with_fix_advice(self):
         # The real napkins case: Loaded says Each, copy is a 100-pack.

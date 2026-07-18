@@ -60,10 +60,8 @@ CHECK_LABELS = [
     ("credit_note", "Not a credit note"),
     ("pdf_present", "Invoice copy attached"),
     ("po_linked", "Linked to a purchase order"),
-    ("po_fetch", "Purchase order retrieved"),
     ("po_supplier", "Supplier matches the purchase order"),
     ("items_matched", "Stock items, brands and units all exist in Loaded (no NEW)"),
-    ("line_arithmetic", "Line arithmetic (qty × cost = line total)"),
     ("totals", "Invoice totals consistent"),
     ("pdf_readable", "Invoice copy readable"),
     ("pdf_invoice_number", "Invoice number matches the copy"),
@@ -336,11 +334,9 @@ def run(params, call_api, log, call_api_parallel=None):
                     and not (ln.get("brand") and not ln.get("linkedBrandId"))
                 )
                 else "✗",
-                "po_line": "—",
                 "on_copy": "—",
                 "unit": {"invoice": ln.get("unit"), "copy": None, "result": "—"},
                 "quantity": {
-                    "ordered": None,
                     "invoice": opt_num(ln.get("quantityReceived")),
                     "copy": None,
                     "result": "—",
@@ -355,7 +351,6 @@ def run(params, call_api, log, call_api_parallel=None):
                     "copy": None,
                     "result": "—",
                 },
-                "arithmetic": "—",
             }
             line_records.append(rec)
             rec_by_id[ln.get("id")] = rec
@@ -373,7 +368,7 @@ def run(params, call_api, log, call_api_parallel=None):
 
             # Compact each line record's nested comparison dicts into the
             # display-ready cell strings the playbook renders (e.g.
-            # "ord 5.0 / inv 4.95 / copy 4.95 ✓"). Keeps the LLM payload small
+            # "inv 4.95 / copy 4.95 ✓"). Keeps the LLM payload small
             # enough to survive the tool-result size cap without losing values.
             def cell(pairs, result):
                 vals = [lbl + " " + str(v) for lbl, v in pairs if v not in (None, "")]
@@ -392,7 +387,6 @@ def run(params, call_api, log, call_api_parallel=None):
                 return {
                     "line": rec.get("line"),
                     "stock_item": rec.get("stock_item", "—"),
-                    "po_line": rec.get("po_line", "—"),
                     "on_copy": rec.get("on_copy", "—"),
                     "unit": cell(
                         [
@@ -403,11 +397,7 @@ def run(params, call_api, log, call_api_parallel=None):
                         unit.get("result"),
                     ),
                     "quantity": cell(
-                        [
-                            ("ord", qty.get("ordered")),
-                            ("inv", qty.get("invoice")),
-                            ("copy", qty.get("copy")),
-                        ],
+                        [("inv", qty.get("invoice")), ("copy", qty.get("copy"))],
                         qty.get("result"),
                     ),
                     "unit_cost": cell(
@@ -418,7 +408,6 @@ def run(params, call_api, log, call_api_parallel=None):
                         [("inv", tot.get("invoice")), ("copy", tot.get("copy"))],
                         tot.get("result"),
                     ),
-                    "arithmetic": rec.get("arithmetic", "—"),
                 }
 
             def hdr(field, invoice_val, po_val, copy_val, key):
@@ -555,16 +544,16 @@ def run(params, call_api, log, call_api_parallel=None):
             dict(base, purchase_order_id=po_id),
         )
         if isinstance(po, dict) and po.get("error"):
+            # An unfetchable PO reads as "not usably linked" — same check key.
             _fail(
                 checks,
                 reasons,
-                "po_fetch",
+                "po_linked",
                 "Could not fetch linked purchase order: " + po["error"],
             )
             po = None
             skipped.append(verdict_now())
             continue
-        checks["po_fetch"] = "pass"
 
         # Layer 4: the linked PO must belong to the same supplier
         if po:
@@ -617,54 +606,17 @@ def run(params, call_api, log, call_api_parallel=None):
         else:
             checks["items_matched"] = "pass"
 
-        # PO lines are INFORMATIONAL only — invoices legitimately differ from
-        # their purchase order (substitutions, catch weight, extra items). The
-        # attached invoice copy (layer 6) is the source of truth for what was
-        # billed; the PO contributes the ordered quantity for the audit view.
-        if po:
-            po_lines = {ln.get("itemId"): ln for ln in po.get("lines") or []}
-            for ln in lines:
-                rec = rec_by_id.get(ln.get("id"))
-                pol = po_lines.get(ln.get("linkedItemId"))
-                if rec and pol:
-                    rec["po_line"] = "✓"
-                    rec["quantity"]["ordered"] = opt_num(pol.get("quantityOrdered"))
+        # NOTE: PO lines are deliberately not compared or displayed — invoices
+        # legitimately differ from their purchase order (substitutions, catch
+        # weight, extra items); the copy is the source of truth. Per-line
+        # arithmetic (qty × cost = line total) is not checked either: Loaded
+        # enforces it on entry.
 
         if reasons:
             skipped.append(verdict_now())
             continue
 
-        # Layer 5: internal consistency — per-line arithmetic
-        arith_ok = True
-        for ln in lines:
-            rec = rec_by_id.get(ln.get("id"))
-            q, uc, tc = (
-                dec(ln.get("quantityReceived")),
-                dec(ln.get("unitCost")),
-                dec(ln.get("totalCost")),
-            )
-            line_ok = not (
-                q is None or uc is None or tc is None or not close(q * uc, tc, line_tol)
-            )
-            if rec:
-                rec["arithmetic"] = "✓" if line_ok else "✗"
-            if not line_ok:
-                arith_ok = False
-                reasons.append(
-                    "Line '"
-                    + str(ln.get("description"))
-                    + "': "
-                    + str(q)
-                    + " × "
-                    + money(uc)
-                    + " = "
-                    + money((q or D(0)) * (uc or D(0)))
-                    + " but line total is "
-                    + money(tc)
-                )
-        checks["line_arithmetic"] = "pass" if arith_ok else "fail"
-
-        # Layer 5 (cont.): internal totals
+        # Layer 5: internal totals
         subtotal, tax = dec(detail.get("subtotal")), dec(detail.get("taxAmount"))
         line_sum = sum((dec(ln.get("totalCost")) or D(0)) for ln in lines)
         if not close(line_sum, subtotal, totals_tol):
@@ -908,10 +860,8 @@ def run(params, call_api, log, call_api_parallel=None):
                     {
                         "line": str(cand.get("description")) + " — on copy only",
                         "stock_item": "—",
-                        "po_line": "—",
                         "on_copy": "✗",
                         "quantity": {
-                            "ordered": None,
                             "invoice": None,
                             "copy": opt_num(cand.get("quantity")),
                             "result": "✗",
@@ -926,7 +876,6 @@ def run(params, call_api, log, call_api_parallel=None):
                             "copy": opt_money(cand.get("line_total_ex_tax")),
                             "result": "✗",
                         },
-                        "arithmetic": "—",
                     }
                 )
                 reasons.append(
@@ -945,14 +894,12 @@ def run(params, call_api, log, call_api_parallel=None):
                             "line": str(charge.get("description"))
                             + " — charge on copy only",
                             "stock_item": "—",
-                            "po_line": "—",
                             "on_copy": "✗",
                             "line_total": {
                                 "invoice": None,
                                 "copy": money(amt),
                                 "result": "✗",
                             },
-                            "arithmetic": "—",
                         }
                     )
                     reasons.append(
