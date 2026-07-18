@@ -89,11 +89,21 @@ def _wire_fake_connector(monkeypatch, payloads):
             return fake_spec
 
     class FakeConfigSession:
+        opens = 0
+
+        def __init__(self):
+            FakeConfigSession.opens += 1
+
         def query(self, *a, **k):
             return FakeQuery()
 
+        def expunge(self, obj):
+            pass
+
         def close(self):
             pass
+
+    _wire_fake_connector.last_session_cls = FakeConfigSession
 
     import app.db.engine as engine_mod
     import app.agents.tool_loop as tool_loop_mod
@@ -152,6 +162,39 @@ class TestWriteGate:
         )
         result = execute_function(code, {}, db_session, None, options={})
         assert result["data"] == {"v": 1}
+
+
+class TestSpecCaching:
+    """The config DB is small and shared; a run must not re-open a connection
+    per call. Every call to the same connector reuses one cached spec fetch."""
+
+    def test_many_calls_open_the_config_db_once(self, monkeypatch, db_session):
+        _wire_fake_connector(monkeypatch, {"read_thing": {"v": 1}})
+        session_cls = _wire_fake_connector.last_session_cls
+        session_cls.opens = 0
+        code = (
+            "def run(params, call_api, log):\n"
+            "    for _ in range(8):\n"
+            "        call_api('fake', 'read_thing', {})\n"
+            "    return {'ok': True}\n"
+        )
+        result = execute_function(code, {}, db_session, None)
+        assert result["success"]
+        assert session_cls.opens == 1, "spec should be fetched once, not per call"
+
+    def test_parallel_calls_open_the_config_db_once(self, monkeypatch, db_session):
+        _wire_fake_connector(monkeypatch, {"read_thing": {"v": 1}})
+        session_cls = _wire_fake_connector.last_session_cls
+        session_cls.opens = 0
+        code = (
+            "def run(params, call_api, log, call_api_parallel):\n"
+            "    calls = [('fake', 'read_thing', {}) for _ in range(6)]\n"
+            "    return call_api_parallel(calls)\n"
+        )
+        result = execute_function(code, {}, db_session, None)
+        assert result["success"]
+        # The whole parallel batch shares one spec fetch, even across threads.
+        assert session_cls.opens == 1
 
 
 class TestCallCap:

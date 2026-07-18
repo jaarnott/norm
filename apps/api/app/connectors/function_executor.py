@@ -10,6 +10,7 @@ import decimal
 import json
 import logging
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -129,32 +130,53 @@ def execute_function(
         logs.append(str(message))
         logger.info("[fn] %s", message)
 
+    # Run-local connector-spec cache. A consolidator's parallel batch used to
+    # open one config-DB connection per call to re-fetch the SAME spec; with the
+    # config DB capped at 25 connections and shared across all environments, a
+    # fan-out could exhaust it (the "Config DB unreachable" incident that
+    # surfaced to users as a vague "venue" error). Fetch each connector's spec
+    # once per run and share it; the lock is held across the cold fetch so a
+    # burst of parallel workers waits on one fetch instead of each opening a
+    # connection. The spec is expunged so its (column-only) attributes stay
+    # readable after the session closes and are safe to read from worker threads.
+    _spec_cache: dict[str, Any] = {}
+    _spec_cache_lock = threading.Lock()
+
+    def _get_spec(connector: str):
+        from app.db.engine import _ConfigSessionLocal
+
+        with _spec_cache_lock:
+            if connector in _spec_cache:
+                return _spec_cache[connector]
+            cfg_db = _ConfigSessionLocal()
+            try:
+                spec = (
+                    cfg_db.query(ConnectorSpec)
+                    .filter(ConnectorSpec.connector_name == connector)
+                    .first()
+                )
+                if spec is not None:
+                    cfg_db.expunge(spec)
+            finally:
+                cfg_db.close()
+            _spec_cache[connector] = spec
+            return spec
+
     def _do_api_call(
         connector: str, action: str, api_params: dict, use_db: Session
     ) -> tuple[Any, int]:
         """Core API call logic. Returns (payload, duration_ms)."""
-        # Look up spec from config DB
-        from app.db.engine import _ConfigSessionLocal
+        spec = _get_spec(connector)
+        if not spec:
+            raise ValueError(f"Connector not found: {connector}")
 
-        cfg_db = _ConfigSessionLocal()
-        try:
-            spec = (
-                cfg_db.query(ConnectorSpec)
-                .filter(ConnectorSpec.connector_name == connector)
-                .first()
-            )
-            if not spec:
-                raise ValueError(f"Connector not found: {connector}")
-
-            tool_def = None
-            for t in spec.tools or []:
-                if isinstance(t, dict) and t.get("action") == action:
-                    tool_def = t
-                    break
-            if not tool_def:
-                raise ValueError(f"Tool not found: {connector}.{action}")
-        finally:
-            cfg_db.close()
+        tool_def = None
+        for t in spec.tools or []:
+            if isinstance(t, dict) and t.get("action") == action:
+                tool_def = t
+                break
+        if not tool_def:
+            raise ValueError(f"Tool not found: {connector}.{action}")
 
         # Write actions are deny-by-default: a consolidator may only call a
         # non-GET tool when consolidator_config.allowed_write_actions names it.

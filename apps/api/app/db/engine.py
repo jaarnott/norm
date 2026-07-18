@@ -69,12 +69,18 @@ if not settings.CONFIG_DATABASE_URL:
         "shared config database."
     )
 
+# The config DB is a small instance shared across ALL environments (local,
+# testing, staging, production), so keep the idle footprint low: pool_size is the
+# number of connections each app instance holds open indefinitely, and four
+# environments each holding five was most of the DB's 25-connection budget before
+# any real work ran. max_overflow still allows short bursts. Spec lookups are now
+# cached per run (see function_executor), so steady-state config-DB use is light.
 _config_engine = create_engine(
     settings.CONFIG_DATABASE_URL,
-    pool_size=5,
+    pool_size=2,
     max_overflow=10,
     pool_timeout=10,
-    pool_recycle=1800,
+    pool_recycle=900,
     pool_pre_ping=True,
 )
 
