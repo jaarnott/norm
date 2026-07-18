@@ -53,20 +53,79 @@ LINE_TOL = "0.01"
 # from `checks` means an earlier layer failed first, shown as "—" (not checked).
 CHECK_LABELS = [
     ("credit_note", "Not a credit note"),
+    ("pdf_present", "Invoice copy attached"),
     ("po_linked", "Linked to a purchase order"),
     ("po_fetch", "Purchase order retrieved"),
     ("po_supplier", "Supplier matches the purchase order"),
-    ("items_matched", "All lines matched to stock items"),
-    ("po_line_set", "Every line has a purchase-order line"),
-    ("po_line_fields", "Units match the purchase order"),
+    ("items_matched", "Stock items, brands and units all exist in Loaded (no NEW)"),
     ("line_arithmetic", "Line arithmetic (qty × cost = line total)"),
     ("totals", "Invoice totals consistent"),
-    ("pdf_present", "Invoice copy attached"),
     ("pdf_readable", "Invoice copy readable"),
     ("pdf_invoice_number", "Invoice number matches the copy"),
     ("pdf_lines", "Lines match the invoice copy"),
     ("pdf_total", "Total matches the invoice copy"),
 ]
+
+# Conservative unit-name normalisation for the invoice-vs-copy unit check.
+# Both sides must be RECOGNISED here (or textually identical) before a
+# mismatch counts as a failure — supplier PDFs print units too inconsistently
+# ("5.6 KG", "CTN8", …) to fail on strings we can't confidently interpret.
+UNIT_ALIASES = {
+    "kg": "kg",
+    "kgs": "kg",
+    "kilo": "kg",
+    "kilos": "kg",
+    "kilogram": "kg",
+    "kilograms": "kg",
+    "g": "g",
+    "gm": "g",
+    "gram": "g",
+    "grams": "g",
+    "l": "l",
+    "lt": "l",
+    "ltr": "l",
+    "litre": "l",
+    "liter": "l",
+    "litres": "l",
+    "liters": "l",
+    "ml": "ml",
+    "mls": "ml",
+    "ea": "ea",
+    "each": "ea",
+    "unit": "ea",
+    "un": "ea",
+    "doz": "doz",
+    "dozen": "doz",
+    "dz": "doz",
+    "pk": "pk",
+    "pack": "pk",
+    "pkt": "pk",
+    "packet": "pk",
+    "bx": "bx",
+    "box": "bx",
+    "boxes": "bx",
+    "ctn": "ctn",
+    "carton": "ctn",
+    "cartons": "ctn",
+    "cs": "cs",
+    "case": "cs",
+    "cases": "cs",
+    "btl": "btl",
+    "bottle": "btl",
+    "bottles": "btl",
+    "can": "can",
+    "cans": "can",
+    "bag": "bag",
+    "bags": "bag",
+    "tray": "tray",
+    "trays": "tray",
+    "punnet": "punnet",
+    "punnets": "punnet",
+    "roll": "roll",
+    "rolls": "roll",
+    "bunch": "bunch",
+    "bunches": "bunch",
+}
 
 # Line-level detail is capped so a 200-line invoice can't blow out the report;
 # every line is still CHECKED — only the per-line display rows are capped.
@@ -97,6 +156,9 @@ def run(params, call_api, log, call_api_parallel=None):
 
     def norm(text):
         return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+
+    def unit_key(text):
+        return UNIT_ALIASES.get(norm(text))
 
     venue = params.get("venue")
     dry_run = bool(params.get("dry_run"))
@@ -172,11 +234,15 @@ def run(params, call_api, log, call_api_parallel=None):
                 "line": str(ln.get("description") or ln.get("code") or "?"),
                 "code": ln.get("code"),
                 "stock_item": "✓"
-                if (ln.get("linkedItemId") and ln.get("linkedUnitId"))
+                if (
+                    ln.get("linkedItemId")
+                    and ln.get("linkedUnitId")
+                    and not (ln.get("brand") and not ln.get("linkedBrandId"))
+                )
                 else "✗",
                 "po_line": "—",
                 "on_copy": "—",
-                "unit": {"invoice": ln.get("unit"), "po": None, "result": "—"},
+                "unit": {"invoice": ln.get("unit"), "copy": None, "result": "—"},
                 "quantity": {
                     "ordered": None,
                     "invoice": opt_num(ln.get("quantityReceived")),
@@ -233,7 +299,7 @@ def run(params, call_api, log, call_api_parallel=None):
                     "po_line": rec.get("po_line", "—"),
                     "on_copy": rec.get("on_copy", "—"),
                     "unit": cell(
-                        [("inv", unit.get("invoice")), ("po", unit.get("po"))],
+                        [("inv", unit.get("invoice")), ("copy", unit.get("copy"))],
                         unit.get("result"),
                     ),
                     "quantity": cell(
@@ -356,7 +422,20 @@ def run(params, call_api, log, call_api_parallel=None):
             continue
         checks["credit_note"] = "pass"
 
-        # Layer 2: must be automatched to a purchase order
+        # Layer 2: an invoice copy must be attached. Without the source
+        # document nothing can be verified, so stop reviewing immediately.
+        if not detail.get("fileId"):
+            _fail(
+                checks,
+                reasons,
+                "pdf_present",
+                "No invoice copy attached — cannot verify; attach the supplier's invoice in Loaded",
+            )
+            skipped.append(verdict_now())
+            continue
+        checks["pdf_present"] = "pass"
+
+        # Layer 3: must be automatched to a purchase order
         po_id = detail.get("linkedPurchaseOrderId")
         if not po_id:
             msg = "Not linked to a purchase order"
@@ -387,7 +466,7 @@ def run(params, call_api, log, call_api_parallel=None):
             continue
         checks["po_fetch"] = "pass"
 
-        # Layer 3: PO supplier + every line matched to the PO
+        # Layer 4: the linked PO must belong to the same supplier
         if po:
             if (
                 po.get("supplierId")
@@ -407,92 +486,55 @@ def run(params, call_api, log, call_api_parallel=None):
             else:
                 checks["po_supplier"] = "pass"
 
-        # Layer 3 (cont.): every line matched to a stock item + unit
-        unmatched = [
-            ln
-            for ln in lines
-            if not ln.get("linkedItemId") or not ln.get("linkedUnitId")
-        ]
-        if unmatched:
-            names = ", ".join(
-                "'" + str(ln.get("description") or ln.get("code")) + "'"
-                for ln in unmatched[:5]
-            )
+        # Layer 4 (cont.): every stock item, brand and unit must already exist
+        # in Loaded — anything Loaded would show with a NEW tag on the receive
+        # screen (a value with no linked id) blocks auto-receiving.
+        new_values = []
+        for ln in lines:
+            name = str(ln.get("description") or ln.get("code") or "?")
+            if not ln.get("linkedItemId"):
+                new_values.append("stock item on line '" + name + "'")
+            if not ln.get("linkedUnitId"):
+                new_values.append(
+                    "unit '" + str(ln.get("unit")) + "' on line '" + name + "'"
+                )
+            if ln.get("brand") and not ln.get("linkedBrandId"):
+                new_values.append(
+                    "brand '" + str(ln.get("brand")) + "' on line '" + name + "'"
+                )
+        if new_values:
+            shown = "; ".join(new_values[:5])
+            if len(new_values) > 5:
+                shown += "; … " + str(len(new_values) - 5) + " more"
             _fail(
                 checks,
                 reasons,
                 "items_matched",
-                str(len(unmatched))
-                + " line item(s) not matched to stock items: "
-                + names,
+                str(len(new_values))
+                + " value(s) are not in the Loaded database (would be created as NEW): "
+                + shown,
             )
         else:
             checks["items_matched"] = "pass"
 
-        # Layer 3 (cont.): line-by-line vs the purchase order. NOTE: the PO
-        # unit PRICE is deliberately NOT checked — prices move between ordering
-        # and invoicing; the attached invoice document (layer 5) is the source
-        # of truth for what is actually billed.
+        # PO lines are INFORMATIONAL only — invoices legitimately differ from
+        # their purchase order (substitutions, catch weight, extra items). The
+        # attached invoice copy (layer 6) is the source of truth for what was
+        # billed; the PO contributes the ordered quantity for the audit view.
         if po:
             po_lines = {ln.get("itemId"): ln for ln in po.get("lines") or []}
-            line_set_ok, per_line_ok = True, True
             for ln in lines:
                 rec = rec_by_id.get(ln.get("id"))
                 pol = po_lines.get(ln.get("linkedItemId"))
-                if not pol:
-                    line_set_ok = False
-                    if rec:
-                        rec["po_line"] = "✗"
-                    reasons.append(
-                        "Line '"
-                        + str(ln.get("description"))
-                        + "' has no matching purchase-order line"
-                    )
-                    continue
-                if rec:
+                if rec and pol:
                     rec["po_line"] = "✓"
-                    rec["unit"]["po"] = pol.get("unitName")
                     rec["quantity"]["ordered"] = opt_num(pol.get("quantityOrdered"))
-                # unit must be identical
-                if pol.get("unitId") != ln.get("linkedUnitId"):
-                    per_line_ok = False
-                    if rec:
-                        rec["unit"]["result"] = "✗"
-                    reasons.append(
-                        "Line '"
-                        + str(ln.get("description"))
-                        + "': unit differs from PO ("
-                        + str(ln.get("unit"))
-                        + " vs "
-                        + str(pol.get("unitName"))
-                        + ")"
-                    )
-                elif rec:
-                    rec["unit"]["result"] = "✓"
-                # quantity variance is allowed (catch weight) but reported
-                qo, qr = (
-                    dec(pol.get("quantityOrdered")),
-                    dec(ln.get("quantityReceived")),
-                )
-                if qo is not None and qr is not None and qo != qr:
-                    log(
-                        ref
-                        + ": quantity variance on '"
-                        + str(ln.get("description"))
-                        + "' — "
-                        + str(qo)
-                        + " ordered / "
-                        + str(qr)
-                        + " billed (allowed, PDF-verified)"
-                    )
-            checks["po_line_set"] = "pass" if line_set_ok else "fail"
-            checks["po_line_fields"] = "pass" if per_line_ok else "fail"
 
         if reasons:
             skipped.append(verdict_now())
             continue
 
-        # Layer 4: internal consistency — per-line arithmetic
+        # Layer 5: internal consistency — per-line arithmetic
         arith_ok = True
         for ln in lines:
             rec = rec_by_id.get(ln.get("id"))
@@ -522,7 +564,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 )
         checks["line_arithmetic"] = "pass" if arith_ok else "fail"
 
-        # Layer 4 (cont.): internal totals
+        # Layer 5 (cont.): internal totals
         subtotal, tax = dec(detail.get("subtotal")), dec(detail.get("taxAmount"))
         line_sum = sum((dec(ln.get("totalCost")) or D(0)) for ln in lines)
         if not close(line_sum, subtotal, totals_tol):
@@ -559,38 +601,28 @@ def run(params, call_api, log, call_api_parallel=None):
             skipped.append(verdict_now())
             continue
 
-        # Layer 5: verify against the supplier's attached invoice document
+        # Layer 6: verify against the supplier's attached invoice copy
         # (only reached when every cheaper gate passed — this is the one
-        # LLM-extraction call per invoice)
-        pdf = None
-        if not detail.get("fileId"):
+        # LLM-extraction call per invoice; the copy's presence was checked
+        # up front in layer 2)
+        pdf = extract_document(
+            "loadedhub",
+            "download_invoice_file",
+            dict(base, file_id=detail["fileId"]),
+            schema=PDF_SCHEMA,
+            instructions="Extract every product line, every separate charge (freight etc.), and the totals from this supplier invoice.",
+        )
+        if not isinstance(pdf, dict) or pdf.get("error"):
+            err = pdf.get("error") if isinstance(pdf, dict) else "unreadable"
             _fail(
                 checks,
                 reasons,
-                "pdf_present",
-                "No invoice document attached — cannot verify against the source invoice",
+                "pdf_readable",
+                "Could not read the attached invoice document: " + str(err),
             )
+            pdf = None
         else:
-            checks["pdf_present"] = "pass"
-            # Gate 9: extract the PDF and compare line-by-line
-            pdf = extract_document(
-                "loadedhub",
-                "download_invoice_file",
-                dict(base, file_id=detail["fileId"]),
-                schema=PDF_SCHEMA,
-                instructions="Extract every product line, every separate charge (freight etc.), and the totals from this supplier invoice.",
-            )
-            if not isinstance(pdf, dict) or pdf.get("error"):
-                err = pdf.get("error") if isinstance(pdf, dict) else "unreadable"
-                _fail(
-                    checks,
-                    reasons,
-                    "pdf_readable",
-                    "Could not read the attached invoice document: " + str(err),
-                )
-                pdf = None
-            else:
-                checks["pdf_readable"] = "pass"
+            checks["pdf_readable"] = "pass"
 
         if pdf:
             # The copy must be for THIS invoice (only fails on a live conflict —
@@ -647,11 +679,33 @@ def run(params, call_api, log, call_api_parallel=None):
                 unclaimed.remove(match)
                 if rec:
                     rec["on_copy"] = "✓"
+                    rec["unit"]["copy"] = match.get("unit")
                     rec["quantity"]["copy"] = opt_num(match.get("quantity"))
                     rec["unit_cost"]["copy"] = opt_money(match.get("unit_price_ex_tax"))
                     rec["line_total"]["copy"] = opt_money(
                         match.get("line_total_ex_tax")
                     )
+                # Unit: invoice vs copy. Only a confident mismatch fails —
+                # both sides must be recognised units (or textually equal);
+                # unrecognised strings stay "not checked".
+                inv_unit, copy_unit = ln.get("unit"), match.get("unit")
+                if inv_unit and copy_unit:
+                    ik, ck = unit_key(inv_unit), unit_key(copy_unit)
+                    if norm(inv_unit) == norm(copy_unit) or (ik and ck and ik == ck):
+                        if rec:
+                            rec["unit"]["result"] = "✓"
+                    elif ik and ck:
+                        pdf_ok = False
+                        if rec:
+                            rec["unit"]["result"] = "✗"
+                        reasons.append(
+                            "Line '"
+                            + str(ln.get("description"))
+                            + "': unit "
+                            + str(inv_unit)
+                            + " does not match the document's unit "
+                            + str(copy_unit)
+                        )
                 if dec(match.get("quantity")) != dec(ln.get("quantityReceived")):
                     pdf_ok = False
                     if rec:

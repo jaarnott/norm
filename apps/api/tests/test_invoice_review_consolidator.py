@@ -86,6 +86,8 @@ def make_line(**over):
         "code": "PBO0.7-0.99",
         "description": "SALMON FILLET",
         "unit": "Kilo",
+        "brand": None,
+        "linkedBrandId": None,
         "quantityOrdered": 5.0,
         "quantityReceived": 4.95,
         "unitCost": 44.40,
@@ -264,7 +266,10 @@ class TestSkips:
         assert "Not linked to a purchase order" in reason
         assert "PO#1520987" in reason
 
-    def test_freight_line_not_on_po_blocks(self):
+    def test_freight_line_missing_from_copy_blocks(self):
+        # A freight line on the Loaded invoice that only shows as a separate
+        # charge on the copy: the product-line match fails on the copy side
+        # (the PO no longer matters for line membership).
         freight = make_line(
             id="line-2",
             code="FGT001",
@@ -290,7 +295,7 @@ class TestSkips:
         api = api_for(inv, pdf=pdf)
         verdict = sole_skip(run_consolidator(api))
         assert any(
-            "'FREIGHT - FOOD' has no matching purchase-order line" in r
+            "'FREIGHT - FOOD' not found on the attached invoice document" in r
             for r in verdict["reasons"]
         )
 
@@ -301,13 +306,40 @@ class TestSkips:
         result = run_consolidator(api)
         assert result["summary"] == {"received": 1, "skipped": 0}
 
-    def test_unit_differs_from_po(self):
+    def test_po_unit_difference_does_not_block(self):
+        # The PO is not compared line-by-line at all — only the copy is.
         api = api_for(
             make_invoice(),
             po=make_po(lines=[make_po_line(unitId="unit-gram", unitName="Gram")]),
         )
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+
+    def test_invoice_lines_not_on_po_do_not_block(self):
+        # Invoice and PO may legitimately differ — an empty PO line set is fine
+        # as long as the copy confirms every line.
+        api = api_for(make_invoice(), po=make_po(lines=[]))
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+
+    def test_unit_differs_from_copy_blocks(self):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit="each")
+        api = api_for(make_invoice(), pdf=pdf)  # invoice unit is Kilo
         verdict = sole_skip(run_consolidator(api))
-        assert any("unit differs from PO" in r for r in verdict["reasons"])
+        assert any(
+            "unit Kilo does not match the document's unit each" in r
+            for r in verdict["reasons"]
+        )
+
+    def test_unrecognised_copy_unit_is_not_checked(self):
+        # "5.6 KG" is a pack descriptor, not a recognisable unit — a confident
+        # comparison is impossible, so it must not block.
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit="5.6 KG")
+        api = api_for(make_invoice(), pdf=pdf)
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
 
     def test_po_supplier_mismatch(self):
         api = api_for(
@@ -317,10 +349,34 @@ class TestSkips:
         verdict = sole_skip(run_consolidator(api))
         assert any("does not match invoice supplier" in r for r in verdict["reasons"])
 
-    def test_unmatched_stock_item(self):
+    def test_new_stock_item_blocks(self):
         api = api_for(make_invoice(lines=[make_line(linkedItemId=None)]))
         verdict = sole_skip(run_consolidator(api))
-        assert any("not matched to stock items" in r for r in verdict["reasons"])
+        assert any("would be created as NEW" in r for r in verdict["reasons"])
+        assert any(
+            "stock item on line 'SALMON FILLET'" in r for r in verdict["reasons"]
+        )
+
+    def test_new_unit_blocks(self):
+        api = api_for(make_invoice(lines=[make_line(linkedUnitId=None)]))
+        verdict = sole_skip(run_consolidator(api))
+        assert any("unit 'Kilo' on line" in r for r in verdict["reasons"])
+
+    def test_new_brand_blocks(self):
+        api = api_for(
+            make_invoice(lines=[make_line(brand="Sneaky Brand", linkedBrandId=None)])
+        )
+        verdict = sole_skip(run_consolidator(api))
+        assert any("brand 'Sneaky Brand' on line" in r for r in verdict["reasons"])
+
+    def test_known_brand_passes(self):
+        api = api_for(
+            make_invoice(
+                lines=[make_line(brand="Akaroa", linkedBrandId="brand-akaroa")]
+            )
+        )
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
 
     def test_line_arithmetic_failure(self):
         api = api_for(make_invoice(lines=[make_line(totalCost=200.00)]))
@@ -347,10 +403,15 @@ class TestSkips:
         verdict = sole_skip(run_consolidator(api))
         assert any("$252.75" in r and "$252.78" in r for r in verdict["reasons"])
 
-    def test_missing_pdf_blocks(self):
-        api = api_for(make_invoice(fileId=None))
+    def test_missing_copy_blocks_immediately(self):
+        # Early gate: no copy attached → stop reviewing; nothing else is
+        # reported even when other problems exist.
+        api = api_for(
+            make_invoice(fileId=None, linkedPurchaseOrderId=None, subtotal=999.0)
+        )
         verdict = sole_skip(run_consolidator(api))
-        assert any("No invoice document attached" in r for r in verdict["reasons"])
+        assert len(verdict["reasons"]) == 1
+        assert "No invoice copy attached" in verdict["reasons"][0]
 
     def test_unreadable_pdf_blocks(self):
         api = api_for(make_invoice(), pdf={"error": "corrupt file"})
@@ -423,8 +484,7 @@ class TestLayeredReporting:
         api = api_for(
             make_invoice(
                 linkedPurchaseOrderId=None,
-                fileId=None,  # would previously add PDF noise too
-                subtotal=999.0,  # and totals noise
+                subtotal=999.0,  # would previously add totals noise too
             )
         )
         verdict = sole_skip(run_consolidator(api))
@@ -467,23 +527,14 @@ class TestLayeredReporting:
         assert extractions == [], "PDF extraction ran for a blocked invoice"
 
     def test_same_layer_failures_are_all_reported(self):
-        # Two independent line problems in the same layer (vs the PO) both show.
-        extra = make_line(
-            id="line-2",
-            code="XTRA",
-            description="EXTRA THING",
-            linkedItemId="item-extra",
-            linkedUnitId="unit-each",
-        )
-        bad_unit = make_line(id="line-3", description="WRONG UNIT ITEM")
-        api = api_for(
-            make_invoice(lines=[extra, bad_unit]),
-            po=make_po(lines=[make_po_line(unitId="unit-gram", unitName="Gram")]),
-        )
+        # Two independent problems in the same layer (vs the copy) both show.
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], quantity=5.0, unit_price_ex_tax=45.40)
+        api = api_for(make_invoice(), pdf=pdf)
         verdict = sole_skip(run_consolidator(api))
         text = " | ".join(verdict["reasons"])
-        assert "'EXTRA THING' has no matching purchase-order line" in text
-        assert "unit differs from PO" in text
+        assert "document's quantity" in text
+        assert "document's unit price" in text
 
     def test_internal_totals_block_before_pdf_runs(self):
         extractions = []
@@ -522,13 +573,14 @@ class TestChecklist:
         verdict = run_consolidator(api)["received"][0]
         # All-pass checklists collapse to a single string — keeps the report
         # payload under the tool-result slim threshold on large runs.
-        assert verdict["checklist"] == "All 14 checks passed ✓"
+        assert verdict["checklist"] == "All 12 checks passed ✓"
 
     def test_unlinked_invoice_shows_cross_then_unchecked(self):
         api = api_for(make_invoice(linkedPurchaseOrderId=None))
         verdict = run_consolidator(api)["skipped"][0]
         by_label = {c["check"]: c["result"] for c in verdict["checklist"]}
         assert by_label["Not a credit note"] == "✓"
+        assert by_label["Invoice copy attached"] == "✓"  # checked EARLY now
         assert by_label["Linked to a purchase order"] == "✗"
         # everything after the failing layer is explicitly "not checked"
         assert by_label["Purchase order retrieved"] == "—"
@@ -557,8 +609,9 @@ class TestChecklist:
             pdfs={FILE_ID: make_pdf()},
         )
         rows = {r["reference"]: r for r in run_consolidator(api)["results"]}
-        assert rows["F55755100"]["checks"] == "14✓"
-        assert rows["X-1"]["checks"] == "1✓ 1✗ 12 not checked"
+        assert rows["F55755100"]["checks"] == "12✓"
+        # unlinked invoice: credit ✓, copy attached ✓, po_linked ✗, rest unchecked
+        assert rows["X-1"]["checks"] == "2✓ 1✗ 9 not checked"
 
 
 class TestAuditDetails:
@@ -594,7 +647,7 @@ class TestAuditDetails:
         assert rec["po_line"] == "✓"
         assert rec["on_copy"] == "✓"
         # Cells are display-ready comparison strings (payload compactness)
-        assert rec["unit"] == "inv Kilo / po Kilo ✓"
+        assert rec["unit"] == "inv Kilo / copy Kg ✓"  # normalised match
         assert rec["quantity"] == "ord 5.0 / inv 4.95 / copy 4.95 ✓"
         assert rec["unit_cost"] == "inv $44.40 / copy $44.40 ✓"
         assert rec["line_total"] == "inv $219.78 / copy $219.78 ✓"
@@ -611,14 +664,18 @@ class TestAuditDetails:
         assert header["Total incl tax"]["invoice"] == "$252.75"
         assert header["Total incl tax"]["copy"] == "—"
 
-    def test_po_fetched_failure_keeps_unchecked_line_detail(self):
-        # PO fetched but a line has no PO line — comparison started, so line
-        # records are reported, with "—" marking cells never checked.
+    def test_po_line_column_is_informational(self):
+        # No matching PO line is NOT a failure — the cell just shows "—"
+        # (and "✓" when a PO line exists, carrying the ordered quantity).
         api = api_for(make_invoice(), po=make_po(lines=[]))
-        verdict = run_consolidator(api)["skipped"][0]
-        rec = verdict["details"]["lines"][0]
-        assert rec["quantity"].startswith("ord") or rec["quantity"].startswith("inv")
-        assert rec["po_line"] == "✗"
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+        rec = result["received"][0]["details"]["lines"][0]
+        assert rec["po_line"] == "—"
+        matched = api_for(make_invoice())
+        rec2 = run_consolidator(matched)["received"][0]["details"]["lines"][0]
+        assert rec2["po_line"] == "✓"
+        assert rec2["quantity"].startswith("ord 5.0")
 
     def test_price_mismatch_vs_copy_marks_the_cell(self):
         pdf = make_pdf()
