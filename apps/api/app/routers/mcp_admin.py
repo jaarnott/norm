@@ -32,6 +32,7 @@ from app.mcp.projection import (
     default_tool_name,
     exposable_reason,
     is_read_tool,
+    suggest_scopes,
 )
 from app.mcp.scopes import MCP_SCOPES
 
@@ -51,6 +52,7 @@ class McpCapabilityOut(BaseModel):
     enabled: bool
     scopes: list[str]
     grantable_scopes: list[str]
+    suggested_scopes: list[str]  # the natural default(s); [] when nothing fits
     exposable: bool
     reason: str | None
 
@@ -140,6 +142,9 @@ def list_capabilities(
                     grantable_scopes=[
                         s.name for s in MCP_SCOPES.values() if s.access_level == "read"
                     ],
+                    suggested_scopes=suggest_scopes(
+                        spec.connector_name, action, tool.get("description") or ""
+                    ),
                     exposable=reason is None,
                     reason=reason,
                 )
@@ -162,6 +167,9 @@ def list_capabilities(
                 enabled=bool(cap and cap.enabled),
                 scopes=list(cap.scopes or []) if cap else [],
                 grantable_scopes=[s.name for s in MCP_SCOPES.values()],
+                suggested_scopes=suggest_scopes(
+                    pb.slug, "", pb.description, drafts=True
+                ),
                 exposable=reason is None,
                 reason=reason,
             )
@@ -290,6 +298,12 @@ def upsert_capability(
         enabled=cap.enabled,
         scopes=list(cap.scopes or []),
         grantable_scopes=[s.name for s in MCP_SCOPES.values()],
+        suggested_scopes=suggest_scopes(
+            cap.target,
+            cap.action,
+            cap.description_override or "",
+            drafts=cap.kind == "playbook",
+        ),
         exposable=True,
         reason=None,
     )

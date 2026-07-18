@@ -14,6 +14,7 @@ from app.mcp.projection import (
     default_tool_name,
     exposable_reason,
     is_read_tool,
+    suggest_scopes,
     to_mcp_tool_dict,
     write_signals,
 )
@@ -135,6 +136,50 @@ class TestExposableReason:
     def test_playbooks_are_always_exposable(self):
         """A playbook runs Norm's own tool loop, so drafts and approval apply."""
         assert exposable_reason("playbook", {}) is None
+
+
+class TestSuggestScopes:
+    @pytest.mark.parametrize(
+        "connector,action,expected",
+        [
+            # POS / sales — including the "orders" that are actually sales.
+            ("loadedhub", "get_sales_data", "mcp:reports:read"),
+            ("loadedhub", "get_pos_orders", "mcp:reports:read"),
+            ("loadedhub", "get_pos_item_sales", "mcp:reports:read"),
+            ("loadedhub", "get_staff_orders", "mcp:reports:read"),
+            ("loadedhub", "get_staff_item_orders", "mcp:reports:read"),
+            ("loadedhub", "get_pos_discounts", "mcp:reports:read"),
+            # Procurement / stock — must NOT be caught by the sales "order" rule.
+            ("loadedhub", "get_stock_items", "mcp:orders:read"),
+            ("loadedhub", "get_stock_item", "mcp:orders:read"),
+            ("loadedhub", "get_supplier_invoices", "mcp:orders:read"),
+            # Roster and HR.
+            ("loadedhub", "get_roster", "mcp:roster:read"),
+            ("bamboohr", "get_employees", "mcp:hr:read"),
+        ],
+    )
+    def test_natural_scope(self, connector, action, expected):
+        assert suggest_scopes(connector, action) == [expected]
+
+    def test_no_match_returns_empty(self):
+        # A domain with no scope (marketing/social) gets no confident guess.
+        assert suggest_scopes("orbit", "get_social_metrics") == []
+
+    def test_playbook_drafting_uses_draft_scope(self):
+        assert suggest_scopes(
+            "create_stock_order", "", "Create a purchase order for stock items",
+            drafts=True,
+        ) == ["mcp:orders:draft"]
+
+    def test_playbook_read_analysis_stays_read(self):
+        # An analysis playbook reads; it does not draft, so the read scope holds.
+        assert suggest_scopes(
+            "cogs_analysis", "", "Analyse cost of goods and margins", drafts=True
+        ) == ["mcp:reports:read"]
+
+    def test_connector_never_suggests_draft(self):
+        # drafts defaults False for connectors, so even a create-y name stays read.
+        assert suggest_scopes("loadedhub", "get_stock_items") == ["mcp:orders:read"]
 
 
 class TestDenylistAndAlwaysExpose:

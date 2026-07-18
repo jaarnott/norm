@@ -417,6 +417,119 @@ def project_tools(
     return sorted(tools, key=lambda t: t.name)
 
 
+# ── Natural scope suggestion ─────────────────────────────────────────────
+# The default permission for a tool, so the admin panel can pre-select the one
+# scope that fits instead of presenting the whole vocabulary (a POS tool
+# offering "View HR records" is a footgun). This is a CONVENIENCE, not a
+# boundary: real enforcement is the scope's `requires` plus the user's role, so
+# a wrong guess is recoverable — the admin can always override it.
+#
+# Order matters: the first domain whose keywords appear wins. Procurement/stock
+# is checked before sales precisely because a hospitality POS "order" is a sale
+# (get_pos_orders, get_staff_orders → reports), while procurement names carry
+# "purchase"/"stock" and must land on orders:read.
+_SCOPE_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("mcp:roster:read", ("roster", "shift", "rota", "staffing")),
+    (
+        "mcp:hr:read",
+        (
+            "employee",
+            "payroll",
+            "timesheet",
+            "leave",
+            "contract",
+            "absence",
+            "time_off",
+            "onboarding",
+            "candidate",
+            "applicant",
+            "recruit",
+        ),
+    ),
+    # Procurement / stock BEFORE sales — see the note above.
+    (
+        "mcp:orders:read",
+        (
+            "stock",
+            "inventory",
+            "supplier",
+            "purchase",
+            "delivery",
+            "invoice",
+            "sku",
+            "wastage",
+            "ingredient",
+            "par_level",
+        ),
+    ),
+    # POS / sales. "order" and "product" live here: a POS order is a sale, and
+    # procurement orders were already caught above by "purchase"/"stock".
+    (
+        "mcp:reports:read",
+        (
+            "sales",
+            "revenue",
+            "trading",
+            "pos",
+            "discount",
+            "takings",
+            "transaction",
+            "performance",
+            "report",
+            "order",
+            "product",
+            "cover",
+            "spend",
+            "gross",
+            "margin",
+            "cogs",
+            "profit",
+        ),
+    ),
+    ("mcp:tasks:read", ("task", "schedule", "automation")),
+    ("mcp:venues:read", ("venue", "site", "location")),
+)
+
+# The draft counterpart of a read scope, used when a *playbook* (which creates
+# drafts) matches a read domain — drafting a stock order needs orders:draft,
+# not orders:read.
+_DRAFT_OF: dict[str, str] = {
+    "mcp:orders:read": "mcp:orders:draft",
+    "mcp:tasks:read": "mcp:tasks:draft",
+}
+
+_DRAFTING_VERBS = frozenset(
+    {"create", "draft", "build", "prepare", "raise", "generate", "new"}
+)
+
+
+def _looks_like_drafting(haystack: str) -> bool:
+    return any(v in haystack for v in _DRAFTING_VERBS)
+
+
+def suggest_scopes(
+    target: str, action: str, description: str = "", *, drafts: bool = False
+) -> list[str]:
+    """The natural default scope(s) for a candidate, or [] if nothing fits.
+
+    Keyword match over the connector/playbook name, action and description.
+    Returns the single best-fitting scope. When ``drafts`` (a playbook, which
+    can create drafts) and the matched domain has a draft variant and the name
+    reads like a create/draft action, the draft scope is used instead of read.
+
+    [] means "no obvious fit" — the panel then falls back to the full list,
+    which is the right behaviour for a domain with no scope yet (marketing,
+    social) rather than a confident wrong guess.
+    """
+    haystack = f"{target} {action} {description}".lower()
+    for scope, keywords in _SCOPE_HINTS:
+        if any(k in haystack for k in keywords):
+            if drafts and scope in _DRAFT_OF and _looks_like_drafting(haystack):
+                return [_DRAFT_OF[scope]]
+            return [scope]
+    return []
+
+
 def exposable_reason(kind: str, tool_def: dict) -> str | None:
     """Why this candidate can't be exposed as a direct tool, or None if it can.
 
@@ -453,6 +566,7 @@ __all__ = [
     "is_read_tool",
     "project_tools",
     "raw_tool_defs",
+    "suggest_scopes",
     "to_mcp_tool_dict",
     "write_signals",
 ]
