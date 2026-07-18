@@ -217,24 +217,11 @@ RECONCILE_CONSOLIDATOR_TOOL = {
             "create_supplier_statement",
         ],
     },
-    "display_component": "generic_table",
-    "display_props": {
-        "title": "Statement reconciliation — Loaded vs invoice copy",
-        "columns": [
-            {"key": "invoice", "label": "Invoice (Loaded)"},
-            {"key": "invno_doc", "label": "Invoice # (Copy)"},
-            {"key": "supplier", "label": "Supplier"},
-            {"key": "statement", "label": "Statement"},
-            {"key": "po_loaded", "label": "PO (Loaded)"},
-            {"key": "po_doc", "label": "PO (Copy)"},
-            {"key": "date_loaded", "label": "Date (Loaded)"},
-            {"key": "date_doc", "label": "Date (Copy)"},
-            {"key": "total_loaded", "label": "Total (Loaded)", "align": "right"},
-            {"key": "total_doc", "label": "Total (Copy)", "align": "right"},
-            {"key": "outcome", "label": "Outcome"},
-            {"key": "notes", "label": "Notes"},
-        ],
-    },
+    # NOTE: deliberately NO display_component. A display block triggers the
+    # tool loop's "display-only" early-exit (tool_loop.py Phase F) whenever the
+    # model's pre-tool preamble exceeds 120 chars — which silently ends the
+    # turn WITHOUT feeding the report back to the LLM. The playbook has the
+    # LLM render the summary table in markdown instead.
 }
 
 CONSOLIDATOR_TOOL = {
@@ -273,19 +260,7 @@ CONSOLIDATOR_TOOL = {
         "max_api_calls": 80,
         "allowed_write_actions": ["receive_invoice"],
     },
-    "display_component": "generic_table",
-    "display_props": {
-        "title": "Invoice review",
-        "columns": [
-            {"key": "reference", "label": "Invoice"},
-            {"key": "supplier", "label": "Supplier"},
-            {"key": "po", "label": "PO"},
-            {"key": "total", "label": "Total", "align": "right"},
-            {"key": "checks", "label": "Checks"},
-            {"key": "outcome", "label": "Outcome"},
-            {"key": "reasons", "label": "Notes"},
-        ],
-    },
+    # NOTE: deliberately NO display_component — see the reconcile tool above.
 }
 
 PLAYBOOK = {
@@ -301,9 +276,11 @@ PLAYBOOK = {
 
 ROLLOUT: ALWAYS pass dry_run=true. (Remove this line after production verification.)
 
-1. Call review_and_receive_invoices for the venue (default range: last 60 days).
+1. Call review_and_receive_invoices for the venue (default range: last 60 days). Before calling it, write at most ONE short status line (e.g. "Reviewing the outstanding invoices…") — the full report comes after the tool returns.
    - If the user only asks to "check", "review" or "look at" invoices, pass dry_run=true.
-2. Write the report. The app already displays the tool's summary table (Invoice / Supplier / PO / Total / Checks / Outcome / Notes) — NEVER repeat it. Your reply is the per-invoice audit view underneath, in two sections: "Received" (or "Would receive" on a dry run) then "Needs attention". Copy every value and ✓/✗/— exactly as returned — never invent, reformat, or fill in a "—" ("—" means that check was not run because an earlier one failed).
+2. Write the report. Copy every value and ✓/✗/— exactly as returned — never invent, reformat, or fill in a "—" ("—" means that check was not run because an earlier one failed).
+   - Start with a compact markdown summary table built from the tool's results rows — | Invoice | Supplier | PO | Total | Checks | Outcome | — one row per invoice (leave the reasons out of this table; they appear in the sections below).
+   - Then the per-invoice audit view in two sections: "Received" (or "Would receive" on a dry run) then "Needs attention".
    - EVERY invoice that HAS details.lines (received, would receive, or failed during line/copy comparison) MUST get its own subsection — do not summarise or skip any:
      a. Heading: ### {reference_number} — {supplier_name} — {total}
      b. details.header as a markdown table — | Field | Invoice (Loaded) | PO | Invoice copy | Result | — one row per header field.
@@ -334,9 +311,9 @@ RECONCILE_PLAYBOOK = {
     ),
     "instructions": """Goal: reconcile the venue's received supplier invoices against their supplier statements. Invoices that pass every check are marked reconciled automatically by the reconcile_received_invoices tool — you never decide what gets reconciled; the tool's deterministic checks do.
 
-1. Call reconcile_received_invoices for the venue (default window: last 30 days of statements).
+1. Call reconcile_received_invoices for the venue (default window: last 30 days of statements). Before calling it, write at most ONE short status line — the full report comes after the tool returns.
    - If the user only asks to "check", "review" or "look at" invoices, pass dry_run=true. After showing a dry run, if the user asks to proceed / confirms, call the tool again WITHOUT dry_run to reconcile for real.
-2. Report the results in three sections, using the tool's exact values and reasons verbatim (never soften or re-derive them):
+2. Report the results, using the tool's exact values and reasons verbatim (never soften or re-derive them). Start with a compact markdown summary table built from the tool's results rows — | Invoice | Supplier | Statement | Total | Outcome | — one row per invoice. Then three sections:
    - "Reconciled" (or "Would reconcile" on a dry run) and "Could not reconcile": for EVERY invoice render a markdown comparison table from the tool's comparison data showing the actual values checked on each side — | Field | Received invoice (Loaded) | Invoice copy | Match | — with rows for invoice number, PO number, invoice date, and total incl tax. The Match cell comes from the field's `match` value: true → ✓, false → ✗, null → — (check not run). Copy the values exactly as returned; never invent or reformat them.
    - "Could not reconcile" additionally lists the exact reasons (missing copy, PO mismatch, date mismatch, total mismatch, credit).
    - "Suppliers needing a statement": supplier, invoice count, how many would reconcile once a statement exists.
