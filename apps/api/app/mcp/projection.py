@@ -44,7 +44,7 @@ from app.agents.prompt_builder import (
 )
 from app.config import settings
 from app.mcp.scopes import ACCESS_DRAFT, ACCESS_READ
-from app.mcp.ui_apps import ui_resource_for
+from app.mcp.ui_apps import ui_resource_for, ui_resource_for_playbook
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +350,11 @@ def project_tools(
                     description=cap.description_override or pb.description,
                     input_schema=_playbook_input_schema(venue_names),
                     venue_scoped=True,
+                    ui_resource=(
+                        ui_resource_for_playbook(cap.target)
+                        if settings.MCP_UI_ENABLED
+                        else None
+                    ),
                 )
             )
             continue

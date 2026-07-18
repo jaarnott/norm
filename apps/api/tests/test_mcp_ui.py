@@ -10,15 +10,19 @@ shape, the ``text/html;profile=mcp-app`` mime type, the extension capability in
 from app.config import settings
 from app.mcp.server import McpContext, handle_jsonrpc
 from app.mcp.ui_apps import (
+    UI_APPS,
     UI_EXTENSION_ID,
     UI_MIME_TYPE,
     list_ui_resources,
     read_ui_resource,
     ui_resource_for,
+    ui_resource_for_playbook,
 )
 from app.mcp.projection import McpTool, to_mcp_tool_dict
 
 SALES_CHART_URI = "ui://norm/sales-chart"
+ROSTER_URI = "ui://norm/roster"
+WORKFLOW_URI = "ui://norm/workflow"
 
 
 def _rpc(method, params=None, rid=1):
@@ -35,13 +39,38 @@ class TestRegistry:
     def test_sales_chart_bound_to_get_sales_data(self):
         assert ui_resource_for("loadedhub", "get_sales_data") == SALES_CHART_URI
 
+    def test_roster_bound_to_get_roster(self):
+        assert ui_resource_for("loadedhub", "get_roster") == ROSTER_URI
+
+    def test_playbook_bound_to_workflow_app(self):
+        assert ui_resource_for_playbook("create_stock_order") == WORKFLOW_URI
+        assert ui_resource_for_playbook("cogs_analysis") is None
+        assert ui_resource_for_playbook(None) is None
+
     def test_unmapped_tool_has_no_ui(self):
-        assert ui_resource_for("loadedhub", "get_roster") is None
+        assert ui_resource_for("loadedhub", "get_stock_items") is None
         assert ui_resource_for(None, None) is None
+
+    def test_every_bound_uri_resolves_to_a_real_app(self):
+        """A binding pointing at a missing app would render nothing, silently."""
+        from app.mcp.ui_apps import PLAYBOOK_UI, TOOL_UI
+
+        for uri in list(TOOL_UI.values()) + list(PLAYBOOK_UI.values()):
+            assert uri in UI_APPS, f"{uri} is bound but not registered"
+
+    def test_shared_bridge_and_css_are_injected(self):
+        """Each app is served self-contained: no unresolved injection markers,
+        and the shared protocol/style actually made it in."""
+        for uri in UI_APPS:
+            html = read_ui_resource(uri)["contents"][0]["text"]
+            assert "__NORM_BRIDGE__" not in html and "__NORM_BASE_CSS__" not in html
+            assert "window.NormApp" in html  # bridge injected
+            assert "--brand" in html  # base css injected
 
     def test_list_shape(self):
         rows = list_ui_resources()
-        assert any(r["uri"] == SALES_CHART_URI for r in rows)
+        uris = {r["uri"] for r in rows}
+        assert {SALES_CHART_URI, ROSTER_URI, WORKFLOW_URI} <= uris
         for r in rows:
             assert r["mimeType"] == UI_MIME_TYPE
             assert r["uri"].startswith("ui://")

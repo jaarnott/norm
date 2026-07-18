@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Norm — Workflow</title>
+<style>/*__NORM_BASE_CSS__*/
+  .status { display:flex; align-items:center; gap:8px; margin:2px 0 10px; }
+  .status .badge.good { background:transparent; color:var(--good);
+    border:1px solid var(--good); }
+  .status .badge.warn { background:transparent; color:var(--warn);
+    border:1px solid var(--warn); }
+  .note { color:var(--muted); font-size:.78rem; margin:0 0 12px;
+    padding-left:10px; border-left:2px solid var(--line); }
+  .md { font-size:.84rem; line-height:1.5; }
+  .md h1,.md h2,.md h3 { font-size:.86rem; margin:.8em 0 .3em; }
+  .md p { margin:.5em 0; }
+  .md ul { margin:.4em 0; padding-left:1.1em; }
+  .md li { margin:.15em 0; }
+  .md code { background:var(--line); padding:.1em .3em; border-radius:3px;
+    font-size:.92em; }
+  .md table { margin:.6em 0; }
+  .wrap { overflow-x:auto; }
+  .actions { margin-top:14px; }
+  .spin { color:var(--muted); font-size:.82rem; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="head"><span class="brand">Norm</span></div>
+  <div class="status" id="status"></div>
+  <p class="note" id="note" hidden></p>
+  <div class="md wrap" id="summary"></div>
+  <div class="actions" id="actions"></div>
+</div>
+<script>/*__NORM_BRIDGE__*/</script>
+<script>
+(function () {
+  "use strict";
+
+  var LABELS = {
+    draft_created:   { text: "Draft created",  cls: "" },
+    pending_approval:{ text: "Needs approval", cls: "warn" },
+    completed:       { text: "Completed",      cls: "good" },
+    running:         { text: "Still running",  cls: "" },
+  };
+
+  function esc(s) { return String(s == null ? "" : s)
+    .replace(/[&<>]/g, function (c) { return ({ "&":"&amp;","<":"&lt;",">":"&gt;" })[c]; }); }
+
+  // Minimal, safe markdown: escape first, then re-introduce only known markup.
+  function md(src) {
+    var lines = esc(String(src || "")).split(/\r?\n/);
+    var out = [], i = 0;
+    function inline(s) {
+      return s
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+    }
+    while (i < lines.length) {
+      var ln = lines[i];
+      if (!ln.trim()) { i++; continue; }
+
+      // table: header row, separator, then body rows
+      if (/^\s*\|.*\|\s*$/.test(ln) && i + 1 < lines.length &&
+          /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+        var cells = function (r) {
+          return r.trim().replace(/^\||\|$/g, "").split("|").map(function (c) { return c.trim(); });
+        };
+        var head = cells(ln); i += 2;
+        var body = [];
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { body.push(cells(lines[i])); i++; }
+        out.push("<table><thead><tr>" + head.map(function (h) {
+          return "<th>" + inline(h) + "</th>"; }).join("") + "</tr></thead><tbody>" +
+          body.map(function (r) {
+            return "<tr>" + r.map(function (c) {
+              var n = /^[-+$]?[\d,.]+%?$/.test(c.replace(/\s/g, ""));
+              return '<td class="' + (n ? "num" : "") + '">' + inline(c) + "</td>";
+            }).join("") + "</tr>";
+          }).join("") + "</tbody></table>");
+        continue;
+      }
+      // heading
+      var h = ln.match(/^\s*(#{1,3})\s+(.*)$/);
+      if (h) { out.push("<h3>" + inline(h[2]) + "</h3>"); i++; continue; }
+      // bullets
+      if (/^\s*[-*]\s+/.test(ln)) {
+        var items = [];
+        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+          items.push("<li>" + inline(lines[i].replace(/^\s*[-*]\s+/, "")) + "</li>"); i++;
+        }
+        out.push("<ul>" + items.join("") + "</ul>"); continue;
+      }
+      // paragraph
+      var para = [];
+      while (i < lines.length && lines[i].trim() &&
+             !/^\s*[-*#]\s/.test(lines[i]) && !/^\s*\|/.test(lines[i])) {
+        para.push(lines[i]); i++;
+      }
+      out.push("<p>" + inline(para.join(" ")) + "</p>");
+    }
+    return out.join("");
+  }
+
+  NormApp.onResult(function (params) {
+    var d = params && params.structuredContent;
+    if (d == null && params && Array.isArray(params.content)) {
+      var t = params.content.find(function (c) { return c && c.type === "text"; });
+      if (t) { try { d = JSON.parse(t.text); } catch (e) {} }
+    }
+    var statusEl = document.getElementById("status");
+    var sumEl = document.getElementById("summary");
+    var noteEl = document.getElementById("note");
+    var actEl = document.getElementById("actions");
+
+    if (!d || (params && params.isError) || d.error) {
+      statusEl.innerHTML = '<span class="badge warn">Failed</span>';
+      sumEl.innerHTML = '<p class="err">' +
+        esc((d && d.error) || "This workflow could not be completed.") + "</p>";
+      return;
+    }
+
+    var meta = LABELS[d.status] || { text: d.status || "Done", cls: "" };
+    statusEl.innerHTML = '<span class="badge ' + meta.cls + '">' + esc(meta.text) + "</span>" +
+      (d.doc_type ? '<span class="muted" style="font-size:.78rem">' +
+        esc(String(d.doc_type).replace(/_/g, " ")) + "</span>" : "");
+
+    if (d.note) { noteEl.textContent = d.note; noteEl.hidden = false; }
+    sumEl.innerHTML = d.summary ? md(d.summary)
+      : '<p class="spin">' + (d.status === "running"
+          ? "Norm is still working on this."
+          : "No summary was returned.") + "</p>";
+
+    if (d.open_in_norm) {
+      var btn = document.createElement("button");
+      btn.className = "btn";
+      btn.textContent = d.status === "draft_created" ? "Review draft in Norm"
+        : d.status === "pending_approval" ? "Approve in Norm" : "Open in Norm";
+      btn.addEventListener("click", function () { NormApp.openLink(d.open_in_norm); });
+      actEl.innerHTML = ""; actEl.appendChild(btn);
+    }
+    NormApp.reportSize();
+  });
+})();
+</script>
+</body>
+</html>

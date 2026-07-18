@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Norm — Roster</title>
+<style>/*__NORM_BASE_CSS__*/
+  .shift { display:grid; grid-template-columns:minmax(90px,150px) 1fr auto;
+    align-items:center; gap:10px; padding:5px 0; font-size:.82rem; }
+  .who { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .who .role { color:var(--muted); font-size:.72rem; }
+  .track { position:relative; height:16px; background:var(--line);
+    border-radius:8px; overflow:hidden; }
+  .bar { position:absolute; top:0; height:100%; background:var(--bar);
+    border-radius:8px; transition:background .12s; }
+  .bar:hover { background:var(--bar-hi); }
+  .when { color:var(--muted); font-size:.74rem; font-variant-numeric:tabular-nums;
+    white-space:nowrap; }
+  .scale { display:flex; justify-content:space-between; color:var(--muted);
+    font-size:.68rem; margin:2px 0 8px; padding-left:calc(min(150px,25%) + 10px); }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="head"><span class="brand">Norm</span><span class="figure" id="figure"></span></div>
+  <p class="sub" id="sub">Loading roster…</p>
+  <div id="body"></div>
+</div>
+<script>/*__NORM_BRIDGE__*/</script>
+<script>
+(function () {
+  "use strict";
+  var NAME_KEYS = ["staff_name","employee_name","full_name","name","staff","employee","person"];
+  var ROLE_KEYS = ["role","position","area","department","job","job_title","section"];
+  var START_KEYS = ["start","start_time","starts_at","shift_start","from","begin","start_at"];
+  var END_KEYS = ["end","end_time","ends_at","shift_end","to","finish","end_at"];
+
+  function pick(o, keys) {
+    if (!o || typeof o !== "object") return undefined;
+    var lower = {}; Object.keys(o).forEach(function (k) { lower[k.toLowerCase()] = o[k]; });
+    for (var i = 0; i < keys.length; i++) if (lower[keys[i]] != null) return lower[keys[i]];
+    return undefined;
+  }
+  function esc(s) { return String(s == null ? "" : s)
+    .replace(/[&<>]/g, function (c) { return ({ "&":"&amp;","<":"&lt;",">":"&gt;" })[c]; }); }
+
+  // Minutes from midnight. Accepts ISO datetimes and "HH:MM" / "H:MM am".
+  function minutes(v) {
+    if (v == null) return null;
+    if (typeof v === "number") return v > 1440 ? null : v;
+    var s = String(v).trim();
+    var iso = s.match(/T(\d{2}):(\d{2})/);
+    if (iso) return +iso[1] * 60 + +iso[2];
+    var ampm = s.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$/i);
+    if (ampm) {
+      var h = +ampm[1] % 12; if (ampm[3].toLowerCase() === "p") h += 12;
+      return h * 60 + (+ampm[2] || 0);
+    }
+    var hm = s.match(/^(\d{1,2}):(\d{2})/);
+    if (hm) return +hm[1] * 60 + +hm[2];
+    return null;
+  }
+  function hhmm(m) {
+    if (m == null) return "";
+    var h = Math.floor(m / 60) % 24, mm = m % 60;
+    var ap = h < 12 ? "am" : "pm", h12 = h % 12 === 0 ? 12 : h % 12;
+    return h12 + (mm ? ":" + String(mm).padStart(2, "0") : "") + ap;
+  }
+
+  function findShifts(root) {
+    var best = null, bestScore = -1, seen = 0;
+    (function walk(n) {
+      if (seen++ > 5000 || n == null) return;
+      if (Array.isArray(n)) {
+        if (n.length && typeof n[0] === "object" && n[0] !== null) {
+          var rows = n.filter(function (r) { return r && typeof r === "object"; });
+          var score = rows.filter(function (r) {
+            return pick(r, NAME_KEYS) != null || pick(r, START_KEYS) != null;
+          }).length;
+          if (score > bestScore) { bestScore = score; best = rows; }
+        }
+        n.forEach(walk);
+      } else if (typeof n === "object") { Object.keys(n).forEach(function (k) { walk(n[k]); }); }
+    })(root);
+    return bestScore > 0 ? best : null;
+  }
+
+  function fail(msg) {
+    document.getElementById("figure").textContent = "";
+    document.getElementById("sub").textContent = "";
+    document.getElementById("body").innerHTML = '<p class="err">' + esc(msg) + "</p>";
+  }
+
+  NormApp.onResult(function (params) {
+    var data = params && params.structuredContent;
+    if (data == null && params && Array.isArray(params.content)) {
+      var t = params.content.find(function (c) { return c && c.type === "text"; });
+      if (t) { try { data = JSON.parse(t.text); } catch (e) {} }
+    }
+    if (params && params.isError) return fail("Norm returned an error for this roster.");
+    if (data == null) return fail("No roster data to display.");
+
+    var rows = findShifts(data);
+    if (!rows || !rows.length) return fail("No shifts found in this result.");
+
+    var shifts = rows.map(function (r) {
+      var s = minutes(pick(r, START_KEYS)), e = minutes(pick(r, END_KEYS));
+      if (e != null && s != null && e < s) e += 1440; // overnight
+      return {
+        name: String(pick(r, NAME_KEYS) || "—"),
+        role: pick(r, ROLE_KEYS) ? String(pick(r, ROLE_KEYS)) : "",
+        start: s, end: e,
+      };
+    });
+
+    var timed = shifts.filter(function (s) { return s.start != null && s.end != null; });
+    var hours = timed.reduce(function (a, s) { return a + (s.end - s.start) / 60; }, 0);
+    document.getElementById("figure").textContent =
+      shifts.length + (shifts.length === 1 ? " shift" : " shifts");
+    document.getElementById("sub").textContent = timed.length
+      ? Math.round(hours * 10) / 10 + " rostered hours"
+      : "Shift times unavailable";
+
+    if (!timed.length) return renderTable(shifts);
+
+    var lo = Math.min.apply(null, timed.map(function (s) { return s.start; }));
+    var hi = Math.max.apply(null, timed.map(function (s) { return s.end; }));
+    var span = Math.max(60, hi - lo);
+    lo = Math.floor(lo / 60) * 60; hi = Math.ceil(hi / 60) * 60; span = hi - lo;
+
+    var html = '<div class="scale"><span>' + hhmm(lo) + "</span><span>" +
+      hhmm(lo + span / 2) + "</span><span>" + hhmm(hi) + "</span></div>";
+    html += shifts.map(function (s) {
+      var bar = "";
+      if (s.start != null && s.end != null) {
+        var left = ((s.start - lo) / span) * 100;
+        var w = Math.max(1.5, ((s.end - s.start) / span) * 100);
+        bar = '<div class="bar" style="left:' + left.toFixed(2) + "%;width:" +
+          w.toFixed(2) + '%"><title></title></div>';
+      }
+      return '<div class="shift"><div class="who">' + esc(s.name) +
+        (s.role ? '<div class="role">' + esc(s.role) + "</div>" : "") +
+        '</div><div class="track" title="' + esc(s.name + " · " + hhmm(s.start) + "–" + hhmm(s.end)) +
+        '">' + bar + '</div><div class="when">' +
+        (s.start != null ? esc(hhmm(s.start) + "–" + hhmm(s.end)) : "—") + "</div></div>";
+    }).join("");
+    document.getElementById("body").innerHTML = html;
+  });
+
+  function renderTable(shifts) {
+    document.getElementById("body").innerHTML =
+      "<table><thead><tr><th>Staff</th><th>Role</th></tr></thead><tbody>" +
+      shifts.map(function (s) {
+        return "<tr><td>" + esc(s.name) + "</td><td>" + esc(s.role || "—") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+})();
+</script>
+</body>
+</html>

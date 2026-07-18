@@ -1,0 +1,43 @@
+/* Shared look for every Norm ui:// app. Injected server-side (ui_apps.py).
+   Theme follows the host: it sets data-theme, else we fall back to the OS. */
+:root {
+  --bg:#fff; --text:#1a1a1a; --muted:#8a8378; --line:#ece6df;
+  --brand:#a08060; --accent:#8a6d3b; --accent-soft:#f4e8d8;
+  --bar:#a08060; --bar-hi:#b89a76; --good:#5a7d5a; --warn:#b07a4a;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#1c1a17; --text:#f0ece6; --muted:#9a9284; --line:#33302a;
+          --brand:#c4a882; --accent:#c4a882; --accent-soft:#3a3229;
+          --bar:#c4a882; --bar-hi:#d8c19a; --good:#8fb08f; --warn:#d0a06a; }
+}
+:root[data-theme="light"] {
+  --bg:#fff; --text:#1a1a1a; --muted:#8a8378; --line:#ece6df;
+  --brand:#a08060; --accent:#8a6d3b; --accent-soft:#f4e8d8;
+  --bar:#a08060; --bar-hi:#b89a76; --good:#5a7d5a; --warn:#b07a4a;
+}
+:root[data-theme="dark"] {
+  --bg:#1c1a17; --text:#f0ece6; --muted:#9a9284; --line:#33302a;
+  --brand:#c4a882; --accent:#c4a882; --accent-soft:#3a3229;
+  --bar:#c4a882; --bar-hi:#d8c19a; --good:#8fb08f; --warn:#d0a06a;
+}
+* { box-sizing: border-box; }
+html, body { margin:0; background:var(--bg); color:var(--text);
+  font-family: system-ui, -apple-system, sans-serif; }
+#root { padding:16px 18px; }
+.head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.brand { font-weight:800; color:var(--brand); font-size:.95rem; letter-spacing:-.01em; }
+.figure { font-variant-numeric:tabular-nums; font-weight:700; font-size:1.05rem; }
+.sub { color:var(--muted); font-size:.78rem; margin:2px 0 14px; }
+.muted { color:var(--muted); }
+.err { color:var(--muted); font-size:.85rem; padding:8px 0; }
+.badge { font-size:.66rem; font-weight:600; text-transform:uppercase;
+  letter-spacing:.04em; padding:2px 7px; border-radius:4px;
+  background:var(--accent-soft); color:var(--accent); }
+.btn { display:inline-block; padding:.5rem 1rem; font-size:.82rem; font-weight:600;
+  color:#fff; background:var(--accent); border:0; border-radius:8px;
+  cursor:pointer; font-family:inherit; }
+table { border-collapse:collapse; width:100%; font-size:.8rem; }
+th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
+th { color:var(--muted); font-weight:600; font-size:.72rem;
+  text-transform:uppercase; letter-spacing:.04em; }
+td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
