@@ -61,6 +61,25 @@ export default function Home() {
     }
   }, []);
 
+  // Deep-link handler for "open in Norm" links from the MCP surface
+  // (?thread=, ?doc=, ?report=). Reads window.location directly to avoid a
+  // Suspense boundary; runs once auth is confirmed. Additive and same-origin.
+  useEffect(() => {
+    if (!authChecked || !token) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const threadId = params.get('thread') || params.get('doc');
+      if (threadId) {
+        setSelectedThreadId(threadId);
+        if (isMobile) setMobileView('detail');
+      }
+    } catch {
+      /* no-op */
+    }
+    // Only on first authenticated render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authChecked, token]);
+
   // Load threads when authenticated
   useEffect(() => {
     if (!token) return;

@@ -1,19 +1,25 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import LoginForm from '../components/auth/LoginForm';
 import { setToken, setStoredUser } from '../lib/api';
 
-export default function LoginPage() {
+function LoginInner() {
   const router = useRouter();
+  const params = useSearchParams();
   const [, setLoggedIn] = useState(false);
+
+  // Honour a ?next= target (e.g. the MCP consent screen bounced us here).
+  // Same-origin paths only, so this can't be turned into an open redirect.
+  const rawNext = params.get('next') || '';
+  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/app';
 
   const handleLogin = (token: string, user: { id: string; email: string; full_name: string; role: string }) => {
     setToken(token);
     setStoredUser(user);
     setLoggedIn(true);
-    router.push('/app');
+    router.push(next);
   };
 
   return (
@@ -29,5 +35,13 @@ export default function LoginPage() {
         <LoginForm onSuccess={handleLogin} />
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginInner />
+    </Suspense>
   );
 }

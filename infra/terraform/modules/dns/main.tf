@@ -76,6 +76,20 @@ resource "google_compute_url_map" "main" {
       paths   = ["/api/*"]
       service = google_compute_backend_service.api.id
     }
+
+    # MCP server + OAuth discovery. These are served by the API but live
+    # outside /api (the MCP endpoint is a distinct protocol, and RFC 8414/9728
+    # require the discovery documents at the host root). Without these rules
+    # they fall through to `default_service` (the web app) and 404.
+    path_rule {
+      paths   = ["/mcp", "/mcp/*"]
+      service = google_compute_backend_service.api.id
+    }
+
+    path_rule {
+      paths   = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/*", "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/*", "/.well-known/openid-configuration"]
+      service = google_compute_backend_service.api.id
+    }
   }
 }
 

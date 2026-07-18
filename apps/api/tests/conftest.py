@@ -28,7 +28,8 @@ from app.db.models import (
     Product,
 )
 from app.db.config_models import ConfigBase
-from app.db.engine import get_db
+from app.db import mcp_models  # noqa: F401 — register MCP tables on Base.metadata
+from app.db.engine import get_db, get_config_db, get_config_db_rw
 from app.auth.security import hash_password, create_access_token
 from app.routers import (
     auth,
@@ -70,8 +71,18 @@ _test_app.include_router(component_apis.router, prefix="/api")
 _test_app.include_router(connector_specs.router, prefix="/api")
 
 from app.routers import internal as _internal  # noqa: E402
+from app.routers import mcp as _mcp  # noqa: E402
+from app.routers import mcp_admin as _mcp_admin  # noqa: E402
+from app.routers import mcp_oauth as _mcp_oauth  # noqa: E402
+from app.routers import well_known as _well_known  # noqa: E402
 
 _test_app.include_router(_internal.router)
+# No prefix — mirrors the real mount in main.py. The MCP endpoint lives at the
+# host root so its OAuth discovery documents resolve.
+_test_app.include_router(_mcp.router)
+_test_app.include_router(_well_known.router)
+_test_app.include_router(_mcp_admin.router, prefix="/api")
+_test_app.include_router(_mcp_oauth.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +124,10 @@ def client(db_session):
             pass  # session cleanup handled by db_session fixture
 
     _test_app.dependency_overrides[get_db] = _override_get_db
+    # The MCP endpoint and admin router also depend on the config DB; locally
+    # (and in CI) it's the same physical DB, so point it at the same session.
+    _test_app.dependency_overrides[get_config_db] = _override_get_db
+    _test_app.dependency_overrides[get_config_db_rw] = _override_get_db
     with TestClient(_test_app, raise_server_exceptions=False) as c:
         yield c
     _test_app.dependency_overrides.clear()

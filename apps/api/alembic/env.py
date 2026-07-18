@@ -16,6 +16,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 from app.db.models import Base
+from app.db import mcp_models  # noqa: F401 — register MCP tables on Base.metadata
 target_metadata = Base.metadata
 
 # Override sqlalchemy.url from DATABASE_URL env var if set (for CI/CD and production)

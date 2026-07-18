@@ -14,6 +14,7 @@ import ComponentsPanel from './ComponentsPanel';
 import PlaybooksPanel from './PlaybooksPanel';
 import TemplatesPanel from './TemplatesPanel';
 import AgentsPanel from './AgentsPanel';
+import McpPanel from './McpPanel';
 import AdminThreadsPanel from './AdminThreadsPanel';
 import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
@@ -1044,7 +1045,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads';
+type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -1068,6 +1069,7 @@ export default function SettingsPanel() {
   const showPlaybooks = isAdmin;
   const [specEditing, setSpecEditing] = useState(false);
   const showSecrets = isAdmin;
+  const showMcp = isAdmin;
   const showThreads = isAdmin;
 
   // Fetch org ID for billing tab
@@ -1376,12 +1378,16 @@ export default function SettingsPanel() {
         {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
         {showTests && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
         {showSecrets && <button data-testid="settings-tab-secrets" onClick={() => setActiveTab('secrets')} style={tabStyle('secrets')}>Secrets</button>}
+        {showMcp && <button data-testid="settings-tab-mcp" onClick={() => setActiveTab('mcp')} style={tabStyle('mcp')}>MCP</button>}
         {showThreads && <button data-testid="settings-tab-threads" onClick={() => setActiveTab('threads')} style={tabStyle('threads')}>Threads</button>}
       </div>
 
       <div style={{ flex: 1, overflow: activeTab === 'threads' ? 'hidden' : 'auto', padding: activeTab === 'threads' ? 0 : '1.5rem' }}>
         {/* ============ THREADS TAB (admin) ============ */}
         {activeTab === 'threads' && <AdminThreadsPanel />}
+
+        {/* ============ MCP TAB ============ */}
+        {activeTab === 'mcp' && <McpPanel />}
 
         {/* ============ VENUES TAB ============ */}
         {activeTab === 'venues' && <VenuesTab />}

@@ -15,6 +15,7 @@ if settings.SENTRY_DSN:
         traces_sample_rate=0.1 if settings.ENVIRONMENT == "production" else 0.5,
     )
 
+from app.db import mcp_models  # noqa: F401, E402 — register MCP tables on Base.metadata
 from app.routers import (  # noqa: E402
     health,
     venues,
@@ -39,6 +40,10 @@ from app.routers import (  # noqa: E402
     playbooks,
     templates,
     internal,
+    mcp,
+    mcp_admin,
+    mcp_oauth,
+    well_known,
 )
 
 app = FastAPI(
@@ -89,6 +94,12 @@ app.include_router(component_apis.router, prefix="/api")
 app.include_router(playbooks.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
 app.include_router(internal.router)
+# No /api prefix: the MCP endpoint is a separate protocol with its own auth
+# scheme, and its OAuth discovery documents must resolve from the host root.
+app.include_router(mcp.router)
+app.include_router(well_known.router)  # /.well-known/* — must be at host root
+app.include_router(mcp_admin.router, prefix="/api")
+app.include_router(mcp_oauth.router, prefix="/api")
 
 
 @app.on_event("startup")

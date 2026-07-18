@@ -354,8 +354,16 @@ from app.db.config_models import (  # noqa: F401, E402
     ConnectorSpec,
     AgentConfig,
     AgentConnectorBinding,
+    McpCapability,
     SystemSecret,
 )
+
+# NOTE: the MCP OAuth/audit models (app/db/mcp_models.py) are NOT re-exported
+# here. They import Base from this module, so re-importing them at the bottom
+# would create a circular import whenever mcp_models is imported first. They
+# are instead imported explicitly where Base.metadata must include them:
+# alembic/env.py (migrations), tests/conftest.py (create_all), and app.main
+# (startup). Import them directly: `from app.db.mcp_models import McpToken`.
 
 
 class OAuthState(Base):

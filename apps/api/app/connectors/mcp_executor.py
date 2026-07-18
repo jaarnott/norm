@@ -14,10 +14,17 @@ import time
 import httpx
 
 from app.connectors.base import ConnectorResult
+from app.connectors.mcp_protocol import jsonrpc_request as _jsonrpc_request
 
 logger = logging.getLogger(__name__)
 
 MCP_TIMEOUT = 30  # seconds
+
+__all__ = [
+    "mcp_discover_tools",
+    "mcp_call_tool",
+    "convert_mcp_tools_to_spec",
+]
 
 
 def _build_auth_headers(
@@ -42,16 +49,6 @@ def _build_auth_headers(
         headers[header_name] = credentials.get(key_field, "")
 
     return headers
-
-
-def _jsonrpc_request(method: str, params: dict | None = None, rpc_id: int = 1) -> dict:
-    """Build a JSON-RPC 2.0 request body."""
-    return {
-        "jsonrpc": "2.0",
-        "id": rpc_id,
-        "method": method,
-        "params": params or {},
-    }
 
 
 def _parse_mcp_response(body: dict) -> tuple[dict, list[dict], bool]:

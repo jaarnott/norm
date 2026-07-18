@@ -249,6 +249,111 @@ def check_model_selection(
     return issues
 
 
+def check_mcp_capability(
+    cap_kind: str,
+    cap_target: str,
+    cap_action: str,
+    cap_scopes: list | None,
+    tool_def: dict | None,
+    playbook_enabled: bool | None,
+    known_mcp_scopes: set[str],
+    denylist: set,
+) -> list[ConfigIssue]:
+    """Validate one enabled mcp_capabilities row against live config.
+
+    This is the drift guard the write-time validation can't be: a capability
+    enabled today can be broken tomorrow by a rename, a method change, or a
+    disabled playbook. Same checks the admin endpoint runs on write, run daily
+    against the real rows.
+    """
+    from app.mcp.projection import write_signals
+
+    where = f"mcp.{cap_target}.{cap_action}" if cap_action else f"mcp.{cap_target}"
+    issues: list[ConfigIssue] = []
+
+    # Scopes must be real and non-empty.
+    unknown = set(cap_scopes or []) - known_mcp_scopes
+    if unknown:
+        issues.append(
+            ConfigIssue(
+                severity="error",
+                where=where,
+                problem=(
+                    f"MCP capability grants unknown scope(s): {sorted(unknown)}. "
+                    "The tool is exposed but no role can ever call it."
+                ),
+                fix="Fix the scopes in Settings → MCP, or remove the capability.",
+            )
+        )
+    if not (cap_scopes or []):
+        issues.append(
+            ConfigIssue(
+                severity="error",
+                where=where,
+                problem="Enabled MCP capability has no scopes — authorized by nothing but holding a token.",
+                fix="Assign at least one scope in Settings → MCP, or disable it.",
+            )
+        )
+
+    if cap_kind == "connector":
+        if (cap_target, cap_action) in denylist:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem="A conversation-scoped tool is exposed over MCP; it cannot work there.",
+                    fix="Disable this capability in Settings → MCP.",
+                )
+            )
+        elif tool_def is None:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=(
+                        f"MCP capability points at {cap_target}.{cap_action}, "
+                        "which no connector spec defines (renamed or removed)."
+                    ),
+                    fix="Restore the action, or remove the capability in Settings → MCP.",
+                )
+            )
+        else:
+            signals = write_signals(tool_def)
+            if signals:
+                issues.append(
+                    ConfigIssue(
+                        severity="error",
+                        where=where,
+                        problem=(
+                            "MCP capability is exposed as a direct read tool but the "
+                            f"underlying action now writes: {'; '.join(signals)}."
+                        ),
+                        fix="Disable it, or expose it via a playbook workflow instead.",
+                    )
+                )
+    elif cap_kind == "playbook":
+        if playbook_enabled is None:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=f"MCP capability points at playbook '{cap_target}', which does not exist.",
+                    fix="Remove the capability in Settings → MCP.",
+                )
+            )
+        elif not playbook_enabled:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=f"MCP capability exposes playbook '{cap_target}', but that playbook is disabled.",
+                    fix="Enable the playbook, or disable the MCP capability.",
+                )
+            )
+
+    return issues
+
+
 def validate_config(db=None, config_db=None) -> dict:
     """Run every check against the live databases. Returns a summary dict.
 
@@ -299,6 +404,39 @@ def validate_config(db=None, config_db=None) -> dict:
         for row in db.query(ConnectorConfig).all():
             issues.extend(
                 check_model_selection(row.connector_name, row.config, allowed)
+            )
+
+        # MCP capability drift: every enabled row must still resolve to a real,
+        # read-only connector action or an enabled playbook.
+        from app.db.config_models import McpCapability
+        from app.mcp.projection import MCP_DENYLIST
+        from app.mcp.scopes import MCP_SCOPES
+
+        tool_def_by_key: dict = {}
+        for spec in config_db.query(ConnectorSpec).all():
+            for tool in spec.tools or []:
+                if isinstance(tool, dict) and tool.get("action"):
+                    tool_def_by_key[(spec.connector_name, tool["action"])] = tool
+        playbook_enabled_by_slug = {
+            pb.slug: pb.enabled for pb in config_db.query(Playbook).all()
+        }
+        known_mcp_scopes = set(MCP_SCOPES)
+        for cap in (
+            config_db.query(McpCapability)
+            .filter(McpCapability.enabled == True)  # noqa: E712
+            .all()
+        ):
+            issues.extend(
+                check_mcp_capability(
+                    cap.kind,
+                    cap.target,
+                    cap.action,
+                    cap.scopes,
+                    tool_def_by_key.get((cap.target, cap.action)),
+                    playbook_enabled_by_slug.get(cap.target),
+                    known_mcp_scopes,
+                    MCP_DENYLIST,
+                )
             )
 
         return {

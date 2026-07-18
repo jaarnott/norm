@@ -108,6 +108,10 @@ def _collect_tools(
                     "field_schema": tool.get("field_schema", {}),
                     "method": tool.get("method", "POST"),
                     "description": tool.get("description", ""),
+                    # Used by result-slimming (tool_loop._slim_tool_result and
+                    # the MCP surface). Carried here so callers don't have to
+                    # re-query the spec row.
+                    "summary_fields": tool.get("summary_fields"),
                 }
             )
 
@@ -143,6 +147,70 @@ def build_dynamic_prompt(
     from app.services.agent_config_service import get_system_prompt
 
     return get_system_prompt(domain, _cdb) or None
+
+
+def build_venue_property(configured_venues: list[str]) -> dict:
+    """The `venue` enum property injected into external-connector tools."""
+    return {
+        "type": "string",
+        "description": f"Venue name. Available for: {', '.join(configured_venues)}.",
+        "enum": configured_venues,
+    }
+
+
+def build_input_schema(tool: dict, extra_properties: dict | None = None) -> dict:
+    """Build a JSON Schema object from a ConnectorSpec tool row.
+
+    Anthropic's ``input_schema`` and MCP's ``inputSchema`` are the same object,
+    so this has two consumers: ``build_tool_definitions`` below (Norm's own
+    agents) and ``app.mcp.projection`` (the external MCP surface). Keeping one
+    implementation is what stops the two surfaces from drifting apart.
+
+    ``extra_properties`` are merged after the field-derived ones — that's how
+    the caller injects context it alone knows about (the venue enum here; MCP
+    injects nothing today).
+
+    Note the loose default: every field is ``type: string`` unless the spec row
+    carries an explicit ``field_schema``, which is passed through verbatim and
+    is the only way to express nested objects or arrays.
+    """
+    properties: dict = {}
+    field_descs = tool.get("field_descriptions") or {}
+    field_schemas = tool.get("field_schema") or {}
+    field_mapping = tool.get("field_mapping") or {}
+    required_fields = list(tool.get("required_fields") or [])
+    all_fields = required_fields + list(tool.get("optional_fields") or [])
+
+    for field in all_fields:
+        # Explicit schema wins — supports nested objects/arrays
+        if field in field_schemas:
+            prop = {**field_schemas[field]}
+            if "description" not in prop:
+                prop["description"] = field_descs.get(field, field)
+            properties[field] = prop
+            continue
+
+        api_name = field_mapping.get(field, field)
+        desc_parts = []
+        hint = field_descs.get(field, "")
+        if hint:
+            desc_parts.append(hint)
+        if api_name != field:
+            desc_parts.append(f"Maps to API field: {api_name}")
+        properties[field] = {
+            "type": "string",
+            "description": ". ".join(desc_parts) if desc_parts else field,
+        }
+
+    if extra_properties:
+        properties.update(extra_properties)
+
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required_fields,
+        "additionalProperties": False,
+    }
 
 
 def build_tool_definitions(
@@ -425,36 +493,8 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             continue
         seen_names.add(tool_name)
 
-        # Build properties from required_fields + optional_fields
-        properties: dict = {}
-        field_descs = tool.get("field_descriptions") or {}
-        field_schemas = tool.get("field_schema") or {}
-        all_fields = list(tool["required_fields"]) + list(
-            tool.get("optional_fields") or []
-        )
-        for field in all_fields:
-            # Use explicit schema if provided (supports nested objects/arrays)
-            if field in field_schemas:
-                prop = {**field_schemas[field]}
-                if "description" not in prop:
-                    prop["description"] = field_descs.get(field, field)
-                properties[field] = prop
-                continue
-
-            api_name = tool["field_mapping"].get(field, field)
-            desc_parts = []
-            hint = field_descs.get(field, "")
-            if hint:
-                desc_parts.append(hint)
-            if api_name != field:
-                desc_parts.append(f"Maps to API field: {api_name}")
-            prop = {
-                "type": "string",
-                "description": ". ".join(desc_parts) if desc_parts else field,
-            }
-            properties[field] = prop
-
         # Inject venue parameter for external connectors when multiple venues exist
+        extra_properties: dict = {}
         is_external = tool["connector"] != "norm" and not tool["connector"].startswith(
             "norm_"
         )
@@ -472,11 +512,7 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
                 > 0
             ]
             if configured_venues:
-                properties["venue"] = {
-                    "type": "string",
-                    "description": f"Venue name. Available for: {', '.join(configured_venues)}.",
-                    "enum": configured_venues,
-                }
+                extra_properties["venue"] = build_venue_property(configured_venues)
 
         method = tool["method"].upper()
         desc = tool.get("description") or tool["action"].replace("_", " ")
@@ -486,12 +522,7 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             {
                 "name": tool_name,
                 "description": desc_full,
-                "input_schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": tool["required_fields"],
-                    "additionalProperties": False,
-                },
+                "input_schema": build_input_schema(tool, extra_properties),
             }
         )
 

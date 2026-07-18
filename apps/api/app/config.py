@@ -66,6 +66,25 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_SECRET: str = ""
     APP_URL: str = ""  # Auto-derived from ENVIRONMENT if not set
 
+    # ── MCP server ──────────────────────────────────────────────────────
+    # Norm's outward-facing MCP surface, for external AI clients (Claude)
+    # acting on behalf of an authenticated user. Off by default: it stays
+    # dark in every environment until deliberately switched on.
+    MCP_ENABLED: bool = False
+    # OAuth issuer. Must EXACTLY match the URL prefix the well-known metadata
+    # is fetched from (RFC 8414 §3.3) — a mismatch makes clients reject the
+    # document outright. Derived explicitly rather than from request.base_url,
+    # which reports the internal host behind nginx.
+    MCP_ISSUER: str = ""
+    # Exact-match allowlist for OAuth redirect hosts. This is what stops a
+    # dynamically-registered client from redirecting authorization codes to an
+    # attacker's server.
+    MCP_ALLOWED_REDIRECT_HOSTS: str = "claude.ai,*.claude.ai,localhost,127.0.0.1"
+    # Development shortcut: a static bearer accepted at /mcp, acting as the
+    # first admin user with that user's real scopes and venues. Refused unless
+    # ENVIRONMENT == "local". No default — it does not exist unless set.
+    MCP_DEV_TOKEN: str = ""
+
     # ── Observability (Phase 4) ─────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: Literal["json", "console"] = "console"
@@ -93,6 +112,34 @@ class Settings(BaseSettings):
         if self.CORS_ALLOWED_ORIGINS == "*":
             return ["*"]
         return [o.strip() for o in self.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def mcp_issuer(self) -> str:
+        """OAuth issuer for the MCP authorization server.
+
+        Deployed environments serve the API **same-origin** with the app — the
+        GCP load balancer path-routes /api, /mcp and /.well-known to the API
+        backend on the app domain (there is no api.* subdomain). So the issuer
+        must match app_url, or discovery advertises a host that doesn't resolve
+        and RFC 8414 §3.3's issuer-matches-fetch-origin check fails. Locally the
+        API is a separate port, so app_url (:3000) is wrong there — use :8000.
+        """
+        if self.MCP_ISSUER:
+            return self.MCP_ISSUER.rstrip("/")
+        if self.is_local:
+            return "http://localhost:8000"
+        return self.app_url.rstrip("/")
+
+    @property
+    def mcp_resource_url(self) -> str:
+        """Canonical MCP resource identifier (RFC 8707 audience)."""
+        return f"{self.mcp_issuer}/mcp"
+
+    @property
+    def mcp_allowed_redirect_hosts(self) -> list[str]:
+        return [
+            h.strip() for h in self.MCP_ALLOWED_REDIRECT_HOSTS.split(",") if h.strip()
+        ]
 
     @property
     def is_production(self) -> bool:

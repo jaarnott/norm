@@ -141,6 +141,46 @@ class Playbook(ConfigBase):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class McpCapability(ConfigBase):
+    """Curation for Norm's outward-facing MCP surface.
+
+    A thin enable+scope layer, nothing more. This table holds **no schema** —
+    MCP tool schemas always project from ``ConnectorSpec.tools`` / ``Playbook``
+    at request time, so a capability can never drift from the definition it
+    exposes. Adding a connector or playbook makes it a *candidate* the moment
+    it exists; a missing row means "not exposed" (fail closed).
+
+    What is deliberately NOT a column here:
+
+    - **access (read/draft)** — derived from the tool's ``method``, so it can't
+      be mis-set. A non-GET action can only be exposed via a playbook.
+    - **the scope vocabulary** — ``scopes`` picks from ``app.mcp.scopes``;
+      unknown values are rejected on write. The vocabulary itself, and its
+      mapping onto org permission scopes, stays in code.
+
+    Those two rules are what keep "v1 is read + draft only" a property of the
+    system rather than a promise. See app/routers/mcp_admin.py for the
+    write-time validation and app/services/config_validator.py for the daily
+    drift check.
+    """
+
+    __tablename__ = "mcp_capabilities"
+    __table_args__ = (
+        UniqueConstraint("kind", "target", "action", name="uq_mcp_capability"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    kind = Column(String, nullable=False)  # "connector" | "playbook"
+    target = Column(String, nullable=False)  # connector_name | playbook.slug
+    action = Column(String, nullable=False, default="")  # "" for playbooks
+    scopes = Column(JSON, nullable=False, default=list)  # ⊆ app.mcp.scopes
+    description_override = Column(Text, nullable=True)  # prose only, never schema
+    tool_name_override = Column(String, nullable=True)  # public alias
+    enabled = Column(Boolean, nullable=False, default=False)  # fail closed
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class DashboardTemplate(ConfigBase):
     __tablename__ = "dashboard_templates"
 

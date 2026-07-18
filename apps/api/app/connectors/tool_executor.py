@@ -33,15 +33,26 @@ def execute_connector_tool(
     config_db: Session,
     venue_id: str | None = None,
     thread_id: str | None = None,
+    strict_venue: bool = False,
 ) -> ToolResult:
     """Execute a connector tool end-to-end, matching the LLM tool loop path.
 
     Steps:
     1. Look up ConnectorSpec and tool definition
-    2. Resolve venue-aware credentials
-    3. Call execute_spec (which normalizes fields via _normalize_fields)
-    4. Apply response_transform if configured
-    5. Return clean result
+    2. Dispatch to a registered internal handler, or a consolidator, if either
+       applies (mirrors tool_loop._execute_tool_call)
+    3. Resolve venue-aware credentials
+    4. Call execute_spec (which normalizes fields via _normalize_fields)
+    5. Apply response_transform if configured
+    6. Return clean result
+
+    ``strict_venue`` controls the credential fallback when no config exists for
+    ``venue_id``. False (default) keeps the historical loose behaviour — fall
+    back to any enabled config. True restricts the fallback to venue-agnostic
+    (platform) configs only, matching tool_loop._resolve_venue_config. Callers
+    serving an authenticated, venue-scoped request must pass True: the loose
+    fallback would otherwise answer a question about venue A using venue B's
+    credentials.
     """
     from app.db.config_models import ConnectorSpec
     from app.db.models import Venue
@@ -78,35 +89,48 @@ def execute_connector_tool(
             error=f"Action not found: {action}. Available: {', '.join(str(a) for a in available_actions)}",
         )
 
-    # 3. Check for consolidator (internal handler) — these don't use execute_spec
+    # 3. Dispatch to an in-process handler if one applies. Order mirrors
+    #    tool_loop._execute_tool_call: a registered internal handler shadows a
+    #    consolidator, and both shadow execute_spec. Without the get_handler
+    #    lookup, every @register'd internal tool (resolve_dates,
+    #    create_purchase_order, list_automated_tasks, ...) falls through to
+    #    execute_spec and fails — this path only ever reached consolidators.
+    from app.agents.internal_tools import get_handler
+
+    handler = get_handler(connector_name, action)
+    handler_kind = "INTERNAL"
+
     consolidator_config = tool_def.get("consolidator_config")
-    if consolidator_config:
+    if not handler and consolidator_config:
         from app.agents.internal_tools import execute_consolidator
 
-        # Pass venue info through params so the consolidator can use it
+        handler_kind = "CONSOLIDATOR"
+
+        def handler(p, db_sess, tid):
+            return execute_consolidator(consolidator_config, p, db_sess, tid)
+
+    if handler:
+        # Pass venue info through params so the handler can use it
         call_params = dict(params)
         if venue_id:
-            from app.db.models import Venue as _Venue
-
-            v = db.query(_Venue).filter(_Venue.id == venue_id).first()
+            v = db.query(Venue).filter(Venue.id == venue_id).first()
             if v and not call_params.get("venue"):
                 call_params["venue"] = v.name
 
         try:
-            handler_result = execute_consolidator(
-                consolidator_config, call_params, db, thread_id
-            )
+            handler_result = handler(call_params, db, thread_id)
         except Exception as exc:
             return ToolResult(success=False, payload=None, error=str(exc))
 
         payload = handler_result.get("data")
+        payload = _apply_transform(tool_def, payload)
         logs = handler_result.get("_logs", [])
         return ToolResult(
             success=handler_result.get("success", True),
             payload=payload,
             error=handler_result.get("error"),
             rendered_request={
-                "method": "CONSOLIDATOR",
+                "method": handler_kind,
                 "url": f"{connector_name}/{action}",
             },
             row_count=(
@@ -123,7 +147,9 @@ def execute_connector_tool(
     clean_params.pop("venue_id", None)
     clean_params.pop("_all_venues", None)
 
-    config_row = _resolve_credentials(connector_name, venue_id, db)
+    config_row = _resolve_credentials(
+        connector_name, venue_id, db, strict_venue=strict_venue
+    )
     credentials = config_row.config if config_row else {}
     resolved_venue_id = config_row.venue_id if config_row else venue_id
 
@@ -164,31 +190,14 @@ def execute_connector_tool(
         )
 
     # 5. Apply response_transform if configured
-    payload = result.response_payload
-    transform_config = tool_def.get("response_transform")
-    if transform_config and transform_config.get("enabled") and payload:
-        from app.connectors.response_transform import apply_response_transform
+    # Resolve venue timezone for datetime field options (|tz, |dow)
+    venue_tz_name = None
+    if resolved_venue_id:
+        venue_obj = db.query(Venue).filter(Venue.id == resolved_venue_id).first()
+        if venue_obj and venue_obj.timezone:
+            venue_tz_name = venue_obj.timezone
 
-        # Resolve venue timezone for datetime field options (|tz, |dow)
-        venue_tz_name = None
-        if resolved_venue_id:
-            venue_obj = db.query(Venue).filter(Venue.id == resolved_venue_id).first()
-            if venue_obj and venue_obj.timezone:
-                venue_tz_name = venue_obj.timezone
-
-        wrapped = (
-            {"data": payload}
-            if isinstance(payload, list)
-            else (payload if isinstance(payload, dict) else {"data": payload})
-        )
-        transformed = apply_response_transform(
-            wrapped, transform_config, venue_timezone=venue_tz_name
-        )
-        payload = (
-            transformed.get("data", transformed)
-            if isinstance(transformed, dict)
-            else transformed
-        )
+    payload = _apply_transform(tool_def, result.response_payload, venue_tz_name)
 
     row_count = len(payload) if isinstance(payload, list) else (1 if payload else 0)
 
@@ -295,8 +304,51 @@ def list_connector_tools(connector_name: str, config_db: Session) -> dict:
     return {"tools": tools}
 
 
-def _resolve_credentials(connector_name: str, venue_id: str | None, db: Session):
-    """Venue-aware credential lookup."""
+def _apply_transform(
+    tool_def: dict, payload: Any, venue_timezone: str | None = None
+) -> Any:
+    """Apply a tool's response_transform, if it has one enabled.
+
+    Shared by the handler and spec paths so a transform behaves the same
+    however the tool was dispatched.
+    """
+    transform_config = (tool_def or {}).get("response_transform")
+    if not (transform_config and transform_config.get("enabled") and payload):
+        return payload
+
+    from app.connectors.response_transform import apply_response_transform
+
+    wrapped = (
+        {"data": payload}
+        if isinstance(payload, list)
+        else (payload if isinstance(payload, dict) else {"data": payload})
+    )
+    transformed = apply_response_transform(
+        wrapped, transform_config, venue_timezone=venue_timezone
+    )
+    return (
+        transformed.get("data", transformed)
+        if isinstance(transformed, dict)
+        else transformed
+    )
+
+
+def _resolve_credentials(
+    connector_name: str,
+    venue_id: str | None,
+    db: Session,
+    *,
+    strict_venue: bool = False,
+):
+    """Venue-aware credential lookup.
+
+    With ``strict_venue=True`` the fallback is restricted to venue-agnostic
+    (platform) configs, matching tool_loop._resolve_venue_config. The loose
+    default — fall back to *any* enabled config — is retained for existing
+    callers (dashboard chart refresh), but is a cross-venue leak on any
+    authenticated, venue-scoped path: a request scoped to venue A would be
+    answered with venue B's credentials, and the caller would never know.
+    """
     from app.db.models import ConnectorConfig
 
     if venue_id:
@@ -311,6 +363,18 @@ def _resolve_credentials(connector_name: str, venue_id: str | None, db: Session)
         )
         if config:
             return config
+
+    if strict_venue:
+        # Platform-level configs only — never another venue's.
+        return (
+            db.query(ConnectorConfig)
+            .filter(
+                ConnectorConfig.connector_name == connector_name,
+                ConnectorConfig.venue_id.is_(None),
+                ConnectorConfig.enabled == "true",
+            )
+            .first()
+        )
 
     # Fall back to first enabled config (platform or any venue)
     return (

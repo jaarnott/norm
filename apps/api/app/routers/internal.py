@@ -107,3 +107,51 @@ async def refresh_tokens_endpoint(
             failure["error"],
         )
     return result
+
+
+@router.post("/internal/mcp-gc")
+async def mcp_gc_endpoint(
+    x_scheduler_secret: str = Header(default=""),
+):
+    """Garbage-collect expired MCP OAuth state.
+
+    Deletes expired authorization codes, long-expired/revoked tokens, and stale
+    rate-limit windows. This is the fix for the OAuthState-never-GC'd problem
+    the connector-OAuth table has — do not let these tables grow forever.
+
+    Called on a schedule by Cloud Scheduler, guarded by X-Scheduler-Secret.
+    """
+    _authorize(x_scheduler_secret)
+
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import text
+
+    from app.db.engine import SessionLocal
+    from app.mcp.ratelimit import gc_expired
+
+    now = datetime.now(timezone.utc)
+    token_cutoff = now - timedelta(days=30)
+
+    db = SessionLocal()
+    try:
+        codes = db.execute(
+            text("DELETE FROM mcp_authorization_codes WHERE expires_at < :now"),
+            {"now": now},
+        ).rowcount
+        tokens = db.execute(
+            text(
+                "DELETE FROM mcp_tokens "
+                "WHERE (expires_at < :cutoff) OR "
+                "(revoked_at IS NOT NULL AND revoked_at < :cutoff)"
+            ),
+            {"cutoff": token_cutoff},
+        ).rowcount
+        db.commit()
+        windows = gc_expired(db)
+    finally:
+        db.close()
+
+    result = {"codes": codes, "tokens": tokens, "rate_limit_windows": windows}
+    logger.info("mcp-gc: %s", result)
+    return result
