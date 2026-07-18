@@ -69,12 +69,6 @@ _SALES_CHART = UiApp(
     title="Norm — Sales chart",
     html_file="sales-chart.html",
 )
-_ROSTER = UiApp(
-    uri="ui://norm/roster",
-    name="Roster",
-    title="Norm — Roster",
-    html_file="roster.html",
-)
 # Renders a playbook outcome: status, the agent's summary (often a markdown
 # table — e.g. the drafted purchase order), and an "open in Norm" action.
 _WORKFLOW = UiApp(
@@ -84,13 +78,42 @@ _WORKFLOW = UiApp(
     html_file="workflow.html",
 )
 
-UI_APPS: dict[str, UiApp] = {app.uri: app for app in (_SALES_CHART, _ROSTER, _WORKFLOW)}
+# Renders Norm's OWN display components (imported from apps/web, bundled by
+# apps/mcp-ui) rather than a hand-written re-implementation. Preferred for any
+# tool whose result a Norm component already knows how to draw — one renderer,
+# fixed once, for both the web app and Claude.
+_DISPLAY_BLOCK = UiApp(
+    uri="ui://norm/display-block",
+    name="Norm display block",
+    title="Norm",
+    html_file="display-block.html",
+)
+
+UI_APPS: dict[str, UiApp] = {
+    app.uri: app for app in (_SALES_CHART, _WORKFLOW, _DISPLAY_BLOCK)
+}
+
+DISPLAY_BLOCK_URI = _DISPLAY_BLOCK.uri
+
+# Which Norm display component draws a tool's result, keyed by
+# (connector, action). Tools listed here render through _DISPLAY_BLOCK.
+#
+# The component must be in the sandbox-safe registry (apps/mcp-ui/src/registry.ts)
+# — i.e. a pure function of its data, with no fetch on mount. That rules out
+# roster_editor/purchase_order_editor/orders_dashboard, which self-fetch and
+# would fail with no session inside the host's iframe.
+#
+# Note the components parse the RAW connector payload: Norm's own show_* tools
+# hand it over untouched (internal_tools._show_component), so there is no
+# adapter to write on either side.
+TOOL_COMPONENT: dict[tuple[str, str], str] = {
+    ("loadedhub", "get_roster"): "roster_table",
+}
 
 # Which curated connector tool renders into which app, keyed by
 # (connector, action). A tool absent here is a plain text/data tool.
 TOOL_UI: dict[tuple[str, str], str] = {
     ("loadedhub", "get_sales_data"): _SALES_CHART.uri,
-    ("loadedhub", "get_roster"): _ROSTER.uri,
 }
 
 # Which playbook workflow renders into which app, keyed by playbook slug.
@@ -103,10 +126,23 @@ PLAYBOOK_UI: dict[str, str] = {
 
 
 def ui_resource_for(connector: str | None, action: str | None) -> str | None:
-    """The ui:// resource a connector tool renders into, or None."""
+    """The ui:// resource a connector tool renders into, or None.
+
+    A tool mapped to a Norm display component wins: reusing the real component
+    beats a bespoke app, so TOOL_COMPONENT is checked first.
+    """
     if not connector or not action:
         return None
+    if (connector, action) in TOOL_COMPONENT:
+        return DISPLAY_BLOCK_URI
     return TOOL_UI.get((connector, action))
+
+
+def component_for(connector: str | None, action: str | None) -> str | None:
+    """The Norm display component that draws this tool's result, or None."""
+    if not connector or not action:
+        return None
+    return TOOL_COMPONENT.get((connector, action))
 
 
 def ui_resource_for_playbook(slug: str | None) -> str | None:

@@ -20,7 +20,7 @@ from app.mcp.ui_apps import (
 from app.mcp.projection import McpTool, to_mcp_tool_dict
 
 SALES_CHART_URI = "ui://norm/sales-chart"
-ROSTER_URI = "ui://norm/roster"
+DISPLAY_BLOCK_URI = "ui://norm/display-block"
 WORKFLOW_URI = "ui://norm/workflow"
 
 
@@ -38,8 +38,12 @@ class TestRegistry:
     def test_sales_chart_bound_to_get_sales_data(self):
         assert ui_resource_for("loadedhub", "get_sales_data") == SALES_CHART_URI
 
-    def test_roster_bound_to_get_roster(self):
-        assert ui_resource_for("loadedhub", "get_roster") == ROSTER_URI
+    def test_roster_renders_through_norms_own_component(self):
+        """get_roster reuses RosterTable rather than a bespoke app."""
+        from app.mcp.ui_apps import component_for
+
+        assert ui_resource_for("loadedhub", "get_roster") == DISPLAY_BLOCK_URI
+        assert component_for("loadedhub", "get_roster") == "roster_table"
 
     def test_playbook_bound_to_workflow_app(self):
         assert ui_resource_for_playbook("create_stock_order") == WORKFLOW_URI
@@ -52,9 +56,11 @@ class TestRegistry:
 
     def test_every_bound_uri_resolves_to_a_real_app(self):
         """A binding pointing at a missing app would render nothing, silently."""
-        from app.mcp.ui_apps import PLAYBOOK_UI, TOOL_UI
+        from app.mcp.ui_apps import PLAYBOOK_UI, TOOL_COMPONENT, TOOL_UI
 
-        for uri in list(TOOL_UI.values()) + list(PLAYBOOK_UI.values()):
+        bound = list(TOOL_UI.values()) + list(PLAYBOOK_UI.values())
+        bound += [DISPLAY_BLOCK_URI] * len(TOOL_COMPONENT)
+        for uri in bound:
             assert uri in UI_APPS, f"{uri} is bound but not registered"
 
     def test_shared_bridge_and_css_are_injected(self):
@@ -63,13 +69,13 @@ class TestRegistry:
         for uri in UI_APPS:
             html = read_ui_resource(uri)["contents"][0]["text"]
             assert "__NORM_BRIDGE__" not in html and "__NORM_BASE_CSS__" not in html
-            assert "window.NormApp" in html  # bridge injected
+            assert "window.NormApp" in html  # shared bridge present
             assert "--brand" in html  # base css injected
 
     def test_list_shape(self):
         rows = list_ui_resources()
         uris = {r["uri"] for r in rows}
-        assert {SALES_CHART_URI, ROSTER_URI, WORKFLOW_URI} <= uris
+        assert {SALES_CHART_URI, WORKFLOW_URI, DISPLAY_BLOCK_URI} <= uris
         for r in rows:
             assert r["mimeType"] == UI_MIME_TYPE
             assert r["uri"].startswith("ui://")
@@ -234,3 +240,46 @@ class TestUiPayloadSeparation:
 
         res = tools_call_result({"a": 1})
         assert res["structuredContent"] == {"a": 1}
+
+
+# ── Bundle freshness ─────────────────────────────────────────────────────
+
+
+class TestBundleFreshness:
+    """The display-block bundle is a COMMITTED build artifact.
+
+    Editing RosterTable without running `pnpm --filter @norm/mcp-ui build`
+    would ship a stale component to Claude while the web app moved on — the
+    exact drift this whole refactor exists to prevent. The build stamps a hash
+    of its sources; we recompute it here.
+    """
+
+    # Keep in sync with apps/mcp-ui/scripts/emit.mjs SOURCES
+    SOURCES = [
+        "apps/web/app/components/display/GenericTable.tsx",
+        "apps/web/app/components/display/RosterTable.tsx",
+        "apps/mcp-ui/src/registry.ts",
+        "apps/mcp-ui/src/main.tsx",
+        "apps/api/app/mcp/ui/_bridge.js",
+    ]
+
+    def test_bundle_matches_its_sources(self):
+        import hashlib
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[3]
+        bundle = root / "apps/api/app/mcp/ui/display-block.html"
+        html = bundle.read_text(encoding="utf-8")
+
+        stamped = re.search(r"norm-mcp-ui-sources sha256:([0-9a-f]{64})", html)
+        assert stamped, "bundle has no source stamp — rebuild apps/mcp-ui"
+
+        h = hashlib.sha256()
+        for rel in self.SOURCES:
+            h.update((root / rel).read_bytes())
+
+        assert stamped.group(1) == h.hexdigest(), (
+            "display-block.html is STALE: a source component changed since it "
+            "was built. Run: pnpm --filter @norm/mcp-ui build"
+        )

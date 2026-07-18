@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "allowJs": true
+  },
+  // Only src — tsc follows the components we actually import. Globbing the
+// whole display tree would drag in self-fetching ones we deliberately
+// exclude (DashboardView needs Node types and next/dynamic).
+  "include": ["src/**/*"]
+}

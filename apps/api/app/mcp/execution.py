@@ -230,7 +230,25 @@ class NormMcpContext(McpContext):
         # week-long roster with nothing to draw. Falls back to the shaped
         # payload if even the UI budget can't hold it.
         structured = ui_payload(result.payload) if tool.ui_resource else None
+        if structured is not None:
+            structured = self._as_display_block(tool, structured)
         return tools_call_result(payload, structured=structured)
+
+    def _as_display_block(self, tool: McpTool, data: dict) -> dict:
+        """Wrap a payload for the display-block app, or pass it through.
+
+        Norm's components take the raw payload untouched (that is what
+        internal_tools._show_component hands them), so this only names the
+        component — it never reshapes the data.
+        """
+        from app.mcp.ui_apps import DISPLAY_BLOCK_URI, component_for
+
+        if tool.ui_resource != DISPLAY_BLOCK_URI:
+            return data
+        component = component_for(tool.connector, tool.action)
+        if not component:
+            return data
+        return {"component": component, "data": data, "props": {}}
 
     def _audit(
         self,
