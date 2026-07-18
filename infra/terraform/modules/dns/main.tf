@@ -77,6 +77,16 @@ resource "google_compute_url_map" "main" {
       service = google_compute_backend_service.api.id
     }
 
+    # The OAuth consent screen (authorization_endpoint) is a Next.js page, not
+    # an API route — well_known.py advertises {app_url}/mcp/authorize and the
+    # API's /authorize 302s there. It must stay on the web backend. This exact
+    # path is a longer match than the /mcp/* rule below, so GCP longest-prefix
+    # matching selects it here while the JSON-RPC endpoint still goes to the API.
+    path_rule {
+      paths   = ["/mcp/authorize"]
+      service = google_compute_backend_service.web.id
+    }
+
     # MCP server + OAuth discovery. These are served by the API but live
     # outside /api (the MCP endpoint is a distinct protocol, and RFC 8414/9728
     # require the discovery documents at the host root). Without these rules
