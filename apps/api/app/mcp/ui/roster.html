@@ -30,21 +30,29 @@
 <script>
 (function () {
   "use strict";
-  var NAME_KEYS = ["staff_name","employee_name","full_name","name","staff","employee","person"];
-  var ROLE_KEYS = ["role","position","area","department","job","job_title","section"];
-  var START_KEYS = ["start","start_time","starts_at","shift_start","from","begin","start_at"];
-  var END_KEYS = ["end","end_time","ends_at","shift_end","to","finish","end_at"];
+
+  // Keys are compared lower-cased, so camelCase spellings appear here in
+  // lower case (LoadedHub returns staffMemberFirstName / rules[].startTime).
+  var NAME_KEYS  = ["staffmembername","staff_name","employee_name","full_name","name","staff","employee","person"];
+  var FIRST_KEYS = ["staffmemberfirstname","firstname","first_name","givenname"];
+  var LAST_KEYS  = ["staffmemberlastname","lastname","last_name","surname","familyname"];
+  var ROLE_KEYS  = ["rolename","role","position","area","department","job","job_title","section"];
+  var START_KEYS = ["starttime","startdatetime","clockintime","start","start_time","starts_at","shift_start","from","begin","start_at"];
+  var END_KEYS   = ["endtime","enddatetime","clockouttime","end","end_time","ends_at","shift_end","to","finish","end_at"];
+  var HOURS_KEYS = ["totalhours","total_hours","hours","paidhours","totalpaidhours"];
 
   function pick(o, keys) {
     if (!o || typeof o !== "object") return undefined;
-    var lower = {}; Object.keys(o).forEach(function (k) { lower[k.toLowerCase()] = o[k]; });
+    var lower = {};
+    Object.keys(o).forEach(function (k) { lower[k.toLowerCase()] = o[k]; });
     for (var i = 0; i < keys.length; i++) if (lower[keys[i]] != null) return lower[keys[i]];
     return undefined;
   }
   function esc(s) { return String(s == null ? "" : s)
     .replace(/[&<>]/g, function (c) { return ({ "&":"&amp;","<":"&lt;",">":"&gt;" })[c]; }); }
+  function num(v) { var n = typeof v === "number" ? v : parseFloat(v); return isFinite(n) ? n : null; }
 
-  // Minutes from midnight. Accepts ISO datetimes and "HH:MM" / "H:MM am".
+  // Minutes from midnight. Accepts ISO datetimes, "HH:MM", "h:mm am".
   function minutes(v) {
     if (v == null) return null;
     if (typeof v === "number") return v > 1440 ? null : v;
@@ -67,21 +75,53 @@
     return h12 + (mm ? ":" + String(mm).padStart(2, "0") : "") + ap;
   }
 
+  // ── Field readers, tolerant of the real LoadedHub shape ────────────────
+  function nameOf(r) {
+    var n = pick(r, NAME_KEYS);
+    if (n) return String(n);
+    var f = pick(r, FIRST_KEYS), l = pick(r, LAST_KEYS);
+    if (f || l) return [f, l].filter(Boolean).join(" ");
+    return "";
+  }
+  // Rostered times live on rules[] (a shift can span several pay rules), with
+  // clock-in/out as the fallback for shifts already worked.
+  function spanOf(r) {
+    var rules = r && (r.rules || r.Rules);
+    if (Array.isArray(rules) && rules.length) {
+      var ss = [], ee = [];
+      rules.forEach(function (x) {
+        var s = minutes(pick(x, START_KEYS)), e = minutes(pick(x, END_KEYS));
+        if (s != null) ss.push(s);
+        if (e != null) ee.push(e);
+      });
+      if (ss.length && ee.length) {
+        return [Math.min.apply(null, ss), Math.max.apply(null, ee)];
+      }
+    }
+    return [minutes(pick(r, START_KEYS)), minutes(pick(r, END_KEYS))];
+  }
+  function looksLikeShift(r) {
+    if (!r || typeof r !== "object") return false;
+    var sp = spanOf(r);
+    return !!nameOf(r) || sp[0] != null;
+  }
+
+  // Find the shift array: prefer a key that mentions shifts, else the array
+  // with the most shift-looking records.
   function findShifts(root) {
-    var best = null, bestScore = -1, seen = 0;
-    (function walk(n) {
-      if (seen++ > 5000 || n == null) return;
-      if (Array.isArray(n)) {
-        if (n.length && typeof n[0] === "object" && n[0] !== null) {
-          var rows = n.filter(function (r) { return r && typeof r === "object"; });
-          var score = rows.filter(function (r) {
-            return pick(r, NAME_KEYS) != null || pick(r, START_KEYS) != null;
-          }).length;
-          if (score > bestScore) { bestScore = score; best = rows; }
-        }
-        n.forEach(walk);
-      } else if (typeof n === "object") { Object.keys(n).forEach(function (k) { walk(n[k]); }); }
-    })(root);
+    var best = null, bestScore = 0, seen = 0;
+    (function walk(node, key) {
+      if (seen++ > 5000 || node == null) return;
+      if (Array.isArray(node)) {
+        var rows = node.filter(function (r) { return r && typeof r === "object"; });
+        var score = rows.filter(looksLikeShift).length;
+        if (score && /shift/i.test(key || "")) score += 1000; // strong signal
+        if (score > bestScore) { bestScore = score; best = rows; }
+        node.forEach(function (n) { walk(n, key); });
+      } else if (typeof node === "object") {
+        Object.keys(node).forEach(function (k) { walk(node[k], k); });
+      }
+    })(root, "");
     return bestScore > 0 ? best : null;
   }
 
@@ -104,20 +144,24 @@
     if (!rows || !rows.length) return fail("No shifts found in this result.");
 
     var shifts = rows.map(function (r) {
-      var s = minutes(pick(r, START_KEYS)), e = minutes(pick(r, END_KEYS));
+      var sp = spanOf(r);
+      var s = sp[0], e = sp[1];
       if (e != null && s != null && e < s) e += 1440; // overnight
       return {
-        name: String(pick(r, NAME_KEYS) || "—"),
+        name: nameOf(r) || "—",
         role: pick(r, ROLE_KEYS) ? String(pick(r, ROLE_KEYS)) : "",
-        start: s, end: e,
+        start: s, end: e, hours: num(pick(r, HOURS_KEYS)),
       };
     });
 
     var timed = shifts.filter(function (s) { return s.start != null && s.end != null; });
-    var hours = timed.reduce(function (a, s) { return a + (s.end - s.start) / 60; }, 0);
+    // Prefer the roster's own hours; fall back to the computed span.
+    var stated = shifts.reduce(function (a, s) { return a + (s.hours || 0); }, 0);
+    var hours = stated || timed.reduce(function (a, s) { return a + (s.end - s.start) / 60; }, 0);
+
     document.getElementById("figure").textContent =
       shifts.length + (shifts.length === 1 ? " shift" : " shifts");
-    document.getElementById("sub").textContent = timed.length
+    document.getElementById("sub").textContent = hours
       ? Math.round(hours * 10) / 10 + " rostered hours"
       : "Shift times unavailable";
 
@@ -125,8 +169,8 @@
 
     var lo = Math.min.apply(null, timed.map(function (s) { return s.start; }));
     var hi = Math.max.apply(null, timed.map(function (s) { return s.end; }));
+    lo = Math.floor(lo / 60) * 60; hi = Math.ceil(hi / 60) * 60;
     var span = Math.max(60, hi - lo);
-    lo = Math.floor(lo / 60) * 60; hi = Math.ceil(hi / 60) * 60; span = hi - lo;
 
     var html = '<div class="scale"><span>' + hhmm(lo) + "</span><span>" +
       hhmm(lo + span / 2) + "</span><span>" + hhmm(hi) + "</span></div>";
@@ -135,12 +179,12 @@
       if (s.start != null && s.end != null) {
         var left = ((s.start - lo) / span) * 100;
         var w = Math.max(1.5, ((s.end - s.start) / span) * 100);
-        bar = '<div class="bar" style="left:' + left.toFixed(2) + "%;width:" +
-          w.toFixed(2) + '%"><title></title></div>';
+        bar = '<div class="bar" style="left:' + left.toFixed(2) + "%;width:" + w.toFixed(2) + '%"></div>';
       }
       return '<div class="shift"><div class="who">' + esc(s.name) +
         (s.role ? '<div class="role">' + esc(s.role) + "</div>" : "") +
-        '</div><div class="track" title="' + esc(s.name + " · " + hhmm(s.start) + "–" + hhmm(s.end)) +
+        '</div><div class="track" title="' +
+        esc(s.name + (s.start != null ? " · " + hhmm(s.start) + "–" + hhmm(s.end) : "")) +
         '">' + bar + '</div><div class="when">' +
         (s.start != null ? esc(hhmm(s.start) + "–" + hhmm(s.end)) : "—") + "</div></div>";
     }).join("");
@@ -149,9 +193,10 @@
 
   function renderTable(shifts) {
     document.getElementById("body").innerHTML =
-      "<table><thead><tr><th>Staff</th><th>Role</th></tr></thead><tbody>" +
+      "<table><thead><tr><th>Staff</th><th>Role</th><th class='num'>Hours</th></tr></thead><tbody>" +
       shifts.map(function (s) {
-        return "<tr><td>" + esc(s.name) + "</td><td>" + esc(s.role || "—") + "</td></tr>";
+        return "<tr><td>" + esc(s.name) + "</td><td>" + esc(s.role || "—") +
+          "</td><td class='num'>" + (s.hours != null ? esc(s.hours) : "—") + "</td></tr>";
       }).join("") + "</tbody></table>";
   }
 })();
