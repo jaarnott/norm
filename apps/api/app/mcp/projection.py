@@ -42,7 +42,9 @@ from app.agents.prompt_builder import (
     build_input_schema,
     build_venue_property,
 )
+from app.config import settings
 from app.mcp.scopes import ACCESS_DRAFT, ACCESS_READ
+from app.mcp.ui_apps import ui_resource_for
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +202,9 @@ class McpTool:
     # Whether venue authorization must run before executing. Derived from the
     # tool, not from the schema — see needs_venue().
     venue_scoped: bool = True
+    # MCP Apps (SEP-1865): the ui:// resource this tool renders into, or None
+    # for a plain text/data tool. Surfaced as `_meta.ui.resourceUri`.
+    ui_resource: str | None = None
 
     @property
     def is_read_only(self) -> bool:
@@ -231,7 +236,7 @@ def to_mcp_tool_dict(tool: McpTool) -> dict:
     method travels as a real field on McpTool, and read-only-ness is advertised
     through the annotation MCP actually defines for it.
     """
-    return {
+    out: dict = {
         "name": tool.name,
         "description": tool.description,
         "inputSchema": tool.input_schema,
@@ -240,6 +245,11 @@ def to_mcp_tool_dict(tool: McpTool) -> dict:
             "destructiveHint": False,  # v1 is read + draft only
         },
     }
+    # MCP Apps: bind the tool to its embedded UI. The host preloads this ui://
+    # resource and renders the tool's result into it.
+    if tool.ui_resource:
+        out["_meta"] = {"ui": {"resourceUri": tool.ui_resource}}
+    return out
 
 
 def raw_tool_defs(config_db: Session) -> dict[tuple[str, str], dict]:
@@ -411,6 +421,11 @@ def project_tools(
                 input_schema=build_input_schema(tool_def, extra),
                 summary_fields=tuple(summary_fields) if summary_fields else None,
                 venue_scoped=tool_needs_venue,
+                ui_resource=(
+                    ui_resource_for(cap.target, cap.action)
+                    if settings.MCP_UI_ENABLED
+                    else None
+                ),
             )
         )
 

@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Norm — Sales</title>
+<style>
+  :root {
+    --bg: #ffffff; --card: #ffffff; --text: #1a1a1a; --muted: #8a8378;
+    --line: #ece6df; --bar: #a08060; --bar-top: #b89a76; --brand: #a08060;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1c1a17; --card:#232019; --text:#f0ece6; --muted:#9a9284;
+            --line:#33302a; --bar:#c4a882; --bar-top:#d8c19a; --brand:#c4a882; }
+  }
+  :root[data-theme="dark"] { --bg:#1c1a17; --card:#232019; --text:#f0ece6; --muted:#9a9284;
+            --line:#33302a; --bar:#c4a882; --bar-top:#d8c19a; --brand:#c4a882; }
+  :root[data-theme="light"] { --bg:#ffffff; --card:#ffffff; --text:#1a1a1a; --muted:#8a8378;
+            --line:#ece6df; --bar:#a08060; --bar-top:#b89a76; --brand:#a08060; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif; }
+  #root { padding: 16px 18px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 2px; }
+  .brand { font-weight: 800; color: var(--brand); font-size: 0.95rem; letter-spacing: -0.01em; }
+  .total { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 1.05rem; }
+  .sub { color: var(--muted); font-size: 0.78rem; margin: 0 0 14px; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .bar { fill: var(--bar); transition: fill .12s; }
+  .bar:hover { fill: var(--bar-top); }
+  .axis { stroke: var(--line); stroke-width: 1; }
+  .glabel { fill: var(--muted); font-size: 10px; }
+  .vlabel { fill: var(--muted); font-size: 9px; }
+  .empty, .err { color: var(--muted); font-size: 0.85rem; padding: 8px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.8rem; margin-top: 6px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="head"><span class="brand">Norm</span><span class="total" id="total"></span></div>
+  <p class="sub" id="sub">Loading sales…</p>
+  <div id="chart"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  // ── postMessage JSON-RPC bridge (MCP Apps view side) ──────────────────
+  var nextId = 1;
+  var pending = {};
+  function rpc(method, params) {
+    var id = nextId++;
+    window.parent.postMessage({ jsonrpc: "2.0", id: id, method: method, params: params || {} }, "*");
+    return new Promise(function (resolve) { pending[id] = resolve; });
+  }
+  function notify(method, params) {
+    window.parent.postMessage({ jsonrpc: "2.0", method: method, params: params || {} }, "*");
+  }
+
+  window.addEventListener("message", function (ev) {
+    var m = ev.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id != null && pending[m.id]) { pending[m.id](m.result); delete pending[m.id]; return; }
+    switch (m.method) {
+      case "ui/notifications/tool-result": onResult(m.params || {}); break;
+      case "ui/notifications/host-context-changed":
+        if (m.params && m.params.hostContext) applyTheme(m.params.hostContext);
+        break;
+      case "ui/resource-teardown": /* nothing to clean up */ break;
+    }
+  });
+
+  function applyTheme(hostContext) {
+    if (hostContext && hostContext.theme) {
+      document.documentElement.setAttribute("data-theme", hostContext.theme);
+    }
+  }
+
+  // Report our rendered height so the host can size the iframe.
+  function reportSize() {
+    var el = document.getElementById("root");
+    notify("ui/notifications/size-changed", {
+      width: el.scrollWidth, height: el.scrollHeight,
+    });
+  }
+  if (window.ResizeObserver) {
+    new ResizeObserver(reportSize).observe(document.getElementById("root"));
+  }
+
+  // Handshake: initialize → apply theme → announce initialized.
+  rpc("ui/initialize", {
+    protocolVersion: "2025-06-18",
+    appInfo: { name: "Norm Sales Chart", version: "1.0.0" },
+    appCapabilities: {},
+  }).then(function (result) {
+    if (result && result.hostContext) applyTheme(result.hostContext);
+    notify("ui/notifications/initialized", {});
+    // If the tool result was pushed by the host as part of tool-info, render it.
+    if (result && result.hostContext && result.hostContext.toolInfo &&
+        result.hostContext.toolInfo.result) {
+      onResult(result.hostContext.toolInfo.result);
+    }
+  });
+
+  // ── Data extraction (resilient to the exact loadedhub shape) ──────────
+  var LABEL_KEYS = ["period","date","day","label","name","interval","time","bucket","week","month","start","start_date","datetime"];
+  var VALUE_KEYS = ["total","total_sales","sales","value","amount","revenue","net","gross","net_sales","sales_total","turnover","takings","total_amount"];
+
+  function num(v) {
+    if (typeof v === "number") return isFinite(v) ? v : null;
+    if (v && typeof v === "object") { // {amount, currency} etc.
+      for (var k of ["amount","value","total"]) if (k in v) return num(v[k]);
+      return null;
+    }
+    if (typeof v === "string") { var n = parseFloat(v.replace(/[^0-9.\-]/g, "")); return isFinite(n) ? n : null; }
+    return null;
+  }
+  function pick(obj, keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var kk = Object.keys(obj).find(function (o) { return o.toLowerCase() === keys[i]; });
+      if (kk != null) return obj[kk];
+    }
+    return undefined;
+  }
+  // Find the most chart-like array of records anywhere in the payload.
+  function findSeries(root) {
+    var best = null, bestScore = -1, seen = 0;
+    (function walk(node) {
+      if (seen++ > 5000 || node == null) return;
+      if (Array.isArray(node)) {
+        if (node.length && typeof node[0] === "object" && node[0] !== null) {
+          var rows = node.filter(function (r) { return r && typeof r === "object"; });
+          var withVal = rows.filter(function (r) { return num(pick(r, VALUE_KEYS)) != null; });
+          var score = withVal.length;
+          if (score > bestScore) { bestScore = score; best = rows; }
+        }
+        node.forEach(walk);
+      } else if (typeof node === "object") {
+        Object.keys(node).forEach(function (k) { walk(node[k]); });
+      }
+    })(root);
+    return bestScore > 0 ? best : null;
+  }
+
+  function fmt(n) {
+    try { return new Intl.NumberFormat(undefined, { maximumFractionDigits: n % 1 ? 2 : 0 }).format(n); }
+    catch (e) { return String(n); }
+  }
+  function fmtMoney(n) {
+    var cents = Math.round(n * 100) % 100 !== 0;
+    try {
+      return "$" + new Intl.NumberFormat(undefined, {
+        minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: cents ? 2 : 0,
+      }).format(n);
+    } catch (e) { return "$" + fmt(Math.round(n * 100) / 100); }
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]; }); }
+
+  function onResult(params) {
+    var data = params && params.structuredContent;
+    if (data == null && params && Array.isArray(params.content)) {
+      var t = params.content.find(function (c) { return c && c.type === "text"; });
+      if (t) { try { data = JSON.parse(t.text); } catch (e) { /* leave null */ } }
+    }
+    if (params && params.isError) { fail("Norm returned an error for this request."); return; }
+    if (data == null) { fail("No data to display."); return; }
+
+    var rows = findSeries(data);
+    if (!rows || !rows.length) {
+      // Not a series — show whatever scalar total we can find, else a note.
+      var scalar = num(pick(data, VALUE_KEYS));
+      if (scalar != null) { renderTotalOnly(scalar); return; }
+      fail("This result has no sales series to chart."); return;
+    }
+
+    var series = rows.map(function (r) {
+      return { label: labelOf(pick(r, LABEL_KEYS)), value: num(pick(r, VALUE_KEYS)) || 0 };
+    }).filter(function (d) { return d.value != null; });
+
+    renderChart(series);
+  }
+
+  function labelOf(v) {
+    if (v == null) return "";
+    if (typeof v === "string") {
+      // Trim ISO timestamps to a date, keep short labels as-is.
+      var mIso = v.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (mIso) return mIso[1].slice(5); // MM-DD
+      return v.length > 10 ? v.slice(0, 10) : v;
+    }
+    return String(v);
+  }
+
+  // ── Rendering ─────────────────────────────────────────────────────────
+  function setSub(txt) { document.getElementById("sub").textContent = txt; }
+  function fail(msg) {
+    document.getElementById("total").textContent = "";
+    setSub("");
+    document.getElementById("chart").innerHTML = '<p class="err">' + esc(msg) + "</p>";
+    reportSize();
+  }
+  function renderTotalOnly(total) {
+    document.getElementById("total").textContent = fmtMoney(total);
+    setSub("Total sales");
+    document.getElementById("chart").innerHTML = "";
+    reportSize();
+  }
+
+  function renderChart(series) {
+    var total = series.reduce(function (s, d) { return s + d.value; }, 0);
+    document.getElementById("total").textContent = fmtMoney(total);
+    setSub(series.length + (series.length === 1 ? " period" : " periods") + " · hover a bar for detail");
+
+    var max = Math.max.apply(null, series.map(function (d) { return d.value; })) || 1;
+    var W = 720, H = 260, padL = 8, padR = 8, padT = 10, padB = 26;
+    var innerW = W - padL - padR, innerH = H - padT - padB;
+    var n = series.length;
+    var gap = n > 1 ? Math.min(10, innerW / n * 0.25) : 0;
+    var bw = (innerW - gap * (n - 1)) / n;
+    var everyLabel = Math.ceil(n / 12); // avoid label crowding
+
+    var bars = series.map(function (d, i) {
+      var h = Math.max(1, (d.value / max) * innerH);
+      var x = padL + i * (bw + gap);
+      var y = padT + (innerH - h);
+      var lbl = (i % everyLabel === 0)
+        ? '<text class="glabel" x="' + (x + bw / 2) + '" y="' + (H - 9) + '" text-anchor="middle">' + esc(d.label) + "</text>"
+        : "";
+      var val = bw > 22
+        ? '<text class="vlabel" x="' + (x + bw / 2) + '" y="' + (y - 3) + '" text-anchor="middle">' + esc(fmt(d.value)) + "</text>"
+        : "";
+      return '<rect class="bar" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) +
+             '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="2">' +
+             "<title>" + esc(d.label) + ": " + esc(fmtMoney(d.value)) + "</title></rect>" + val + lbl;
+    }).join("");
+
+    var baseY = padT + innerH;
+    var svg = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Sales by period">' +
+      '<line class="axis" x1="' + padL + '" y1="' + baseY + '" x2="' + (W - padR) + '" y2="' + baseY + '"/>' +
+      bars + "</svg>";
+    document.getElementById("chart").innerHTML = svg;
+    reportSize();
+  }
+
+  // If nothing arrives shortly, keep the loading note but stop looking anxious.
+  setTimeout(function () {
+    if (document.getElementById("sub").textContent === "Loading sales…") setSub("Waiting for data…");
+  }, 4000);
+})();
+</script>
+</body>
+</html>

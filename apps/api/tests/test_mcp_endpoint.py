@@ -164,7 +164,8 @@ class TestHandshake:
         ).json()["result"]
 
         assert init["protocolVersion"] == "2025-06-18"
-        assert init["capabilities"] == {"tools": {"listChanged": False}}
+        assert init["capabilities"]["tools"] == {"listChanged": False}
+        assert init["capabilities"]["resources"] == {"listChanged": False}
         assert init["serverInfo"]["name"] == "norm"
         assert "resolve_dates" in init["instructions"]
 

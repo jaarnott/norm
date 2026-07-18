@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     # first admin user with that user's real scopes and venues. Refused unless
     # ENVIRONMENT == "local". No default — it does not exist unless set.
     MCP_DEV_TOKEN: str = ""
+    # MCP Apps (SEP-1865) embedded UI: expose ui:// resources and bind curated
+    # tools to them so the host renders their result in a sandboxed iframe.
+    # A kill switch — off makes the server advertise only `tools` again.
+    MCP_UI_ENABLED: bool = True
 
     # ── Observability (Phase 4) ─────────────────────────────────────────
     LOG_LEVEL: str = "INFO"

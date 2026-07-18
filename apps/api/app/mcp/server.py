@@ -7,11 +7,12 @@ headers, raw-body parsing — live in ``routers/mcp.py``.
 ## Protocol surface
 
 Implemented: ``initialize``, ``notifications/initialized``, ``ping``,
-``tools/list``, ``tools/call``.
+``tools/list``, ``tools/call``, and — for MCP Apps (SEP-1865) embedded UI —
+``resources/list`` and ``resources/read`` (gated on ``MCP_UI_ENABLED``).
 
-Not implemented, deliberately: ``resources/*``, ``prompts/*``, SSE streaming,
-``Mcp-Session-Id``, outbound notifications. We advertise only ``tools``, so a
-conforming client never calls the rest.
+Not implemented, deliberately: ``prompts/*``, SSE streaming, ``Mcp-Session-Id``,
+outbound notifications, resource subscriptions. ``resources/*`` serves only the
+static ``ui://`` app templates — there are no data resources to enumerate.
 
 Statelessness is a design commitment, not an omission: Norm runs on Cloud Run
 with autoscaling, and session affinity across instances is a bug factory.
@@ -27,6 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
+from app.config import settings
 from app.connectors.mcp_protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
@@ -36,6 +38,12 @@ from app.connectors.mcp_protocol import (
     jsonrpc_result,
 )
 from app.mcp.instructions import SERVER_INSTRUCTIONS
+from app.mcp.ui_apps import (
+    UI_EXTENSION_ID,
+    UI_MIME_TYPE,
+    list_ui_resources,
+    read_ui_resource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +77,20 @@ def _handle_initialize(params: dict, ctx: "McpContext") -> dict:
         if requested in SUPPORTED_PROTOCOL_VERSIONS
         else LATEST_PROTOCOL_VERSION
     )
+    # Advertise only what we implement. A client that sees a capability here
+    # will call its methods and expect them to work.
+    capabilities: dict = {"tools": {"listChanged": False}}
+    if settings.MCP_UI_ENABLED:
+        # MCP Apps (SEP-1865): UI resources rendered in the host's sandboxed
+        # iframe. Requires the `resources` primitive plus the UI extension so
+        # the host knows to treat ui:// resources as renderable apps.
+        capabilities["resources"] = {"listChanged": False}
+        capabilities["extensions"] = {
+            UI_EXTENSION_ID: {"mimeTypes": [UI_MIME_TYPE]},
+        }
     return {
         "protocolVersion": version,
-        # Advertise only what we implement. A client that sees `resources` here
-        # will call resources/list and get a method-not-found for its trouble.
-        "capabilities": {"tools": {"listChanged": False}},
+        "capabilities": capabilities,
         "serverInfo": {
             "name": SERVER_NAME,
             "title": SERVER_TITLE,
@@ -100,6 +117,28 @@ def _handle_tools_list(params: dict, ctx: "McpContext") -> dict:
     return {"tools": ctx.list_tools()}
 
 
+def _handle_resources_list(params: dict, ctx: "McpContext") -> dict:
+    """List UI resources. Non-paginated; the set is tiny and curated.
+
+    UI apps are static, non-sensitive HTML templates (the data they render is
+    fetched per-request through the authenticated tool path), so the list is
+    the same for every principal.
+    """
+    if not settings.MCP_UI_ENABLED:
+        return {"resources": []}
+    return {"resources": list_ui_resources()}
+
+
+def _handle_resources_read(params: dict, ctx: "McpContext") -> dict:
+    uri = params.get("uri")
+    if not uri or not isinstance(uri, str):
+        raise McpDispatchError(INVALID_PARAMS, "params.uri is required")
+    result = read_ui_resource(uri) if settings.MCP_UI_ENABLED else None
+    if result is None:
+        raise McpDispatchError(INVALID_PARAMS, f"Unknown resource: {uri}")
+    return result
+
+
 def _handle_tools_call(params: dict, ctx: "McpContext") -> dict:
     name = params.get("name")
     if not name or not isinstance(name, str):
@@ -119,6 +158,8 @@ _HANDLERS: dict[str, Callable[[dict, "McpContext"], dict]] = {
     "ping": _handle_ping,
     "tools/list": _handle_tools_list,
     "tools/call": _handle_tools_call,
+    "resources/list": _handle_resources_list,
+    "resources/read": _handle_resources_read,
 }
 
 # Notifications get no response body — the client isn't listening for one.

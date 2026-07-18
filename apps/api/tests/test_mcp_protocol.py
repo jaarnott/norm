@@ -127,14 +127,16 @@ class TestDispatchInitialize:
         )
         assert r["result"]["protocolVersion"] == LATEST_PROTOCOL_VERSION
 
-    def test_advertises_only_tools(self):
-        """Never advertise a capability we don't implement — a client that sees
-        `resources` will call resources/list and get method-not-found."""
+    def test_advertises_tools_and_ui(self):
+        """Advertise exactly what we implement: tools, plus (with MCP Apps on)
+        resources and the UI extension. Never advertise prompts, which we don't."""
         caps = handle_jsonrpc(jsonrpc_request("initialize"), McpContext())["result"][
             "capabilities"
         ]
-        assert caps == {"tools": {"listChanged": False}}
-        assert "resources" not in caps
+        assert caps["tools"] == {"listChanged": False}
+        # MCP_UI_ENABLED defaults on, so the UI extension is advertised.
+        assert caps["resources"] == {"listChanged": False}
+        assert "io.modelcontextprotocol/ui" in caps["extensions"]
         assert "prompts" not in caps
 
     def test_instructions_carry_the_date_authority(self):
@@ -163,7 +165,8 @@ class TestDispatchErrors:
         assert r["error"]["code"] == INVALID_REQUEST
 
     def test_unknown_method(self):
-        r = handle_jsonrpc(jsonrpc_request("resources/list"), McpContext())
+        # prompts/* is deliberately not implemented.
+        r = handle_jsonrpc(jsonrpc_request("prompts/list"), McpContext())
         assert r["error"]["code"] == METHOD_NOT_FOUND
 
     def test_non_object_params(self):
