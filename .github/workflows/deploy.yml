@@ -108,9 +108,30 @@ jobs:
       image_tag: ${{ needs.build-and-push.outputs.image_tag }}
     secrets: inherit
 
-  # ── Deploy to production (manual trigger from admin panel) ──────
+  # ── Deploy to production (auto, after staging) ──────────────────
+  # Norm has no live end users yet, so every green build ships straight to
+  # production. The gates are the CI run and the E2E suite against testing
+  # above — if either fails the pipeline stops before this job. Database
+  # migrations run first via the norm-migrate-production Cloud Run job (see
+  # deploy-env.yml). To pin a specific SHA or roll back, use the manual job
+  # below. When Norm has real users, reinstate a gate here (either drop this
+  # job back to workflow_dispatch only, or add a required reviewer to the
+  # "production" GitHub environment, which pauses this job for approval).
   deploy-production:
     name: Deploy to Production
+    needs: [build-and-push, deploy-staging]
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: production
+      image_tag: ${{ needs.build-and-push.outputs.image_tag }}
+    secrets: inherit
+
+  # ── Deploy to production (manual: pin a SHA or roll back) ───────
+  deploy-production-manual:
+    name: Deploy to Production (manual)
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
     uses: ./.github/workflows/deploy-env.yml
     with:

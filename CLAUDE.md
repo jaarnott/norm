@@ -20,30 +20,59 @@
 
 ```
 Push to main
-  → CI (lint, 228 tests, typecheck, docker build)
+  → CI (lint, tests, typecheck, docker build)
   → Build & push Docker images to Artifact Registry
   → Deploy to testing (testing.bettercallnorm.com)
   → Run E2E test suite
   → Deploy to staging (staging.bettercallnorm.com)
+  → Deploy to production (bettercallnorm.com)   ← automatic
 ```
 
-### Production deploy (manual)
+**Production deploys automatically.** Every green build ships all the way to
+production — there is no manual gate. The gates are CI and the E2E suite against
+testing; if either fails the pipeline stops before production. Migrations run
+first, automatically (see below).
 
-Production requires a manual trigger. Use the GitHub CLI:
+This is deliberate while Norm has no live end users. **When real users are on
+it, reinstate a gate**: either drop `deploy-production` in
+`.github/workflows/deploy.yml` back to `workflow_dispatch` only, or add a
+required reviewer to the `production` GitHub environment (which pauses the job
+for approval without any workflow change).
+
+### Deploying a specific SHA / rolling back
+
+The manual path still exists for pinning a build or rolling back:
 
 ```bash
-# First, ensure GITHUB_TOKEN doesn't override CLI auth:
+# Ensure GITHUB_TOKEN doesn't override CLI auth:
 unset GITHUB_TOKEN
 
-# Deploy the latest SHA to production:
-gh workflow run deploy.yml -f environment=production -f image_tag=$(git rev-parse HEAD)
+gh workflow run deploy.yml -f environment=production -f image_tag=<git-sha>
 ```
 
-Or from GitHub Actions UI: Actions → Deploy → Run workflow → select `production` → paste the git SHA.
+Or GitHub Actions UI: Actions → Deploy → Run workflow → `production` → paste the SHA.
+
+To roll back fast without the pipeline, point the Cloud Run service at a previous
+image tag directly (images are tagged by git SHA in the `norm-testing` registry):
+
+```bash
+gcloud run services update norm-api-production \
+  --project=norm-production-491101 --region=australia-southeast1 \
+  --image=australia-southeast1-docker.pkg.dev/norm-testing/norm/norm-api:<git-sha> --quiet
+# same for norm-web-production / norm-web
+```
 
 ### Running migrations on production
 
-Migrations run automatically on testing/staging via the deploy pipeline. For production, migrations must be run manually via Cloud SQL proxy:
+**Migrations run automatically on every environment, including production** — the
+deploy pipeline executes the `norm-migrate-<env>` Cloud Run job (e.g.
+`norm-migrate-production`) before switching traffic to the new image, so schema
+changes land ahead of the code that needs them. You do not normally need to do
+anything.
+
+The manual Cloud SQL proxy procedure below is a **fallback** — for when the
+migrate job is missing/broken, or you need to inspect or repair schema state by
+hand:
 
 ```bash
 export PATH="$HOME/google-cloud-sdk/bin:$PATH"
