@@ -50,6 +50,10 @@ STOCK_4W = {"lines": [{"stockItemID": "i1", "quantityOnHand": 10.0}]}
 RECEIVED = []
 SALES = [{"amount": 100000}]
 BUDGETS = [{"amount": 200000}]
+# Post-transform shape of get_stock_item_minimums (see the spec action): one row
+# per item with the par level and the ratios needed to convert it to counting
+# units. Default: no minimums configured.
+MINIMUMS = []
 
 API_ERROR = {
     "error": 'API error 500: {"code":500,"description":"Something went wrong"}'
@@ -66,6 +70,7 @@ class Api:
         received=RECEIVED,
         sales=SALES,
         budgets=BUDGETS,
+        minimums=MINIMUMS,
         retry_stock=None,
     ):
         self.stock_now = stock_now
@@ -73,6 +78,7 @@ class Api:
         self.received = received
         self.sales = sales
         self.budgets = budgets
+        self.minimums = minimums
         self.retry_stock = retry_stock  # what a serial retry returns, if set
         self.retries = 0
         self.logs = []
@@ -87,6 +93,8 @@ class Api:
             return self.sales
         if action == "get_budgets":
             return self.budgets
+        if action == "get_stock_item_minimums":
+            return self.minimums
         raise AssertionError(f"unexpected action {action}")
 
     def call_api(self, connector, action, params=None):
@@ -121,7 +129,116 @@ class TestHappyPath:
         assert row["usageLast4Weeks"] == 6.0
         assert row["forecastUsage"] == 12.0
         assert row["orderQty"] == 8.0  # 12 forecast - 4 on hand
+        assert row["orderDriver"] == "usage"
+        assert row["minimumStock"] == 0
         assert api.retries == 0
+
+    def test_no_20_percent_buffer_is_applied(self):
+        """We deliberately do NOT add LoadedHub's 20% forecast buffer."""
+        out = run_fn(Api())
+        # A buffered order would be 1.2 * 12 - 4 = 10.4; the bare forecast is 8.0.
+        assert out[0]["orderQty"] == 8.0
+
+
+class TestMinimumEnforcement:
+    """Par levels: order up to the minimum, converting units, even with no usage."""
+
+    def test_below_par_with_no_usage_is_still_ordered(self):
+        # No usage this period (opening == closing), but on hand (4) is below the
+        # par level of 10 -> order the 6-unit shortfall.
+        api = Api(
+            stock_now={
+                "lines": [
+                    {
+                        "stockItemID": "i1",
+                        "itemName": "Jim Beam 700ml",
+                        "quantityOnHand": 4.0,
+                        "countingUnitName": "bottle",
+                        "Category": "Spirits",
+                    }
+                ]
+            },
+            stock_4w={"lines": [{"stockItemID": "i1", "quantityOnHand": 4.0}]},
+            minimums=[
+                {
+                    "id": "i1",
+                    "minQty": 10,
+                    "minUnitRatio": 0.7,
+                    "countingUnitRatio": 0.7,
+                }
+            ],
+        )
+        out = run_fn(api)
+        assert len(out) == 1
+        assert out[0]["orderQty"] == 6.0  # 10 par - 4 on hand
+        assert out[0]["orderDriver"] == "minimum"
+        assert out[0]["minimumStock"] == 10.0
+
+    def test_minimum_is_converted_from_its_own_unit(self):
+        """Min '1' in a 24-pack unit for an item counted in Each == 24 Each."""
+        api = Api(
+            stock_now={
+                "lines": [
+                    {
+                        "stockItemID": "beer",
+                        "itemName": "Stella 330ml",
+                        "quantityOnHand": 5.0,
+                        "countingUnitName": "Each",
+                        "Category": "Beer",
+                    }
+                ]
+            },
+            stock_4w={"lines": [{"stockItemID": "beer", "quantityOnHand": 5.0}]},
+            minimums=[
+                {"id": "beer", "minQty": 1, "minUnitRatio": 24, "countingUnitRatio": 1}
+            ],
+        )
+        out = run_fn(api)
+        assert out[0]["minimumStock"] == 24.0
+        assert out[0]["orderQty"] == 19.0  # 24 par - 5 on hand
+
+    def test_at_or_above_par_with_no_usage_is_not_ordered(self):
+        api = Api(
+            stock_now={
+                "lines": [
+                    {
+                        "stockItemID": "i1",
+                        "itemName": "Jim Beam 700ml",
+                        "quantityOnHand": 12.0,
+                        "countingUnitName": "bottle",
+                        "Category": "Spirits",
+                    }
+                ]
+            },
+            stock_4w={"lines": [{"stockItemID": "i1", "quantityOnHand": 12.0}]},
+            minimums=[
+                {
+                    "id": "i1",
+                    "minQty": 10,
+                    "minUnitRatio": 0.7,
+                    "countingUnitRatio": 0.7,
+                }
+            ],
+        )
+        assert run_fn(api) == []
+
+    def test_usage_wins_when_it_exceeds_the_par_shortfall(self):
+        # Default stock: usage order = 8. Par shortfall only 2 -> usage drives it.
+        api = Api(
+            minimums=[
+                {"id": "i1", "minQty": 6, "minUnitRatio": 1, "countingUnitRatio": 1}
+            ]
+        )
+        out = run_fn(api)
+        assert out[0]["orderQty"] == 8.0
+        assert out[0]["orderDriver"] == "usage"
+
+    def test_minimums_call_failure_degrades_to_usage_only(self):
+        api = Api(minimums=API_ERROR)
+        out = run_fn(api)
+        assert isinstance(out, list)
+        assert out[0]["orderQty"] == 8.0  # usage forecast still works
+        assert any("par levels will not be enforced" in m for m in api.logs)
 
 
 class TestStockOnHandFailure:

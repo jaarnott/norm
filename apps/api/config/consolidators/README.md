@@ -21,6 +21,14 @@ sync overwrites it.
 | `reconcile_received_invoices.py` | `loadedhub` spec → tool `reconcile_received_invoices` | `scripts/sync_invoice_receiving_config.py` |
 | `calculate_template_stock_requirements.py` | `loadedhub` spec → tool `calculate_template_stock_requirements` | `scripts/sync_stock_requirements_config.py` |
 
+`calculate_template_stock_requirements` also depends on a plain connector
+action, **`get_stock_item_minimums`** (loadedhub → `/1.0/stock/internal/items`),
+which returns each item's par level plus the unit ratios to convert it into
+counting units. That action likewise lives in the config DB; its reviewed source
+and sync script is `scripts/sync_stock_item_minimums_action.py`. It enforces par
+levels (order up to the minimum even with no usage) but deliberately does **not**
+apply LoadedHub's 20% forecast buffer.
+
 ## Treat a failed API call as a failure, not as no data
 
 `call_api` and `call_api_parallel` return `{"error": "..."}` when a call fails —

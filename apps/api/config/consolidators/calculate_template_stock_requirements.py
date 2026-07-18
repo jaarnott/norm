@@ -1,23 +1,32 @@
 def run(params, call_api, log, call_api_parallel):
     """Forecast how much of a stocktake template's stock to order.
 
-    Mirrors what LoadedHub's own Stock → Ordering → Predicted Order page does:
-    compare stock on hand now vs 4 weeks ago, add what was received in between to
-    get usage, then scale that usage by the budget for the forecast period.
+    Compares stock on hand now vs 4 weeks ago, adds what was received in between
+    to get usage, then scales that usage by the budget for the forecast period.
 
-    Failure handling is the point of this version. `get_stock_on_hand` is slow —
-    ~13s in LoadedHub's own UI, and it degrades under concurrency — and LoadedHub
-    aborts it with a 500 ("Something went wrong") at roughly 30s. When that
-    happened, `call_api_parallel` returned {"error": ...} for those two calls;
-    this function read `.get("lines", [])` off that error dict, silently got an
-    empty list, and reported "0 items need reordering out of 0 total". The agent
-    then told the user the template "may be empty or unconfigured" — while the
-    template actually had 309 items. A LoadedHub outage was reported as a data
-    problem, which sent everyone looking in the wrong place.
+    Two things to know about how this differs from LoadedHub's own Predicted
+    Order page:
 
-    So: a failed call is now retried once (serially, off the parallel batch that
-    contributed to the timeout) and, if it still fails, reported as the API error
-    it is. Never silently treated as "no stock".
+    * We deliberately do NOT add LoadedHub's 20% forecast buffer. Order
+      quantities here are the bare usage-scaled forecast.
+    * We DO enforce the per-item minimum stock-on-hand (par level), like
+      LoadedHub does. An item that has fallen below its configured minimum is
+      ordered up to that minimum even if it had no usage this period — so slow
+      movers with a par level are no longer silently dropped. The minimum is
+      stored in the item's own unit, which is often (but not always — ~1 in 5
+      items) different from the counting unit stock-on-hand reports; we convert
+      it via the unit ratios before comparing.
+
+    Failure handling: `get_stock_on_hand` is slow — ~13s in LoadedHub's own UI —
+    and LoadedHub aborts it with a 500 ("Something went wrong") at roughly 30s.
+    When that happens `call_api_parallel` returns {"error": ...} for those calls.
+    An earlier version read `.get("lines", [])` off that error dict, silently got
+    an empty list, and reported "0 items need reordering out of 0 total" for a
+    309-item template. So a failed stock call is now retried once (serially, off
+    the parallel batch that contributed to the timeout) and, if it still fails,
+    reported as the API error it is. The item-minimums call is best-effort: if it
+    fails we warn and fall back to usage-only (par levels not enforced), rather
+    than abort.
     """
     venue = params["venue"]
     template_id = params["template_id"]
@@ -85,9 +94,14 @@ def run(params, call_api, log, call_api_parallel):
                 "get_budgets",
                 {"venue": venue, "from_date": params["today"], "to_date": order_until},
             ),
+            (
+                "loadedhub",
+                "get_stock_item_minimums",
+                {"venue": venue},
+            ),
         ]
     )
-    stock_now_raw, stock_4w_raw, received, sales, budgets = results
+    stock_now_raw, stock_4w_raw, received, sales, budgets, item_mins_raw = results
 
     # Retry the slow calls one at a time — the parallel batch is part of why they
     # time out, so a serial retry has a real chance of succeeding.
@@ -128,8 +142,37 @@ def run(params, call_api, log, call_api_parallel):
             )
         received = []
 
+    # Build the minimum-stock (par) lookup, keyed by item id, in COUNTING units.
+    # Each item stores its minimum in its own unit; stock-on-hand reports
+    # quantityOnHand in the counting unit. Convert via the two unit ratios:
+    #   min_in_base     = minQty * minUnitRatio
+    #   min_in_counting = min_in_base / countingUnitRatio
+    # (~1 in 5 items has a min unit that differs from its counting unit, e.g. a
+    # beer counted in "Each" with a minimum set in "24 Pack" — skipping this
+    # conversion would understate those minimums 24-fold.)
+    min_on_hand = {}
+    if isinstance(item_mins_raw, list):
+        for it in item_mins_raw:
+            min_qty = float(it.get("minQty", 0) or 0)
+            if min_qty <= 0:
+                continue
+            min_ratio = float(it.get("minUnitRatio", 0) or 0)
+            count_ratio = float(it.get("countingUnitRatio", 0) or 0)
+            if min_ratio > 0 and count_ratio > 0:
+                min_on_hand[it.get("id", "")] = min_qty * min_ratio / count_ratio
+            else:
+                # No ratios to convert with — assume the min is already stated
+                # in counting units rather than dropping the par level entirely.
+                min_on_hand[it.get("id", "")] = min_qty
+    else:
+        log(
+            f"WARNING: item minimums unavailable ({api_error(item_mins_raw)}) — "
+            "par levels will not be enforced this run"
+        )
+
     log(
-        f"Current stock: {len(stock_now)} items, 4w ago: {len(stock_4w)} items, Invoices: {len(received)}"
+        f"Current stock: {len(stock_now)} items, 4w ago: {len(stock_4w)} items, "
+        f"Invoices: {len(received)}, Items with a par level: {len(min_on_hand)}"
     )
 
     if not stock_now:
@@ -187,7 +230,13 @@ def run(params, call_api, log, call_api_parallel):
             total_budget += float(b.get("amount", 0) or 0)
     log(f"Total budget (forecast period): ${total_budget:,.0f}")
 
-    # Calculate per-item requirements
+    # Calculate per-item requirements. Each item's order is the greater of two
+    # drivers:
+    #   * usage forecast — usage scaled by the budget (no buffer), and
+    #   * par level      — top up to the configured minimum stock on hand.
+    # An item with no usage this period is still ordered if it has fallen below
+    # its par level, which is why the old `usage <= 0: continue` short-circuit is
+    # gone.
     results = []
     for item in stock_now:
         item_id = item.get("stockItemID", "")
@@ -195,25 +244,34 @@ def run(params, call_api, log, call_api_parallel):
         on_hand = float(item.get("quantityOnHand", 0) or 0)
         usage = usage_by_item.get(item_id, 0)
 
-        if usage <= 0:
+        forecast = 0.0
+        usage_order = 0.0
+        if usage > 0:
+            usage_per_1k = usage / (total_sales / 1000)
+            forecast = usage_per_1k * (total_budget / 1000)
+            usage_order = max(0, forecast - on_hand)
+
+        min_level = min_on_hand.get(item_id, 0)
+        min_order = max(0, min_level - on_hand) if min_level > 0 else 0
+
+        order_qty = max(usage_order, min_order)
+        if order_qty <= 0:
             continue
 
-        usage_per_1k = usage / (total_sales / 1000)
-        forecast = usage_per_1k * (total_budget / 1000)
-        order_qty = max(0, forecast - on_hand)
-
-        if order_qty > 0:
-            results.append(
-                {
-                    "itemName": item_name,
-                    "currentStock": round(on_hand, 1),
-                    "usageLast4Weeks": round(usage, 1),
-                    "forecastUsage": round(forecast, 1),
-                    "orderQty": round(order_qty, 1),
-                    "unit": item.get("countingUnitName", ""),
-                    "category": item.get("Category", ""),
-                }
-            )
+        results.append(
+            {
+                "itemName": item_name,
+                "currentStock": round(on_hand, 1),
+                "usageLast4Weeks": round(usage, 1) if usage > 0 else 0,
+                "forecastUsage": round(forecast, 1),
+                "minimumStock": round(min_level, 1),
+                "orderQty": round(order_qty, 1),
+                # Which rule set the quantity, so the agent can explain the line.
+                "orderDriver": "minimum" if min_order > usage_order else "usage",
+                "unit": item.get("countingUnitName", ""),
+                "category": item.get("Category", ""),
+            }
+        )
 
     results.sort(key=lambda x: x["orderQty"], reverse=True)
     log(f"RESULT: {len(results)} items need reordering out of {len(stock_now)} total")
