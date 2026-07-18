@@ -303,12 +303,15 @@ ROLLOUT: ALWAYS pass dry_run=true. (Remove this line after production verificati
 
 1. Call review_and_receive_invoices for the venue (default range: last 60 days).
    - If the user only asks to "check", "review" or "look at" invoices, pass dry_run=true.
-2. Report the results in two sections ("Received" / "Would receive" on a dry run, then "Needs attention"). For EVERY invoice render, from the tool's data and copying every value and ✓/✗/— exactly as returned (never invent, reformat or fill in a "—"; "—" means that check was not run because an earlier one failed):
-   a. Its details.header as a markdown table — | Field | Invoice (Loaded) | PO | Invoice copy | Result | — one row per header field (invoice number, supplier, PO number, subtotal, tax, total).
-   b. Its details.lines as a markdown table — | Line | Stock item | PO line | On copy | Unit | Quantity | Unit cost | Line total | Arithmetic | — one row per line. The unit/quantity/cost/total cells arrive as ready-made comparison strings (e.g. "ord 5.0 / inv 4.95 / copy 4.95 ✓"); copy each cell into the table verbatim. Include the "on copy only" rows and any "…more lines omitted" marker verbatim.
-   c. Its checklist: when it is the string "All 14 checks passed ✓", print exactly that line; otherwise render it as a compact | Check | Result | table.
-   d. For "Needs attention" invoices only: the tool's exact reasons as a markdown bulleted list (one bullet per reason). The tool reports only the first blocking problem per invoice, so present the bullets as-is without speculating about other issues.
-3. Close with the summary counts and what manual work remains in Loaded (linking POs, adding freight lines, credit notes).
+2. Write the report. The app already displays the tool's summary table (Invoice / Supplier / PO / Total / Checks / Outcome / Notes) — NEVER repeat it. Your reply is the per-invoice audit view underneath, in two sections: "Received" (or "Would receive" on a dry run) then "Needs attention". Copy every value and ✓/✗/— exactly as returned — never invent, reformat, or fill in a "—" ("—" means that check was not run because an earlier one failed).
+   - EVERY invoice that HAS details.lines (received, would receive, or failed during line/copy comparison) MUST get its own subsection — do not summarise or skip any:
+     a. Heading: ### {reference_number} — {supplier_name} — {total}
+     b. details.header as a markdown table — | Field | Invoice (Loaded) | PO | Invoice copy | Result | — one row per header field.
+     c. details.lines as a markdown table — | Line | Stock item | PO line | On copy | Unit | Quantity | Unit cost | Line total | Arithmetic | — one row per line. The unit/quantity/cost/total cells arrive as ready-made comparison strings (e.g. "ord 5.0 / inv 4.95 / copy 4.95 ✓"); copy each cell verbatim. Include the "on copy only" rows and any "…more lines omitted" marker verbatim.
+     d. Its checklist: when it is the string "All 14 checks passed ✓", print exactly that line; otherwise a compact | Check | Result | table.
+     e. Its reasons, if any, as a markdown bulleted list.
+   - Invoices WITHOUT details.lines were skipped before any comparison ran (no PO linked, credit note, fetch failure) — list each as one bold line "**{reference_number}** — {supplier_name} — {total}" followed by the tool's reasons as bullets. No tables for these; the tool reports only the first blocking problem, so present the bullets as-is without speculating.
+3. Close with the summary counts and what manual work remains in Loaded (linking POs, adding freight lines, credit notes). Mention that the header comparison for any skipped invoice is available on request (it is in details.header of the same result).
 
 If the user asks why a specific invoice was skipped, use get_invoice_detail together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
     "tool_filter": [

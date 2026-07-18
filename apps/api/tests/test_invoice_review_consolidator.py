@@ -600,17 +600,25 @@ class TestAuditDetails:
         assert rec["line_total"] == "inv $219.78 / copy $219.78 ✓"
         assert rec["arithmetic"] == "✓"
 
-    def test_blocked_invoice_still_shows_loaded_values_unchecked(self):
+    def test_blocked_invoice_has_header_but_no_line_detail(self):
         api = api_for(make_invoice(linkedPurchaseOrderId=None))
         verdict = run_consolidator(api)["skipped"][0]
-        rec = verdict["details"]["lines"][0]
-        # Loaded's own values still shown; trailing "—" marks "not checked"
-        assert rec["quantity"] == "inv 4.95 —"
-        assert rec["po_line"] == "—"
-        assert rec["arithmetic"] == "—"
+        # No comparison ran, so no line records — their absence tells the
+        # playbook to render reason bullets instead of audit tables.
+        assert "lines" not in verdict["details"]
+        # Loaded's own header values remain available on request.
         header = {h["field"]: h for h in verdict["details"]["header"]}
         assert header["Total incl tax"]["invoice"] == "$252.75"
         assert header["Total incl tax"]["copy"] == "—"
+
+    def test_po_fetched_failure_keeps_unchecked_line_detail(self):
+        # PO fetched but a line has no PO line — comparison started, so line
+        # records are reported, with "—" marking cells never checked.
+        api = api_for(make_invoice(), po=make_po(lines=[]))
+        verdict = run_consolidator(api)["skipped"][0]
+        rec = verdict["details"]["lines"][0]
+        assert rec["quantity"].startswith("ord") or rec["quantity"].startswith("inv")
+        assert rec["po_line"] == "✗"
 
     def test_price_mismatch_vs_copy_marks_the_cell(self):
         pdf = make_pdf()
@@ -641,8 +649,9 @@ class TestAuditDetails:
         )
 
     def test_long_invoices_cap_line_detail(self):
+        # PO-linked so line comparison runs (unlinked invoices report no lines)
         many = [make_line(id=f"line-{i}", description=f"ITEM {i}") for i in range(30)]
-        api = api_for(make_invoice(linkedPurchaseOrderId=None, lines=many))
+        api = api_for(make_invoice(lines=many))
         lines = run_consolidator(api)["skipped"][0]["details"]["lines"]
         assert len(lines) == 26  # 25 detail rows + omission marker
         assert "5 more lines checked but omitted" in lines[-1]["line"]
@@ -682,8 +691,7 @@ class TestPayloadSize:
         invoices, details = [], {}
         for i in range(count):
             lines = [
-                make_line(id=f"l{i}-{j}", description=f"ITEM {i}-{j}")
-                for j in range(4)
+                make_line(id=f"l{i}-{j}", description=f"ITEM {i}-{j}") for j in range(4)
             ]
             inv = make_invoice(
                 id=f"inv-{i}",

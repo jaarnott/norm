@@ -268,6 +268,59 @@ def run(params, call_api, log, call_api_parallel=None):
                 {"check": label, "result": symbol.get(checks.get(key), "—")}
                 for key, label in CHECK_LABELS
             ]
+            details = {
+                "header": [
+                    hdr(
+                        "Invoice number",
+                        ref,
+                        None,
+                        (pdf or {}).get("invoice_number"),
+                        "pdf_invoice_number",
+                    ),
+                    hdr(
+                        "Supplier",
+                        detail.get("supplierName"),
+                        (po or {}).get("supplierName"),
+                        (pdf or {}).get("supplier_name"),
+                        "po_supplier",
+                    ),
+                    hdr(
+                        "PO number",
+                        po_number_hint,
+                        (po or {}).get("orderNumber"),
+                        (pdf or {}).get("purchase_order_number"),
+                        "po_linked",
+                    ),
+                    hdr(
+                        "Subtotal (ex tax)",
+                        opt_money(detail.get("subtotal")),
+                        None,
+                        opt_money((pdf or {}).get("subtotal_ex_tax")),
+                        "totals",
+                    ),
+                    hdr(
+                        "Tax",
+                        opt_money(detail.get("taxAmount")),
+                        None,
+                        opt_money((pdf or {}).get("tax_amount")),
+                        "totals",
+                    ),
+                    hdr(
+                        "Total incl tax",
+                        opt_money(detail.get("total")),
+                        None,
+                        opt_money((pdf or {}).get("total_incl_tax")),
+                        "pdf_total",
+                    ),
+                ],
+            }
+            # Line records are only worth reporting once line-level comparison
+            # started (the PO was fetched) — before that every cell is "—" and
+            # the reasons tell the whole story. Their absence is also the
+            # playbook's rendering signal: lines present ⇒ full audit tables,
+            # lines absent ⇒ reason bullets only.
+            if po is not None:
+                details["lines"] = [compact_line(rec) for rec in line_records]
             return {
                 "invoice_id": inv_id,
                 "reference_number": ref,
@@ -280,53 +333,7 @@ def run(params, call_api, log, call_api_parallel=None):
                     if all(r["result"] == "✓" for r in checklist_rows)
                     else checklist_rows
                 ),
-                "details": {
-                    "header": [
-                        hdr(
-                            "Invoice number",
-                            ref,
-                            None,
-                            (pdf or {}).get("invoice_number"),
-                            "pdf_invoice_number",
-                        ),
-                        hdr(
-                            "Supplier",
-                            detail.get("supplierName"),
-                            (po or {}).get("supplierName"),
-                            (pdf or {}).get("supplier_name"),
-                            "po_supplier",
-                        ),
-                        hdr(
-                            "PO number",
-                            po_number_hint,
-                            (po or {}).get("orderNumber"),
-                            (pdf or {}).get("purchase_order_number"),
-                            "po_linked",
-                        ),
-                        hdr(
-                            "Subtotal (ex tax)",
-                            opt_money(detail.get("subtotal")),
-                            None,
-                            opt_money((pdf or {}).get("subtotal_ex_tax")),
-                            "totals",
-                        ),
-                        hdr(
-                            "Tax",
-                            opt_money(detail.get("taxAmount")),
-                            None,
-                            opt_money((pdf or {}).get("tax_amount")),
-                            "totals",
-                        ),
-                        hdr(
-                            "Total incl tax",
-                            opt_money(detail.get("total")),
-                            None,
-                            opt_money((pdf or {}).get("total_incl_tax")),
-                            "pdf_total",
-                        ),
-                    ],
-                    "lines": [compact_line(rec) for rec in line_records],
-                },
+                "details": details,
             }
 
         # Gates are evaluated in LAYERS that short-circuit: once a layer fails,
