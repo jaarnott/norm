@@ -3,7 +3,7 @@
 import { useMemo, useState, useRef, useCallback } from 'react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 import type { Shift, ShiftBreak, DragData } from './shared';
-import { dateKey, formatTimeShort, calcHours, roleColor, staffName, snapToGrid, offsetToTime } from './shared';
+import { dateKey, formatTimeShort, calcHours, roleColor, staffName, snapToGrid, offsetToTime, tzOffsetOf, localTzOffset, rosterTzOffset, formatWithOffset } from './shared';
 
 const SIDEBAR_W = 140;
 const HOUR_W = 60;
@@ -114,6 +114,8 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
   const origWidth = Math.max(origRight - origLeft, 20);
   const hrs = calcHours(shift.clockinTime, shift.clockoutTime);
   const color = roleColor(shift.roleId || '');
+  // Send edits back in the same zone the shift arrived in, not the viewer's.
+  const tz = tzOffsetOf(shift.clockinTime) || tzOffsetOf(shift.clockoutTime) || localTzOffset(selectedDate);
 
   const displayLeft = resizePreview?.left ?? origLeft;
   const displayWidth = resizePreview?.width ?? origWidth;
@@ -155,8 +157,8 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
     const handleUp = () => {
       const preview = latestPreview.current;
       if (resizeRef.current && preview) {
-        const newClockIn = offsetToTime(preview.left, selectedDate, HOUR_W, DAY_START_HOUR);
-        const newClockOut = offsetToTime(preview.left + preview.width, selectedDate, HOUR_W, DAY_START_HOUR);
+        const newClockIn = offsetToTime(preview.left, selectedDate, HOUR_W, DAY_START_HOUR, tz);
+        const newClockOut = offsetToTime(preview.left + preview.width, selectedDate, HOUR_W, DAY_START_HOUR, tz);
         onResize(shift.id || '', newClockIn, newClockOut);
       }
       resizeRef.current = null;
@@ -168,14 +170,14 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
 
     document.addEventListener('mousemove', handleMove);
     document.addEventListener('mouseup', handleUp);
-  }, [interactive, onResize, origLeft, origWidth, shift.id, selectedDate]);
+  }, [interactive, onResize, origLeft, origWidth, shift.id, selectedDate, tz]);
 
   // Preview time labels during resize
   const previewStartTime = resizePreview
-    ? formatTimeShort(offsetToTime(resizePreview.left, selectedDate, HOUR_W, DAY_START_HOUR))
+    ? formatTimeShort(offsetToTime(resizePreview.left, selectedDate, HOUR_W, DAY_START_HOUR, tz))
     : formatTimeShort(shift.clockinTime);
   const previewEndTime = resizePreview
-    ? formatTimeShort(offsetToTime(resizePreview.left + resizePreview.width, selectedDate, HOUR_W, DAY_START_HOUR))
+    ? formatTimeShort(offsetToTime(resizePreview.left + resizePreview.width, selectedDate, HOUR_W, DAY_START_HOUR, tz))
     : formatTimeShort(shift.clockoutTime);
 
   return (
@@ -304,11 +306,13 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
 
 // --- Droppable lane with click-to-create ---
 
-function Lane({ laneId, index, interactive, selectedDate, onCreateShift, children }: {
+function Lane({ laneId, index, interactive, selectedDate, tzOffset, onCreateShift, children }: {
   laneId: string;
   index: number;
   interactive: boolean;
   selectedDate: Date;
+  /** Zone the roster is expressed in — new shifts must match it, not the viewer. */
+  tzOffset: string;
   onCreateShift?: (staffId: string, clockinTime: string, clockoutTime: string) => void;
   children: React.ReactNode;
 }) {
@@ -351,8 +355,8 @@ function Lane({ laneId, index, interactive, selectedDate, onCreateShift, childre
     if (dragRef.current.isDragging) {
       const startX = Math.min(dragRef.current.startX, currentX);
       const endX = Math.max(dragRef.current.startX, currentX);
-      const clockIn = offsetToTime(startX, selectedDate, HOUR_W, DAY_START_HOUR);
-      const clockOut = offsetToTime(endX, selectedDate, HOUR_W, DAY_START_HOUR);
+      const clockIn = offsetToTime(startX, selectedDate, HOUR_W, DAY_START_HOUR, tzOffset);
+      const clockOut = offsetToTime(endX, selectedDate, HOUR_W, DAY_START_HOUR, tzOffset);
       const inMs = new Date(clockIn).getTime();
       const outMs = new Date(clockOut).getTime();
       if (outMs - inMs >= MIN_SHIFT_MS) {
@@ -360,17 +364,16 @@ function Lane({ laneId, index, interactive, selectedDate, onCreateShift, childre
       }
     } else {
       // Click — create default-duration shift
-      const clickTime = offsetToTime(dragRef.current.startX, selectedDate, HOUR_W, DAY_START_HOUR);
+      const clickTime = offsetToTime(dragRef.current.startX, selectedDate, HOUR_W, DAY_START_HOUR, tzOffset);
       const startMs = snapToGrid(new Date(clickTime).getTime(), SNAP_MINUTES);
       const endMs = startMs + DEFAULT_SHIFT_MS;
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00+13:00`;
+      const fmt = (d: Date) => formatWithOffset(d, tzOffset, false);
       onCreateShift(laneId, fmt(new Date(startMs)), fmt(new Date(endMs)));
     }
 
     dragRef.current = null;
     setDragPreview(null);
-  }, [laneId, selectedDate, onCreateShift]);
+  }, [laneId, selectedDate, onCreateShift, tzOffset]);
 
   const handleMouseLeave = useCallback(() => {
     if (dragRef.current) {
@@ -414,6 +417,8 @@ function Lane({ laneId, index, interactive, selectedDate, onCreateShift, childre
 
 export default function DayTimeline({ shifts, selectedDate, editingShiftId, onSelectShift, onResizeShift, onCreateShift, interactive }: DayTimelineProps) {
   const lanes = useMemo(() => buildLanes(shifts, selectedDate), [shifts, selectedDate]);
+  // New shifts must be written in the roster's own zone (see rosterTzOffset).
+  const tzOffset = useMemo(() => rosterTzOffset(shifts, selectedDate), [shifts, selectedDate]);
 
   const hours: number[] = [];
   for (let h = DAY_START_HOUR; h < DAY_START_HOUR + DAY_HOURS; h++) {
@@ -477,7 +482,7 @@ export default function DayTimeline({ shifts, selectedDate, editingShiftId, onSe
           {/* Lanes */}
           <div style={{ position: 'relative' }}>
             {lanes.map((lane, li) => (
-              <Lane key={lane.id} laneId={lane.id} index={li} interactive={interactive} selectedDate={selectedDate} onCreateShift={onCreateShift}>
+              <Lane key={lane.id} laneId={lane.id} index={li} interactive={interactive} selectedDate={selectedDate} tzOffset={tzOffset} onCreateShift={onCreateShift}>
                 {/* Hour gridlines */}
                 {hours.map((_, i) => (
                   <div key={i} style={{

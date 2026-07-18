@@ -178,15 +178,42 @@ export function snapToGrid(timeMs: number, intervalMinutes: number): number {
   return Math.round(timeMs / ms) * ms;
 }
 
-export function offsetToTime(offset: number, selectedDate: Date, hourWidth: number, dayStartHour: number): string {
+import { tzOffsetOf, localTzOffset } from '../../../lib/datetime';
+
+export { tzOffsetOf, localTzOffset, formatWithOffset } from '../../../lib/datetime';
+
+/**
+ * The timezone the roster is expressed in.
+ *
+ * Times we send back must sit in the same zone as the ones the connector gave
+ * us, so take the offset from the roster's own shifts. Only if the roster has
+ * no timestamped shift yet (a brand new day) do we fall back to the browser's
+ * offset for that date. Never hardcode one: the venue may not be in the
+ * viewer's zone, and a fixed offset silently breaks across a DST boundary.
+ */
+export function rosterTzOffset(shifts: Shift[], fallbackDate: Date): string {
+  for (const s of shifts) {
+    const tz = tzOffsetOf(s.clockinTime) || tzOffsetOf(s.clockoutTime);
+    if (tz) return tz;
+  }
+  return localTzOffset(fallbackDate);
+}
+
+export function offsetToTime(
+  offset: number,
+  selectedDate: Date,
+  hourWidth: number,
+  dayStartHour: number,
+  tzOffset?: string,
+): string {
   const hours = offset / hourWidth + dayStartHour;
   const totalMinutes = Math.round(hours * 60);
   const d = new Date(selectedDate);
   d.setHours(0, 0, 0, 0);
   d.setMinutes(totalMinutes);
-  // Preserve timezone offset from original date
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00+13:00`;
+  const tz = tzOffset || localTzOffset(d);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${tz}`;
 }
 
 export const formInputStyle: React.CSSProperties = {

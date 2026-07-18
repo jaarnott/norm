@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
-import { extractShifts, extractRosterMeta, getWeekDays, dateKey, buildStaffRows, DAY_NAMES, formatTimeShort, calcHours, roleColor } from './roster/shared';
+import { extractShifts, extractRosterMeta, getWeekDays, dateKey, buildStaffRows, DAY_NAMES, formatTimeShort, calcHours, roleColor, formatWithOffset } from './roster/shared';
 import { apiFetch } from '../../lib/api';
 import WeekGrid from './roster/WeekGrid';
 import DayTimeline from './roster/DayTimeline';
@@ -83,13 +83,13 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     sunday.setDate(monday.getDate() + 6);
     sunday.setHours(23, 59, 59, 0);
     const pad = (n: number) => String(n).padStart(2, '0');
-    const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}+13:00`;
+    const fmt = (d: Date) => formatWithOffset(d);
 
     try {
       const res = await apiFetch('/api/working-documents/from-connector', {
         method: 'POST',
         body: JSON.stringify({
-          connector_name: 'loadedhub',
+          connector_name: connectorName,
           action: 'get_roster',
           params: { start_datetime: fmt(monday), end_datetime: fmt(sunday), venue_id: venueId },
           doc_type: 'roster',
@@ -162,12 +162,12 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     sunday.setDate(monday.getDate() + 6);
     sunday.setHours(23, 59, 59, 0);
     const pad = (n: number) => String(n).padStart(2, '0');
-    const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}+13:00`;
+    const fmt = (d: Date) => formatWithOffset(d);
     try {
       const res = await apiFetch('/api/working-documents/from-connector', {
         method: 'POST',
         body: JSON.stringify({
-          connector_name: 'loadedhub',
+          connector_name: connectorName,
           action: 'get_roster',
           params: { start_datetime: fmt(monday), end_datetime: fmt(sunday), venue_id: venueId },
           doc_type: 'roster',
