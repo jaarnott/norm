@@ -90,6 +90,10 @@ jobs:
         working-directory: apps/web
         run: pnpm exec tsc --noEmit
 
+      - name: Unit tests
+        working-directory: apps/web
+        run: pnpm test
+
       - name: Build
         working-directory: apps/web
         run: pnpm build
