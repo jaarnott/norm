@@ -140,10 +140,39 @@ class TestDispatchInitialize:
         assert "prompts" not in caps
 
     def test_instructions_carry_the_date_authority(self):
+        from app.config import settings
+        from app.services.business_calendar import humanize_hhmm
+
         r = handle_jsonrpc(jsonrpc_request("initialize"), McpContext())
         instructions = r["result"]["instructions"]
-        assert "resolve_dates" in instructions
-        assert "7:00am Monday" in instructions
+        # Derived from config, not pinned to a literal — the old test asserted
+        # "7:00am Monday", which would keep passing while the configured start
+        # moved and the text quietly lied to the client.
+        assert humanize_hhmm(settings.BUSINESS_DAY_START) in instructions
+        assert "Monday" in instructions
+
+    def test_instructions_name_the_tool_as_it_actually_projects(self):
+        """It used to say `resolve_dates`; the tool is `norm__resolve_dates`.
+        Guidance pointing at a name absent from tools/list is guidance the
+        client cannot follow."""
+        from app.mcp.projection import default_tool_name
+
+        r = handle_jsonrpc(jsonrpc_request("initialize"), McpContext())
+        assert (
+            default_tool_name("connector", "norm", "resolve_dates")
+            in r["result"]["instructions"]
+        )
+
+    def test_instructions_follow_the_configured_day_start(self, monkeypatch):
+        """The regression the literal pin could not catch."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "BUSINESS_DAY_START", "05:30")
+        instructions = handle_jsonrpc(jsonrpc_request("initialize"), McpContext())[
+            "result"
+        ]["instructions"]
+        assert "5:30am" in instructions and "5:29am" in instructions
+        assert "7:00am" not in instructions
 
     def test_latest_version_is_first_supported(self):
         assert SUPPORTED_PROTOCOL_VERSIONS[0] == LATEST_PROTOCOL_VERSION

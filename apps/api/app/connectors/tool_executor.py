@@ -110,9 +110,13 @@ def execute_connector_tool(
             return execute_consolidator(consolidator_config, p, db_sess, tid)
 
     if handler:
-        # Pass venue info through params so the handler can use it
+        # Pass venue info through params so the handler can use it: the name for
+        # display, and the id for anything needing the venue's own settings —
+        # resolve_dates reads day_start_time/timezone off it, so without the id
+        # it silently applies the org default instead of the venue's calendar.
         call_params = dict(params)
         if venue_id:
+            call_params.setdefault("venue_id", venue_id)
             v = db.query(Venue).filter(Venue.id == venue_id).first()
             if v and not call_params.get("venue"):
                 call_params["venue"] = v.name

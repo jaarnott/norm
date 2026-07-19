@@ -181,6 +181,14 @@ class NormMcpContext(McpContext):
         if tool.kind == "playbook":
             return self._call_playbook(tool, params, venue_id)
 
+        # A tool that isn't venue-scoped still gets no venue_id above, but the
+        # date resolver needs the venue's calendar to apply the right trading
+        # day. Hand it one only when it's unambiguous.
+        if venue_id is None and not tool.venue_scoped:
+            params.setdefault("venue_id", self._calendar_venue())
+            if params.get("venue_id") is None:
+                params.pop("venue_id", None)
+
         t0 = time.time()
         result = self._execute(tool, params, venue_id)
         duration_ms = int((time.time() - t0) * 1000)
@@ -280,6 +288,21 @@ class NormMcpContext(McpContext):
             duration_ms=duration_ms,
             venue_id=venue_id,
         )
+
+    def _calendar_venue(self) -> str | None:
+        """A venue to read business-calendar settings from, or None.
+
+        ``resolve_dates`` is deliberately not venue-scoped: it returns no venue
+        data, so it needs no venue *authorization*. But it does need venue
+        *settings* — `day_start_time` and `timezone` — or it silently applies
+        the org default instead of the venue's own trading day.
+
+        With exactly one consented venue the choice is unambiguous, so use it.
+        With several they may disagree, and picking one silently would be its
+        own wrong answer — fall back to the configured default instead.
+        """
+        venue_ids = self.principal.venue_ids if self.principal else ()
+        return venue_ids[0] if len(venue_ids) == 1 else None
 
     def _resolve_venue_for(self, tool: McpTool, venue_name: str | None) -> str | None:
         """Resolve and authorize the venue for a tool call.

@@ -37,7 +37,7 @@ from app.connectors.mcp_protocol import (
     jsonrpc_error,
     jsonrpc_result,
 )
-from app.mcp.instructions import SERVER_INSTRUCTIONS
+from app.mcp.instructions import server_instructions
 from app.mcp.ui_apps import (
     UI_EXTENSION_ID,
     UI_MIME_TYPE,
@@ -96,7 +96,7 @@ def _handle_initialize(params: dict, ctx: "McpContext") -> dict:
             "title": SERVER_TITLE,
             "version": SERVER_VERSION,
         },
-        "instructions": SERVER_INSTRUCTIONS,
+        "instructions": server_instructions(),
     }
 
 

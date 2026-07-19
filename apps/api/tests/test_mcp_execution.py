@@ -234,3 +234,43 @@ class TestNoFailOpenImports:
         assert not offenders, (
             f"app/mcp/ must not import require_permission/require_role: {offenders}"
         )
+
+
+class TestCalendarVenue:
+    """Which venue's trading day applies to a tool that isn't venue-scoped.
+
+    resolve_dates returns no venue data, so it needs no venue *authorization* —
+    but it does need venue *settings* (day_start_time/timezone), or it silently
+    applies the org default instead of the venue's own trading day.
+    """
+
+    def _ctx(self, db, principal):
+        from app.mcp.execution import NormMcpContext
+
+        return NormMcpContext(principal=principal, db=db, config_db=db)
+
+    def test_single_venue_is_used(self, db_session):
+        org = _org(db_session)
+        v = _venue(db_session, "La Zeppa", org)
+        u = _user(db_session)
+        _grant(db_session, u, v)
+        ctx = self._ctx(db_session, _principal(u, org, [v]))
+        assert ctx._calendar_venue() == v.id
+
+    def test_several_venues_fall_back_to_the_default(self, db_session):
+        """They may disagree on their day start. Silently picking one would be
+        its own wrong answer, so use the configured default instead."""
+        org = _org(db_session)
+        a = _venue(db_session, "La Zeppa", org)
+        b = _venue(db_session, "Mr Murdochs", org)
+        u = _user(db_session)
+        _grant(db_session, u, a)
+        _grant(db_session, u, b)
+        ctx = self._ctx(db_session, _principal(u, org, [a, b]))
+        assert ctx._calendar_venue() is None
+
+    def test_no_venues_is_none(self, db_session):
+        org = _org(db_session)
+        u = _user(db_session)
+        ctx = self._ctx(db_session, _principal(u, org, []))
+        assert ctx._calendar_venue() is None

@@ -149,6 +149,26 @@ def timezone_name(venue) -> str:
     return str(timezone_for(venue))
 
 
+def humanize_hhmm(hhmm: str) -> str:
+    """ "07:00" -> "7:00am". For prose that quotes the boundary.
+
+    Lives here so text describing the rule is generated from the rule. The MCP
+    server instructions used to hand-write "7:00am", which meant changing the
+    configured start silently made the guidance we send external clients false.
+    """
+    hour, minute = _parse_hhmm(hhmm)
+    suffix = "am" if hour < 12 else "pm"
+    display_hour = hour % 12 or 12
+    return f"{display_hour}:{minute:02d}{suffix}"
+
+
+def day_end_label(hhmm: str) -> str:
+    """The inclusive end of a day starting at ``hhmm`` — "07:00" -> "6:59am"."""
+    hour, minute = _parse_hhmm(hhmm)
+    total = (hour * 60 + minute - 1) % (24 * 60)
+    return humanize_hhmm(f"{total // 60:02d}:{total % 60:02d}")
+
+
 # ── Boundaries ───────────────────────────────────────────────────────────
 
 

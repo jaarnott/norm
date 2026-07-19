@@ -615,10 +615,20 @@ def _resolve_dates(params: dict, db: Session, thread_id: str | None) -> dict:
     # timezone; otherwise fall back to the caller's timezone and the configured
     # default day start — never to another venue's settings.
     venue = None
-    if params.get("venue_id"):
+    venue_id = params.get("venue_id")
+    if not venue_id and thread_id:
+        # Fall back to the thread's venue. Note this is set when the thread is
+        # created and never refreshed, so it can be stale if the user switched
+        # venue mid-conversation — a useful default, not a guarantee. An
+        # explicit venue_id in params always wins.
+        from app.db.models import Thread
+
+        thread = db.query(Thread).filter(Thread.id == thread_id).first()
+        venue_id = thread.venue_id if thread else None
+    if venue_id:
         from app.db.models import Venue
 
-        venue = db.query(Venue).filter(Venue.id == params["venue_id"]).first()
+        venue = db.query(Venue).filter(Venue.id == venue_id).first()
     if venue is None:
         venue = SimpleNamespace(
             timezone=params.get("timezone") or settings.SCHEDULER_TIMEZONE,

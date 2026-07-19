@@ -168,3 +168,54 @@ class TestCustomWindowAndDescription:
     def test_as_dict_is_serialisable(self):
         d = bc.trading_day(venue()).as_dict()
         assert set(d) >= {"start", "end", "kind", "trading_aligned", "description"}
+
+
+class TestHumanLabels:
+    """Prose that quotes the boundary is generated from the boundary.
+
+    The MCP instructions used to hand-write "7:00am", so changing the
+    configured start left Norm computing one boundary and telling Claude about
+    another — with a test pinning the same literal, nothing caught it.
+    """
+
+    @pytest.mark.parametrize(
+        "hhmm,expected",
+        [
+            ("07:00", "7:00am"),
+            ("05:30", "5:30am"),
+            ("00:00", "12:00am"),
+            ("12:00", "12:00pm"),
+            ("13:15", "1:15pm"),
+            ("23:59", "11:59pm"),
+        ],
+    )
+    def test_humanize(self, hhmm, expected):
+        assert bc.humanize_hhmm(hhmm) == expected
+
+    @pytest.mark.parametrize(
+        "hhmm,expected",
+        [("07:00", "6:59am"), ("05:30", "5:29am"), ("00:00", "11:59pm")],
+    )
+    def test_day_end_label_is_one_minute_before(self, hhmm, expected):
+        assert bc.day_end_label(hhmm) == expected
+
+
+class TestPerVenueResolution:
+    """The reason this matters: today every venue is 07:00, so a venue-blind
+    resolver looks correct. It stops being correct the day one differs."""
+
+    def test_venues_with_different_starts_get_different_yesterdays(self):
+        sunday_3am = dt.datetime(2026, 7, 19, 3, 0, tzinfo=NZ)
+        late = bc.resolve_phrase(venue("07:00"), "yesterday", sunday_3am)
+        early = bc.resolve_phrase(venue("02:00"), "yesterday", sunday_3am)
+        # At 3am Sunday the 7am venue is still trading Saturday, so "yesterday"
+        # is Friday; the 2am venue has already rolled over, so it is Saturday.
+        assert late.start.day == 17
+        assert early.start.day == 18
+
+    def test_venue_timezone_changes_the_window(self):
+        moment = dt.datetime(2026, 7, 18, 20, 0, tzinfo=NZ)
+        nz = bc.trading_day(venue(timezone="Pacific/Auckland"), moment)
+        syd = bc.trading_day(venue(timezone="Australia/Sydney"), moment)
+        assert nz.timezone != syd.timezone
+        assert nz.start.utcoffset() != syd.start.utcoffset()
