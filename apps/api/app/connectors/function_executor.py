@@ -444,11 +444,24 @@ def execute_function(
                 "error": "Function must define 'run(params, call_api, log)'",
             }
 
-        # Pass call_api_parallel if function accepts 4 args, otherwise just 3
+        # Widen the call to match what the function actually accepts, so older
+        # consolidators keep working unchanged:
+        #   3 args -> run(params, call_api, log)
+        #   4 args -> ... call_api_parallel
+        #   5 args -> ... options (its own consolidator_config)
+        # Passing options lets one reviewed function_code serve many tools that
+        # differ only in configuration — e.g. a date wrapper that reads which
+        # action it wraps and what that action calls its date parameters —
+        # instead of copying the same logic into a file per tool.
         import inspect
 
         sig = inspect.signature(run_fn)
-        if len(sig.parameters) >= 4:
+        arity = len(sig.parameters)
+        if arity >= 5:
+            result_data = run_fn(
+                enriched_params, call_api, log, call_api_parallel, options
+            )
+        elif arity >= 4:
             result_data = run_fn(enriched_params, call_api, log, call_api_parallel)
         else:
             result_data = run_fn(enriched_params, call_api, log)

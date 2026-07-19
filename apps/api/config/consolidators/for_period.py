@@ -1,36 +1,42 @@
 # ruff: noqa: F821 — `datetime` and `json` are injected into the sandbox
 # namespace by app/connectors/function_executor.py; they are not imports.
 #
-# Canonical function_code for the `loadedhub.get_sales_for_period` consolidator.
-# This file is the reviewed, version-controlled source of truth; its contents
-# are synced verbatim into the ConnectorSpec tool's
-# consolidator_config.function_code in the config DB (see README.md).
+# Canonical function_code for every `*_for_period` consolidator on the
+# `loadedhub` spec. ONE reviewed implementation serves them all: the tools
+# differ only in which action they wrap and what that action calls its date
+# parameters, so that lives in each tool's consolidator_config rather than in a
+# copy of this file per tool.
 #
 # Runs inside the consolidator sandbox: no imports, `call_api` only.
-# Requires consolidator_config:
-#   {"max_api_calls": 6, "allowed_write_actions": []}   # reads only
+# Required consolidator_config:
+#   {
+#     "max_api_calls": 6,
+#     "allowed_write_actions": [],        # reads only, always
+#     "wraps": "get_pos_orders",          # the action this fronts
+#     "start_param": "start",             # what that action calls its window start
+#     "end_param": "end",                 # ... and its end
+#   }
 #
 # WHY THIS EXISTS
 #
-# get_sales_data takes raw ISO timestamps, so a caller has to work out the
-# window itself. Claude computed midnight-to-midnight for "yesterday", but a
+# The underlying tools take raw ISO timestamps, so the caller has to work out
+# the window itself. Claude computed midnight-to-midnight for "yesterday", but a
 # hospitality trading day runs from the venue's day_start_time (07:00) to one
-# second before it the next day. The numbers were wrong, and a late-night venue
-# read $0 for a Saturday — which looks like a POS outage rather than a bad
-# window, so the wrong window produced a confident wrong diagnosis.
+# second before it the next day. A late-night venue read $0 for a Saturday —
+# which looks like a POS outage rather than a bad window, so a wrong window
+# produced a confident wrong diagnosis.
 #
-# This tool removes the chance to get it wrong: it accepts a period in plain
-# English and resolves it through Norm's own calendar (norm.resolve_dates,
-# which is venue-aware), then calls get_sales_data with the resolved window.
-# The rule stops being advice and becomes a property of the interface.
+# These tools remove the chance to get it wrong: they take a period in plain
+# English and resolve it through Norm's own venue-aware calendar. The rule stops
+# being advice a client may ignore and becomes a property of the interface.
 #
-# An explicit start/end is still honoured verbatim — never snapped — because
-# reconciling against a bank statement legitimately wants civil days. But when
-# an explicit range does not line up with the venue's trading day, Norm cannot
-# tell an informed override from a caller that simply didn't know. Only the
-# caller has that context, so this returns the analysis and asks, WITHOUT the
-# data: handing back wrong-window numbers with a footnote invites exactly the
-# confident-but-wrong answer this exists to prevent.
+# The underlying actions also name their window seven different ways
+# (start_datetime, start, start_time, from, from_iso, start_date...). Fronting
+# them with one shape means a caller learns it once.
+
+# Params this tool consumes; everything else is forwarded to the wrapped action
+# so its own arguments (interval, posIdentifier, flags...) still work.
+_CONSUMED = ("period", "start", "end", "confirmed_by_user", "venue_id", "mode")
 
 
 def _window_from(resolved):
@@ -44,13 +50,23 @@ def _window_from(resolved):
     return window if isinstance(window, dict) else None
 
 
-def run(params, call_api, log, call_api_parallel=None):
-    venue = params.get("venue")
-    venue_id = params.get("venue_id")
+def run(params, call_api, log, call_api_parallel=None, options=None):
+    options = options or {}
+    wraps = options.get("wraps")
+    start_param = options.get("start_param")
+    end_param = options.get("end_param")
+    if not wraps or not start_param or not end_param:
+        return {
+            "error": (
+                "Misconfigured: consolidator_config needs wraps, start_param and "
+                "end_param. This is a Norm configuration problem, not something "
+                "you can fix by changing your request."
+            )
+        }
+
     period = (params.get("period") or "").strip()
     start = params.get("start")
     end = params.get("end")
-    interval = params.get("interval") or "1.00:00:00"
     confirmed = bool(params.get("confirmed_by_user"))
 
     if not period and not (start and end):
@@ -64,8 +80,11 @@ def run(params, call_api, log, call_api_parallel=None):
     # One resolver for both paths, so the venue's calendar is applied the same
     # way whichever the caller used. The sandbox allows no imports, so it is
     # reached as a tool rather than a function — which is correct anyway: the
-    # calendar stays in Norm instead of being copied into config-DB code.
-    resolve_args = {"venue_id": venue_id} if venue_id else {}
+    # calendar stays in Norm instead of being copied into config-DB code, and
+    # config-DB code is shared by every organisation.
+    resolve_args = {}
+    if params.get("venue_id"):
+        resolve_args["venue_id"] = params["venue_id"]
     if period:
         resolve_args["query"] = period
     else:
@@ -103,20 +122,15 @@ def run(params, call_api, log, call_api_parallel=None):
             ),
         }
 
-    sales = call_api(
-        "loadedhub",
-        "get_sales_data",
-        {
-            "venue": venue,
-            "start_datetime": window["start"],
-            "end_datetime": window["end"],
-            "interval": interval,
-        },
-    )
-    if isinstance(sales, dict) and sales.get("error"):
-        return {"error": str(sales["error"]), "window": window}
+    forwarded = {k: v for k, v in params.items() if k not in _CONSUMED}
+    forwarded[start_param] = window["start"]
+    forwarded[end_param] = window["end"]
+
+    data = call_api("loadedhub", wraps, forwarded)
+    if isinstance(data, dict) and data.get("error"):
+        return {"error": str(data["error"]), "window": window}
 
     # Always say which window produced these numbers. This is what turns a
-    # silently wrong answer into a visible one — the $0 venue is only
+    # silently wrong answer into a visible one — a $0 venue is only
     # diagnosable if you can see the window it was measured over.
-    return {"window": window, "sales": sales}
+    return {"window": window, "data": data}

@@ -20,7 +20,7 @@ sync overwrites it.
 | `review_and_receive_invoices.py` | `loadedhub` spec → tool `review_and_receive_invoices` | `scripts/sync_invoice_receiving_config.py` |
 | `reconcile_received_invoices.py` | `loadedhub` spec → tool `reconcile_received_invoices` | `scripts/sync_invoice_receiving_config.py` |
 | `calculate_template_stock_requirements.py` | `loadedhub` spec → tool `calculate_template_stock_requirements` | `scripts/sync_stock_requirements_config.py` |
-| `sales_for_period.py` | `loadedhub` spec → tool `get_sales_for_period` | `scripts/sync_sales_for_period_config.py` |
+| `for_period.py` | `loadedhub` spec → the 13 `*_for_period` tools (one function_code, per-tool `wraps`/`start_param`/`end_param`) | `scripts/sync_for_period_config.py` |
 
 ## Interactive "Fix & Receive" card
 
