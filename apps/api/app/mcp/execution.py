@@ -248,7 +248,14 @@ class NormMcpContext(McpContext):
         component = component_for(tool.connector, tool.action)
         if not component:
             return data
-        return {"component": component, "data": data, "props": {}}
+        # `embedded` tells the component it is running outside the Norm app —
+        # no session, no route back to the API — so it skips lookups it would
+        # normally fetch and renders from the data it was handed.
+        return {
+            "component": component,
+            "data": data,
+            "props": {"embedded": True, "connector_name": tool.connector},
+        }
 
     def _audit(
         self,

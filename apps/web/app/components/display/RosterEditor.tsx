@@ -58,8 +58,12 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       .catch(() => {});
   }, [docUrl]);
 
-  // Fetch venues for venue selector
+  // Fetch venues for venue selector.
+  // `embedded` marks a host outside the Norm app (an MCP App iframe in Claude)
+  // where there is no session and no route back to the API — the request would
+  // simply be blocked. The selector hides itself when venues is empty.
   useEffect(() => {
+    if (props?.embedded) return;
     apiFetch('/api/venues')
       .then(r => r.ok ? r.json() : null)
       .then(d => {
@@ -68,7 +72,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         }
       })
       .catch(() => {});
-  }, []);
+  }, [props?.embedded]);
 
   // Reload roster for a different venue
   const handleVenueChange = useCallback(async (venueId: string) => {

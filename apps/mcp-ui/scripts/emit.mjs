@@ -16,7 +16,12 @@ const root = join(here, '..', '..', '..');
 // Keep in sync with tests/test_mcp_ui.py::TestBundleFreshness
 const SOURCES = [
   'apps/web/app/components/display/GenericTable.tsx',
-  'apps/web/app/components/display/RosterTable.tsx',
+  'apps/web/app/components/display/RosterEditor.tsx',
+  'apps/web/app/components/display/roster/shared.ts',
+  'apps/web/app/components/display/roster/WeekGrid.tsx',
+  'apps/web/app/components/display/roster/DayTimeline.tsx',
+  'apps/web/app/components/display/roster/ShiftModal.tsx',
+  'apps/web/app/lib/datetime.ts',
   'apps/mcp-ui/src/registry.ts',
   'apps/mcp-ui/src/main.tsx',
   'apps/api/app/mcp/ui/_bridge.js',

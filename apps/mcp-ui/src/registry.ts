@@ -18,7 +18,7 @@
  */
 import type { ComponentType } from 'react';
 import GenericTable from '../../web/app/components/display/GenericTable';
-import RosterTable from '../../web/app/components/display/RosterTable';
+import RosterEditor from '../../web/app/components/display/RosterEditor';
 
 // Structurally DisplayBlockProps, declared locally so we don't import
 // DisplayBlockRenderer (which pulls the whole self-fetching registry).
@@ -30,6 +30,13 @@ export interface BlockProps {
 }
 
 export const REGISTRY: Record<string, ComponentType<BlockProps>> = {
+  // Rich, interactive: the weekly drag grid / day timeline — the thing Claude
+  // cannot draw itself. Its working-document fetch is guarded on a
+  // working_document_id we never send, and every mutation is delegated to
+  // `onAction` rather than fetched, so with raw data and no onAction it
+  // renders read-only without touching the network.
+  roster_editor: RosterEditor as ComponentType<BlockProps>,
+  // Fallback only, for a component name we don't recognise. Never bound to a
+  // tool: Claude renders tables better than we can embed them.
   generic_table: GenericTable as ComponentType<BlockProps>,
-  roster_table: RosterTable as ComponentType<BlockProps>,
 };

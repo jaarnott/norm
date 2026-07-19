@@ -42,7 +42,15 @@ class TestRegistry:
         summarise or slice what we've frozen into an iframe.
         """
         assert ui_resource_for("loadedhub", "get_sales_data") is None
-        assert ui_resource_for("loadedhub", "get_roster") is None
+
+    def test_roster_uses_the_rich_component_not_the_table(self):
+        """The roster IS interactive in Norm — a weekly drag grid — so it earns
+        a binding. It must be roster_editor, never roster_table: the table is
+        the thing Claude already does better."""
+        from app.mcp.ui_apps import component_for
+
+        assert ui_resource_for("loadedhub", "get_roster") == DISPLAY_BLOCK_URI
+        assert component_for("loadedhub", "get_roster") == "roster_editor"
 
     def test_playbook_bound_to_workflow_app(self):
         assert ui_resource_for_playbook("create_stock_order") == WORKFLOW_URI
@@ -256,7 +264,12 @@ class TestBundleFreshness:
     # Keep in sync with apps/mcp-ui/scripts/emit.mjs SOURCES
     SOURCES = [
         "apps/web/app/components/display/GenericTable.tsx",
-        "apps/web/app/components/display/RosterTable.tsx",
+        "apps/web/app/components/display/RosterEditor.tsx",
+        "apps/web/app/components/display/roster/shared.ts",
+        "apps/web/app/components/display/roster/WeekGrid.tsx",
+        "apps/web/app/components/display/roster/DayTimeline.tsx",
+        "apps/web/app/components/display/roster/ShiftModal.tsx",
+        "apps/web/app/lib/datetime.ts",
         "apps/mcp-ui/src/registry.ts",
         "apps/mcp-ui/src/main.tsx",
         "apps/api/app/mcp/ui/_bridge.js",

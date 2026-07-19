@@ -99,18 +99,21 @@ DISPLAY_BLOCK_URI = _DISPLAY_BLOCK.uri
 # Which Norm display component draws a tool's result, keyed by
 # (connector, action). Tools listed here render through _DISPLAY_BLOCK.
 #
-# Empty on purpose. The components that are *safe* to bundle today (the pure,
-# data-driven ones — generic_table, roster_table) are exactly the ones we do
-# NOT want: they are tables, and Claude draws tables better than we can embed
-# them. The components worth exposing are the interactive ones
-# (purchase_order_editor, roster_editor, criteria_editor), and those currently
-# fetch on mount — which cannot work with no session inside the host's iframe.
-# Making one of those accept injected data instead is the next piece of work.
+# roster_editor is the weekly drag grid / day timeline — rich and interactive,
+# which is the bar. (roster_table would have been the easy binding and the
+# wrong one: it is a table, and Claude draws tables better than we embed them.)
 #
-# When that lands: components parse the RAW connector payload (Norm's show_*
-# tools hand it over untouched, internal_tools._show_component), so there is no
-# adapter to write on either side.
-TOOL_COMPONENT: dict[tuple[str, str], str] = {}
+# It renders read-only here: the working-document fetch is guarded on a
+# working_document_id we never send, and every mutation is delegated to an
+# `onAction` callback we deliberately do not pass — so no dead buttons and no
+# network. Wiring onAction through the bridge to tools/call is what would make
+# it editable from Claude, once there is a draft-safe action to route it to.
+#
+# Components parse the RAW connector payload (Norm's show_* tools hand it over
+# untouched, internal_tools._show_component), so there is no adapter either side.
+TOOL_COMPONENT: dict[tuple[str, str], str] = {
+    ("loadedhub", "get_roster"): "roster_editor",
+}
 
 # Bespoke apps for a connector tool, keyed by (connector, action). Empty: the
 # only bespoke app left is the playbook workflow card below.
