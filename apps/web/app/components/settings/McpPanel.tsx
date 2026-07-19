@@ -28,6 +28,7 @@ interface Capability {
   scopes: string[];
   grantable_scopes: string[];
   suggested_scopes: string[];
+  ui: { resource: string; component: string | null; name: string } | null;
   exposable: boolean;
   reason: string | null;
 }
@@ -136,6 +137,12 @@ export default function McpPanel() {
         behalf of a signed-in user. Read tools return data; workflow tools run a
         playbook and create drafts for approval in Norm.
       </p>
+      <p style={{ color: '#666', fontSize: '0.8rem', margin: '-0.5rem 0 1rem' }}>
+        Anything marked <span style={{ fontSize: '0.68rem', background: '#e6efe6', color: '#4d7a4d', padding: '1px 6px', borderRadius: 4, fontWeight: 600 }}>◨ interactive</span>{' '}
+        renders a real Norm component inside Claude that the user can act on.
+        Everything else returns plain data, which Claude lays out itself — that&apos;s
+        deliberate, it formats tables and charts better than we can embed them.
+      </p>
       {error && <p style={{ color: '#c0392b', fontSize: '0.85rem' }}>{error}</p>}
 
       <Section title={`Workflow tools (${playbooks.filter((p) => p.enabled).length} of ${playbooks.length} enabled)`}>
@@ -207,6 +214,12 @@ function Row({ cap, scopes, scopeLabel, saving, onToggleEnabled, onToggleScope }
                disabled={saving || relevant.length === 0} />
         <code style={{ fontSize: '0.82rem', fontWeight: 600 }}>{cap.tool_name}</code>
         {cap.access === 'draft' && <span style={{ fontSize: '0.68rem', background: '#f4e8d8', color: '#8a6d3b', padding: '1px 6px', borderRadius: 4 }}>draft</span>}
+        {cap.ui && (
+          <span title={`Renders the ${cap.ui.name} component in Claude${cap.ui.component ? ` (${cap.ui.component})` : ''} instead of plain data`}
+                style={{ fontSize: '0.68rem', background: '#e6efe6', color: '#4d7a4d', padding: '1px 6px', borderRadius: 4, fontWeight: 600, whiteSpace: 'nowrap' }}>
+            ◨ interactive
+          </span>
+        )}
       </div>
       <div style={{ fontSize: '0.78rem', color: '#777', margin: '0.2rem 0 0.3rem 1.6rem' }}>{cap.description}</div>
       <div style={{ marginLeft: '1.6rem', fontSize: '0.72rem', color: '#888', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>

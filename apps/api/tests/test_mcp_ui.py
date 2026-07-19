@@ -19,7 +19,6 @@ from app.mcp.ui_apps import (
 )
 from app.mcp.projection import McpTool, to_mcp_tool_dict
 
-SALES_CHART_URI = "ui://norm/sales-chart"
 DISPLAY_BLOCK_URI = "ui://norm/display-block"
 WORKFLOW_URI = "ui://norm/workflow"
 
@@ -35,15 +34,15 @@ def _rpc(method, params=None, rid=1):
 
 
 class TestRegistry:
-    def test_sales_chart_bound_to_get_sales_data(self):
-        assert ui_resource_for("loadedhub", "get_sales_data") == SALES_CHART_URI
+    def test_static_presentation_is_left_to_claude(self):
+        """Tables and charts are NOT embedded — Claude renders those natively.
 
-    def test_roster_renders_through_norms_own_component(self):
-        """get_roster reuses RosterTable rather than a bespoke app."""
-        from app.mcp.ui_apps import component_for
-
-        assert ui_resource_for("loadedhub", "get_roster") == DISPLAY_BLOCK_URI
-        assert component_for("loadedhub", "get_roster") == "roster_table"
+        A component earns a ui:// binding only by being interactive. Binding a
+        table here would be strictly worse than plain data: Claude can't
+        summarise or slice what we've frozen into an iframe.
+        """
+        assert ui_resource_for("loadedhub", "get_sales_data") is None
+        assert ui_resource_for("loadedhub", "get_roster") is None
 
     def test_playbook_bound_to_workflow_app(self):
         assert ui_resource_for_playbook("create_stock_order") == WORKFLOW_URI
@@ -75,15 +74,15 @@ class TestRegistry:
     def test_list_shape(self):
         rows = list_ui_resources()
         uris = {r["uri"] for r in rows}
-        assert {SALES_CHART_URI, WORKFLOW_URI, DISPLAY_BLOCK_URI} <= uris
+        assert {WORKFLOW_URI, DISPLAY_BLOCK_URI} <= uris
         for r in rows:
             assert r["mimeType"] == UI_MIME_TYPE
             assert r["uri"].startswith("ui://")
 
     def test_read_returns_self_contained_html(self):
-        res = read_ui_resource(SALES_CHART_URI)
+        res = read_ui_resource(WORKFLOW_URI)
         content = res["contents"][0]
-        assert content["uri"] == SALES_CHART_URI
+        assert content["uri"] == WORKFLOW_URI
         assert content["mimeType"] == UI_MIME_TYPE
         html = content["text"]
         assert "<!DOCTYPE html>" in html
@@ -103,13 +102,13 @@ class TestResourcesDispatch:
     def test_resources_list(self):
         resp = _rpc("resources/list")
         uris = [r["uri"] for r in resp["result"]["resources"]]
-        assert SALES_CHART_URI in uris
+        assert WORKFLOW_URI in uris
 
     def test_resources_read(self):
-        resp = _rpc("resources/read", {"uri": SALES_CHART_URI})
+        resp = _rpc("resources/read", {"uri": WORKFLOW_URI})
         content = resp["result"]["contents"][0]
         assert content["mimeType"] == UI_MIME_TYPE
-        assert "<svg" in content["text"] or "svg" in content["text"]
+        assert "<!DOCTYPE html>" in content["text"]
 
     def test_resources_read_missing_uri(self):
         resp = _rpc("resources/read", {})
@@ -152,8 +151,8 @@ def _tool(ui_resource=None):
 
 class TestToolBinding:
     def test_meta_ui_emitted_when_bound(self):
-        d = to_mcp_tool_dict(_tool(ui_resource=SALES_CHART_URI))
-        assert d["_meta"]["ui"]["resourceUri"] == SALES_CHART_URI
+        d = to_mcp_tool_dict(_tool(ui_resource=WORKFLOW_URI))
+        assert d["_meta"]["ui"]["resourceUri"] == WORKFLOW_URI
 
     def test_no_meta_when_unbound(self):
         assert "_meta" not in to_mcp_tool_dict(_tool(ui_resource=None))
@@ -171,7 +170,7 @@ class TestKillSwitch:
         assert "resources" not in caps
 
         assert _rpc("resources/list")["result"]["resources"] == []
-        assert "error" in _rpc("resources/read", {"uri": SALES_CHART_URI})
+        assert "error" in _rpc("resources/read", {"uri": WORKFLOW_URI})
 
 
 # ── UI payload vs model payload ──────────────────────────────────────────

@@ -62,13 +62,16 @@ class UiApp:
 # ── Registry ─────────────────────────────────────────────────────────────
 # Keep this small and curated, like the tool surface. A ui:// app is only
 # reachable if a tool or playbook is bound to it below.
+#
+# WHAT BELONGS HERE: interactive surfaces — editing a draft, picking from a
+# list, approving something. Things the user *does*.
+#
+# WHAT DOES NOT: tables and charts. Claude renders those natively from the
+# tool's JSON, and it does it well. An embedded static table is strictly worse
+# than letting Claude lay the data out in the conversation, because ours can't
+# be summarised, sliced or reasoned over. A component earns a place here only
+# by doing something Claude cannot.
 
-_SALES_CHART = UiApp(
-    uri="ui://norm/sales-chart",
-    name="Sales chart",
-    title="Norm — Sales chart",
-    html_file="sales-chart.html",
-)
 # Renders a playbook outcome: status, the agent's summary (often a markdown
 # table — e.g. the drafted purchase order), and an "open in Norm" action.
 _WORKFLOW = UiApp(
@@ -89,32 +92,29 @@ _DISPLAY_BLOCK = UiApp(
     html_file="display-block.html",
 )
 
-UI_APPS: dict[str, UiApp] = {
-    app.uri: app for app in (_SALES_CHART, _WORKFLOW, _DISPLAY_BLOCK)
-}
+UI_APPS: dict[str, UiApp] = {app.uri: app for app in (_WORKFLOW, _DISPLAY_BLOCK)}
 
 DISPLAY_BLOCK_URI = _DISPLAY_BLOCK.uri
 
 # Which Norm display component draws a tool's result, keyed by
 # (connector, action). Tools listed here render through _DISPLAY_BLOCK.
 #
-# The component must be in the sandbox-safe registry (apps/mcp-ui/src/registry.ts)
-# — i.e. a pure function of its data, with no fetch on mount. That rules out
-# roster_editor/purchase_order_editor/orders_dashboard, which self-fetch and
-# would fail with no session inside the host's iframe.
+# Empty on purpose. The components that are *safe* to bundle today (the pure,
+# data-driven ones — generic_table, roster_table) are exactly the ones we do
+# NOT want: they are tables, and Claude draws tables better than we can embed
+# them. The components worth exposing are the interactive ones
+# (purchase_order_editor, roster_editor, criteria_editor), and those currently
+# fetch on mount — which cannot work with no session inside the host's iframe.
+# Making one of those accept injected data instead is the next piece of work.
 #
-# Note the components parse the RAW connector payload: Norm's own show_* tools
-# hand it over untouched (internal_tools._show_component), so there is no
+# When that lands: components parse the RAW connector payload (Norm's show_*
+# tools hand it over untouched, internal_tools._show_component), so there is no
 # adapter to write on either side.
-TOOL_COMPONENT: dict[tuple[str, str], str] = {
-    ("loadedhub", "get_roster"): "roster_table",
-}
+TOOL_COMPONENT: dict[tuple[str, str], str] = {}
 
-# Which curated connector tool renders into which app, keyed by
-# (connector, action). A tool absent here is a plain text/data tool.
-TOOL_UI: dict[tuple[str, str], str] = {
-    ("loadedhub", "get_sales_data"): _SALES_CHART.uri,
-}
+# Bespoke apps for a connector tool, keyed by (connector, action). Empty: the
+# only bespoke app left is the playbook workflow card below.
+TOOL_UI: dict[tuple[str, str], str] = {}
 
 # Which playbook workflow renders into which app, keyed by playbook slug.
 PLAYBOOK_UI: dict[str, str] = {
@@ -150,6 +150,25 @@ def ui_resource_for_playbook(slug: str | None) -> str | None:
     if not slug:
         return None
     return PLAYBOOK_UI.get(slug)
+
+
+def ui_descriptor(uri: str | None, component: str | None = None) -> dict | None:
+    """Describe a binding for the admin UI, or None if there is no UI.
+
+    Lets Settings → MCP say *which* capabilities render an interactive
+    component in Claude rather than plain data — otherwise the only way to know
+    is to read this file.
+    """
+    if not uri:
+        return None
+    app = UI_APPS.get(uri)
+    if app is None:
+        return None
+    return {
+        "resource": uri,
+        "component": component,
+        "name": app.name,
+    }
 
 
 def list_ui_resources() -> list[dict]:

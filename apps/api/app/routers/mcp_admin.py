@@ -34,6 +34,12 @@ from app.mcp.projection import (
     is_read_tool,
     suggest_scopes,
 )
+from app.mcp.ui_apps import (
+    component_for,
+    ui_descriptor,
+    ui_resource_for,
+    ui_resource_for_playbook,
+)
 from app.mcp.scopes import MCP_SCOPES
 
 logger = logging.getLogger(__name__)
@@ -53,6 +59,9 @@ class McpCapabilityOut(BaseModel):
     scopes: list[str]
     grantable_scopes: list[str]
     suggested_scopes: list[str]  # the natural default(s); [] when nothing fits
+    # Set when this capability renders an interactive component in Claude
+    # rather than plain data: {resource, component, name}. None = data only.
+    ui: dict | None
     exposable: bool
     reason: str | None
 
@@ -145,6 +154,10 @@ def list_capabilities(
                     suggested_scopes=suggest_scopes(
                         spec.connector_name, action, tool.get("description") or ""
                     ),
+                    ui=ui_descriptor(
+                        ui_resource_for(spec.connector_name, action),
+                        component_for(spec.connector_name, action),
+                    ),
                     exposable=reason is None,
                     reason=reason,
                 )
@@ -170,6 +183,7 @@ def list_capabilities(
                 suggested_scopes=suggest_scopes(
                     pb.slug, "", pb.description, drafts=True
                 ),
+                ui=ui_descriptor(ui_resource_for_playbook(pb.slug)),
                 exposable=reason is None,
                 reason=reason,
             )
@@ -303,6 +317,12 @@ def upsert_capability(
             cap.action,
             cap.description_override or "",
             drafts=cap.kind == "playbook",
+        ),
+        ui=ui_descriptor(
+            ui_resource_for_playbook(cap.target)
+            if cap.kind == "playbook"
+            else ui_resource_for(cap.target, cap.action),
+            None if cap.kind == "playbook" else component_for(cap.target, cap.action),
         ),
         exposable=True,
         reason=None,
