@@ -98,51 +98,53 @@ def _sample_rows(rows: list, n: int) -> list:
     return [rows[int(i * step)] for i in range(n)]
 
 
-def _resolve_date_placeholders(params: dict, day_start_time: str | None = None) -> dict:
+def _venue_for_dates(db, venue_id: str | None):
+    """The venue whose business calendar applies, or None for the default.
+
+    Returns None rather than borrowing another venue's settings. This used to
+    fall back to "the first venue in the table with a day_start_time", which
+    silently applied one venue's trading boundary to another — and was
+    duplicated at three call sites.
+    """
+    if not venue_id or venue_id == "__all__":
+        return None
+    from app.db.models import Venue
+
+    return db.query(Venue).filter(Venue.id == venue_id).first()
+
+
+def _resolve_date_placeholders(params: dict, venue=None) -> dict:
     """Replace placeholder strings with actual timestamps.
 
-    ``day_start_time`` is the business day start in HH:MM format (e.g. "05:00").
-    When set, "today_start" means 05:00 today instead of 00:00.
+    Windows come from ``business_calendar`` — the single definition of a
+    trading day — so a dashboard and the agent answer the same question the
+    same way. Both the day start and the timezone follow the venue; passing
+    None uses the configured defaults.
     """
     import datetime as _dt
     import re as _re
-    from zoneinfo import ZoneInfo as _ZoneInfo
 
-    tz = _ZoneInfo("Pacific/Auckland")
+    from app.services import business_calendar as _bc
+
+    tz = _bc.timezone_for(venue)
     now = _dt.datetime.now(tz)
 
-    # Parse business-day start hour/minute
-    ds_hour, ds_min = 0, 0
-    if day_start_time:
-        parts = day_start_time.split(":")
-        ds_hour = int(parts[0]) if parts else 0
-        ds_min = int(parts[1]) if len(parts) > 1 else 0
-
-    today_start = now.replace(hour=ds_hour, minute=ds_min, second=0, microsecond=0)
-    # If it's before the business-day start, "today" is actually yesterday's start
-    if now < today_start:
-        today_start -= _dt.timedelta(days=1)
-    today_end = today_start + _dt.timedelta(days=1) - _dt.timedelta(seconds=1)
-    yesterday_start = today_start - _dt.timedelta(days=1)
-    yesterday_end = today_start - _dt.timedelta(seconds=1)
-    tomorrow_start = today_start + _dt.timedelta(days=1)
-    tomorrow_end = tomorrow_start + _dt.timedelta(days=1) - _dt.timedelta(seconds=1)
-    # Week start = most recent Monday at business-day start
-    days_since_monday = today_start.weekday()
-    week_start = today_start - _dt.timedelta(days=days_since_monday)
-    month_start = today_start.replace(day=1)
-    twelve_h_ago = now - _dt.timedelta(hours=12)
+    today = _bc.trading_day(venue, now, 0)
+    yesterday = _bc.trading_day(venue, now, -1)
+    tomorrow = _bc.trading_day(venue, now, 1)
+    week = _bc.trading_week(venue, now, 0)
+    month = _bc.trading_month(venue, now, 0)
 
     placeholders = {
-        "today_start": today_start.isoformat(),
-        "today_end": today_end.isoformat(),
-        "yesterday_start": yesterday_start.isoformat(),
-        "yesterday_end": yesterday_end.isoformat(),
-        "tomorrow_start": tomorrow_start.isoformat(),
-        "tomorrow_end": tomorrow_end.isoformat(),
-        "week_start": week_start.isoformat(),
-        "month_start": month_start.isoformat(),
-        "12h_ago": twelve_h_ago.isoformat(),
+        "today_start": today.start.isoformat(),
+        "today_end": today.end.isoformat(),
+        "yesterday_start": yesterday.start.isoformat(),
+        "yesterday_end": yesterday.end.isoformat(),
+        "tomorrow_start": tomorrow.start.isoformat(),
+        "tomorrow_end": tomorrow.end.isoformat(),
+        "week_start": week.start.isoformat(),
+        "month_start": month.start.isoformat(),
+        "12h_ago": (now - _dt.timedelta(hours=12)).isoformat(),
         "now": now.isoformat(),
     }
 
@@ -557,29 +559,15 @@ async def refresh_report(
     errors = []
     gf = (body.global_filters if body else None) or {}
 
-    # Look up business-day start time from venue or first available venue
-    day_start = None
+    # The venue whose business calendar applies to these date placeholders.
     gf_venue = gf.get("venue_id")
-    venue_id_for_day = (
-        gf_venue if gf_venue and gf_venue != "__all__" else report.venue_id
+    date_venue = _venue_for_dates(
+        db, gf_venue if gf_venue and gf_venue != "__all__" else report.venue_id
     )
-    if venue_id_for_day:
-        from app.db.models import Venue
-
-        v = db.query(Venue).filter(Venue.id == venue_id_for_day).first()
-        if v and v.day_start_time:
-            day_start = v.day_start_time
-    if not day_start:
-        # Fall back to first venue with a day_start_time
-        from app.db.models import Venue
-
-        v = db.query(Venue).filter(Venue.day_start_time.isnot(None)).first()
-        if v:
-            day_start = v.day_start_time
 
     def _resolve_params(params: dict) -> dict:
         """Resolve date placeholders and merge global date filters."""
-        resolved = _resolve_date_placeholders(params, day_start_time=day_start)
+        resolved = _resolve_date_placeholders(params, venue=date_venue)
         if gf.get("start"):
             for k in ("start_datetime", "start", "start_time", "from_date", "from"):
                 if k in resolved:
@@ -755,29 +743,17 @@ def refresh_single_chart(
 
     gf = (body.global_filters if body else None) or {}
 
-    # Resolve day start
-    day_start = None
+    # The venue whose business calendar applies to these date placeholders.
     gf_venue = gf.get("venue_id")
     venue_id_for_day = (
         gf_venue
         if gf_venue and gf_venue != "__all__"
         else (report.venue_id if report else None)
     )
-    if venue_id_for_day:
-        from app.db.models import Venue
-
-        v = db.query(Venue).filter(Venue.id == venue_id_for_day).first()
-        if v and v.day_start_time:
-            day_start = v.day_start_time
-    if not day_start:
-        from app.db.models import Venue
-
-        v = db.query(Venue).filter(Venue.day_start_time.isnot(None)).first()
-        if v:
-            day_start = v.day_start_time
+    date_venue = _venue_for_dates(db, venue_id_for_day)
 
     raw_params = script.get("params", {})
-    resolved = _resolve_date_placeholders(raw_params, day_start_time=day_start)
+    resolved = _resolve_date_placeholders(raw_params, venue=date_venue)
     if gf.get("start"):
         for k in ("start_datetime", "start", "start_time", "from_date", "from"):
             if k in resolved:
@@ -1065,21 +1041,9 @@ async def test_chart_script(
         raw_params.update(body.param_overrides)
 
     venue_id = (body.venue_id if body else None) or script.get("venue_id")
-    test_day_start = None
-    if venue_id:
-        from app.db.models import Venue
-
-        v = db.query(Venue).filter(Venue.id == venue_id).first()
-        if v and v.day_start_time:
-            test_day_start = v.day_start_time
-    if not test_day_start:
-        from app.db.models import Venue
-
-        v = db.query(Venue).filter(Venue.day_start_time.isnot(None)).first()
-        if v:
-            test_day_start = v.day_start_time
-
-    resolved = _resolve_date_placeholders(raw_params, day_start_time=test_day_start)
+    resolved = _resolve_date_placeholders(
+        raw_params, venue=_venue_for_dates(db, venue_id)
+    )
 
     # Determine venues to test against
     if venue_id:

@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     # overrides it via schedule_config["timezone"].
     SCHEDULER_TIMEZONE: str = "Pacific/Auckland"
 
+    # ── Business calendar ───────────────────────────────────────────────
+    # When a hospitality trading day starts, for venues that haven't set their
+    # own `Venue.day_start_time`. Trade after midnight belongs to the day that
+    # started the evening before, so this is what stops a late-night venue
+    # reading $0 for a Saturday. See app/services/business_calendar.py — that
+    # module is the only place the rule is implemented.
+    BUSINESS_DAY_START: str = "07:00"
+
     # ── LLM ─────────────────────────────────────────────────────────────
     ANTHROPIC_API_KEY: str = ""
     LLM_INTERPRETER_MODEL: str = "claude-opus-4-8"

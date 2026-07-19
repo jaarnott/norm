@@ -577,6 +577,19 @@ def _send_report_email(params: dict, db: Session, thread_id: str | None) -> dict
 # ---------------------------------------------------------------------------
 
 
+def _day_names_between(start, end) -> dict[str, str]:
+    """{"2026-07-18": "Saturday", ...} for every date the window touches."""
+    import datetime as _dt
+
+    out: dict[str, str] = {}
+    day = start.date()
+    last = end.date()
+    while day <= last:
+        out[day.isoformat()] = day.strftime("%A")
+        day += _dt.timedelta(days=1)
+    return out
+
+
 @register("norm", "resolve_dates")
 def _resolve_dates(params: dict, db: Session, thread_id: str | None) -> dict:
     """Resolve natural language time references into exact ISO 8601 timestamps.
@@ -587,21 +600,56 @@ def _resolve_dates(params: dict, db: Session, thread_id: str | None) -> dict:
     import datetime as _dt
     import json as _json
 
-    import zoneinfo
-
     from app.config import settings
     from app.interpreter.llm_interpreter import call_llm
+
+    from types import SimpleNamespace
+
+    from app.services import business_calendar as _bc
 
     query = params.get("query", "").strip()
     if not query:
         return {"success": False, "data": {}, "error": "query is required"}
 
-    tz_name = params.get("timezone", "Pacific/Auckland")
-    try:
-        tz = zoneinfo.ZoneInfo(tz_name)
-    except Exception:
-        tz = zoneinfo.ZoneInfo("Pacific/Auckland")
-        tz_name = "Pacific/Auckland"
+    # Whose calendar applies. A venue_id gets that venue's real day start and
+    # timezone; otherwise fall back to the caller's timezone and the configured
+    # default day start — never to another venue's settings.
+    venue = None
+    if params.get("venue_id"):
+        from app.db.models import Venue
+
+        venue = db.query(Venue).filter(Venue.id == params["venue_id"]).first()
+    if venue is None:
+        venue = SimpleNamespace(
+            timezone=params.get("timezone") or settings.SCHEDULER_TIMEZONE,
+            day_start_time=None,
+        )
+
+    tz = _bc.timezone_for(venue)
+    tz_name = str(tz)
+    day_start = _bc.day_start_for(venue)
+
+    # The common vocabulary resolves in Python. It used to go to Haiku with the
+    # business rules as prose, which meant the trading-day boundary was decided
+    # by a model, per call, and could not be tested. Only genuinely fuzzy
+    # phrases ("the week before the long weekend") still need the LLM.
+    window = _bc.resolve_phrase(venue, query)
+    if window is not None:
+        return {
+            "success": True,
+            "data": {
+                "periods": [
+                    {
+                        "label": window.label,
+                        "start": window.start.isoformat(),
+                        "end": window.end.isoformat(),
+                    }
+                ],
+                "timezone": tz_name,
+                "date_reference": _day_names_between(window.start, window.end),
+                "window": window.as_dict(),
+            },
+        }
 
     now = _dt.datetime.now(tz)
     day_name = now.strftime("%A")  # e.g. "Thursday"
@@ -634,11 +682,11 @@ Reference dates (computed, use these as anchors):
 - First of this month: {first_of_month}
 - First of last month: {first_of_last_month}
 
-Business rules:
-- A business week runs from 7:00am Monday to 6:59am the following Monday.
-- A business day runs from 7:00am to 6:59am the next day.
-- "Last week" means the most recent completed week (last Monday 7am to this Monday 6:59am).
-- "This week" means the current week starting this Monday 7am.
+Business rules (this venue's configured trading day — do not assume midnight):
+- A business day runs from {day_start} to one second before {day_start} the next day.
+- A business week runs from {day_start} Monday to one second before {day_start} the following Monday.
+- "Last week" means the most recent completed business week.
+- "This week" means the current business week, starting this Monday at {day_start}.
 
 Convert the user's time reference into exact ISO 8601 periods.
 Return ONLY valid JSON — no markdown, no explanation:
