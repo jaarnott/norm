@@ -4,8 +4,10 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
-import { extractShifts, extractRosterMeta, getWeekDays, dateKey, buildStaffRows, DAY_NAMES, calcHours, roleColor, formatWithOffset } from './roster/shared';
-import { apiFetch } from '../../lib/api';
+import { extractShifts, extractRosterMeta, venueWeekDays, dateKey, buildStaffRows, DAY_NAMES, calcHours, roleColor, formatWithOffset, OPEN_ROW_ID } from './roster/shared';
+import { apiFetch, callComponentApi } from '../../lib/api';
+import { computeWarnings, summarise } from './roster/warnings';
+import type { LeaveRecord, UnavailabilityRecord } from './roster/warnings';
 import { venueTimePrefs, formatClock, venueOffset, formatInTz, wallClockToInstant } from '../../lib/rosterTime';
 import WeekGrid from './roster/WeekGrid';
 import DayTimeline from './roster/DayTimeline';
@@ -31,11 +33,22 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
 
   const [docData, setDocData] = useState<Record<string, unknown> | null>(initialDocId ? null : data);
   const [venues, setVenues] = useState<VenueOption[]>([]);
+  // The venue's whole staff roll and role list, so you can roster someone who
+  // isn't on this week yet. Empty when embedded (no session to fetch with), in
+  // which case we fall back to whoever is already on the roster.
+  const [staffRoll, setStaffRoll] = useState<StaffOption[]>([]);
+  const [roleRoll, setRoleRoll] = useState<RoleOption[]>([]);
+  // Leave and unavailability for the week on screen, so the warnings can say
+  // "Sam is on leave" rather than only "two shifts overlap".
+  const [leave, setLeave] = useState<LeaveRecord[]>([]);
+  const [unavailability, setUnavailability] = useState<UnavailabilityRecord[]>([]);
+
   const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
+  const activeVenueId = selectedVenue || (props?.activeVenueId as string) || null;
   const [docVersion, setDocVersion] = useState<number>(1);
   const [syncStatus, setSyncStatus] = useState<string>('synced');
   const [shifts, setShifts] = useState<Shift[]>(() => workingDocId ? [] : extractShifts(data));
-  const [meta, setMeta] = useState<RosterMeta>(() => workingDocId ? { startDate: null, endDate: null, totalHours: 0, rosterId: '' } : extractRosterMeta(data));
+  const [meta, setMeta] = useState<RosterMeta>(() => workingDocId ? { startDate: null, endDate: null, totalHours: 0, rosterId: '', publishedAt: null, lockedAt: null } : extractRosterMeta(data));
   const connectorName = (props?.connector_name as string) || 'loadedhub';
 
   const [viewMode, setViewMode] = useState<ViewMode>('week');
@@ -81,6 +94,31 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       })
       .catch(() => {});
   }, [props?.embedded]);
+
+  useEffect(() => {
+    if (props?.embedded || !activeVenueId) return;
+    let cancelled = false;
+    const load = async (action: string): Promise<Record<string, unknown>[]> => {
+      try {
+        const res = await callComponentApi('roster_editor', action, {}, activeVenueId);
+        const d = res?.data as unknown;
+        return Array.isArray(d) ? (d as Record<string, unknown>[]) : [];
+      } catch { return []; }
+    };
+    (async () => {
+      const [staff, roles] = await Promise.all([load('staff_list'), load('roles_list')]);
+      if (cancelled) return;
+      setStaffRoll(staff
+        .filter(r => !r.datestampDeleted)
+        .map(r => ({ id: String(r.id), name: String(r.name || r.id) }))
+        .sort((a, b) => a.name.localeCompare(b.name)));
+      setRoleRoll(roles
+        .filter(r => !r.datestampDeleted)
+        .map(r => ({ id: String(r.id), name: String(r.name || r.id) }))
+        .sort((a, b) => a.name.localeCompare(b.name)));
+    })();
+    return () => { cancelled = true; };
+  }, [props?.embedded, activeVenueId]);
 
   // Reload roster for a different venue
   const handleVenueChange = useCallback(async (venueId: string) => {
@@ -133,15 +171,56 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
   // Timezone + business-day start for whichever venue is in view. Falls back to
   // Norm's defaults when the venue list isn't available (e.g. embedded in an MCP
   // host, where there's no session to fetch it with).
-  const activeVenueId = selectedVenue || (props?.activeVenueId as string) || null;
   const timePrefs = useMemo(
     () => venueTimePrefs(venues.find(v => v.id === activeVenueId) ?? null),
     [venues, activeVenueId],
   );
 
-  const days = useMemo(() => getWeekDays(meta.startDate, meta.endDate), [meta.startDate, meta.endDate]);
+  // Venue clock, not the browser's: the roster's start is an instant, and
+  // reading it locally shifts the whole week for an out-of-timezone viewer.
+  const days = useMemo(() => venueWeekDays(meta.startDate, timePrefs), [meta.startDate, timePrefs]);
+
+  // Leave + unavailability follow the week being viewed, not the venue alone.
+  useEffect(() => {
+    if (props?.embedded || !activeVenueId || days.length === 0) return;
+    let cancelled = false;
+    const from = dateKey(days[0]);
+    const to = dateKey(days[days.length - 1]);
+    (async () => {
+      const fetchList = async (action: string): Promise<Record<string, unknown>[]> => {
+        try {
+          const res = await callComponentApi('roster_editor', action,
+            { from_date: from, to_date: to }, activeVenueId);
+          const d = res?.data as unknown;
+          return Array.isArray(d) ? (d as Record<string, unknown>[]) : [];
+        } catch { return []; }
+      };
+      const [lv, un] = await Promise.all([fetchList('leave_list'), fetchList('unavailability_list')]);
+      if (cancelled) return;
+      setLeave(lv as LeaveRecord[]);
+      setUnavailability(un as UnavailabilityRecord[]);
+    })();
+    return () => { cancelled = true; };
+  }, [props?.embedded, activeVenueId, days]);
+
   const staffRows = useMemo(() => buildStaffRows(shifts, days, timePrefs), [shifts, days, timePrefs]);
+  // Problems in the roster as it currently stands. Pure, so the same result can
+  // badge the grid and be read aloud by the agent — see roster/warnings.ts.
+  const warnings = useMemo(
+    () => (days.length ? computeWarnings(shifts, days, timePrefs, {}, { leave, unavailability }) : []),
+    [shifts, days, timePrefs, leave, unavailability],
+  );
   const activeShifts = shifts.filter(s => !s.datestampDeleted);
+  // Computed, not read off the payload: the connector's totalHours is a
+  // snapshot from load time and goes stale the moment anything is edited.
+  const rosteredHours = useMemo(
+    () => activeShifts.reduce((sum, s) => sum + calcHours(s.clockinTime, s.clockoutTime), 0),
+    [activeShifts],
+  );
+  const openShiftCount = useMemo(
+    () => activeShifts.filter(s => !s.staffMemberId).length,
+    [activeShifts],
+  );
 
   // Build staff and role options from shift data
   const staffOptions = useMemo<StaffOption[]>(() => {
@@ -153,8 +232,11 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         map.set(s.staffMemberId, (first && last) ? `${first} ${last}` : first || last || s.staffMemberId);
       }
     }
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [activeShifts]);
+    const derived = Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return staffRoll.length ? staffRoll : derived;
+  }, [activeShifts, staffRoll]);
 
   const roleOptions = useMemo<RoleOption[]>(() => {
     const map = new Map<string, string>();
@@ -163,8 +245,11 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         map.set(s.roleId, s.roleName || s.roleId);
       }
     }
-    return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [activeShifts]);
+    const derived = Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return roleRoll.length ? roleRoll : derived;
+  }, [activeShifts, roleRoll]);
 
   // Default selected date for day view
   const effectiveDate = selectedDate || days[0] || new Date();
@@ -254,6 +339,19 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
 
   // --- Action handlers ---
 
+  /**
+   * Fields core-api clears if you don't send them back.
+   *
+   * The shift endpoints are read-modify-write: a PUT replaces the whole shift,
+   * so omitting `breaks` deletes the breaks and omitting `rules` blanks the
+   * rostered times. Every write must carry the current values through.
+   */
+  const preserved = useCallback((shift: Shift | null | undefined) => ({
+    breaks: shift?.breaks ?? [],
+    rules: (shift?.rules as unknown[]) ?? [],
+    remunerationType: (shift?.remunerationType as string) ?? 'HourlyRate',
+  }), []);
+
   const patchDoc = useCallback(async (ops: Record<string, unknown>[]) => {
     if (!docUrl) return;
     setSyncStatus('syncing');
@@ -270,6 +368,15 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         setSyncStatus(updated.sync_status);
         setShifts(extractShifts(updated.data));
         setMeta(extractRosterMeta(updated.data));
+      } else if (res.status === 409) {
+        // Someone else changed the document. Our optimistic edit was rejected,
+        // so reload rather than leaving state the server never accepted.
+        setSyncStatus('conflict');
+        const fresh = await apiFetch(docUrl).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (fresh) {
+          setDocData(fresh.data); setDocVersion(fresh.version);
+          setShifts(extractShifts(fresh.data)); setMeta(extractRosterMeta(fresh.data));
+        }
       } else {
         const errText = await res.text().catch(() => '');
         console.error('[patchDoc] failed:', res.status, errText);
@@ -281,7 +388,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
   const handleSave = async (formData: ShiftFormData) => {
     setSaving(true);
     try {
-      if (workingDocId && threadId) {
+      if (workingDocId) {
         // Find the role name from the staff's existing shifts or the editing shift
         const roleName = editingShift?.roleName || shifts.find(s => s.roleId === formData.role_id)?.roleName || '';
         if (editingShift) {
@@ -297,6 +404,9 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
               clockoutTime: formData.clockout_time,
               venueId: editingShift.venueId || '',
               hourlyRate: editingShift.hourlyRate ?? editingShift.adjustedHourlyRate ?? 0,
+              ...preserved(editingShift),
+              // The modal may have edited these, so they win over the originals.
+              breaks: formData.breaks ?? editingShift.breaks ?? [],
             },
           }]);
         } else {
@@ -309,6 +419,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
               roleName,
               clockinTime: formData.clockin_time,
               clockoutTime: formData.clockout_time,
+              breaks: formData.breaks ?? [],
             },
           }]);
         }
@@ -318,17 +429,20 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
             connector_name: connectorName, action: 'update_shift',
             params: {
               shift_id: editingShift.id || '', roster_id: editingShift.rosterId || meta.rosterId,
-              staff_member_id: formData.staff_member_id, role_id: formData.role_id,
+              staff_member_id: formData.staff_member_id || null, role_id: formData.role_id,
               clockin_time: formData.clockin_time, clockout_time: formData.clockout_time,
+              ...preserved(editingShift),
+              breaks: formData.breaks ?? editingShift.breaks ?? [],
             },
           });
         } else {
           await onAction({
-            connector_name: connectorName, action: 'create_shift',
+            connector_name: connectorName, action: 'create_rostered_shift',
             params: {
-              roster_id: meta.rosterId, staff_member_id: formData.staff_member_id,
+              roster_id: meta.rosterId, staff_member_id: formData.staff_member_id || null,
               role_id: formData.role_id, clockin_time: formData.clockin_time,
               clockout_time: formData.clockout_time,
+              breaks: formData.breaks ?? [],
             },
           });
         }
@@ -341,7 +455,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
   const handleDelete = async (shift: Shift) => {
     setSaving(true);
     try {
-      if (workingDocId && threadId) {
+      if (workingDocId) {
         await patchDoc([{ op: 'delete_shift', shift_id: shift.id }]);
       } else if (onAction) {
         await onAction({
@@ -449,9 +563,17 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       hourlyRate: shift.hourlyRate ?? shift.adjustedHourlyRate ?? 0,
       clockinTime: dayChanged ? newClockIn : (shift.clockinTime || ''),
       clockoutTime: dayChanged ? newClockOut : (shift.clockoutTime || ''),
+      ...preserved(shift),
     };
+    // An unassigned target is an OPEN shift. core-api represents that as a null
+    // staffMemberId; sending a placeholder string would write junk to the roster.
+    if (!targetStaffId || targetStaffId === OPEN_ROW_ID) {
+      patchFields.staffMemberId = null;
+      patchFields.staffMemberFirstName = '';
+      patchFields.staffMemberLastName = '';
+    }
 
-    if (workingDocId && threadId) {
+    if (workingDocId) {
       await patchDoc([{
         op: 'update_shift',
         shift_id: shift.id,
@@ -462,28 +584,31 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         connector_name: connectorName, action: 'update_shift',
         params: {
           shift_id: shift.id || '', roster_id: shift.rosterId || meta.rosterId,
-          staff_member_id: targetStaffId, role_id: shift.roleId || '',
+          staff_member_id: (!targetStaffId || targetStaffId === OPEN_ROW_ID) ? null : targetStaffId,
+          role_id: shift.roleId || '',
           clockin_time: newClockIn, clockout_time: newClockOut,
+          ...preserved(shift),
         },
       });
     }
-  }, [staffRows, workingDocId, threadId, patchDoc, onAction, connectorName, meta.rosterId]);
+  }, [staffRows, workingDocId, patchDoc, onAction, connectorName, meta.rosterId, preserved]);
 
   const handleResizeShift = useCallback(async (shiftId: string, clockinTime: string, clockoutTime: string) => {
     setShifts(prev => prev.map(s =>
       s.id === shiftId ? { ...s, clockinTime, clockoutTime } : s
     ).sort((a, b) => (a.clockinTime || '').localeCompare(b.clockinTime || '')));
 
-    if (workingDocId && threadId) {
+    if (workingDocId) {
       const shift = shifts.find(s => s.id === shiftId);
       await patchDoc([{ op: 'update_shift', shift_id: shiftId, fields: {
         clockinTime, clockoutTime,
         rosterId: shift?.rosterId || meta.rosterId,
-        staffMemberId: shift?.staffMemberId || '',
+        staffMemberId: shift?.staffMemberId ?? null,
         roleId: shift?.roleId || '',
         roleName: shift?.roleName || '',
         venueId: shift?.venueId || '',
         hourlyRate: shift?.hourlyRate ?? (shift as Record<string, unknown>)?.adjustedHourlyRate ?? 0,
+        ...preserved(shift),
       } }]);
     } else if (onAction) {
       const shift = shifts.find(s => s.id === shiftId);
@@ -496,7 +621,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         },
       });
     }
-  }, [shifts, workingDocId, threadId, patchDoc, onAction, connectorName, meta.rosterId]);
+  }, [shifts, workingDocId, patchDoc, onAction, connectorName, meta.rosterId, preserved]);
 
   const handleCreateShift = useCallback(async (staffId: string, clockinTime: string, clockoutTime: string) => {
     const row = staffRows.find(r => r.id === staffId);
@@ -510,7 +635,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       roleName: '',
     };
 
-    if (workingDocId && threadId) {
+    if (workingDocId) {
       await patchDoc([{ op: 'add_shift', fields }]);
     } else if (onAction) {
       await onAction({
@@ -523,7 +648,9 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     }
   }, [staffRows, workingDocId, threadId, patchDoc, onAction, connectorName]);
 
-  if (activeShifts.length === 0 && !addingNew) return null;
+  // An empty week still renders: the header, week navigation and the add
+  // button are how you start a roster from nothing. Returning null here meant
+  // an empty week had no UI at all, so a new week could never be begun.
 
   // --- Toggle button style ---
   const toggleBtn = (mode: ViewMode, label: string) => (
@@ -605,7 +732,33 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
 
         <span style={{ fontSize: '0.75rem', color: 'var(--muted-soft)' }}>
           {activeShifts.length} shifts
-          {meta.totalHours > 0 && ` · ${meta.totalHours.toFixed(1)}h`}
+          {rosteredHours > 0 && ` · ${rosteredHours.toFixed(1)}h`}
+          {openShiftCount > 0 && ` · ${openShiftCount} open`}
+        </span>
+        {warnings.length > 0 && (
+          <span
+            title={warnings.map(w => `• ${w.message}`).join('\n')}
+            style={{
+              fontSize: '0.68rem', fontWeight: 600, padding: '1px 7px', borderRadius: 10,
+              cursor: 'help',
+              color: warnings.some(w => w.severity === 'error') ? 'var(--error)' : 'var(--warn)',
+              backgroundColor: warnings.some(w => w.severity === 'error') ? 'var(--error-bg)' : 'var(--warn-bg)',
+            }}>
+            {summarise(warnings)}
+          </span>
+        )}
+        <span
+          title={meta.lockedAt
+            ? 'This roster is locked — edits may be rejected upstream.'
+            : meta.publishedAt
+              ? `Published ${new Date(meta.publishedAt).toLocaleDateString('en-NZ')} — staff can see it`
+              : 'Draft — staff cannot see this yet'}
+          style={{
+            fontSize: '0.68rem', fontWeight: 600, padding: '1px 7px', borderRadius: 10,
+            color: meta.lockedAt ? 'var(--locked)' : meta.publishedAt ? 'var(--published)' : 'var(--draft)',
+            backgroundColor: meta.lockedAt ? 'var(--surface-alt)' : meta.publishedAt ? 'var(--published-bg)' : 'var(--draft-bg)',
+          }}>
+          {meta.lockedAt ? 'Locked' : meta.publishedAt ? 'Published' : 'Draft'}
         </span>
         {workingDocId && (
           <span title={syncStatus} style={{
@@ -637,7 +790,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
             editingShiftId={editingShift?.id || null}
             onSelectShift={handleSelectShift}
             onSelectDay={handleSelectDay}
-            interactive={!!onAction}
+            interactive={!!onAction || !!workingDocId}
           />
           </div>
         )}
@@ -651,7 +804,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
             onSelectShift={handleSelectShift}
             onResizeShift={handleResizeShift}
             onCreateShift={handleCreateShift}
-            interactive={!!onAction}
+            interactive={!!onAction || !!workingDocId}
           />
         )}
 

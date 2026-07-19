@@ -62,8 +62,19 @@ def run(params, call_api, log, call_api_parallel=None):
         return str(value or "")[:10]
 
     venue = params.get("venue")
-    dry_run = bool(params.get("dry_run"))
-    create_missing = bool(params.get("create_missing_statements"))
+    # Per-user run mode (injected by execute_consolidator). Reconciliation has
+    # no interactive card, so modes map to the two write gates:
+    #   approve_all / unset → dry run (report only; user confirms to proceed)
+    #   approve_fixes       → reconcile matches; never auto-create statements
+    #   autopilot           → reconcile matches AND auto-create missing statements
+    mode = params.get("mode") or "unset"
+    mode_unset = mode == "unset"
+    approve_all = mode in ("approve_all", "unset")
+    # No separate dry-run: the mode alone decides whether statements are written.
+    dry_run = approve_all
+    create_missing = bool(params.get("create_missing_statements")) or (
+        mode == "autopilot"
+    )
     supplier_filter = {norm(s) for s in (params.get("suppliers") or []) if s}
     to_date = params.get("to_date") or params.get("today")
     from_date = params.get("from_date")
@@ -367,7 +378,7 @@ def run(params, call_api, log, call_api_parallel=None):
         stmt, items, verdicts = entry["statement"], entry["items"], entry["verdicts"]
         if dry_run:
             for v in verdicts:
-                v["outcome"] = "would reconcile (dry run)"
+                v["outcome"] = "awaiting your approval"
                 reconciled.append(v)
             continue
         body = dict(stmt)
@@ -513,6 +524,8 @@ def run(params, call_api, log, call_api_parallel=None):
     return {
         "venue": venue,
         "dry_run": dry_run,
+        "mode": mode,
+        "mode_unset": mode_unset,
         "window": {"from": from_date, "to": to_date},
         "results": rows,
         "reconciled": reconciled,

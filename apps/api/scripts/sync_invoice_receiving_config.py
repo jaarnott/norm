@@ -166,24 +166,24 @@ RECONCILE_SPEC_TOOLS = [
 RECONCILE_CONSOLIDATOR_TOOL = {
     "action": "reconcile_received_invoices",
     "method": "GET",  # deliberate: consolidator dispatch auto-executes; the
-    # deterministic gates in function_code decide every write; dry_run=true is
-    # the read-only path.
+    # deterministic gates in function_code decide every write, gated by the
+    # caller's per-user run mode (approve_all writes nothing).
     "description": (
         "Reconciles received supplier invoices against their supplier statements. "
         "For every unreconciled received invoice covered by a statement it verifies "
         "against the attached invoice copy: copy attached, PO number matches "
         "(strict), invoice date matches, and total incl tax matches within $0.02 — "
-        "then AUTOMATICALLY marks passing invoices reconciled on the statement. "
-        "Failing invoices are reported with exact reasons. Suppliers with no "
-        "covering statement are reported in needs_statement; statements are only "
-        "created when create_missing_statements=true is passed after the user "
-        "explicitly agrees. Pass dry_run=true to review without changing anything."
+        "then marks passing invoices reconciled on the statement. What is written "
+        "is governed by the caller's run mode (approve_all reports only). Failing "
+        "invoices are reported with exact reasons. Suppliers with no covering "
+        "statement are reported in needs_statement; statements are only created "
+        "when create_missing_statements=true is passed after the user explicitly "
+        "agrees (or in autopilot mode)."
     ),
     "required_fields": [],
     "optional_fields": [
         "from_date",
         "to_date",
-        "dry_run",
         "create_missing_statements",
         "suppliers",
     ],
@@ -192,10 +192,6 @@ RECONCILE_CONSOLIDATOR_TOOL = {
         "to_date": "Statement search window end YYYY-MM-DD (default: today)",
     },
     "field_schema": {
-        "dry_run": {
-            "type": "boolean",
-            "description": "Report what would be reconciled without changing anything",
-        },
         "create_missing_statements": {
             "type": "boolean",
             "description": "Create statements for suppliers that lack one (ONLY after the user explicitly agrees)",
@@ -228,10 +224,10 @@ CONSOLIDATOR_TOOL = {
     "action": "review_and_receive_invoices",
     "method": "GET",  # deliberate: internal/consolidator dispatch — the loop
     # auto-executes it; the deterministic gates in function_code (not the LLM)
-    # decide every write, and dry_run=true runs the same path read-only.
+    # decide every write, gated by the caller's per-user run mode.
     "description": (
-        "Reviews outstanding draft supplier invoices and AUTOMATICALLY RECEIVES "
-        "any that pass every deterministic check: invoice copy attached (hard "
+        "Reviews outstanding draft supplier invoices and receives any that pass "
+        "every deterministic check: invoice copy attached (hard "
         "stop without one), linked to a purchase order from the same supplier "
         "(PO lines/prices are NOT compared — invoices may differ from the PO), "
         "every stock item, brand and unit already exists in Loaded (nothing "
@@ -240,23 +236,18 @@ CONSOLIDATOR_TOOL = {
         "(quantities, unit costs, units and totals; totals within $0.02; every "
         "line on the copy must be on the invoice; the copy's guideline-derived "
         "delivered unit of measure must agree with Loaded's unit — a mismatch "
-        "reports the recommended unit to fix in Loaded). Invoices failing a check "
-        "are never modified — they are reported with the first blocking "
-        "problem only (later checks are not run). Pass dry_run=true to review "
-        "without receiving."
+        "reports the recommended unit to fix in Loaded). What is written is "
+        "governed by the caller's run mode (approve_all receives nothing). "
+        "Invoices failing a check are never modified — they are reported with "
+        "the first blocking problem only (later checks are not run)."
     ),
     "required_fields": [],
-    "optional_fields": ["from_date", "to_date", "dry_run"],
+    "optional_fields": ["from_date", "to_date"],
     "field_descriptions": {
         "from_date": "Start date YYYY-MM-DD (default: 60 days ago)",
         "to_date": "End date YYYY-MM-DD (default: today)",
     },
-    "field_schema": {
-        "dry_run": {
-            "type": "boolean",
-            "description": "Report what would be received without changing anything",
-        }
-    },
+    "field_schema": {},
     # Audit report the LLM must relay in full — raise the tool-result slim
     # threshold (clamped by HARD_MAX_TOOL_RESULT_CHARS in tool_loop.py).
     "max_result_chars": 100_000,
@@ -283,16 +274,22 @@ PLAYBOOK = {
         "receive the ones that fully reconcile line-by-line against their purchase "
         "order and the attached supplier invoice PDF."
     ),
-    "instructions": """Goal: review the venue's outstanding supplier invoices. Invoices that pass every safety check are received automatically by the review_and_receive_invoices tool — you never decide what gets received; the tool's deterministic checks do.
+    "instructions": """Goal: review the venue's outstanding supplier invoices. What gets received automatically is decided by the tool's deterministic checks AND the user's run mode — you never decide what gets received.
 
-ROLLOUT: ALWAYS pass dry_run=true. (Remove this line after production verification.)
+RUN MODE — DO THIS FIRST, before running the review. This workflow honours a per-user run mode, and you must NOT run the review until it is set:
+0. Call get_workflow_mode with workflow="review_and_receive_invoices".
+   - If it returns mode "unset": DO NOT run the review. Ask the user to choose their default mode and STOP for their answer:
+     • **approve all** — Norm changes nothing without your OK (everything is presented on cards to approve);
+     • **approve fixes** — Norm auto-receives the exact matches; anything needing a fix waits on a card for you;
+     • **autopilot** — Norm also auto-applies the fixes it can resolve confidently and receives them; anything ambiguous still waits for you.
+     When they answer, call set_workflow_mode with workflow="review_and_receive_invoices" and their choice, confirm it briefly, THEN continue to step 1.
+   - If it returns a set mode: go straight to step 1 (the review runs in that mode automatically). The user can change it any time by asking — call set_workflow_mode.
 
-1. Call review_and_receive_invoices for the venue (default range: last 60 days). Before calling it, write at most ONE short status line (e.g. "Reviewing the outstanding invoices…") — the full report comes after the tool returns.
-   - If the user only asks to "check", "review" or "look at" invoices, pass dry_run=true.
+1. Call review_and_receive_invoices for the venue (default range: last 60 days) — do NOT pass any dry_run or mode param; the run mode alone governs what is written. Before calling it, write at most ONE short status line (e.g. "Reviewing the outstanding invoices…") — the full report comes after the tool returns.
 2. Write the report. Copy every value and ✓/✗/— exactly as returned — never invent, reformat, or fill in a "—" ("—" means that check was not run because an earlier one failed).
    - Start with a compact markdown summary table built from the tool's results rows — | Invoice | Supplier | PO | Total | Checks | Outcome | — one row per invoice (leave the reasons out of this table; they appear in the sections below).
-   - Then the per-invoice audit view in two sections: "Received" (or "Would receive" on a dry run) then "Needs attention".
-   - EVERY invoice that HAS details.lines (received, would receive, or failed during line/copy comparison) MUST get its own subsection — do not summarise or skip any:
+   - Then the per-invoice audit view in two sections: "Received" (invoices the tool received; in approve-all mode these read "awaiting your approval") then "Needs attention".
+   - EVERY invoice that HAS details.lines (received, awaiting approval, or failed during line/copy comparison) MUST get its own subsection — do not summarise or skip any:
      a. Heading: ### {reference_number} — {supplier_name} — {total}
      b. details.header as a markdown table — | Field | Invoice (Loaded) | PO | Invoice copy | Result | — one row per header field.
      c. details.lines as a markdown table — | Line | In Loaded | On copy | Unit | Quantity | Unit cost | Line total | — one row per line (the stock_item field is the "In Loaded" column: ✗ means the stock item, brand or unit would be created as NEW). The unit/quantity/cost/total cells arrive as ready-made comparison strings (e.g. "inv 4.95 / copy 4.95 ✓"); copy each cell verbatim. Include the "on copy only" rows and any "…more lines omitted" marker verbatim.
@@ -301,7 +298,7 @@ ROLLOUT: ALWAYS pass dry_run=true. (Remove this line after production verificati
      f. Its reasons, if any, as a markdown bulleted list.
    - Invoices WITHOUT details.lines were skipped before any comparison ran (no PO linked, credit note, fetch failure) — list each as one bold line "**{reference_number}** — {supplier_name} — {total}" followed by the tool's reasons as bullets. No tables for these; the tool reports only the first blocking problem, so present the bullets as-is without speculating.
 3. Close with the summary counts and what manual work remains in Loaded (linking POs, adding freight lines, credit notes). Mention that the header comparison for any skipped invoice is available on request (it is in details.header of the same result).
-4. If the tool returns a non-empty `fix_invoices` list, a full editable **Receive Invoice** card is shown beneath your report for each invoice with a recommended change — the user can adjust units (pre-filled with the recommendation), the linked PO, quantities and costs, then click **Accept & Receive** to update Loaded and receive the invoice in one step. Add one sentence pointing the user to the cards. Never claim you have applied anything or received anything — the user does that from each card.
+4. If the tool returns a non-empty `fix_invoices` list, a full editable **Receive Invoice** card is shown beneath your report for each invoice with a recommended change — the user can adjust units (pre-filled with the recommendation), the linked PO, quantities and costs, then click **Accept & Receive** to update Loaded and receive the invoice in one step. In **approve all** mode the perfect invoices also appear as cards to approve. If the result's `auto_submit` is true (**autopilot**), the cards apply automatically for the fixes Norm can resolve confidently and the rest wait for the user — say so. Add one sentence pointing the user to the cards. Never claim you have applied anything or received anything — the user (or autopilot) does that from the cards.
 
 If the user asks why a specific invoice was skipped, use get_invoice_detail together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
     "tool_filter": [
@@ -309,6 +306,8 @@ If the user asks why a specific invoice was skipped, use get_invoice_detail toge
         "list_stock_invoices",
         "get_invoice_detail",
         "get_stock_purchase_order",
+        "get_workflow_mode",
+        "set_workflow_mode",
     ],
     "enabled": True,
 }
@@ -322,12 +321,16 @@ RECONCILE_PLAYBOOK = {
         "statements — verify the attached invoice copy (PO number, date, total) "
         "and tick the reconciled box for invoices that fully match."
     ),
-    "instructions": """Goal: reconcile the venue's received supplier invoices against their supplier statements. Invoices that pass every check are marked reconciled automatically by the reconcile_received_invoices tool — you never decide what gets reconciled; the tool's deterministic checks do.
+    "instructions": """Goal: reconcile the venue's received supplier invoices against their supplier statements. What gets reconciled automatically is decided by the tool's deterministic checks AND the user's run mode — you never decide.
 
-1. Call reconcile_received_invoices for the venue (default window: last 30 days of statements). Before calling it, write at most ONE short status line — the full report comes after the tool returns.
-   - If the user only asks to "check", "review" or "look at" invoices, pass dry_run=true. After showing a dry run, if the user asks to proceed / confirms, call the tool again WITHOUT dry_run to reconcile for real.
+RUN MODE — DO THIS FIRST, before reconciling. Do NOT run the reconciliation until the mode is set:
+0. Call get_workflow_mode with workflow="reconcile_received_invoices".
+   - If it returns mode "unset": DO NOT run the tool. Ask the user to choose their default mode and STOP for their answer: **approve all** (nothing is written — the report is for review), **approve fixes** (auto-reconcile the exact matches; creating a missing statement needs your OK), or **autopilot** (also auto-create missing statements). When they answer, call set_workflow_mode with workflow="reconcile_received_invoices" and their choice, confirm it, THEN continue to step 1.
+   - If it returns a set mode: go straight to step 1. The user can change it any time by asking — call set_workflow_mode.
+
+1. Call reconcile_received_invoices for the venue (default window: last 30 days of statements) — do NOT pass any dry_run or mode param; the run mode alone governs what is written. Before calling it, write at most ONE short status line — the full report comes after the tool returns.
 2. Report the results, using the tool's exact values and reasons verbatim (never soften or re-derive them). Start with a compact markdown summary table built from the tool's results rows — | Invoice | Supplier | Statement | Total | Outcome | — one row per invoice. Then three sections:
-   - "Reconciled" (or "Would reconcile" on a dry run) and "Could not reconcile": for EVERY invoice render a markdown comparison table from the tool's comparison data showing the actual values checked on each side — | Field | Received invoice (Loaded) | Invoice copy | Match | — with rows for invoice number, PO number, invoice date, and total incl tax. The Match cell comes from the field's `match` value: true → ✓, false → ✗, null → — (check not run). Copy the values exactly as returned; never invent or reformat them.
+   - "Reconciled" (in approve-all mode these read "awaiting your approval") and "Could not reconcile": for EVERY invoice render a markdown comparison table from the tool's comparison data showing the actual values checked on each side — | Field | Received invoice (Loaded) | Invoice copy | Match | — with rows for invoice number, PO number, invoice date, and total incl tax. The Match cell comes from the field's `match` value: true → ✓, false → ✗, null → — (check not run). Copy the values exactly as returned; never invent or reformat them.
    - "Could not reconcile" additionally lists the exact reasons (missing copy, PO mismatch, date mismatch, total mismatch, credit).
    - "Suppliers needing a statement": supplier, invoice count, how many would reconcile once a statement exists.
 3. Include each statement's amount vs reconciled amount difference from the tool's statements summary.
@@ -339,6 +342,8 @@ If the user asks about a specific invoice, use get_invoice_detail plus the retur
         "list_supplier_statements",
         "list_received_invoices",
         "get_invoice_detail",
+        "get_workflow_mode",
+        "set_workflow_mode",
     ],
     "enabled": True,
 }

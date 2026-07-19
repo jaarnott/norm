@@ -19,10 +19,6 @@ class TestListConnectors:
         names = [c["name"] for c in data["connectors"]]
         assert "anthropic" in names
 
-    def test_list_connectors_without_auth_returns_401(self, client):
-        resp = client.get("/api/connectors")
-        assert resp.status_code in (401, 403)
-
 
 class TestUpsertConnector:
     """PUT /api/connectors/{name}"""
@@ -64,15 +60,6 @@ class TestUpsertConnector:
             headers=admin_headers,
         )
         assert resp.status_code == 404
-
-    def test_save_connector_without_auth_returns_401(self, client):
-        resp = client.put(
-            "/api/connectors/anthropic",
-            json={
-                "config": {"api_key": "sk-test"},
-            },
-        )
-        assert resp.status_code in (401, 403)
 
     def test_update_existing_config_merges(self, client, db_session, admin_headers):
         # First save

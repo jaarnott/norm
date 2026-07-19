@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import type { Shift, ShiftFormData } from './shared';
-import { staffName, formInputStyle } from './shared';
+import type { Shift, ShiftFormData, ShiftBreak } from './shared';
+import { staffName, formInputStyle, calcHours } from './shared';
 
 export interface StaffOption {
   id: string;
@@ -34,6 +34,27 @@ function ShiftForm({ initial, onSave, onCancel, saving, staffOptions, roleOption
   roleOptions?: RoleOption[];
 }) {
   const [form, setForm] = useState(initial);
+
+  // A removed break that already exists upstream must be sent back with
+  // deletedAt set — dropping it from the array would leave it in place.
+  const updateBreak = (i: number, patch: Partial<ShiftBreak>) =>
+    setForm(f => ({
+      ...f,
+      breaks: (f.breaks || []).map((b, j) => (j === i ? { ...b, ...patch } : b)),
+    }));
+  const removeBreak = (i: number) =>
+    setForm(f => ({
+      ...f,
+      breaks: (f.breaks || []).flatMap((b, j) => {
+        if (j !== i) return [b];
+        return b.id ? [{ ...b, deletedAt: new Date().toISOString() }] : [];
+      }),
+    }));
+  const activeBreaks = (form.breaks || []).filter(b => !b.deletedAt);
+  const breakMinutes = Math.round(
+    activeBreaks.reduce((sum, b) => sum + calcHours(b.breakStart, b.breakEnd) * 60, 0),
+  );
+
   return (
     <div style={{ marginTop: '0.5rem' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem', marginBottom: '0.4rem' }}>
@@ -82,7 +103,59 @@ function ShiftForm({ initial, onSave, onCancel, saving, staffOptions, roleOption
             onChange={e => setForm(f => ({ ...f, clockout_time: e.target.value ? e.target.value + ':00' : '' }))} style={formInputStyle} />
         </div>
       </div>
-      <div style={{ display: 'flex', gap: '0.4rem' }}>
+      {/* Breaks. Unpaid time is deducted from paid hours, so getting these
+          right matters for what someone is actually paid. */}
+      <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--line)', paddingTop: '0.4rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.3rem' }}>
+          <label style={{ fontSize: '0.72rem', color: 'var(--text-soft)', fontWeight: 500 }}>
+            Breaks{activeBreaks.length > 0 && ` (${breakMinutes} min)`}
+          </label>
+          <button
+            type="button"
+            onClick={() => setForm(f => ({
+              ...f,
+              breaks: [...(f.breaks || []), {
+                breakStart: f.clockin_time, breakEnd: f.clockin_time, paid: false,
+              } as ShiftBreak],
+            }))}
+            style={{
+              fontSize: '0.7rem', padding: '2px 8px', cursor: 'pointer',
+              border: '1px solid var(--line)', borderRadius: 4,
+              background: 'var(--bg)', color: 'var(--text-soft)',
+            }}>+ Add break</button>
+        </div>
+        {activeBreaks.length === 0 && (
+          <div style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>No breaks on this shift.</div>
+        )}
+        {(form.breaks || []).map((b, i) => b.deletedAt ? null : (
+          <div key={b.id || i} style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', marginBottom: '0.25rem' }}>
+            <input
+              type="datetime-local" value={(b.breakStart || '').slice(0, 16)}
+              onChange={e => updateBreak(i, { breakStart: e.target.value ? e.target.value + ':00' : '' })}
+              style={{ ...formInputStyle, flex: 1 }} />
+            <span style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>to</span>
+            <input
+              type="datetime-local" value={(b.breakEnd || '').slice(0, 16)}
+              onChange={e => updateBreak(i, { breakEnd: e.target.value ? e.target.value + ':00' : '' })}
+              style={{ ...formInputStyle, flex: 1 }} />
+            <label style={{ fontSize: '0.68rem', color: 'var(--text-soft)', display: 'flex', alignItems: 'center', gap: 3 }}>
+              <input type="checkbox" checked={!!b.paid}
+                onChange={e => updateBreak(i, { paid: e.target.checked })} />
+              paid
+            </label>
+            <button
+              type="button"
+              title="Remove break"
+              onClick={() => removeBreak(i)}
+              style={{
+                border: 'none', background: 'none', cursor: 'pointer',
+                color: 'var(--error)', fontSize: '0.9rem', lineHeight: 1, padding: '0 2px',
+              }}>&#10005;</button>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.5rem' }}>
         <button onClick={() => onSave(form)} disabled={saving} style={{
           padding: '4px 12px', fontSize: '0.75rem', fontWeight: 600,
           backgroundColor: 'var(--ok)', color: 'var(--bg)', border: 'none', borderRadius: 4,
@@ -139,7 +212,8 @@ export default function ShiftModal({ editingShift, addingNew, saving, onSave, on
             role_id: String(editingShift.roleId || ''),
             clockin_time: String(editingShift.clockinTime || ''),
             clockout_time: String(editingShift.clockoutTime || ''),
-          } : { staff_member_id: '', role_id: '', clockin_time: '', clockout_time: '' }}
+            breaks: editingShift.breaks || [],
+          } : { staff_member_id: '', role_id: '', clockin_time: '', clockout_time: '', breaks: [] }}
           onSave={onSave}
           onCancel={onClose}
           saving={saving}

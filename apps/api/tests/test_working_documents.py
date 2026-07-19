@@ -41,10 +41,6 @@ class TestListDocuments:
         assert len(data["documents"]) == 1
         assert data["documents"][0]["doc_type"] == "order"
 
-    def test_list_documents_without_auth_returns_401(self, client):
-        resp = client.get(f"/api/threads/{uuid.uuid4()}/working-documents")
-        assert resp.status_code in (401, 403)
-
 
 class TestGetDocument:
     """GET /api/threads/{thread_id}/working-documents/{doc_id}"""

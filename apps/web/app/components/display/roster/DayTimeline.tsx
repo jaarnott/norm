@@ -3,7 +3,7 @@
 import { useMemo, useState, useRef, useCallback } from 'react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 import type { Shift, ShiftBreak, DragData } from './shared';
-import { dateKey, calcHours, roleColor, staffName } from './shared';
+import { dateKey, calcHours, roleColor, staffName, OPEN_ROW_ID, OPEN_ROW_LABEL } from './shared';
 import type { VenueTimePrefs } from '../../../lib/rosterTime';
 import { companyDayDate, offsetToISO, formatClock, formatHourLabel } from '../../../lib/rosterTime';
 import {
@@ -43,14 +43,15 @@ function buildLanes(shifts: Shift[], dayDate: string, prefs: VenueTimePrefs): St
   const laneMap = new Map<string, StaffLane>();
 
   for (const s of dayShifts) {
-    const sid = s.staffMemberId || 'unknown';
+    const open = !s.staffMemberId;
+    const sid = open ? OPEN_ROW_ID : s.staffMemberId!;
     if (!laneMap.has(sid)) {
       laneMap.set(sid, {
         id: sid,
-        name: staffName(s),
-        firstName: s.staffMemberFirstName || '',
-        lastName: s.staffMemberLastName || '',
-        role: s.roleName || '',
+        name: open ? OPEN_ROW_LABEL : staffName(s),
+        firstName: open ? '' : (s.staffMemberFirstName || ''),
+        lastName: open ? '' : (s.staffMemberLastName || ''),
+        role: open ? '' : (s.roleName || ''),
         shifts: [],
       });
     }

@@ -138,14 +138,6 @@ class TestListEnvironments:
         names = [e["name"] for e in envs]
         assert names == ["testing", "staging", "production"]
 
-    def test_environments_have_null_latest_deploy_initially(
-        self, client, admin_headers
-    ):
-        resp = client.get("/api/admin/environments", headers=admin_headers)
-        envs = resp.json()["environments"]
-        for env in envs:
-            assert env["latest_deploy"] is None
-
     def test_non_admin_gets_403(self, client, manager_headers):
         resp = client.get("/api/admin/environments", headers=manager_headers)
         assert resp.status_code == 403

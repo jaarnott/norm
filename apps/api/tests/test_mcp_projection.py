@@ -167,7 +167,9 @@ class TestSuggestScopes:
 
     def test_playbook_drafting_uses_draft_scope(self):
         assert suggest_scopes(
-            "create_stock_order", "", "Create a purchase order for stock items",
+            "create_stock_order",
+            "",
+            "Create a purchase order for stock items",
             drafts=True,
         ) == ["mcp:orders:draft"]
 

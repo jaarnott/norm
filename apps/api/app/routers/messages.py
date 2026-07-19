@@ -128,7 +128,16 @@ async def post_message_stream(
         bg = asyncio.ensure_future(asyncio.to_thread(run))
         try:
             while True:
-                event = await queue.get()
+                # Heartbeat: a long tool call (e.g. the invoice review's
+                # per-invoice PDF extractions) can go a minute+ without emitting
+                # an event. Without periodic bytes the browser / Codespaces
+                # proxy drops the idle SSE connection and the client sees a
+                # "network error". Send an SSE comment every 15s while waiting.
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
                 yield f"data: {json.dumps(event)}\n\n"
                 if event["type"] in ("complete", "error"):
                     break

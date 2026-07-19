@@ -144,6 +144,16 @@ class TestMe:
         assert data["role"] == "admin"
         assert data["id"] == admin_user.id
 
+    # ── Canonical coverage of the shared auth dependency ──────────────────
+    # Every authenticated route hangs off the same `get_current_user`
+    # dependency, so these three tests cover all of them. Individual routers
+    # used to carry their own `test_<route>_without_auth_returns_401` copy —
+    # eighteen of them, all exercising this one code path, several asserting
+    # `in (401, 403)` so loosely that they passed either way. They were removed.
+    # If you're tempted to add another per-route variant, add the case here
+    # instead; a new *route* doesn't need a new auth test, a new auth
+    # *mechanism* does.
+
     def test_me_without_token_returns_401(self, client):
         """Requests without an Authorization header should be rejected."""
         resp = client.get("/api/auth/me")
@@ -156,6 +166,31 @@ class TestMe:
             headers={
                 "Authorization": "Bearer invalid.token.here",
             },
+        )
+        assert resp.status_code == 401
+
+    def test_me_with_expired_token_returns_401(self, client, admin_user):
+        """An expired but otherwise valid token must not be accepted.
+
+        Signed with the real secret, so this fails if expiry stops being
+        checked — which a garbage-token test would not catch.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from jose import jwt
+
+        from app.auth.security import JWT_ALGORITHM, JWT_SECRET
+
+        expired = jwt.encode(
+            {
+                "sub": admin_user.id,
+                "exp": datetime.now(timezone.utc) - timedelta(minutes=5),
+            },
+            JWT_SECRET,
+            algorithm=JWT_ALGORITHM,
+        )
+        resp = client.get(
+            "/api/auth/me", headers={"Authorization": f"Bearer {expired}"}
         )
         assert resp.status_code == 401
 

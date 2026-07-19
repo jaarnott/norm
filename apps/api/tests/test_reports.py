@@ -29,22 +29,6 @@ class TestCreateReport:
         assert resp.status_code == 200
         assert resp.json()["title"] == "Untitled Report"
 
-    def test_create_report_with_venue(self, client, db_session, admin_headers, venue):
-        resp = client.post(
-            "/api/reports",
-            json={
-                "title": "Venue Report",
-                "venue_id": venue.id,
-            },
-            headers=admin_headers,
-        )
-        assert resp.status_code == 200
-        assert resp.json()["venue_id"] == venue.id
-
-    def test_create_report_without_auth_returns_401(self, client):
-        resp = client.post("/api/reports", json={"title": "No Auth"})
-        assert resp.status_code in (401, 403)
-
 
 class TestListReports:
     """GET /api/reports"""

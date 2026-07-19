@@ -162,6 +162,51 @@ class TestVenueScopedTokenSelection:
 
         assert get_token.call_args.kwargs.get("venue_id") == "venue-abc"
 
+    def test_lookup_returns_the_requested_venues_token(self, db_session):
+        """The half the mocked test above can't reach.
+
+        Patching get_valid_access_token proves the argument was passed; it
+        cannot prove the query honours it, because the mock has no rows to
+        filter. With two real venues holding different tokens, picking the
+        wrong one is exactly the silent cross-venue leak this guards.
+        """
+        import uuid
+
+        from app.db.config_models import ConnectorSpec
+        from app.db.models import ConnectorConfig, Venue
+        from app.services.oauth_service import get_valid_access_token
+
+        spec = ConnectorSpec(
+            connector_name="loadedhub",
+            display_name="LoadedHub",
+            execution_mode="template",
+            auth_type="oauth2",
+            auth_config={},
+            tools=[],
+        )
+        db_session.add(spec)
+
+        tokens = {}
+        for name in ("Venue A", "Venue B"):
+            venue = Venue(id=str(uuid.uuid4()), name=name)
+            db_session.add(venue)
+            token = f"token-for-{name.replace(' ', '-').lower()}"
+            tokens[name] = (venue.id, token)
+            db_session.add(
+                ConnectorConfig(
+                    connector_name="loadedhub",
+                    venue_id=venue.id,
+                    enabled="true",
+                    config={},
+                    access_token=token,
+                )
+            )
+        db_session.flush()
+
+        for name, (venue_id, expected) in tokens.items():
+            got = get_valid_access_token(spec, db_session, venue_id=venue_id)
+            assert got == expected, f"{name} got another venue's token"
+
 
 class TestRetryOn401:
     def test_401_on_oauth2_is_retryable(self):

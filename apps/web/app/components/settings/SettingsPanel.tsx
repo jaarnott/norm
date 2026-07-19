@@ -16,6 +16,7 @@ import TemplatesPanel from './TemplatesPanel';
 import AgentsPanel from './AgentsPanel';
 import McpPanel from './McpPanel';
 import AdminThreadsPanel from './AdminThreadsPanel';
+import WorkflowModesTab from './WorkflowModesTab';
 import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
 import type { User } from '../../types';
@@ -1045,7 +1046,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp';
+type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -1363,6 +1364,7 @@ export default function SettingsPanel() {
 
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee', overflowX: 'auto', WebkitOverflowScrolling: 'touch', alignItems: 'center' }}>
+        <button data-testid="settings-tab-preferences" onClick={() => setActiveTab('preferences')} style={tabStyle('preferences')}>Preferences</button>
         <button data-testid="settings-tab-venues" onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
         <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Users</button>
         {showRoles && <button data-testid="settings-tab-roles" onClick={() => setActiveTab('roles')} style={tabStyle('roles')}>Roles</button>}
@@ -1388,6 +1390,9 @@ export default function SettingsPanel() {
 
         {/* ============ MCP TAB ============ */}
         {activeTab === 'mcp' && <McpPanel />}
+
+        {/* ============ PREFERENCES TAB (all users) ============ */}
+        {activeTab === 'preferences' && <WorkflowModesTab />}
 
         {/* ============ VENUES TAB ============ */}
         {activeTab === 'venues' && <VenuesTab />}

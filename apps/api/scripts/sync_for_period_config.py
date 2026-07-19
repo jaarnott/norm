@@ -21,6 +21,13 @@ Excluded deliberately —
       Wrapping them would imply a precision the upstream cannot honour. Invoice
       and budget dates are calendar dates anyway — the trading day does not
       apply to when an invoice is dated.
+  list_supplier_statements
+      A statement covers a supplier's billing period, which is a calendar
+      range — the same reasoning as the invoice lists above. Its from/to are
+      ISO so a 07:00 boundary is expressible, but expressing it would be
+      wrong: nothing about when a statement falls is governed by when the
+      venue starts trading. Wrapped briefly, then removed; the raw action is
+      the correct interface.
   get_stock_on_hand
       A single point-in-time snapshot (report_datetime), not a window.
   create_rostered_shift, update_shift
@@ -38,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -135,13 +143,6 @@ WRAPPED = [
         "to",
         "Received supplier invoices",
     ),
-    (
-        "list_supplier_statements_for_period",
-        "list_supplier_statements",
-        "from_iso",
-        "to_iso",
-        "Supplier statements",
-    ),
 ]
 
 PERIOD_DESC = (
@@ -155,7 +156,72 @@ START_DESC = (
 )
 
 
-def tool_for(action, wraps, start_param, end_param, returns, function_code):
+_TEMPLATE_DEFAULT = re.compile(r"\{\{\s*(\w+)\s*\|\s*default\(\s*'([^']*)'\s*\)")
+
+
+def template_defaults(wrapped):
+    """Defaults the wrapped action's own request templates already declare.
+
+    e.g. get_sales_data renders `interval={{ interval | default('1.00:00:00') }}`,
+    so the request has always had a value for it — but the executor still
+    refuses the call for a missing required field before rendering. Reading the
+    value out of config rather than hardcoding one means we never invent a
+    value the API wasn't already going to use.
+    """
+    blob = " ".join(
+        str(wrapped.get(k) or "")
+        for k in ("path_template", "body_template", "query_template")
+    )
+    return dict(_TEMPLATE_DEFAULT.findall(blob))
+
+
+def tool_for(
+    action, wraps, start_param, end_param, returns, function_code, wrapped=None
+):
+    """Build one `*_for_period` tool row.
+
+    ``wrapped`` is the spec row of the action being fronted. Its own arguments
+    are inherited verbatim (minus the two date params this tool replaces),
+    because fronting an action must not hide what that action requires: the
+    wrapper originally declared ``required_fields: []``, so `interval`,
+    `posIdentifier` and the timeclock flags were unreachable and every call
+    died with "Missing required fields: interval" AFTER resolving the window —
+    a failure that looked like a date bug and wasn't.
+
+    Inheriting rather than listing them keeps this correct when the upstream
+    spec changes; a hardcoded list would silently rot.
+    """
+    wrapped = wrapped or {}
+    dates = {start_param, end_param}
+    ours = {"period", "start", "end", "confirmed_by_user"}
+
+    def carried(names):
+        return [f for f in (names or []) if f not in dates and f not in ours]
+
+    # Defaults the wrapped action's own template already declares. The
+    # consolidator fills these, so the caller need not supply them and a client
+    # working from a stale schema still succeeds.
+    defaults = template_defaults(wrapped)
+
+    inherited_required = [
+        f for f in carried(wrapped.get("required_fields")) if f not in defaults
+    ]
+    inherited_optional = carried(wrapped.get("optional_fields")) + [
+        f for f in carried(wrapped.get("required_fields")) if f in defaults
+    ]
+    inherited_fields = set(inherited_required) | set(inherited_optional)
+
+    inherited_descs = {
+        k: v
+        for k, v in (wrapped.get("field_descriptions") or {}).items()
+        if k in inherited_fields
+    }
+    inherited_schema = {
+        k: v
+        for k, v in (wrapped.get("field_schema") or {}).items()
+        if k in inherited_fields
+    }
+
     return {
         "action": action,
         # Deliberate, and the same choice the other consolidators make:
@@ -176,14 +242,22 @@ def tool_for(action, wraps, start_param, end_param, returns, function_code):
             "For a group-wide question pass venue='all' to cover every venue in "
             "one call, each measured over its own trading day."
         ),
-        "required_fields": [],
-        "optional_fields": ["period", "start", "end", "confirmed_by_user"],
+        "required_fields": inherited_required,
+        "optional_fields": [
+            "period",
+            "start",
+            "end",
+            "confirmed_by_user",
+            *inherited_optional,
+        ],
         "field_descriptions": {
+            **inherited_descs,
             "period": PERIOD_DESC,
             "start": START_DESC,
             "end": "Only with start. ISO 8601 with offset. Honoured verbatim.",
         },
         "field_schema": {
+            **inherited_schema,
             "confirmed_by_user": {
                 "type": "boolean",
                 "description": (
@@ -198,6 +272,7 @@ def tool_for(action, wraps, start_param, end_param, returns, function_code):
             "wraps": wraps,
             "start_param": start_param,
             "end_param": end_param,
+            "defaults": defaults,
             "function_code": function_code,
         },
     }
@@ -212,10 +287,6 @@ def main() -> None:
     from app.db.engine import _ConfigSessionLocal
 
     function_code = FUNCTION_CODE_PATH.read_text(encoding="utf-8")
-    desired = {
-        action: tool_for(action, wraps, sp, ep, returns, function_code)
-        for action, wraps, sp, ep, returns in WRAPPED
-    }
 
     db = _ConfigSessionLocal()
     changes: list[str] = []
@@ -237,6 +308,40 @@ def main() -> None:
         if missing:
             raise SystemExit(f"wrapped actions missing from the spec: {missing}")
 
+        # Build each tool from the live spec row of the action it fronts, so its
+        # own arguments are inherited rather than guessed.
+        desired = {
+            action: tool_for(
+                action,
+                wraps,
+                sp,
+                ep,
+                returns,
+                function_code,
+                wrapped=tools[by_action[wraps]],
+            )
+            for action, wraps, sp, ep, returns in WRAPPED
+        }
+
+        # A wrapper that hides a required field of the action it fronts resolves
+        # the window, then dies on "Missing required fields: X" with no way for
+        # the caller to supply it. Checked against live config here because the
+        # unit tests can only pin the mechanism, not this spec's actual rows.
+        for action, wraps, sp, ep, _returns in WRAPPED:
+            need = {
+                f
+                for f in (tools[by_action[wraps]].get("required_fields") or [])
+                if f not in {sp, ep}
+            }
+            have = set(desired[action]["required_fields"]) | set(
+                desired[action]["optional_fields"]
+            )
+            if need - have:
+                raise SystemExit(
+                    f"{action} would hide required field(s) of {wraps}: "
+                    f"{sorted(need - have)}"
+                )
+
         for action, tool in desired.items():
             if action in by_action:
                 if tools[by_action[action]] != tool:
@@ -247,6 +352,57 @@ def main() -> None:
                 changes.append(
                     f"added:   {action}  (wraps {tool['consolidator_config']['wraps']})"
                 )
+
+        # Prune wrappers this script no longer manages, so WRAPPED above is the
+        # single source of truth and dropping an entry actually removes the tool
+        # (list_supplier_statements_for_period was retired this way).
+        #
+        # The capability row and the agent bindings go with it. Leaving an
+        # enabled McpCapability pointing at a spec tool that no longer exists
+        # produces the worst failure mode this codebase has: project_tools finds
+        # no tool_def and silently omits it, so the admin UI shows the
+        # capability as on while nothing is ever served.
+        from app.db.config_models import AgentConnectorBinding, McpCapability
+        from sqlalchemy.orm.attributes import flag_modified as _flag
+
+        managed = {action for action, *_ in WRAPPED}
+        stale = [
+            t.get("action")
+            for t in tools
+            if str(t.get("action", "")).endswith("_for_period")
+            and t.get("action") not in managed
+        ]
+        for action in stale:
+            tools = [t for t in tools if t.get("action") != action]
+            changes.append(f"removed: {action}  (no longer in WRAPPED)")
+
+            cap = (
+                db.query(McpCapability)
+                .filter(
+                    McpCapability.kind == "connector",
+                    McpCapability.target == "loadedhub",
+                    McpCapability.action == action,
+                )
+                .first()
+            )
+            if cap:
+                db.delete(cap)
+                changes.append("         └ removed its McpCapability row")
+
+            for binding in (
+                db.query(AgentConnectorBinding)
+                .filter(AgentConnectorBinding.connector_name == "loadedhub")
+                .all()
+            ):
+                caps = list(binding.capabilities or [])
+                kept = [c for c in caps if c.get("action") != action]
+                if len(kept) != len(caps):
+                    binding.capabilities = kept
+                    _flag(binding, "capabilities")
+                    changes.append(
+                        f"         └ unbound from agent {binding.agent_slug}"
+                    )
+
         spec.tools = tools
 
         if not changes:

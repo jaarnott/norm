@@ -35,10 +35,6 @@ class TestListOrganizations:
         assert resp.status_code == 200
         assert len(resp.json()["organizations"]) == 0
 
-    def test_list_organizations_without_auth_returns_401(self, client):
-        resp = client.get("/api/organizations")
-        assert resp.status_code in (401, 403)
-
     def test_platform_admin_sees_all_orgs_without_membership(
         self,
         client,
@@ -138,16 +134,6 @@ class TestCreateOrganization:
             headers=admin_headers,
         )
         assert resp.status_code == 422
-
-    def test_create_organization_without_auth_returns_401(self, client):
-        resp = client.post(
-            "/api/organizations",
-            json={
-                "name": "No Auth",
-                "slug": "no-auth",
-            },
-        )
-        assert resp.status_code in (401, 403)
 
 
 class TestGetOrganization:

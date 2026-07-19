@@ -38,6 +38,9 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     dashboard_preferences = Column(JSON, nullable=True)  # {"hr": "report-id", ...}
+    # Per-workflow run mode, keyed by consolidator action name, e.g.
+    # {"review_and_receive_invoices": "autopilot"}. See services/workflow_modes.
+    workflow_modes = Column(JSON, nullable=True)
 
     threads = relationship("Thread", back_populates="user")
     memberships = relationship("OrganizationMembership", back_populates="user")
@@ -459,6 +462,28 @@ class WorkingDocument(Base):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     thread = relationship("Thread", back_populates="working_documents")
+
+
+class DocumentExtraction(Base):
+    """Cache of LLM extractions from binary documents (e.g. invoice PDFs).
+
+    Extracting a supplier invoice copy is the expensive step of the receiving
+    review — an LLM call per invoice, per run. The source document is immutable
+    (a file is uploaded once under a stable id), so the extracted fields can be
+    cached indefinitely and reused across runs instead of re-extracting every
+    time. Keyed by a hash of (connector, action, api_params, schema,
+    instructions) so the same file extracted with a different schema is a
+    distinct entry.
+    """
+
+    __tablename__ = "document_extractions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    cache_key = Column(String, nullable=False, unique=True, index=True)
+    connector = Column(String, nullable=False)
+    action = Column(String, nullable=False)
+    data = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_now)
 
 
 class HrSetup(Base):

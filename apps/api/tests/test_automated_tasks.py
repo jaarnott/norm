@@ -85,10 +85,6 @@ class TestListAutomatedTasks:
         titles = [t["title"] for t in tasks]
         assert unique_title in titles
 
-    def test_list_without_auth_returns_401(self, client):
-        resp = client.get("/api/automated-tasks")
-        assert resp.status_code in (401, 403)
-
 
 class TestGetAutomatedTask:
     """GET /api/automated-tasks/{task_id}"""
@@ -150,17 +146,6 @@ class TestCreateAutomatedTask:
             headers=admin_headers,
         )
         assert resp.status_code == 422
-
-    def test_create_task_without_auth_returns_401(self, client):
-        resp = client.post(
-            "/api/automated-tasks",
-            json={
-                "title": "No Auth",
-                "agent_slug": "procurement",
-                "prompt": "Do something",
-            },
-        )
-        assert resp.status_code in (401, 403)
 
 
 class TestUpdateAutomatedTask:

@@ -64,7 +64,14 @@ def run_consolidator(api, **params):
         "extract_document": api.extract_document,
     }
     exec(FUNCTION_CODE, namespace)
-    defaults = {"today": "2026-07-17", "venue": "Bessie", **params}
+    # Default to approve_fixes (the pre-modes behaviour) so existing assertions
+    # about auto-reconciling hold; mode-specific tests override this.
+    defaults = {
+        "today": "2026-07-17",
+        "venue": "Bessie",
+        "mode": "approve_fixes",
+        **params,
+    }
     return namespace["run"](defaults, api.call_api, lambda m: None)
 
 
@@ -159,10 +166,10 @@ class TestReconciles:
         assert items[0]["reconciled"] is True
         assert items[0]["id"] == "recv-1"
 
-    def test_dry_run_never_writes(self):
+    def test_approve_all_never_writes(self):
         api = api_for(make_received())
-        result = run_consolidator(api, dry_run=True)
-        assert result["reconciled"][0]["outcome"] == "would reconcile (dry run)"
+        result = run_consolidator(api, mode="approve_all")
+        assert result["reconciled"][0]["outcome"] == "awaiting your approval"
         assert api.updated == [] and api.created == []
 
     def test_existing_statement_items_are_preserved(self):
@@ -366,7 +373,9 @@ class TestStatementMatching:
     def test_create_missing_is_a_noop_in_dry_run(self):
         orphan = make_received(supplierId="other", supplierName="Orphan Foods")
         api = Api(statements=[], received=[orphan], pdfs={FILE_ID: make_pdf()})
-        result = run_consolidator(api, create_missing_statements=True, dry_run=True)
+        result = run_consolidator(
+            api, create_missing_statements=True, mode="approve_all"
+        )
         assert api.created == []
         assert result["summary"]["needs_statement"] == 1
 
@@ -480,7 +489,7 @@ class TestComparisonEvidence:
 class TestReport:
     def test_statement_summary_reports_difference(self):
         api = api_for(make_received())
-        result = run_consolidator(api, dry_run=True)
+        result = run_consolidator(api, mode="approve_all")
         s = result["statements"][0]
         assert s["statement_amount"] == "$1,528.70"
         assert s["reconciled_amount"] == "$0.00"
@@ -499,3 +508,34 @@ class TestReport:
         outcomes = {r["invoice"]: r["outcome"] for r in result["results"]}
         assert outcomes["1008102"] == "reconciled"
         assert outcomes["1008103"] == "not reconciled"
+
+
+class TestRunModes:
+    def test_approve_all_is_dry_run(self):
+        api = api_for(make_received())
+        result = run_consolidator(api, mode="approve_all")
+        assert result["dry_run"] is True
+        assert result["mode"] == "approve_all"
+        assert api.updated == [] and api.created == []
+
+    def test_unset_is_dry_run_and_flagged(self):
+        api = api_for(make_received())
+        result = run_consolidator(api, mode="unset")
+        assert result["dry_run"] is True
+        assert result["mode_unset"] is True
+        assert api.updated == []
+
+    def test_approve_fixes_reconciles_but_no_auto_create(self):
+        # A supplier with a received invoice but NO covering statement: in
+        # approve_fixes we must NOT auto-create a statement.
+        inv = make_received(invoiceNumber="NOPE", purchaseOrderNumber="9999")
+        api = Api(statements=[], received=[inv], pdfs={FILE_ID: make_pdf()})
+        run_consolidator(api, mode="approve_fixes")
+        assert api.created == []
+
+    def test_autopilot_auto_creates_missing_statements(self):
+        # Same setup, autopilot → statements auto-created for the passing invoice.
+        inv = make_received()
+        api = Api(statements=[], received=[inv], pdfs={FILE_ID: make_pdf()})
+        run_consolidator(api, mode="autopilot")
+        assert api.created  # created without the LLM passing create_missing

@@ -226,8 +226,27 @@ async def create_from_connector(
                 400, f"No credentials configured for {body.connector_name}"
             )
 
+        # Venue params identify which credentials to use; they are not API
+        # fields, and leaving them in makes them render into templates.
+        params_for_spec = {
+            k: v
+            for k, v in (body.params or {}).items()
+            if k not in ("venue", "venue_id", "venue_name")
+        }
+
+        # venue_id is required, not optional: without it get_valid_access_token
+        # falls back to an unfiltered .first() and authenticates as whichever
+        # venue happens to be first. LoadedHub scopes by token and ignores
+        # x-loaded-company-id, so the call is made against the wrong venue —
+        # which is why loading a roster here returned a bare 500 while the
+        # identical request through /test (which passes it) succeeded.
         conn_result, _rendered = execute_spec(
-            spec, tool_def, body.params, config_row.config, db
+            spec,
+            tool_def,
+            params_for_spec,
+            config_row.config,
+            db,
+            venue_id=config_row.venue_id,
         )
         if not conn_result.success:
             raise HTTPException(502, f"Connector error: {conn_result.error_message}")

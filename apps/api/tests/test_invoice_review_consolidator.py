@@ -65,7 +65,14 @@ def run_consolidator(api, **params):
         "extract_document": api.extract_document,
     }
     exec(FUNCTION_CODE, namespace)
-    defaults = {"today": "2026-07-16", "venue": "Bessie", **params}
+    # Default to approve_fixes (the pre-modes behaviour) so existing assertions
+    # about auto-receiving hold; mode-specific tests override this.
+    defaults = {
+        "today": "2026-07-16",
+        "venue": "Bessie",
+        "mode": "approve_fixes",
+        **params,
+    }
     return namespace["run"](defaults, api.call_api, lambda m: None)
 
 
@@ -214,10 +221,10 @@ class TestReceives:
         assert body["isReceived"] is True
         assert body["receivedAt"]
 
-    def test_dry_run_never_writes(self):
+    def test_approve_all_never_writes(self):
         api = api_for(make_invoice())
-        result = run_consolidator(api, dry_run=True)
-        assert result["received"][0]["outcome"] == "would receive (dry run)"
+        result = run_consolidator(api, mode="approve_all")
+        assert result["received"][0]["outcome"] == "awaiting your approval"
         assert api.received_bodies == []
 
     def test_quantity_variance_allowed_when_pdf_confirms(self):
@@ -505,19 +512,21 @@ class TestLayeredReporting:
         assert len(verdict["reasons"]) == 1
         assert "Credit note" in verdict["reasons"][0]
 
-    def test_blocked_invoices_skip_pdf_extraction(self):
-        extractions = []
+    def test_blocked_invoices_skip_full_pdf_extraction(self):
+        # An invoice blocked before Layer 6 with NO PO reference runs no
+        # extraction at all (no link_po fix, so not even the PO header read).
+        schemas = []
 
         class SpyApi(Api):
             def extract_document(
                 self, connector, action, params=None, schema=None, instructions=None
             ):
-                extractions.append(params)
+                schemas.append(schema)
                 return super().extract_document(
                     connector, action, params, schema, instructions
                 )
 
-        inv = make_invoice(linkedPurchaseOrderId=None)
+        inv = make_invoice(linkedPurchaseOrderId=None, purchaseOrderNumber=None)
         api = SpyApi(
             invoices=[inv],
             details={inv["id"]: inv},
@@ -525,7 +534,33 @@ class TestLayeredReporting:
             pdfs={FILE_ID: make_pdf()},
         )
         run_consolidator(api)
-        assert extractions == [], "PDF extraction ran for a blocked invoice"
+        assert schemas == [], "extraction ran for an invoice with no PO reference"
+
+    def test_link_po_does_only_a_header_extraction(self):
+        # An unlinked invoice that references a PO does ONE lightweight header
+        # extraction (to read the buyer PO), not the full line-by-line Layer 6.
+        schemas = []
+
+        class SpyApi(Api):
+            def extract_document(
+                self, connector, action, params=None, schema=None, instructions=None
+            ):
+                schemas.append(schema)
+                return super().extract_document(
+                    connector, action, params, schema, instructions
+                )
+
+        inv = make_invoice(linkedPurchaseOrderId=None)  # references PO#1520987
+        api = SpyApi(
+            invoices=[inv],
+            details={inv["id"]: inv},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        run_consolidator(api)
+        assert len(schemas) == 1  # exactly the PO header read
+        assert "customer_purchase_order_number" in schemas[0]  # header schema, not lines
+        assert "lines" not in schemas[0]
 
     def test_same_layer_failures_are_all_reported(self):
         # Two independent problems in the same layer (vs the copy) both show.
@@ -759,7 +794,7 @@ class TestPayloadSize:
             pos={PO_ID: make_po()},
             pdfs={FILE_ID: make_pdf()},
         )
-        result = run_consolidator(api, dry_run=True)
+        result = run_consolidator(api, mode="approve_all")
         return len(json.dumps({"success": True, "data": result}))
 
     def test_modest_run_fits_default_slim_threshold(self):
@@ -874,6 +909,20 @@ class TestFixDerivation:
         )
         assert run_consolidator(api)["fixes"] == []
 
+    def test_link_po_prefers_buyer_po_from_copy(self):
+        # Loaded's field holds the supplier's O/N; the copy shows the buyer PO.
+        # The fix suggests the buyer PO and records the referenced one.
+        pdf = make_pdf(customer_purchase_order_number="1520999")
+        api = api_for(
+            make_invoice(linkedPurchaseOrderId=None, purchaseOrderNumber="12195941-1"),
+            pdf=pdf,
+        )
+        fx = run_consolidator(api)["fixes"][0]
+        assert fx["type"] == "link_po"
+        assert fx["po_number"] == "1520999"  # buyer PO from the copy
+        assert fx["copy_po"] == "1520999"
+        assert fx["referenced_po"] == "12195941-1"  # Loaded's (supplier) number
+
     def test_unit_mismatch_yields_unit_fix_with_variant_context(self):
         api = api_for(
             make_invoice(lines=[make_line(unit="Each")]),
@@ -930,3 +979,66 @@ class TestFixInvoicesPayload:
 
     def test_clean_invoice_has_no_fix_invoices(self):
         assert run_consolidator(api_for(make_invoice()))["fix_invoices"] == []
+
+
+class TestRunModes:
+    """Per-user run mode gates auto-receive and card behaviour."""
+
+    def test_approve_all_receives_nothing_and_cards_every_invoice(self):
+        good = make_invoice()
+        bad = make_invoice(
+            id="inv-2", referenceNumber="X-1", linkedPurchaseOrderId=None
+        )
+        api = Api(
+            invoices=[good, bad],
+            details={good["id"]: good, "inv-2": bad},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        result = run_consolidator(api, mode="approve_all")
+        assert api.received_bodies == []  # nothing written
+        assert result["mode"] == "approve_all"
+        assert result["auto_submit"] is False
+        # both the perfect and the fixable invoice get a card
+        refs = {fi["reference_number"] for fi in result["fix_invoices"]}
+        assert refs == {"F55755100", "X-1"}
+        perfect = next(
+            fi for fi in result["fix_invoices"] if fi["reference_number"] == "F55755100"
+        )
+        assert perfect["suggestions"] == []  # no changes, just approve & receive
+
+    def test_unset_behaves_like_approve_all_and_flags(self):
+        api = api_for(make_invoice())
+        result = run_consolidator(api, mode="unset")
+        assert api.received_bodies == []
+        assert result["mode_unset"] is True
+        assert len(result["fix_invoices"]) == 1  # perfect invoice as approval card
+
+    def test_approve_fixes_auto_receives_perfect(self):
+        api = api_for(make_invoice())
+        result = run_consolidator(api, mode="approve_fixes")
+        assert len(api.received_bodies) == 1
+        assert result["auto_submit"] is False
+        assert result["fix_invoices"] == []  # perfect ones not carded
+
+    def test_autopilot_auto_receives_and_signals_auto_submit(self):
+        good = make_invoice()  # uses FILE_ID → clean make_pdf()
+        bad = make_invoice(
+            id="inv-2",
+            referenceNumber="X-1",
+            fileId="file-2",
+            lines=[make_line(unit="Each")],
+        )
+        pdf2 = make_pdf()
+        pdf2["lines"][0] = dict(pdf2["lines"][0], unit_of_measure="100 piece")
+        api = Api(
+            invoices=[good, bad],
+            details={good["id"]: good, "inv-2": bad},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf(), "file-2": pdf2},
+        )
+        result = run_consolidator(api, mode="autopilot")
+        assert len(api.received_bodies) == 1  # the perfect one auto-received
+        assert result["auto_submit"] is True
+        # the unit-fix invoice still gets a card (auto-applied client-side)
+        assert any(fi["reference_number"] == "X-1" for fi in result["fix_invoices"])

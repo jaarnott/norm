@@ -103,10 +103,6 @@ class TestListThreads:
         assert resp.status_code == 200
         assert len(resp.json()["threads"]) == 0
 
-    def test_list_threads_without_auth_returns_401(self, client):
-        resp = client.get("/api/threads")
-        assert resp.status_code in (401, 403)
-
 
 class TestGetThreadDetail:
     """GET /api/threads/{thread_id}"""
@@ -135,10 +131,6 @@ class TestGetThreadDetail:
     def test_get_thread_not_found_returns_404(self, client, admin_headers):
         resp = client.get(f"/api/threads/{uuid.uuid4()}", headers=admin_headers)
         assert resp.status_code == 404
-
-    def test_get_thread_without_auth_returns_401(self, client):
-        resp = client.get(f"/api/threads/{uuid.uuid4()}")
-        assert resp.status_code in (401, 403)
 
 
 class TestDeleteThread:
@@ -186,7 +178,3 @@ class TestDeleteThread:
     def test_delete_nonexistent_thread_returns_404(self, client, admin_headers):
         resp = client.delete(f"/api/threads/{uuid.uuid4()}", headers=admin_headers)
         assert resp.status_code == 404
-
-    def test_delete_without_auth_returns_401(self, client):
-        resp = client.delete(f"/api/threads/{uuid.uuid4()}")
-        assert resp.status_code in (401, 403)

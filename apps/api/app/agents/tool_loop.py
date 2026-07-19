@@ -940,9 +940,13 @@ def _execute_tool_call(
         from app.agents.internal_tools import execute_consolidator
 
         def handler(params, db_sess, tid):
-            return execute_consolidator(
-                tool_def["consolidator_config"], params, db_sess, tid
-            )
+            # Carry the tool's action name into the consolidator config so
+            # execute_consolidator can resolve the per-workflow run mode.
+            cfg = {
+                **tool_def["consolidator_config"],
+                "action": tool_def.get("action"),
+            }
+            return execute_consolidator(cfg, params, db_sess, tid)
 
     if handler or spec.execution_mode == "internal":
         t0 = time.time()

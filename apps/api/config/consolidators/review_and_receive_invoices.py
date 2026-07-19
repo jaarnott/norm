@@ -53,6 +53,24 @@ PDF_SCHEMA = {
 TOTALS_TOL = "0.02"  # user decision: differences <= 2c count as matching
 LINE_TOL = "0.01"
 
+# Header-only extraction to read the BUYER's purchase order number off the copy
+# for unlinked invoices. Loaded's own purchaseOrderNumber field is often the
+# supplier's OWN order number (e.g. Bidfood "O/N"), not the buyer PO that
+# matches a Loaded purchase order — the buyer PO is only on the printed copy.
+# Resolving it here (once, server-side) means the Fix card can pre-select the
+# right PO instantly instead of an LLM call per card in the browser.
+PO_EXTRACT_SCHEMA = {
+    "customer_purchase_order_number": (
+        "string or null — the BUYER's / customer's purchase order number (the "
+        "number the buyer raised in their own system), labelled 'Customer Order "
+        "No', 'Cust Order No', 'Your Order', 'Your Ref', 'PO Number', 'Order No'"
+    ),
+    "supplier_order_number": (
+        "string or null — the SUPPLIER's own order/reference number (labelled "
+        "'O/N', 'Our Order', 'Sales Order', etc.), NOT the buyer's PO"
+    ),
+}
+
 # Ordered, human-readable labels for every gate — drives the per-invoice
 # tick/cross checklist in reports. Keys match the `checks` map; a key absent
 # from `checks` means an earlier layer failed first, shown as "—" (not checked).
@@ -255,7 +273,18 @@ def run(params, call_api, log, call_api_parallel=None):
         return UNIT_ALIASES.get(norm(text))
 
     venue = params.get("venue")
-    dry_run = bool(params.get("dry_run"))
+    # Per-user run mode (injected by execute_consolidator):
+    #   approve_all / unset → present everything, write nothing (dry run)
+    #   approve_fixes       → auto-receive perfect invoices; fixes need the card
+    #   autopilot           → auto-receive perfect; cards auto-apply confident fixes
+    mode = params.get("mode") or "unset"
+    mode_unset = mode == "unset"
+    approve_all = mode in ("approve_all", "unset")
+    autopilot = mode == "autopilot"
+    # No separate dry-run concept: the run mode alone decides whether anything
+    # is written. approve_all / unset present everything read-only for approval;
+    # approve_fixes / autopilot write.
+    dry_run = approve_all
     to_date = params.get("to_date") or params.get("today")
     from_date = params.get("from_date")
     if not from_date:
@@ -417,6 +446,19 @@ def run(params, call_api, log, call_api_parallel=None):
                 "file_id": detail.get("fileId"),
                 "lines": raw_lines,
                 "suggestions": list(fixes),
+                # The review's authoritative checklist so the card can show
+                # every check (not just the ones it re-derives client-side).
+                # Encoded as one compact char per check in CHECK_LABELS order —
+                # 'p' pass, 'f' fail, '-' not reached (the gates short-circuit
+                # at the first failure) — because this rides on every card and
+                # must stay well under the LLM tool-result slim cap. The card
+                # decodes it against the same fixed order. The failure detail
+                # (`reasons`) is already carried once in the skipped/received
+                # verdicts, so it is not duplicated onto every card here.
+                "checks": "".join(
+                    {"pass": "p", "fail": "f"}.get(checks.get(key), "-")
+                    for key, _label in CHECK_LABELS
+                ),
             }
 
         def verdict_now():
@@ -591,15 +633,35 @@ def run(params, call_api, log, call_api_parallel=None):
                     + str(po_number_hint)
                     + " — needs matching in Loaded)"
                 )
+                # Read the BUYER PO off the copy so the card can pre-select the
+                # right Loaded PO instantly (Loaded's field may hold the
+                # supplier's own order number). Best-effort — falls back to the
+                # referenced number if extraction fails.
+                copy_po = None
+                if detail.get("fileId"):
+                    hdr = extract_document(
+                        "loadedhub",
+                        "download_invoice_file",
+                        dict(base, file_id=detail["fileId"]),
+                        schema=PO_EXTRACT_SCHEMA,
+                        instructions=(
+                            "Extract the buyer's purchase order number and the "
+                            "supplier's own order number — they differ."
+                        ),
+                    )
+                    if isinstance(hdr, dict):
+                        copy_po = hdr.get("customer_purchase_order_number")
                 # Fixable: link the referenced PO number to this invoice.
                 fixes.append(
                     {
                         "type": "link_po",
                         "invoice_id": inv_id,
                         "reference": ref,
-                        "po_number": str(po_number_hint),
+                        "po_number": str(copy_po or po_number_hint),
+                        "referenced_po": str(po_number_hint),
+                        "copy_po": copy_po,
                         "summary": "Link purchase order "
-                        + str(po_number_hint)
+                        + str(copy_po or po_number_hint)
                         + " to invoice "
                         + ref,
                     }
@@ -1046,8 +1108,12 @@ def run(params, call_api, log, call_api_parallel=None):
             continue
 
         if dry_run:
-            verdict["outcome"] = "would receive (dry run)"
+            verdict["outcome"] = "awaiting your approval"
             received.append(verdict)
+            # approve_all: a perfect invoice still needs the user's OK, so it
+            # gets an approval card (full receive view, no suggested changes).
+            if approve_all:
+                fix_invoices.append(make_fix_invoice())
             continue
 
         body = dict(detail)
@@ -1114,6 +1180,9 @@ def run(params, call_api, log, call_api_parallel=None):
         "skipped": skipped,
         "fixes": all_fixes,
         "fix_invoices": fix_invoices,
+        "mode": mode,
+        "mode_unset": mode_unset,
+        "auto_submit": autopilot,
         "summary": {"received": len(received), "skipped": len(skipped)},
     }
 

@@ -7,6 +7,7 @@ except through `call_api`.
 
 import datetime
 import decimal
+import hashlib
 import json
 import logging
 import math
@@ -18,6 +19,73 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+def _extraction_cache_key(
+    connector: str, action: str, api_params: dict, schema: dict, instructions: str
+) -> str:
+    """Stable hash of everything that determines an extraction's output.
+
+    The source document is immutable (a file id in api_params), and the schema
+    / instructions decide what is pulled from it — so identical inputs always
+    yield the same fields and can be cached. A different schema for the same
+    file hashes differently, so the two extraction shapes never collide.
+    """
+    material = json.dumps(
+        {
+            "connector": connector,
+            "action": action,
+            "params": api_params or {},
+            "schema": schema or {},
+            "instructions": instructions or "",
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def _extraction_cache_get(db: Session, cache_key: str) -> Any | None:
+    """Return a cached extraction, or None.
+
+    Uses the caller's session deliberately: it keeps the cache inside whatever
+    transaction the request is already running, so tests (which roll their
+    session back) never see or leave behind cached rows.
+    """
+    from app.db.models import DocumentExtraction
+
+    try:
+        row = (
+            db.query(DocumentExtraction)
+            .filter(DocumentExtraction.cache_key == cache_key)
+            .first()
+        )
+        return row.data if row else None
+    except Exception as exc:  # noqa: BLE001 — cache must never break extraction
+        logger.warning("extraction cache read failed: %s", exc)
+        return None
+
+
+def _extraction_cache_put(
+    db: Session, cache_key: str, connector: str, action: str, data: Any
+) -> None:
+    """Store an extraction, committed with the caller's transaction.
+
+    Written inside a SAVEPOINT so a duplicate key (another run stored the same
+    document first) rolls back only this insert, never the caller's work.
+    """
+    from app.db.models import DocumentExtraction
+
+    try:
+        with db.begin_nested():
+            db.add(
+                DocumentExtraction(
+                    cache_key=cache_key, connector=connector, action=action, data=data
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — cache write is best-effort
+        logger.debug("extraction cache write skipped: %s", exc)
+
 
 # Default ceiling on connector API calls per function execution. A consolidator
 # can raise it via consolidator_config.max_api_calls when its workload is
@@ -371,6 +439,17 @@ def execute_function(
         Returns {"error": ...} on failure — callers must treat that as
         "could not read the document", never as a successful extraction.
         """
+        # Cache hit: return the stored extraction without downloading the
+        # document or calling the LLM — and without spending an API call, since
+        # neither the fetch nor the extraction runs.
+        cache_key = _extraction_cache_key(
+            connector, action, api_params or {}, schema or {}, instructions or ""
+        )
+        cached = _extraction_cache_get(db, cache_key)
+        if cached is not None:
+            log(f"extract_document: {connector}.{action} → cache hit")
+            return cached
+
         nonlocal api_call_count
         api_call_count += 1
         if api_call_count > max_api_calls:
@@ -424,6 +503,14 @@ def execute_function(
             log(
                 f"extract_document: {connector}.{action} → {_describe_data(parsed)} ({total_ms}ms)"
             )
+            # Cache only clean extractions — never an error dict, and never a
+            # result with no usable fields (a transient read failure).
+            if (
+                isinstance(parsed, dict)
+                and "error" not in parsed
+                and any(v is not None for v in parsed.values())
+            ):
+                _extraction_cache_put(db, cache_key, connector, action, parsed)
             return parsed
         except Exception as exc:
             log(f"extract_document {connector}.{action} failed: {exc}")

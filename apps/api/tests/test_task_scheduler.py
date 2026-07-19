@@ -46,10 +46,23 @@ class TestComputeNextRunAt:
 
 class TestApplySchedule:
     def test_active_gets_next_run(self, db_session):
+        """Assert *when*, not merely that something was set.
+
+        `is not None` would pass just as happily on a next run computed in
+        1970 — which the runner would then fire immediately and forever.
+        """
+        before = datetime.now(timezone.utc)
         task = _make_task(db_session, status="active", schedule_type="hourly")
         task.next_run_at = None
         task_scheduler.apply_schedule(task)
+
         assert task.next_run_at is not None
+        nxt = task.next_run_at
+        if nxt.tzinfo is None:
+            nxt = nxt.replace(tzinfo=timezone.utc)
+        # Hourly, computed from "now": roughly an hour out, and in the future.
+        assert nxt > before
+        assert timedelta(minutes=59) <= (nxt - before) <= timedelta(minutes=61)
 
     def test_paused_clears_next_run(self, db_session):
         task = _make_task(

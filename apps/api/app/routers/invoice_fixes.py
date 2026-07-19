@@ -28,10 +28,11 @@ Fix contracts (verified live in the LoadedHub test env, 18 Jul 2026):
 
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -62,6 +63,11 @@ class ReceiveRequest(BaseModel):
     # Variant unit updates: {linked_item_id, line_code, unit_id}.
     variant_updates: list[dict] = []
     receive: bool = True
+
+
+class InvoiceStatusRequest(BaseModel):
+    venue_id: str
+    invoice_ids: list[str] = []
 
 
 def _norm(text: object) -> str:
@@ -135,6 +141,21 @@ class _Loaded:
 
     def get(self, path: str) -> object:
         return self.request("GET", path)
+
+    def file_base64(self, file_id: str) -> tuple[str, str]:
+        """Download an invoice file and return (base64, content_type)."""
+        import base64
+
+        resp = httpx.get(
+            _HOST + f"/1.0/stock/internal/invoices/files/{file_id}",
+            headers=self._headers,
+            auth=self._auth,
+            timeout=30.0,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"file download → {resp.status_code}")
+        ctype = resp.headers.get("content-type", "application/pdf").split(";")[0]
+        return base64.b64encode(resp.content).decode(), ctype
 
     def invoice(self, invoice_id: str) -> dict:
         return self.request(
@@ -283,17 +304,184 @@ async def list_units(
     }
 
 
+class ResolvePoRequest(BaseModel):
+    venue_id: str
+    invoice_id: str
+
+
+@router.post("/invoice-fixes/resolve-po")
+async def resolve_po(
+    body: ResolvePoRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Extract the CUSTOMER purchase order number from the invoice copy.
+
+    Loaded's own `purchaseOrderNumber` field is populated by the supplier feed
+    and often holds the supplier's OWN order number (e.g. Bidfood "O/N"), not
+    the buyer's PO. The buyer's PO — the one that matches a Loaded purchase
+    order — is only on the printed copy (e.g. "Customer Order No"). Read it
+    directly so the card can suggest the right PO.
+    """
+    lh = _Loaded(db, config_db, body.venue_id)
+    inv = lh.invoice(body.invoice_id)
+    file_id = inv.get("fileId")
+    if not file_id:
+        return {"customer_po": None, "supplier_order_number": None}
+    try:
+        b64, ctype = lh.file_base64(file_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("resolve-po file download failed: %s", exc)
+        return {"customer_po": None, "supplier_order_number": None}
+
+    from app.interpreter.llm_interpreter import call_llm
+
+    schema = {
+        "customer_purchase_order_number": (
+            "string or null — the BUYER's / customer's purchase order number: "
+            "the order number the buyer (the venue) raised in their own system. "
+            "Suppliers label it 'Customer Order No', 'Cust Order No', 'Your "
+            "Order', 'Your Ref', 'PO Number', 'Purchase Order', 'Order No'. It "
+            "is the number to match against a purchase order."
+        ),
+        "supplier_order_number": (
+            "string or null — the SUPPLIER's OWN order/reference number "
+            "(labelled 'O/N', 'Our Order', 'Our Ref', 'Sales Order', 'Invoice "
+            "No', 'Delivery No'). NOT the buyer's PO."
+        ),
+    }
+    system_prompt = (
+        "You extract identifiers from a supplier invoice exactly as printed. "
+        "Distinguish the BUYER's purchase order number from the SUPPLIER's own "
+        "order number — they are different. Return ONLY a JSON object matching "
+        "this schema:\n" + json.dumps(schema, indent=1) + "\nUse null when a "
+        "field is not present. Never guess."
+    )
+    documents = [
+        {
+            "type": "document",
+            "source": {"type": "base64", "media_type": ctype, "data": b64},
+        }
+    ]
+    try:
+        parsed, _ = call_llm(
+            system_prompt=system_prompt,
+            user_prompt="Extract the buyer PO number and the supplier order number.",
+            db=db,
+            call_type="extraction",
+            max_tokens=512,
+            documents=documents,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("resolve-po extraction failed: %s", exc)
+        return {"customer_po": None, "supplier_order_number": None}
+    parsed = parsed if isinstance(parsed, dict) else {}
+    return {
+        "customer_po": parsed.get("customer_purchase_order_number"),
+        "supplier_order_number": parsed.get("supplier_order_number"),
+    }
+
+
+@router.get("/invoice-fixes/file")
+async def invoice_file(
+    venue_id: str,
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Stream the invoice's attached copy (the supplier PDF) for inline viewing.
+
+    The card resolves the file id from the invoice itself — same source the
+    PO-extraction path uses — so no extra field is needed in the consolidator
+    payload.
+    """
+    import base64
+
+    lh = _Loaded(db, config_db, venue_id)
+    inv = lh.invoice(invoice_id)
+    file_id = inv.get("fileId")
+    if not file_id:
+        raise HTTPException(404, "no invoice copy attached")
+    b64, ctype = lh.file_base64(file_id)
+    ref = inv.get("referenceNumber") or invoice_id
+    ext = "pdf" if "pdf" in (ctype or "").lower() else "bin"
+    return Response(
+        content=base64.b64decode(b64),
+        media_type=ctype or "application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="invoice-{ref}.{ext}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/invoice-fixes/status")
+async def invoice_status(
+    body: InvoiceStatusRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Current state of each card's invoice, read from Loaded.
+
+    The card's "received" state is not stored in the thread — the display block
+    is a snapshot from when the consolidator ran. On reload the card asks the
+    system of record instead, so an invoice received earlier (here, or directly
+    in Loaded) still renders as received.
+    """
+    lh = _Loaded(db, config_db, body.venue_id)
+    statuses: dict[str, dict] = {}
+    for inv_id in body.invoice_ids[:50]:
+        try:
+            inv = lh.invoice(inv_id)
+        except Exception as exc:  # noqa: BLE001 — one bad id must not fail the rest
+            logger.warning("status lookup failed for %s: %s", inv_id, exc)
+            continue
+        # Resolve the linked PO's own order number. Loaded's bulk PO list only
+        # returns *open* orders, so once a PO is received it disappears from
+        # there — the card can only name it by fetching it directly. (The
+        # invoice's own purchaseOrderNumber is often the supplier's order
+        # number, not the buyer PO, so it can't stand in for this.)
+        linked_po_id = inv.get("linkedPurchaseOrderId")
+        linked_po_number = None
+        if linked_po_id:
+            try:
+                po = lh.get(f"/1.0/stock/internal/purchase-orders/{linked_po_id}")
+                linked_po_number = (po or {}).get("orderNumber")
+            except Exception as exc:  # noqa: BLE001 — naming it is best-effort
+                logger.warning("linked PO lookup failed for %s: %s", linked_po_id, exc)
+        statuses[inv_id] = {
+            "is_received": bool(inv.get("isReceived")),
+            "received_at": inv.get("receivedAt"),
+            "reference_number": inv.get("referenceNumber"),
+            "linked_purchase_order_id": linked_po_id,
+            "linked_purchase_order_number": linked_po_number,
+            "purchase_order_number": inv.get("purchaseOrderNumber"),
+        }
+    return {"statuses": statuses}
+
+
 @router.get("/invoice-fixes/purchase-orders")
 async def list_purchase_orders(
     venue_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Loaded purchase orders for the card's Order Number picker."""
+    # Never cache: POs change as invoices get received, and a stale list keeps
+    # already-received POs in the picker (and can miss newly-added fields).
+    response.headers["Cache-Control"] = "no-store"
     lh = _Loaded(db, config_db, venue_id)
     pos = lh.get("/1.0/stock/internal/purchase-orders?from=1901-01-01&to=9999-12-31")
     pos = pos if isinstance(pos, list) else (pos or {}).get("data") or []
+    # Mirror Loaded's own receive screen: it bulk-loads purchase orders and
+    # filters the Order Number dropdown client-side to the invoice's supplier
+    # and to POs that aren't already invoiced/linked. Return the fields the
+    # card needs to do the same filtering.
     return {
         "purchase_orders": [
             {
@@ -301,6 +489,11 @@ async def list_purchase_orders(
                 "order_number": p.get("orderNumber"),
                 "supplier_name": p.get("supplierName"),
                 "supplier_id": p.get("supplierId"),
+                "created_at": p.get("createdAt"),
+                "linked_invoice_id": p.get("linkedInvoiceId"),
+                "invoiced": bool(p.get("invoicedAt")),
+                "received": bool(p.get("isReceived")),
+                "status": p.get("status"),
             }
             for p in pos
             if not p.get("datestampDeleted")

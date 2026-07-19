@@ -126,6 +126,21 @@ def run(params, call_api, log, call_api_parallel=None, options=None):
     forwarded[start_param] = window["start"]
     forwarded[end_param] = window["end"]
 
+    # Fill the wrapped action's own defaults for anything the caller omitted.
+    # These come from that action's spec template (e.g. get_sales_data renders
+    # `interval | default('1.00:00:00')`), so nothing is invented here — the
+    # value is the one the request would have used anyway.
+    #
+    # Why it matters: the executor validates the WRAPPED action's
+    # required_fields, so an omitted `interval` is refused with "Missing
+    # required fields: interval" AFTER the window resolves — even though the
+    # template would have defaulted it. That also makes the tool robust to a
+    # client calling with a stale copy of the schema, which is otherwise an
+    # unfixable-from-here failure.
+    for key, value in (options.get("defaults") or {}).items():
+        if not forwarded.get(key):
+            forwarded[key] = value
+
     data = call_api("loadedhub", wraps, forwarded)
     if isinstance(data, dict) and data.get("error"):
         return {"error": str(data["error"]), "window": window}

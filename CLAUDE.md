@@ -1,5 +1,95 @@
 # Norm — AI Operations Platform for Hospitality
 
+## Working agreement (read this first)
+
+**Do not commit or push unless you are asked to.**
+
+This is not a style preference. Every push to `main` that goes green deploys
+**straight to production** (see Deployment Pipeline below) — there is no manual
+gate. So an agent that commits on its own initiative has shipped to customers
+before anyone read the diff.
+
+What to do instead: make the change, verify it (below), then **report what you
+changed and what you verified, and stop**. The user commits when they're ready.
+
+- Finishing a step in a multi-step task is **not** a reason to commit. Leave the
+  work in the working tree and keep going.
+- "Committing to be safe" is the opposite of safe here.
+- Uncommitted work is fine. This repo is often worked on by more than one agent
+  at once, so also: only ever stage **your own** files (`git add <paths>`, never
+  `git add -A`), and never push commits you didn't author.
+- When a commit *is* requested, follow the conventions further down: branch off
+  `main` if you're on it, and end the message with the co-author trailer.
+
+## Verify before you say it's done
+
+Claiming something works means you ran it. The full set:
+
+```bash
+cd apps/api && uv run ruff check app/ && uv run pytest tests/ -q
+cd apps/web && pnpm lint && pnpm exec tsc --noEmit && pnpm test
+```
+
+**Run the API suite even for a web-only change.** `apps/api/app/mcp/ui/display-block.html`
+is a committed build artifact bundled from web components — the list is `SOURCES`
+in `apps/mcp-ui/scripts/emit.mjs` (the roster components, `lib/datetime.ts`,
+`lib/rosterTime.ts`, `roster/grid.ts`). Edit any of those without running:
+
+```bash
+pnpm --filter @norm/mcp-ui build
+```
+
+and `tests/test_mcp_ui.py` fails in CI with "display-block.html is STALE" — a
+failure that is invisible from the web checks alone.
+
+## You can test connector actions yourself — do it
+
+Don't report a connector action as "unverified, needs a real environment". You
+have one. The local API reads the **shared** config DB (so a spec action you just
+synced is already live) and the **local** database, which holds a real LoadedHub
+token. So a local call hits the real LoadedHub API.
+
+```bash
+# 1. Session — same credentials CI's E2E job uses (apps/e2e/run-local.sh)
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@norm.local","password":"changeme123"}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+
+# 2. Which venue has credentials
+curl -s http://localhost:8000/api/venues -H "Authorization: Bearer $TOKEN"
+
+# 3. Run a READ action for real
+curl -s -X POST http://localhost:8000/api/connector-specs/loadedhub/test \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"tool_action":"get_staff_roles","extracted_fields":{},"venue_id":"<venue-id>"}'
+```
+
+**Always run a new read action before believing its `response_transform`.** Field
+names taken from documentation, from another codebase's types, or from a similar
+endpoint are routinely wrong, and a wrong mapping fails *silently* — the field is
+just missing. Two of five transforms written from Loaded's TypeScript types were
+wrong on first contact with the real payload (`reason` was actually `note`; a
+`leaveTypeName` that doesn't exist at all).
+
+**For WRITE actions use dry-run, not test.** It renders the request — URL, headers,
+body — without sending it, so you can check a body template without changing a
+venue's data:
+
+```bash
+curl -s -X POST http://localhost:8000/api/connector-specs/loadedhub/dry-run \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"tool_action":"update_shift","extracted_fields":{...}}'
+```
+
+Only fire a real write when the side effect is understood and acceptable —
+`publish_roster` notifies staff; a shift write mutates a live roster. The local
+token points at a **real** LoadedHub venue, not a sandbox.
+
+Environment notes: **testing** has no venues, so it cannot exercise connectors.
+**Production** has the data but you don't have its admin credentials. Local is
+the place to test.
+
 ## Quick Start (Codespaces)
 
 ```bash
@@ -145,19 +235,35 @@ All environments share a single config database for system-level configuration:
 
 ```bash
 cd apps/api
-uv run ruff check app/          # lint
+uv run ruff check app/           # lint
 uv run ruff format --check app/  # format check
-uv run pytest tests/ -v          # 228 tests
+uv run pytest tests/ -q          # ~690 tests, ~95s
 
 cd apps/web
 pnpm lint                        # ESLint (0 errors expected)
-pnpm exec tsc --noEmit          # TypeScript check
+pnpm exec tsc --noEmit           # TypeScript check
+pnpm test                        # vitest — pure logic (time math, grid geometry)
 
 # E2E tests (requires dev servers running)
 cd apps/e2e
 ./run-local.sh                   # fetch saved tests from local API, run them, report results
 npx playwright test tests/foo.ts # run a specific generated spec file
 ```
+
+**The E2E stage in CI is advisory, not a gate.** `.github/workflows/e2e-tests.yml`
+sets `continue-on-error: true` on the test run, so the job reports success even
+when tests fail and can never block a deploy — and the suite is currently a
+single smoke test. Do not read a green pipeline as "E2E passed". Worth making a
+real gate (drop the flag, add a few deterministic smoke tests) once Norm has
+real users.
+
+**What the tests are for.** Much of this suite exists because of specific
+production incidents, and those tests carry docstrings saying so — an empty
+`Bearer ` token reaching the wire, sales reading `$0` for a Saturday, venues
+becoming undeletable. The two largest files exec the **real** consolidator code
+from `config/consolidators/` under the real sandbox namespace, and are the only
+thing standing between a config edit and a sandbox failure in production. Before
+deleting a test, check whether it names an incident.
 
 ## Browser Access (Playwright MCP)
 

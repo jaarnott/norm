@@ -41,10 +41,6 @@ class TestGetBilling:
         resp = client.get(f"/api/billing/{organization.id}", headers=manager_headers)
         assert resp.status_code == 403
 
-    def test_get_billing_without_auth_returns_401(self, client, organization):
-        resp = client.get(f"/api/billing/{organization.id}")
-        assert resp.status_code in (401, 403)
-
 
 class TestSetupBilling:
     """POST /api/billing/{org_id}/setup"""

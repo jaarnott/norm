@@ -249,3 +249,191 @@ class TestSandboxSafety:
             tool = module.tool_for(action, wraps, sp, ep, returns, "")
             assert tool["method"] == "GET"
             assert tool["consolidator_config"]["allowed_write_actions"] == []
+
+
+class TestWrappedArgumentsAreReachable:
+    """Fronting an action must not hide what that action requires.
+
+    The wrapper declared `required_fields: []`, so get_sales_data's `interval`
+    (and posIdentifier, and the three timeclock flags) had no place in the
+    schema. Every call resolved the trading-day window correctly and then died
+    with "Missing required fields: interval" — a failure that reads like a date
+    bug and isn't. Five of the thirteen tools were affected.
+    """
+
+    def _module(self):
+        import importlib.util
+        import pathlib
+
+        path = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "sync_for_period_config.py"
+        )
+        spec = importlib.util.spec_from_file_location("sync_for_period", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _wrapped(self):
+        return {
+            "action": "get_sales_data",
+            "required_fields": ["interval", "start_datetime", "end_datetime"],
+            "optional_fields": ["posIdentifier"],
+            "field_descriptions": {
+                "interval": "Bucket size, e.g. 1.00:00:00",
+                "start_datetime": "ISO start",
+                "posIdentifier": "POS id",
+            },
+            "field_schema": {"interval": {"type": "string"}},
+        }
+
+    def test_required_fields_of_the_wrapped_action_are_required_here(self):
+        m = self._module()
+        tool = m.tool_for(
+            "get_sales_for_period",
+            "get_sales_data",
+            "start_datetime",
+            "end_datetime",
+            "Sales",
+            "",
+            wrapped=self._wrapped(),
+        )
+        assert "interval" in tool["required_fields"]
+
+    def test_the_date_params_it_replaces_are_not_inherited(self):
+        """They are the whole point of the wrapper — re-exposing them would put
+        the caller back in the business of computing timestamps."""
+        m = self._module()
+        tool = m.tool_for(
+            "get_sales_for_period",
+            "get_sales_data",
+            "start_datetime",
+            "end_datetime",
+            "Sales",
+            "",
+            wrapped=self._wrapped(),
+        )
+        fields = set(tool["required_fields"]) | set(tool["optional_fields"])
+        assert "start_datetime" not in fields
+        assert "end_datetime" not in fields
+        assert {"period", "start", "end", "confirmed_by_user"} <= fields
+
+    def test_optional_fields_and_their_descriptions_carry_over(self):
+        m = self._module()
+        tool = m.tool_for(
+            "get_sales_for_period",
+            "get_sales_data",
+            "start_datetime",
+            "end_datetime",
+            "Sales",
+            "",
+            wrapped=self._wrapped(),
+        )
+        assert "posIdentifier" in tool["optional_fields"]
+        assert tool["field_descriptions"]["posIdentifier"] == "POS id"
+        assert tool["field_schema"]["interval"] == {"type": "string"}
+        # Our own descriptions still win for the fields we define.
+        assert tool["field_descriptions"]["period"] == m.PERIOD_DESC
+
+    def test_inherited_fields_reach_the_wrapped_call(self):
+        """Schema exposure is only half of it — the consolidator must forward
+        the value through, which is what _CONSUMED governs."""
+        api = Api()
+        run_consolidator(api, period="yesterday", interval="1.00:00:00")
+        assert api.params_for("get_sales_data")["interval"] == "1.00:00:00"
+
+    def test_a_field_the_template_defaults_becomes_optional_and_is_filled(self):
+        """get_sales_data renders `interval | default('1.00:00:00')`, so the
+        request always had a value — only the required-field check refused it.
+        Filling it here means a caller working from a stale copy of the schema
+        still succeeds, which is otherwise unfixable from the server side."""
+        m = self._module()
+        wrapped = dict(
+            self._wrapped(),
+            path_template="/pos/sales?interval={{ interval | default('1.00:00:00') }}",
+        )
+        tool = m.tool_for(
+            "get_sales_for_period",
+            "get_sales_data",
+            "start_datetime",
+            "end_datetime",
+            "Sales",
+            "",
+            wrapped=wrapped,
+        )
+        assert "interval" not in tool["required_fields"]
+        assert "interval" in tool["optional_fields"]
+        assert tool["consolidator_config"]["defaults"] == {"interval": "1.00:00:00"}
+
+        api = Api()
+        run_consolidator(
+            api,
+            options={"defaults": {"interval": "1.00:00:00"}},
+            period="yesterday",
+        )
+        assert api.params_for("get_sales_data")["interval"] == "1.00:00:00"
+
+    def test_a_caller_supplied_value_beats_the_default(self):
+        api = Api()
+        run_consolidator(
+            api,
+            options={"defaults": {"interval": "1.00:00:00"}},
+            period="yesterday",
+            interval="0.01:00:00",
+        )
+        assert api.params_for("get_sales_data")["interval"] == "0.01:00:00"
+
+    def test_fields_without_a_declared_default_stay_required(self):
+        """We must not invent a posIdentifier — an invented id would query the
+        wrong POS rather than fail."""
+        m = self._module()
+        wrapped = {
+            "action": "get_staff_item_orders",
+            "required_fields": ["posIdentifier", "start", "end"],
+            "path_template": "/staff?pos={{ posIdentifier }}",
+        }
+        tool = m.tool_for(
+            "get_staff_item_orders_for_period", "get_staff_item_orders",
+            "start", "end", "Orders", "", wrapped=wrapped,
+        )
+        assert "posIdentifier" in tool["required_fields"]
+        assert tool["consolidator_config"]["defaults"] == {}
+
+    def test_a_schema_valid_call_satisfies_the_executors_required_check(self):
+        """The end-to-end assertion, run locally.
+
+        Builds the wrapper the sync script would write, calls it with only what
+        that schema allows, then applies spec_executor's own missing-required
+        computation to the params the consolidator forwards. This is the check
+        that was never run before shipping: the window resolved fine and the
+        call died one layer further in.
+        """
+        m = self._module()
+        wrapped_row = self._wrapped()
+        tool = m.tool_for(
+            "get_sales_for_period",
+            "get_sales_data",
+            "start_datetime",
+            "end_datetime",
+            "Sales",
+            "",
+            wrapped=wrapped_row,
+        )
+        # A caller may only supply what the wrapper exposes.
+        allowed = set(tool["required_fields"]) | set(tool["optional_fields"])
+        call = {f: "1.00:00:00" for f in tool["required_fields"]}
+        call["period"] = "yesterday"
+        assert set(call) <= allowed
+
+        api = Api()
+        run_consolidator(api, **call)
+        forwarded = api.params_for("get_sales_data")
+
+        # spec_executor.execute_spec, verbatim.
+        missing = [
+            f
+            for f in wrapped_row["required_fields"]
+            if f not in forwarded or not forwarded[f]
+        ]
+        assert missing == [], f"would fail with: Missing required fields: {missing}"

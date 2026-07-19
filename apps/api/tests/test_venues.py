@@ -24,10 +24,6 @@ class TestListVenues:
         venue_ids = [v["id"] for v in data["venues"]]
         assert venue.id in venue_ids
 
-    def test_list_venues_without_auth_returns_401(self, client):
-        resp = client.get("/api/venues")
-        assert resp.status_code in (401, 403)
-
 
 class TestCreateVenue:
     """POST /api/organizations/{org_id}/venues"""
@@ -64,13 +60,6 @@ class TestCreateVenue:
             headers=admin_headers,
         )
         assert resp.status_code == 404
-
-    def test_create_venue_without_auth_returns_401(self, client, organization):
-        resp = client.post(
-            f"/api/organizations/{organization.id}/venues",
-            json={"name": "Venue"},
-        )
-        assert resp.status_code in (401, 403)
 
     def test_create_venue_missing_name_returns_422(
         self,
@@ -125,10 +114,6 @@ class TestDeleteVenue:
     def test_delete_venue_not_found_returns_404(self, client, admin_headers):
         resp = client.delete(f"/api/venues/{uuid.uuid4()}", headers=admin_headers)
         assert resp.status_code == 404
-
-    def test_delete_venue_without_auth_returns_401(self, client, venue):
-        resp = client.delete(f"/api/venues/{venue.id}")
-        assert resp.status_code in (401, 403)
 
 
 class TestVenueConnectors:

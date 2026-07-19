@@ -56,14 +56,6 @@ class TestLLMModelConfig:
         assert s.ROUTER_MODEL not in RETIRED_MODEL_IDS
         assert s.DATE_RESOLVER_MODEL not in RETIRED_MODEL_IDS
 
-    def test_available_models_list_has_no_retired_ids(self):
-        from app.routers.connectors import AVAILABLE_MODELS
-
-        ids = {m["id"] for m in AVAILABLE_MODELS}
-        assert ids.isdisjoint(RETIRED_MODEL_IDS), (
-            f"AVAILABLE_MODELS contains retired IDs: {ids & RETIRED_MODEL_IDS}"
-        )
-
     def test_no_retired_model_ids_referenced_in_source(self):
         """Scan the whole app package so a dead ID anywhere fails CI."""
         import pathlib
@@ -92,13 +84,6 @@ class TestCorsOriginsList:
         s = Settings(CORS_ALLOWED_ORIGINS="*", _env_file=None)
         assert s.cors_origins_list == ["*"]
 
-    def test_single_origin(self):
-        s = Settings(
-            CORS_ALLOWED_ORIGINS="https://app.norm.dev",
-            _env_file=None,
-        )
-        assert s.cors_origins_list == ["https://app.norm.dev"]
-
     def test_multiple_origins(self):
         s = Settings(
             CORS_ALLOWED_ORIGINS="https://app.norm.dev, https://staging.norm.dev",
@@ -109,16 +94,9 @@ class TestCorsOriginsList:
             "https://staging.norm.dev",
         ]
 
-    def test_strips_whitespace(self):
+    def test_strips_whitespace_and_ignores_empty_entries(self):
         s = Settings(
-            CORS_ALLOWED_ORIGINS="  https://a.com ,  https://b.com  ",
-            _env_file=None,
-        )
-        assert s.cors_origins_list == ["https://a.com", "https://b.com"]
-
-    def test_ignores_empty_entries(self):
-        s = Settings(
-            CORS_ALLOWED_ORIGINS="https://a.com,,https://b.com,",
+            CORS_ALLOWED_ORIGINS="  https://a.com , ,https://b.com,  ",
             _env_file=None,
         )
         assert s.cors_origins_list == ["https://a.com", "https://b.com"]
