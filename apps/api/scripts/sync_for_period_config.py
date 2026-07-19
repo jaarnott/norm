@@ -171,7 +171,10 @@ def tool_for(action, wraps, start_param, end_param, returns, function_code):
             "late-night trade after midnight belongs to the evening that started "
             "it. Do not calculate timestamps yourself. Only pass start and end if "
             "the user explicitly asked for specific clock times; the result "
-            "always states which window was used."
+            "always states which window was used — report that window to the "
+            "user alongside the numbers, so the basis of the figures is visible. "
+            "For a group-wide question pass venue='all' to cover every venue in "
+            "one call, each measured over its own trading day."
         ),
         "required_fields": [],
         "optional_fields": ["period", "start", "end", "confirmed_by_user"],

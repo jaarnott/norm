@@ -205,6 +205,9 @@ class McpTool:
     # MCP Apps (SEP-1865): the ui:// resource this tool renders into, or None
     # for a plain text/data tool. Surfaced as `_meta.ui.resourceUri`.
     ui_resource: str | None = None
+    # Whether `venue: "all"` fans this tool out across every consented venue.
+    # Opt-in per tool, and never the default — see supports_all_venues().
+    multi_venue: bool = False
 
     @property
     def is_read_only(self) -> bool:
@@ -282,6 +285,28 @@ def needs_venue(connector: str, action: str) -> bool:
     customers is not enforcement.
     """
     return (connector, action) not in ALWAYS_EXPOSE
+
+
+def supports_all_venues(connector: str, action: str) -> bool:
+    """Whether `venue: "all"` fans this tool out across consented venues.
+
+    Only the `*_for_period` consolidators. They are the tools that resolve
+    their own window per venue, so a fan-out gives each venue its own trading
+    day rather than imposing one venue's boundary on the group — which is the
+    whole point. A raw action would apply one caller-supplied window to six
+    venues that may not share a day start.
+
+    Why this exists at all: the group-wide question ("yesterday's sales across
+    the venues") is the *common* one, and the date-safe tool could not answer
+    it — it asked "which venue?" and the caller went and found a tool that
+    could, one with no trading-day awareness. A rule that is harder to follow
+    than to break will be broken, so the safe path has to be able to answer the
+    question that is actually asked.
+
+    Opt-in, and deliberately not a blanket rule: fanning out multiplies the
+    payload by the venue count, so it must be asked for, never assumed.
+    """
+    return bool(action) and action.endswith("_for_period")
 
 
 def project_tools(
@@ -409,8 +434,9 @@ def project_tools(
         # model to restate it is just a chance to get it wrong.
         extra: dict = {}
         tool_needs_venue = needs_venue(cap.target, cap.action)
+        multi_venue = supports_all_venues(cap.target, cap.action)
         if tool_needs_venue and len(venue_names) > 1:
-            extra["venue"] = build_venue_property(venue_names)
+            extra["venue"] = build_venue_property(venue_names, allow_all=multi_venue)
 
         tools.append(
             McpTool(
@@ -431,6 +457,7 @@ def project_tools(
                     if settings.MCP_UI_ENABLED
                     else None
                 ),
+                multi_venue=multi_venue,
             )
         )
 

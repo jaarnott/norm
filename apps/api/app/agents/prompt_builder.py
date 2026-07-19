@@ -149,12 +149,24 @@ def build_dynamic_prompt(
     return get_system_prompt(domain, _cdb) or None
 
 
-def build_venue_property(configured_venues: list[str]) -> dict:
-    """The `venue` enum property injected into external-connector tools."""
+def build_venue_property(configured_venues: list[str], allow_all: bool = False) -> dict:
+    """The `venue` enum property injected into external-connector tools.
+
+    ``allow_all`` adds an "all" member for tools that can fan out across every
+    consented venue. Opt-in: see mcp.projection.supports_all_venues.
+    """
+    description = f"Venue name. Available for: {', '.join(configured_venues)}."
+    values = list(configured_venues)
+    if allow_all:
+        values.append("all")
+        description += (
+            " Use 'all' to cover every venue in one call — each is measured "
+            "over its own trading day, and the result reports them separately."
+        )
     return {
         "type": "string",
-        "description": f"Venue name. Available for: {', '.join(configured_venues)}.",
-        "enum": configured_venues,
+        "description": description,
+        "enum": values,
     }
 
 

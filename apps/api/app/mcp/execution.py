@@ -167,6 +167,16 @@ class NormMcpContext(McpContext):
         params = dict(arguments)
         venue_name = params.pop("venue", None)
 
+        # Group-wide question, group-wide answer. Handled before venue
+        # resolution because "all" is not a venue to authorize — it means every
+        # venue this principal already consented to.
+        if (
+            tool.multi_venue
+            and isinstance(venue_name, str)
+            and venue_name.strip().lower() == "all"
+        ):
+            return self._call_all_venues(tool, params, arguments)
+
         try:
             venue_id = self._resolve_venue_for(tool, venue_name)
         except VenueResolutionError as exc:
@@ -241,6 +251,98 @@ class NormMcpContext(McpContext):
         if structured is not None:
             structured = self._as_display_block(tool, structured)
         return tools_call_result(payload, structured=structured)
+
+    def _consented_venues(self) -> list[tuple[str, str]]:
+        """(id, name) for the principal's consented venues, ordered by name.
+
+        From the token, never from venue_service.get_user_venues — that fails
+        open, and a fan-out over "every venue on the platform" would be a
+        cross-tenant leak rather than a slow query.
+        """
+        from app.db.models import Venue
+
+        if not self.principal.venue_ids:
+            return []
+        return [
+            (v.id, v.name)
+            for v in self.db.query(Venue)
+            .filter(Venue.id.in_(self.principal.venue_ids))
+            .order_by(Venue.name)
+            .all()
+        ]
+
+    def _call_all_venues(self, tool: McpTool, params: dict, arguments: dict) -> dict:
+        """Run a `*_for_period` tool once per consented venue.
+
+        Each venue resolves its own window, so a group with mixed day starts
+        gets each venue measured on its own trading day instead of one venue's
+        boundary imposed on the rest.
+
+        One venue failing does not fail the call: its error is reported in its
+        own row. A partial answer that says which venue is missing is more
+        useful than a total failure, and it is what makes a stale POS feed
+        visible as a stale feed rather than as a zero.
+        """
+        venues = self._consented_venues()
+        if not venues:
+            return error_result(
+                "You do not have access to any venues in this organization.",
+                code="VALIDATION_ERROR",
+            )
+
+        t0 = time.time()
+        rows: list[dict] = []
+        any_ok = False
+        for venue_id, venue_name in venues:
+            result = self._execute(tool, dict(params), venue_id)
+            row: dict = {"venue": venue_name}
+            if result.success:
+                any_ok = True
+                payload = result.payload
+                # The consolidator's {window, data} envelope — lift the window
+                # to the row so each venue states the basis of its own numbers.
+                if isinstance(payload, dict) and {"window", "data"} <= payload.keys():
+                    row["window"] = payload["window"]
+                    row["data"] = payload["data"]
+                else:
+                    row["data"] = payload
+            else:
+                row["error"] = result.error or "Tool execution failed"
+            rows.append(row)
+
+        duration_ms = int((time.time() - t0) * 1000)
+        logger.info(
+            "mcp_tool_call_all_venues",
+            extra={
+                "mcp_tool": tool.name,
+                "connector": tool.connector,
+                "action": tool.action,
+                "venue_count": len(venues),
+                "failed_venues": sum(1 for r in rows if "error" in r),
+                "duration_ms": duration_ms,
+                "arg_keys": sorted(params),
+            },
+        )
+        self._audit(
+            tool.name,
+            tool.access,
+            arguments,
+            any_ok,
+            error_message=None if any_ok else "all venues failed",
+            duration_ms=duration_ms,
+        )
+
+        if not any_ok:
+            return error_result(
+                "No venue returned data. "
+                + "; ".join(f"{r['venue']}: {r['error']}" for r in rows if "error" in r)
+            )
+
+        payload, _ = shape_result({"venues": rows})
+        # No structuredContent: the UI components render one venue's payload,
+        # and handing them a list would render nothing. A per-venue call still
+        # gets its component.
+        return tools_call_result(payload)
 
     def _as_display_block(self, tool: McpTool, data: dict) -> dict:
         """Wrap a payload for the display-block app, or pass it through.

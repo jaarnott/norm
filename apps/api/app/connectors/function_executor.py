@@ -190,6 +190,35 @@ def execute_function(
                 "consolidator_config.allowed_write_actions"
             )
 
+        # In-process handlers run here, not over HTTP. Mirrors step 3 of
+        # tool_executor.execute_connector_tool, which warns that without this
+        # lookup "every @register'd internal tool (resolve_dates,
+        # create_purchase_order, list_automated_tasks, ...) falls through to
+        # execute_spec and fails". The sandbox never had it, so a consolidator
+        # calling an internal tool built a request against a spec with no
+        # base_url and failed with "Request URL is missing an 'http://' or
+        # 'https://' protocol" — which reads like a misconfigured connector
+        # rather than a call that was never routable.
+        #
+        # Deliberately placed AFTER the write-action gate above, so an internal
+        # write (create_purchase_order) still has to be declared in
+        # allowed_write_actions. Venue params are NOT stripped the way they are
+        # for the HTTP path below: resolve_dates reads day_start_time and
+        # timezone off venue_id, and without it silently applies the org
+        # default instead of the venue's own trading day.
+        from app.agents.internal_tools import get_handler
+
+        handler = get_handler(connector, action)
+        if handler:
+            call_t0 = time.time()
+            handler_result = handler(dict(api_params), use_db, thread_id)
+            call_ms = int((time.time() - call_t0) * 1000)
+            if not handler_result.get("success", True):
+                raise RuntimeError(
+                    handler_result.get("error") or f"{connector}.{action} failed"
+                )
+            return handler_result.get("data"), call_ms
+
         # Resolve venue credentials
         from app.agents.tool_loop import _resolve_venue_config
 

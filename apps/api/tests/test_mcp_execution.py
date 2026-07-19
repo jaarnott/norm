@@ -274,3 +274,184 @@ class TestCalendarVenue:
         u = _user(db_session)
         ctx = self._ctx(db_session, _principal(u, org, []))
         assert ctx._calendar_venue() is None
+
+
+class TestAllVenuesFanOut:
+    """`venue: "all"` on a *_for_period tool.
+
+    Why this exists: asked for yesterday's sales across the group, Claude
+    called the date-safe tool, was told "which venue?", and went and found
+    norm_reports__get_periodic_sales instead — a tool with no trading-day
+    awareness. It reported a Saturday total computed midnight-to-midnight, so
+    post-midnight trade landed in Sunday. The safe tool has to be able to
+    answer the question that actually gets asked, or it gets routed around.
+    """
+
+    def _tool(self, name="loadedhub__get_sales_for_period", multi_venue=True):
+        from app.mcp.projection import McpTool
+
+        return McpTool(
+            name=name,
+            kind="connector",
+            connector="loadedhub",
+            action="get_sales_for_period",
+            playbook_slug=None,
+            method="GET",
+            access="read",
+            scopes=frozenset({"mcp:reports:read"}),
+            description="",
+            input_schema={},
+            multi_venue=multi_venue,
+        )
+
+    def _ctx(self, db, principal, tool, results):
+        """Context with _execute stubbed: venue_id -> (success, payload/error)."""
+        from types import SimpleNamespace
+
+        from app.mcp.execution import NormMcpContext
+
+        ctx = NormMcpContext(principal=principal, db=db, config_db=db)
+        ctx._tools = {tool.name: tool}
+        seen = []
+
+        def fake_execute(_tool, params, venue_id):
+            seen.append((venue_id, dict(params)))
+            ok, body = results[venue_id]
+            return SimpleNamespace(
+                success=ok,
+                payload=body if ok else None,
+                error=None if ok else body,
+            )
+
+        ctx._execute = fake_execute
+        ctx.seen = seen
+        return ctx
+
+    def _window(self, label):
+        return {"start": f"{label}T07:00:00+12:00", "trading_aligned": True}
+
+    def test_runs_once_per_consented_venue(self, db_session):
+        org = _org(db_session)
+        a = _venue(db_session, "La Zeppa", org)
+        b = _venue(db_session, "Mr Murdochs", org)
+        u = _user(db_session)
+        _grant(db_session, u, a)
+        _grant(db_session, u, b)
+        tool = self._tool()
+        ctx = self._ctx(
+            db_session,
+            _principal(u, org, [a, b]),
+            tool,
+            {
+                a.id: (True, {"window": self._window("2026-07-18"), "data": {"t": 1}}),
+                b.id: (True, {"window": self._window("2026-07-18"), "data": {"t": 2}}),
+            },
+        )
+        out = ctx.call_tool(tool.name, {"venue": "all", "period": "yesterday"})
+        assert sorted(v for v, _ in ctx.seen) == sorted([a.id, b.id])
+        # The period still reaches each call; only `venue` is consumed.
+        assert all(p["period"] == "yesterday" for _, p in ctx.seen)
+        assert "venue" not in ctx.seen[0][1]
+        assert not out.get("isError")
+
+    def test_each_venue_reports_its_own_window(self, db_session):
+        """A group with mixed day starts must not have one venue's boundary
+        imposed on the rest — that is the whole reason to fan out here rather
+        than resolve one window and reuse it."""
+        org = _org(db_session)
+        a = _venue(db_session, "La Zeppa", org)
+        b = _venue(db_session, "Mr Murdochs", org)
+        u = _user(db_session)
+        _grant(db_session, u, a)
+        _grant(db_session, u, b)
+        tool = self._tool()
+        ctx = self._ctx(
+            db_session,
+            _principal(u, org, [a, b]),
+            tool,
+            {
+                a.id: (True, {"window": self._window("2026-07-18"), "data": {"t": 1}}),
+                b.id: (True, {"window": self._window("2026-07-17"), "data": {"t": 2}}),
+            },
+        )
+        out = ctx.call_tool(tool.name, {"venue": "all", "period": "yesterday"})
+        import json
+
+        rows = json.loads(out["content"][0]["text"])["venues"]
+        by_name = {r["venue"]: r for r in rows}
+        assert by_name["La Zeppa"]["window"]["start"].startswith("2026-07-18")
+        assert by_name["Mr Murdochs"]["window"]["start"].startswith("2026-07-17")
+
+    def test_one_venue_failing_does_not_fail_the_call(self, db_session):
+        """A partial answer naming the missing venue beats a total failure —
+        it is what makes a stale POS feed visible as a stale feed."""
+        org = _org(db_session)
+        a = _venue(db_session, "La Zeppa", org)
+        b = _venue(db_session, "Mr Murdochs", org)
+        u = _user(db_session)
+        _grant(db_session, u, a)
+        _grant(db_session, u, b)
+        tool = self._tool()
+        ctx = self._ctx(
+            db_session,
+            _principal(u, org, [a, b]),
+            tool,
+            {
+                a.id: (True, {"window": self._window("2026-07-18"), "data": {"t": 1}}),
+                b.id: (False, "LoadedHub 500"),
+            },
+        )
+        out = ctx.call_tool(tool.name, {"venue": "all", "period": "yesterday"})
+        assert not out.get("isError")
+        import json
+
+        rows = {r["venue"]: r for r in json.loads(out["content"][0]["text"])["venues"]}
+        assert rows["Mr Murdochs"]["error"] == "LoadedHub 500"
+        assert rows["La Zeppa"]["data"] == {"t": 1}
+
+    def test_every_venue_failing_is_an_error(self, db_session):
+        org = _org(db_session)
+        a = _venue(db_session, "La Zeppa", org)
+        u = _user(db_session)
+        _grant(db_session, u, a)
+        tool = self._tool()
+        ctx = self._ctx(
+            db_session, _principal(u, org, [a]), tool, {a.id: (False, "LoadedHub 500")}
+        )
+        out = ctx.call_tool(tool.name, {"venue": "all", "period": "yesterday"})
+        assert out.get("isError")
+
+    def test_fan_out_covers_only_consented_venues(self, db_session):
+        """The security property. venue_ids is frozen at consent time, so a
+        venue the user can otherwise reach must not be swept in by "all"."""
+        org = _org(db_session)
+        a = _venue(db_session, "La Zeppa", org)
+        other = _venue(db_session, "Not Consented", org)
+        u = _user(db_session)
+        _grant(db_session, u, a)
+        _grant(db_session, u, other)
+        tool = self._tool()
+        # Principal consented to `a` only, though the user can access both.
+        ctx = self._ctx(
+            db_session,
+            _principal(u, org, [a]),
+            tool,
+            {a.id: (True, {"window": self._window("2026-07-18"), "data": {"t": 1}})},
+        )
+        ctx.call_tool(tool.name, {"venue": "all", "period": "yesterday"})
+        assert [v for v, _ in ctx.seen] == [a.id]
+
+    def test_all_is_not_a_venue_for_tools_that_do_not_opt_in(self, db_session):
+        """Raw actions take a caller-supplied window, so fanning one out would
+        impose a single boundary on venues that may not share a day start."""
+        org = _org(db_session)
+        a = _venue(db_session, "La Zeppa", org)
+        b = _venue(db_session, "Mr Murdochs", org)
+        u = _user(db_session)
+        _grant(db_session, u, a)
+        _grant(db_session, u, b)
+        tool = self._tool(name="loadedhub__get_stock_items", multi_venue=False)
+        ctx = self._ctx(db_session, _principal(u, org, [a, b]), tool, {})
+        out = ctx.call_tool(tool.name, {"venue": "all"})
+        assert out.get("isError")
+        assert ctx.seen == []

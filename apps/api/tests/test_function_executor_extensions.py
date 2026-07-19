@@ -303,3 +303,98 @@ class TestExtractDocument:
         )
         assert not result["success"]
         assert "max 1" in result["error"]
+
+
+class TestInternalHandlerDispatch:
+    """A consolidator calling an in-process tool must not go over HTTP.
+
+    The incident: loadedhub__get_sales_for_period failed for every venue with
+    "Request URL is missing an 'http://' or 'https://' protocol". Its
+    function_code calls call_api("norm", "resolve_dates", ...) to apply the
+    venue's trading day, but the sandbox had no get_handler lookup — so an
+    internal tool fell through to execute_spec, which rendered a request
+    against a spec with no base_url. The tool built to enforce the trading-day
+    rule was the first thing to need this, and it was dead on arrival in
+    production.
+
+    tool_executor.execute_connector_tool has carried the same lookup, and a
+    comment warning about exactly this, the whole time.
+    """
+
+    def _wire_handler(self, monkeypatch, result, record=None):
+        import app.agents.internal_tools as internal
+
+        def handler(params, db, thread_id):
+            if record is not None:
+                record.append(dict(params))
+            return result
+
+        monkeypatch.setattr(
+            internal, "get_handler", lambda c, a: handler if a == "read_thing" else None
+        )
+
+    def test_internal_tool_runs_in_process_not_over_http(
+        self, monkeypatch, db_session
+    ):
+        http_calls = _wire_fake_connector(monkeypatch, {})
+        self._wire_handler(monkeypatch, {"success": True, "data": {"window": {"k": 1}}})
+        code = (
+            "def run(params, call_api, log):\n"
+            "    return call_api('fake', 'read_thing', {})\n"
+        )
+        result = execute_function(code, {}, db_session, None, options={})
+        assert result["data"] == {"window": {"k": 1}}
+        assert http_calls == []  # never reached execute_spec
+
+    def test_venue_id_reaches_the_handler(self, monkeypatch, db_session):
+        """resolve_dates reads day_start_time and timezone off venue_id.
+        Stripping it the way the HTTP path does would silently apply the org
+        default instead of the venue's own trading day — the original bug."""
+        _wire_fake_connector(monkeypatch, {})
+        seen: list[dict] = []
+        self._wire_handler(monkeypatch, {"success": True, "data": {}}, record=seen)
+        code = (
+            "def run(params, call_api, log):\n"
+            "    return call_api('fake', 'read_thing', "
+            "{'query': 'yesterday', 'venue_id': 'v-1'})\n"
+        )
+        execute_function(code, {}, db_session, None, options={})
+        assert seen[0]["venue_id"] == "v-1"
+        assert seen[0]["query"] == "yesterday"
+
+    def test_handler_failure_surfaces_as_an_error(self, monkeypatch, db_session):
+        _wire_fake_connector(monkeypatch, {})
+        self._wire_handler(
+            monkeypatch, {"success": False, "error": "timezone lookup failed"}
+        )
+        code = (
+            "def run(params, call_api, log):\n"
+            "    return call_api('fake', 'read_thing', {})\n"
+        )
+        result = execute_function(code, {}, db_session, None, options={})
+        assert "timezone lookup failed" in str(result["data"].get("error", result))
+
+    def test_internal_write_still_needs_declaration(self, monkeypatch, db_session):
+        """The gate runs before dispatch, so routing internal tools in-process
+        must not become a way around allowed_write_actions."""
+        import app.agents.internal_tools as internal
+
+        called = []
+
+        def handler(params, db, thread_id):
+            called.append(1)
+            return {"success": True, "data": {"done": True}}
+
+        monkeypatch.setattr(
+            internal,
+            "get_handler",
+            lambda c, a: handler if a == "write_thing" else None,
+        )
+        _wire_fake_connector(monkeypatch, {})
+        code = (
+            "def run(params, call_api, log):\n"
+            "    return call_api('fake', 'write_thing', {})\n"
+        )
+        result = execute_function(code, {}, db_session, None, options={})
+        assert "allowed_write_actions" in result["data"]["error"]
+        assert called == []
