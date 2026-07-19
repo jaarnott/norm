@@ -43,6 +43,17 @@ class TestRegistry:
         """
         assert ui_resource_for("loadedhub", "get_sales_data") is None
 
+    def test_date_safe_roster_keeps_the_ui(self):
+        """Swapping MCP from the raw get_roster to get_roster_for_period must
+        not silently drop the roster grid — a binding covering only the raw
+        action would do exactly that."""
+        from app.mcp.ui_apps import component_for
+
+        assert (
+            ui_resource_for("loadedhub", "get_roster_for_period") == DISPLAY_BLOCK_URI
+        )
+        assert component_for("loadedhub", "get_roster_for_period") == "roster_editor"
+
     def test_roster_uses_the_rich_component_not_the_table(self):
         """The roster IS interactive in Norm — a weekly drag grid — so it earns
         a binding. It must be roster_editor, never roster_table: the table is
@@ -297,3 +308,46 @@ class TestBundleFreshness:
             "display-block.html is STALE: a source component changed since it "
             "was built. Run: pnpm --filter @norm/mcp-ui build"
         )
+
+
+class TestConsolidatorEnvelopeUnwrapping:
+    """A *_for_period tool wraps its result as {window, data}. Components parse
+    the raw connector shape and only look one level deep, so the envelope has to
+    be unwrapped or a roster renders empty."""
+
+    def _block(self, payload):
+        from app.mcp.execution import NormMcpContext
+
+        # Must be a tool that actually maps to a component, or _as_display_block
+        # correctly passes the payload straight through.
+        tool = McpTool(
+            name="loadedhub__get_roster_for_period",
+            kind="connector",
+            connector="loadedhub",
+            action="get_roster_for_period",
+            playbook_slug=None,
+            method="GET",
+            access="read",
+            scopes=frozenset({"mcp:roster:read"}),
+            description="Roster for a period",
+            input_schema={"type": "object", "properties": {}},
+            ui_resource=DISPLAY_BLOCK_URI,
+        )
+        ctx = NormMcpContext(principal=None, db=None, config_db=None)
+        return ctx._as_display_block(tool, payload)
+
+    def test_envelope_is_unwrapped_for_the_component(self):
+        roster = {"rosteredShifts": [{"staffMemberFirstName": "Ana"}]}
+        window = {"description": "Yesterday — ...", "trading_aligned": True}
+        block = self._block({"window": window, "data": roster})
+        assert block["data"] == roster, "component must receive the raw payload"
+        assert block["props"]["window"] == window, "window still travels, as a prop"
+
+    def test_unwrapped_payload_passes_through_untouched(self):
+        raw = {"rosteredShifts": []}
+        assert self._block(raw)["data"] == raw
+
+    def test_partial_envelope_is_not_mistaken_for_one(self):
+        # `data` alone (no window) is a plausible connector payload, not an envelope.
+        payload = {"data": [1, 2, 3]}
+        assert self._block(payload)["data"] == payload

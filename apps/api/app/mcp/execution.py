@@ -256,14 +256,23 @@ class NormMcpContext(McpContext):
         component = component_for(tool.connector, tool.action)
         if not component:
             return data
+
+        # A *_for_period consolidator wraps its result as {window, data} so the
+        # window it applied is visible. Components parse the raw connector shape
+        # and only look one level deep, so hand them the inner payload —
+        # otherwise a roster arrives with its shifts one level too far down and
+        # renders empty. The window still travels, as a prop.
+        body, window = data, None
+        if isinstance(data, dict) and "data" in data and "window" in data:
+            body, window = data["data"], data["window"]
+
         # `embedded` tells the component it is running outside the Norm app —
         # no session, no route back to the API — so it skips lookups it would
         # normally fetch and renders from the data it was handed.
-        return {
-            "component": component,
-            "data": data,
-            "props": {"embedded": True, "connector_name": tool.connector},
-        }
+        props = {"embedded": True, "connector_name": tool.connector}
+        if window:
+            props["window"] = window
+        return {"component": component, "data": body, "props": props}
 
     def _audit(
         self,

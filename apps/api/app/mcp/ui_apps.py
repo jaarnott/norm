@@ -113,6 +113,10 @@ DISPLAY_BLOCK_URI = _DISPLAY_BLOCK.uri
 # untouched, internal_tools._show_component), so there is no adapter either side.
 TOOL_COMPONENT: dict[tuple[str, str], str] = {
     ("loadedhub", "get_roster"): "roster_editor",
+    # The date-safe front for the same data. Both are mapped because either may
+    # be the enabled one — MCP curation decides which, and a binding that only
+    # covered the raw action would silently drop the UI the day it was swapped.
+    ("loadedhub", "get_roster_for_period"): "roster_editor",
 }
 
 # Bespoke apps for a connector tool, keyed by (connector, action). Empty: the
