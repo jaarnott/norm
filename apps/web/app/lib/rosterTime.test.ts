@@ -9,6 +9,9 @@ import {
   minutesIntoDay,
   offsetToISO,
   dayStartISO,
+  formatClock,
+  formatHourLabel,
+  venueOffset,
   DEFAULT_TIME_PREFS,
 } from './rosterTime';
 
@@ -79,6 +82,34 @@ describe('grid coordinates', () => {
     const iso = offsetToISO('2026-07-17', 120, NZ);
     expect(iso).toBe('2026-07-17T09:00:00+12:00');
     expect(minutesIntoDay(iso, '2026-07-17', NZ)).toBe(120);
+  });
+});
+
+describe('labels', () => {
+  it('shows clock times in the venue zone, not the viewer’s', () => {
+    // 21:00 UTC is 09:00 the next day in Auckland.
+    expect(formatClock('2026-07-16T21:00:00Z', NZ)).toBe('9:00');
+    const nyc = venueTimePrefs({ timezone: 'America/New_York' });
+    expect(formatClock('2026-07-16T21:00:00Z', nyc)).toBe('17:00');
+  });
+
+  it('is blank for missing or unparseable values', () => {
+    expect(formatClock('', NZ)).toBe('');
+    expect(formatClock('nonsense', NZ)).toBe('');
+  });
+
+  it('labels grid hours from minutes after midnight', () => {
+    expect(formatHourLabel(420)).toBe('7am');
+    expect(formatHourLabel(720)).toBe('12pm');
+    expect(formatHourLabel(0)).toBe('12am');
+    expect(formatHourLabel(1380)).toBe('11pm');
+    expect(formatHourLabel(1470)).toBe('12:30am'); // wraps past midnight
+    expect(formatHourLabel(330)).toBe('5:30am');
+  });
+
+  it('reports the venue offset at an instant', () => {
+    expect(venueOffset(new Date('2026-07-15T00:00:00Z'), NZ)).toBe('+12:00');
+    expect(venueOffset(new Date('2026-01-15T00:00:00Z'), NZ)).toBe('+13:00');
   });
 });
 

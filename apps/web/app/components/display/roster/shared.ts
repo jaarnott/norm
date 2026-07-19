@@ -1,5 +1,10 @@
 // Shared types and helpers for roster components
 
+import type { VenueTimePrefs } from '../../../lib/rosterTime';
+import { companyDayDate } from '../../../lib/rosterTime';
+
+export { tzOffsetOf, localTzOffset, formatWithOffset } from '../../../lib/datetime';
+
 export interface ShiftBreak {
   id?: string;
   breakStart: string;
@@ -115,15 +120,6 @@ export function getWeekDays(start: Date | null, end: Date | null): Date[] {
   return days;
 }
 
-export function formatTimeShort(value: unknown): string {
-  if (!value) return '';
-  try {
-    const d = new Date(String(value));
-    if (isNaN(d.getTime())) return '';
-    return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
-  } catch { return ''; }
-}
-
 export function calcHours(start: unknown, end: unknown): number {
   if (!start || !end) return 0;
   try {
@@ -149,7 +145,11 @@ export function staffName(shift: Shift): string {
   return first || last || String(shift.staffMemberId || '').slice(0, 8);
 }
 
-export function buildStaffRows(shifts: Shift[], days: Date[]): StaffRow[] {
+/**
+ * Group shifts into per-staff rows, keyed by *business* day — so a shift that
+ * runs past midnight stays on the day it started rather than jumping a column.
+ */
+export function buildStaffRows(shifts: Shift[], days: Date[], prefs: VenueTimePrefs): StaffRow[] {
   const dayKeys = new Set(days.map(d => dateKey(d)));
   const staffMap = new Map<string, StaffRow>();
 
@@ -161,7 +161,7 @@ export function buildStaffRows(shifts: Shift[], days: Date[]): StaffRow[] {
     }
     const row = staffMap.get(sid)!;
     if (shift.clockinTime) {
-      const dk = dateKey(new Date(shift.clockinTime));
+      const dk = companyDayDate(shift.clockinTime, prefs);
       if (dayKeys.has(dk)) {
         if (!row.shiftsByDay.has(dk)) row.shiftsByDay.set(dk, []);
         row.shiftsByDay.get(dk)!.push(shift);
@@ -171,49 +171,6 @@ export function buildStaffRows(shifts: Shift[], days: Date[]): StaffRow[] {
   }
 
   return Array.from(staffMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-}
-
-export function snapToGrid(timeMs: number, intervalMinutes: number): number {
-  const ms = intervalMinutes * 60 * 1000;
-  return Math.round(timeMs / ms) * ms;
-}
-
-import { tzOffsetOf, localTzOffset } from '../../../lib/datetime';
-
-export { tzOffsetOf, localTzOffset, formatWithOffset } from '../../../lib/datetime';
-
-/**
- * The timezone the roster is expressed in.
- *
- * Times we send back must sit in the same zone as the ones the connector gave
- * us, so take the offset from the roster's own shifts. Only if the roster has
- * no timestamped shift yet (a brand new day) do we fall back to the browser's
- * offset for that date. Never hardcode one: the venue may not be in the
- * viewer's zone, and a fixed offset silently breaks across a DST boundary.
- */
-export function rosterTzOffset(shifts: Shift[], fallbackDate: Date): string {
-  for (const s of shifts) {
-    const tz = tzOffsetOf(s.clockinTime) || tzOffsetOf(s.clockoutTime);
-    if (tz) return tz;
-  }
-  return localTzOffset(fallbackDate);
-}
-
-export function offsetToTime(
-  offset: number,
-  selectedDate: Date,
-  hourWidth: number,
-  dayStartHour: number,
-  tzOffset?: string,
-): string {
-  const hours = offset / hourWidth + dayStartHour;
-  const totalMinutes = Math.round(hours * 60);
-  const d = new Date(selectedDate);
-  d.setHours(0, 0, 0, 0);
-  d.setMinutes(totalMinutes);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const tz = tzOffset || localTzOffset(d);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${tz}`;
 }
 
 export const formInputStyle: React.CSSProperties = {

@@ -4,8 +4,9 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
-import { extractShifts, extractRosterMeta, getWeekDays, dateKey, buildStaffRows, DAY_NAMES, formatTimeShort, calcHours, roleColor, formatWithOffset } from './roster/shared';
+import { extractShifts, extractRosterMeta, getWeekDays, dateKey, buildStaffRows, DAY_NAMES, calcHours, roleColor, formatWithOffset } from './roster/shared';
 import { apiFetch } from '../../lib/api';
+import { venueTimePrefs, formatClock, venueOffset, formatInTz, wallClockToInstant } from '../../lib/rosterTime';
 import WeekGrid from './roster/WeekGrid';
 import DayTimeline from './roster/DayTimeline';
 import ShiftModal from './roster/ShiftModal';
@@ -13,7 +14,14 @@ import type { StaffOption, RoleOption } from './roster/ShiftModal';
 
 type ViewMode = 'week' | 'day';
 
-interface VenueOption { id: string; name: string }
+interface VenueOption {
+  id: string;
+  name: string;
+  // /api/venues already returns these; the grid needs them to place shifts in
+  // the venue's clock rather than the viewer's.
+  timezone?: string | null;
+  day_start_time?: string | null;
+}
 
 export default function RosterEditor({ data, props, onAction, threadId }: DisplayBlockProps) {
   // Detect working document mode
@@ -87,7 +95,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     sunday.setDate(monday.getDate() + 6);
     sunday.setHours(23, 59, 59, 0);
     const pad = (n: number) => String(n).padStart(2, '0');
-    const fmt = (d: Date) => formatWithOffset(d);
+    const fmt = (d: Date) => formatWithOffset(d, venueOffset(d, timePrefs));
 
     try {
       const res = await apiFetch('/api/working-documents/from-connector', {
@@ -122,8 +130,17 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     setMeta(extractRosterMeta(data));
   }, [data, workingDocId]);
 
+  // Timezone + business-day start for whichever venue is in view. Falls back to
+  // Norm's defaults when the venue list isn't available (e.g. embedded in an MCP
+  // host, where there's no session to fetch it with).
+  const activeVenueId = selectedVenue || (props?.activeVenueId as string) || null;
+  const timePrefs = useMemo(
+    () => venueTimePrefs(venues.find(v => v.id === activeVenueId) ?? null),
+    [venues, activeVenueId],
+  );
+
   const days = useMemo(() => getWeekDays(meta.startDate, meta.endDate), [meta.startDate, meta.endDate]);
-  const staffRows = useMemo(() => buildStaffRows(shifts, days), [shifts, days]);
+  const staffRows = useMemo(() => buildStaffRows(shifts, days, timePrefs), [shifts, days, timePrefs]);
   const activeShifts = shifts.filter(s => !s.datestampDeleted);
 
   // Build staff and role options from shift data
@@ -166,7 +183,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     sunday.setDate(monday.getDate() + 6);
     sunday.setHours(23, 59, 59, 0);
     const pad = (n: number) => String(n).padStart(2, '0');
-    const fmt = (d: Date) => formatWithOffset(d);
+    const fmt = (d: Date) => formatWithOffset(d, venueOffset(d, timePrefs));
     try {
       const res = await apiFetch('/api/working-documents/from-connector', {
         method: 'POST',
@@ -381,19 +398,20 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       const shiftDate = shift.clockinTime.substring(0, 10); // "YYYY-MM-DD"
       if (targetDateKey !== shiftDate) {
         dayChanged = true;
-        // Preserve time-of-day, change the date
-        newClockIn = targetDateKey + shift.clockinTime.substring(10);
+        // Keep the same time of day at the venue, on the new date. Resolving the
+        // wall clock through the venue's zone (rather than doing string surgery
+        // or reading the browser's clock) keeps this right across a DST change,
+        // where the new date's offset may differ from the old one's.
+        const tz = timePrefs.timeZone;
+        const localIn = formatInTz(new Date(shift.clockinTime), tz); // YYYY-MM-DDTHH:MM:SS±HH:MM
+        const [hh, mm] = localIn.substring(11, 16).split(':').map(Number);
+        const newInInstant = wallClockToInstant(targetDateKey, hh * 60 + mm, tz);
+        newClockIn = formatInTz(newInInstant, tz);
         if (shift.clockoutTime) {
-          // Calculate the duration offset (clockout may be next day for overnight shifts)
-          const origIn = new Date(shift.clockinTime).getTime();
-          const origOut = new Date(shift.clockoutTime).getTime();
-          const durationMs = origOut - origIn;
-          const newInDate = new Date(newClockIn);
-          const newOutDate = new Date(newInDate.getTime() + durationMs);
-          // Format back to ISO with timezone offset
-          const tzSuffix = shift.clockoutTime.match(/[+-]\d{2}:\d{2}$/)?.[0] || '';
-          const pad = (n: number) => String(n).padStart(2, '0');
-          newClockOut = `${newOutDate.getFullYear()}-${pad(newOutDate.getMonth() + 1)}-${pad(newOutDate.getDate())}T${pad(newOutDate.getHours())}:${pad(newOutDate.getMinutes())}:${pad(newOutDate.getSeconds())}${tzSuffix}`;
+          // Overnight shifts keep their duration, so the clockout may land on
+          // the following day.
+          const durationMs = new Date(shift.clockoutTime).getTime() - new Date(shift.clockinTime).getTime();
+          newClockOut = formatInTz(new Date(newInInstant.getTime() + durationMs), tz);
         }
       }
     }
@@ -615,6 +633,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
           <WeekGrid
             staffRows={staffRows}
             days={days}
+            prefs={timePrefs}
             editingShiftId={editingShift?.id || null}
             onSelectShift={handleSelectShift}
             onSelectDay={handleSelectDay}
@@ -627,6 +646,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
           <DayTimeline
             shifts={shifts}
             selectedDate={effectiveDate}
+            prefs={timePrefs}
             editingShiftId={editingShift?.id || null}
             onSelectShift={handleSelectShift}
             onResizeShift={handleResizeShift}
@@ -653,7 +673,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
                 <div style={{ width: 3, backgroundColor: color, flexShrink: 0 }} />
                 <div style={{ padding: '3px 8px' }}>
                   <div style={{ fontWeight: 500, color: '#333', whiteSpace: 'nowrap' }}>
-                    {formatTimeShort(activeShift.clockinTime)}–{formatTimeShort(activeShift.clockoutTime)}
+                    {formatClock(activeShift.clockinTime as string, timePrefs)}–{formatClock(activeShift.clockoutTime as string, timePrefs)}
                   </div>
                   {hrs > 0 && <div style={{ fontSize: '0.68rem', color: '#888' }}>{hrs.toFixed(1)}h</div>}
                 </div>

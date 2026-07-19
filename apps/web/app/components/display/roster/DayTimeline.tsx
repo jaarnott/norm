@@ -3,15 +3,16 @@
 import { useMemo, useState, useRef, useCallback } from 'react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 import type { Shift, ShiftBreak, DragData } from './shared';
-import { dateKey, formatTimeShort, calcHours, roleColor, staffName, snapToGrid, offsetToTime, tzOffsetOf, localTzOffset, rosterTzOffset, formatWithOffset } from './shared';
+import { dateKey, calcHours, roleColor, staffName } from './shared';
+import type { VenueTimePrefs } from '../../../lib/rosterTime';
+import { companyDayDate, offsetToISO, formatClock, formatHourLabel } from '../../../lib/rosterTime';
+import {
+  HOUR_W, DAY_HOURS, TIMELINE_W, SNAP_MINUTES,
+  minutesToPx, pxToMinutes, snapPx, timeToOffset, shiftsForDay, nowOffset,
+} from './grid';
 
 const SIDEBAR_W = 140;
-const HOUR_W = 60;
 const ROW_H = 56;
-const DAY_START_HOUR = 6;
-const DAY_HOURS = 20; // 6am to 2am next day
-const TIMELINE_W = DAY_HOURS * HOUR_W;
-const SNAP_MINUTES = 15;
 const MIN_SHIFT_MS = 15 * 60 * 1000;
 const DEFAULT_SHIFT_MS = 4 * 60 * 60 * 1000;
 const DRAG_THRESHOLD = 5;
@@ -19,6 +20,8 @@ const DRAG_THRESHOLD = 5;
 interface DayTimelineProps {
   shifts: Shift[];
   selectedDate: Date;
+  /** Venue timezone + business-day start; drives every position on the grid. */
+  prefs: VenueTimePrefs;
   editingShiftId: string | null;
   onSelectShift: (shift: Shift) => void;
   onResizeShift?: (shiftId: string, clockinTime: string, clockoutTime: string) => void;
@@ -35,9 +38,8 @@ interface StaffLane {
   shifts: Shift[];
 }
 
-function buildLanes(shifts: Shift[], date: Date): StaffLane[] {
-  const dk = dateKey(date);
-  const dayShifts = shifts.filter(s => !s.datestampDeleted && s.clockinTime && dateKey(new Date(s.clockinTime)) === dk);
+function buildLanes(shifts: Shift[], dayDate: string, prefs: VenueTimePrefs): StaffLane[] {
+  const dayShifts = shiftsForDay(shifts, dayDate, prefs);
   const laneMap = new Map<string, StaffLane>();
 
   for (const s of dayShifts) {
@@ -63,41 +65,17 @@ function buildLanes(shifts: Shift[], date: Date): StaffLane[] {
   return Array.from(laneMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function timeToOffset(time: string): number {
-  try {
-    const d = new Date(time);
-    if (isNaN(d.getTime())) return 0;
-    const hours = d.getHours() + d.getMinutes() / 60 - DAY_START_HOUR;
-    const adjusted = hours < 0 ? hours + 24 : hours;
-    return Math.max(0, Math.min(adjusted * HOUR_W, TIMELINE_W));
-  } catch { return 0; }
-}
-
-function formatHourLabel(hour: number): string {
-  if (hour === 0 || hour === 24) return '12am';
-  if (hour === 12) return '12pm';
-  if (hour < 12) return `${hour}am`;
-  return `${hour - 12}pm`;
-}
-
-function nowOffset(): number | null {
-  const now = new Date();
-  const hours = now.getHours() + now.getMinutes() / 60 - DAY_START_HOUR;
-  const adjusted = hours < 0 ? hours + 24 : hours;
-  if (adjusted < 0 || adjusted > DAY_HOURS) return null;
-  return adjusted * HOUR_W;
-}
-
 // --- Shift bar with resize handles ---
 
-function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize, selectedDate }: {
+function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize, dayDate, prefs }: {
   shift: Shift;
   staffId: string;
   interactive: boolean;
   isSelected: boolean;
   onSelect: () => void;
   onResize?: (shiftId: string, clockinTime: string, clockoutTime: string) => void;
-  selectedDate: Date;
+  dayDate: string;
+  prefs: VenueTimePrefs;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `shift-${shift.id}`,
@@ -109,13 +87,11 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
   const resizeRef = useRef<{ edge: 'left' | 'right'; startX: number; origLeft: number; origWidth: number } | null>(null);
   const latestPreview = useRef<{ left: number; width: number } | null>(null);
 
-  const origLeft = timeToOffset(shift.clockinTime || '');
-  const origRight = timeToOffset(shift.clockoutTime || '');
+  const origLeft = timeToOffset(shift.clockinTime || '', dayDate, prefs);
+  const origRight = timeToOffset(shift.clockoutTime || '', dayDate, prefs);
   const origWidth = Math.max(origRight - origLeft, 20);
   const hrs = calcHours(shift.clockinTime, shift.clockoutTime);
   const color = roleColor(shift.roleId || '');
-  // Send edits back in the same zone the shift arrived in, not the viewer's.
-  const tz = tzOffsetOf(shift.clockinTime) || tzOffsetOf(shift.clockoutTime) || localTzOffset(selectedDate);
 
   const displayLeft = resizePreview?.left ?? origLeft;
   const displayWidth = resizePreview?.width ?? origWidth;
@@ -136,15 +112,14 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
       if (resizeRef.current.edge === 'left') {
         newLeft = Math.max(0, resizeRef.current.origLeft + delta);
         newWidth = resizeRef.current.origWidth - delta;
-        // Snap left edge
-        const snappedHours = Math.round((newLeft / HOUR_W + DAY_START_HOUR) * (60 / SNAP_MINUTES)) / (60 / SNAP_MINUTES);
-        newLeft = (snappedHours - DAY_START_HOUR) * HOUR_W;
+        // Snap left edge to the grid interval
+        newLeft = snapPx(newLeft);
         newWidth = (resizeRef.current.origLeft + resizeRef.current.origWidth) - newLeft;
       } else {
         newWidth = Math.max(HOUR_W / 4, resizeRef.current.origWidth + delta);
-        // Snap right edge
-        const rightHours = Math.round(((newLeft + newWidth) / HOUR_W + DAY_START_HOUR) * (60 / SNAP_MINUTES)) / (60 / SNAP_MINUTES);
-        newWidth = (rightHours - DAY_START_HOUR) * HOUR_W - newLeft;
+        // Snap right edge to the grid interval
+        const snappedRight = snapPx(newLeft + newWidth);
+        newWidth = snappedRight - newLeft;
       }
 
       newWidth = Math.max(HOUR_W / 4, newWidth);
@@ -157,8 +132,8 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
     const handleUp = () => {
       const preview = latestPreview.current;
       if (resizeRef.current && preview) {
-        const newClockIn = offsetToTime(preview.left, selectedDate, HOUR_W, DAY_START_HOUR, tz);
-        const newClockOut = offsetToTime(preview.left + preview.width, selectedDate, HOUR_W, DAY_START_HOUR, tz);
+        const newClockIn = offsetToISO(dayDate, pxToMinutes(preview.left), prefs);
+        const newClockOut = offsetToISO(dayDate, pxToMinutes(preview.left + preview.width), prefs);
         onResize(shift.id || '', newClockIn, newClockOut);
       }
       resizeRef.current = null;
@@ -170,15 +145,15 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
 
     document.addEventListener('mousemove', handleMove);
     document.addEventListener('mouseup', handleUp);
-  }, [interactive, onResize, origLeft, origWidth, shift.id, selectedDate, tz]);
+  }, [interactive, onResize, origLeft, origWidth, shift.id, dayDate, prefs]);
 
   // Preview time labels during resize
   const previewStartTime = resizePreview
-    ? formatTimeShort(offsetToTime(resizePreview.left, selectedDate, HOUR_W, DAY_START_HOUR, tz))
-    : formatTimeShort(shift.clockinTime);
+    ? formatClock(offsetToISO(dayDate, pxToMinutes(resizePreview.left), prefs), prefs)
+    : formatClock(shift.clockinTime as string, prefs);
   const previewEndTime = resizePreview
-    ? formatTimeShort(offsetToTime(resizePreview.left + resizePreview.width, selectedDate, HOUR_W, DAY_START_HOUR, tz))
-    : formatTimeShort(shift.clockoutTime);
+    ? formatClock(offsetToISO(dayDate, pxToMinutes(resizePreview.left + resizePreview.width), prefs), prefs)
+    : formatClock(shift.clockoutTime as string, prefs);
 
   return (
     <div
@@ -306,13 +281,13 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
 
 // --- Droppable lane with click-to-create ---
 
-function Lane({ laneId, index, interactive, selectedDate, tzOffset, onCreateShift, children }: {
+function Lane({ laneId, index, interactive, dayDate, prefs, onCreateShift, children }: {
   laneId: string;
   index: number;
   interactive: boolean;
-  selectedDate: Date;
-  /** Zone the roster is expressed in — new shifts must match it, not the viewer. */
-  tzOffset: string;
+  /** Business day this lane renders, and the venue clock it is measured in. */
+  dayDate: string;
+  prefs: VenueTimePrefs;
   onCreateShift?: (staffId: string, clockinTime: string, clockoutTime: string) => void;
   children: React.ReactNode;
 }) {
@@ -355,25 +330,23 @@ function Lane({ laneId, index, interactive, selectedDate, tzOffset, onCreateShif
     if (dragRef.current.isDragging) {
       const startX = Math.min(dragRef.current.startX, currentX);
       const endX = Math.max(dragRef.current.startX, currentX);
-      const clockIn = offsetToTime(startX, selectedDate, HOUR_W, DAY_START_HOUR, tzOffset);
-      const clockOut = offsetToTime(endX, selectedDate, HOUR_W, DAY_START_HOUR, tzOffset);
+      const clockIn = offsetToISO(dayDate, pxToMinutes(startX), prefs);
+      const clockOut = offsetToISO(dayDate, pxToMinutes(endX), prefs);
       const inMs = new Date(clockIn).getTime();
       const outMs = new Date(clockOut).getTime();
       if (outMs - inMs >= MIN_SHIFT_MS) {
         onCreateShift(laneId, clockIn, clockOut);
       }
     } else {
-      // Click — create default-duration shift
-      const clickTime = offsetToTime(dragRef.current.startX, selectedDate, HOUR_W, DAY_START_HOUR, tzOffset);
-      const startMs = snapToGrid(new Date(clickTime).getTime(), SNAP_MINUTES);
-      const endMs = startMs + DEFAULT_SHIFT_MS;
-      const fmt = (d: Date) => formatWithOffset(d, tzOffset, false);
-      onCreateShift(laneId, fmt(new Date(startMs)), fmt(new Date(endMs)));
+      // Click — create a default-duration shift, snapped to the grid interval
+      const startMin = Math.round(pxToMinutes(dragRef.current.startX) / SNAP_MINUTES) * SNAP_MINUTES;
+      const endMin = startMin + DEFAULT_SHIFT_MS / 60000;
+      onCreateShift(laneId, offsetToISO(dayDate, startMin, prefs), offsetToISO(dayDate, endMin, prefs));
     }
 
     dragRef.current = null;
     setDragPreview(null);
-  }, [laneId, selectedDate, onCreateShift, tzOffset]);
+  }, [laneId, dayDate, prefs, onCreateShift]);
 
   const handleMouseLeave = useCallback(() => {
     if (dragRef.current) {
@@ -415,21 +388,22 @@ function Lane({ laneId, index, interactive, selectedDate, tzOffset, onCreateShif
 
 // --- Main component ---
 
-export default function DayTimeline({ shifts, selectedDate, editingShiftId, onSelectShift, onResizeShift, onCreateShift, interactive }: DayTimelineProps) {
-  const lanes = useMemo(() => buildLanes(shifts, selectedDate), [shifts, selectedDate]);
-  // New shifts must be written in the roster's own zone (see rosterTzOffset).
-  const tzOffset = useMemo(() => rosterTzOffset(shifts, selectedDate), [shifts, selectedDate]);
+export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftId, onSelectShift, onResizeShift, onCreateShift, interactive }: DayTimelineProps) {
+  // The business day being shown. Every position on the grid is measured from
+  // this day's start in the venue's zone.
+  const dayDate = useMemo(() => dateKey(selectedDate), [selectedDate]);
+  const lanes = useMemo(() => buildLanes(shifts, dayDate, prefs), [shifts, dayDate, prefs]);
 
-  const hours: number[] = [];
-  for (let h = DAY_START_HOUR; h < DAY_START_HOUR + DAY_HOURS; h++) {
-    hours.push(h % 24);
-  }
+  // Hour ticks start at the venue's day start, not a hardcoded 6am.
+  const hourTicks = useMemo(
+    () => Array.from({ length: DAY_HOURS }, (_, i) => prefs.dayStartMinutes + i * 60),
+    [prefs.dayStartMinutes],
+  );
 
-  const nowLine = useMemo(() => {
-    const today = dateKey(new Date());
-    const selected = dateKey(selectedDate);
-    return today === selected ? nowOffset() : null;
-  }, [selectedDate]);
+  const nowLine = useMemo(
+    () => (companyDayDate(new Date(), prefs) === dayDate ? nowOffset(dayDate, prefs) : null),
+    [dayDate, prefs],
+  );
 
   if (lanes.length === 0) {
     return (
@@ -467,14 +441,14 @@ export default function DayTimeline({ shifts, selectedDate, editingShiftId, onSe
         <div style={{ flex: 1, overflowX: 'auto', minWidth: 0 }}>
           {/* Hour header */}
           <div style={{ width: TIMELINE_W, height: 32, position: 'relative', borderBottom: '2px solid #e2e8f0' }}>
-            {hours.map((h, i) => (
+            {hourTicks.map((mins, i) => (
               <div key={i} style={{
                 position: 'absolute', left: i * HOUR_W, width: HOUR_W,
                 height: '100%', display: 'flex', alignItems: 'center',
                 borderRight: '1px solid #f0f0f0',
                 paddingLeft: 4, fontSize: '0.68rem', color: '#999', fontWeight: 500,
               }}>
-                {formatHourLabel(h)}
+                {formatHourLabel(mins)}
               </div>
             ))}
           </div>
@@ -482,9 +456,9 @@ export default function DayTimeline({ shifts, selectedDate, editingShiftId, onSe
           {/* Lanes */}
           <div style={{ position: 'relative' }}>
             {lanes.map((lane, li) => (
-              <Lane key={lane.id} laneId={lane.id} index={li} interactive={interactive} selectedDate={selectedDate} tzOffset={tzOffset} onCreateShift={onCreateShift}>
+              <Lane key={lane.id} laneId={lane.id} index={li} interactive={interactive} dayDate={dayDate} prefs={prefs} onCreateShift={onCreateShift}>
                 {/* Hour gridlines */}
-                {hours.map((_, i) => (
+                {hourTicks.map((_, i) => (
                   <div key={i} style={{
                     position: 'absolute', left: i * HOUR_W, top: 0, bottom: 0,
                     borderRight: '1px solid #f5f5f5', pointerEvents: 'none',
@@ -500,7 +474,8 @@ export default function DayTimeline({ shifts, selectedDate, editingShiftId, onSe
                       isSelected={editingShiftId === shift.id}
                       onSelect={() => onSelectShift(editingShiftId === shift.id ? { id: undefined } as Shift : shift)}
                       onResize={onResizeShift}
-                      selectedDate={selectedDate}
+                      dayDate={dayDate}
+                      prefs={prefs}
                     />
                   </div>
                 ))}

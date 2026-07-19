@@ -2,19 +2,24 @@
 
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 import type { Shift, ShiftBreak, StaffRow, DragData } from './shared';
-import { dateKey, formatTimeShort, calcHours, roleColor, DAY_NAMES } from './shared';
+import { dateKey, calcHours, roleColor, DAY_NAMES } from './shared';
+import type { VenueTimePrefs } from '../../../lib/rosterTime';
+import { formatClock } from '../../../lib/rosterTime';
 
 interface WeekGridProps {
   staffRows: StaffRow[];
   days: Date[];
+  /** Venue clock — shift times are shown in it, not the viewer's. */
+  prefs: VenueTimePrefs;
   editingShiftId: string | null;
   onSelectShift: (shift: Shift) => void;
   onSelectDay: (date: Date) => void;
   interactive: boolean;
 }
 
-function DraggableShift({ shift, staffId, interactive, isSelected, onSelect }: {
+function DraggableShift({ shift, staffId, interactive, isSelected, onSelect, prefs }: {
   shift: Shift;
+  prefs: VenueTimePrefs;
   staffId: string;
   interactive: boolean;
   isSelected: boolean;
@@ -48,7 +53,7 @@ function DraggableShift({ shift, staffId, interactive, isSelected, onSelect }: {
       <div style={{ width: 3, backgroundColor: color, flexShrink: 0 }} />
       <div style={{ padding: '3px 5px', flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 500, color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {formatTimeShort(shift.clockinTime)}–{formatTimeShort(shift.clockoutTime)}
+          {formatClock(shift.clockinTime as string, prefs)}–{formatClock(shift.clockoutTime as string, prefs)}
         </div>
         {hrs > 0 && (() => {
           const activeBreaks = (shift.breaks || []).filter((b: ShiftBreak) => !b.deletedAt);
@@ -91,7 +96,7 @@ function DroppableCell({ staffId, dk, isToday, children }: {
   );
 }
 
-export default function WeekGrid({ staffRows, days, editingShiftId, onSelectShift, onSelectDay, interactive }: WeekGridProps) {
+export default function WeekGrid({ staffRows, days, prefs, editingShiftId, onSelectShift, onSelectDay, interactive }: WeekGridProps) {
   const cols = `120px repeat(${days.length}, minmax(80px, 1fr))`;
 
   return (
@@ -160,6 +165,7 @@ export default function WeekGrid({ staffRows, days, editingShiftId, onSelectShif
                       interactive={interactive}
                       isSelected={editingShiftId === shift.id}
                       onSelect={() => onSelectShift(editingShiftId === shift.id ? { id: undefined } as Shift : shift)}
+                      prefs={prefs}
                     />
                   ))}
                 </DroppableCell>

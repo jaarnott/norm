@@ -177,6 +177,34 @@ export function offsetToISO(date: string, offsetMinutes: number, prefs: VenueTim
   return formatInTz(instant, prefs.timeZone);
 }
 
+/** The venue's offset at an instant, e.g. "+12:00" — for building timestamps. */
+export function venueOffset(instant: Date, prefs: VenueTimePrefs): string {
+  return formatOffset(tzOffsetMinutes(instant, prefs.timeZone));
+}
+
+/**
+ * Clock label in the venue's zone, e.g. "9:30". Use this for anything a user
+ * reads off the grid — formatting with the browser's clock would show a Sydney
+ * manager the wrong times for an Auckland venue.
+ */
+export function formatClock(iso: string | Date, prefs: VenueTimePrefs): string {
+  if (!iso) return '';
+  const instant = iso instanceof Date ? iso : new Date(iso);
+  if (isNaN(instant.getTime())) return '';
+  const p = partsInTz(instant, prefs.timeZone);
+  return `${p.hour}:${pad2(p.minute)}`;
+}
+
+/** Grid header label for a minutes-after-midnight position, e.g. 420 -> "7am". */
+export function formatHourLabel(minutesAfterMidnight: number): string {
+  const total = ((minutesAfterMidnight % 1440) + 1440) % 1440;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  const suffix = h < 12 || h === 24 ? 'am' : 'pm';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return m ? `${h12}:${pad2(m)}${suffix}` : `${h12}${suffix}`;
+}
+
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
 }
