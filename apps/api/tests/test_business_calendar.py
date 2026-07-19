@@ -219,3 +219,61 @@ class TestPerVenueResolution:
         syd = bc.trading_day(venue(timezone="Australia/Sydney"), moment)
         assert nz.timezone != syd.timezone
         assert nz.start.utcoffset() != syd.start.utcoffset()
+
+
+class TestResolveDatesExplicitRange:
+    """resolve_dates is the single entry point for both paths, so a consolidator
+    can hand it either a phrase or a range and get the same analysis back."""
+
+    def _run(self, params):
+        from unittest.mock import MagicMock
+
+        from app.agents.internal_tools import get_handler
+
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = None
+        return get_handler("norm", "resolve_dates")(params, db, None)
+
+    def test_deviating_range_is_reported_as_not_a_trading_day(self):
+        r = self._run(
+            {
+                "start": "2026-07-18T00:00:00+12:00",
+                "end": "2026-07-19T00:00:00+12:00",
+            }
+        )
+        window = r["data"]["window"]
+        assert window["trading_aligned"] is False
+        assert "Not a trading day" in window["description"]
+
+    def test_deviating_range_is_returned_verbatim_not_snapped(self):
+        r = self._run(
+            {
+                "start": "2026-07-18T00:00:00+12:00",
+                "end": "2026-07-19T00:00:00+12:00",
+            }
+        )
+        period = r["data"]["periods"][0]
+        assert period["start"].startswith("2026-07-18T00:00")
+        assert period["end"].startswith("2026-07-19T00:00")
+
+    def test_aligned_range_is_not_flagged(self):
+        r = self._run(
+            {
+                "start": "2026-07-18T07:00:00+12:00",
+                "end": "2026-07-19T06:59:00+12:00",
+            }
+        )
+        assert r["data"]["window"]["trading_aligned"] is True
+
+    def test_phrase_path_still_works(self):
+        r = self._run({"query": "yesterday"})
+        assert r["success"] is True
+        assert r["data"]["window"]["kind"] == "trading_day"
+
+    def test_neither_phrase_nor_range_is_an_error(self):
+        assert self._run({})["success"] is False
+
+    def test_malformed_range_is_rejected_not_guessed(self):
+        r = self._run({"start": "last tuesday", "end": "whenever"})
+        assert r["success"] is False
+        assert "ISO 8601" in r["error"]

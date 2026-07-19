@@ -608,8 +608,14 @@ def _resolve_dates(params: dict, db: Session, thread_id: str | None) -> dict:
     from app.services import business_calendar as _bc
 
     query = params.get("query", "").strip()
-    if not query:
-        return {"success": False, "data": {}, "error": "query is required"}
+    explicit_start = params.get("start")
+    explicit_end = params.get("end")
+    if not query and not (explicit_start and explicit_end):
+        return {
+            "success": False,
+            "data": {},
+            "error": "query is required (or an explicit start and end)",
+        }
 
     # Whose calendar applies. A venue_id gets that venue's real day start and
     # timezone; otherwise fall back to the caller's timezone and the configured
@@ -638,6 +644,40 @@ def _resolve_dates(params: dict, db: Session, thread_id: str | None) -> dict:
     tz = _bc.timezone_for(venue)
     tz_name = str(tz)
     day_start = _bc.day_start_for(venue)
+
+    # An explicit range is honoured verbatim — never snapped. Someone
+    # reconciling against a bank statement legitimately wants civil days, and
+    # overriding them would just be a different way of returning a wrong
+    # number. What we DO say is whether the range lines up with the venue's
+    # trading day, so a caller can tell an informed override from a mistake.
+    if explicit_start and explicit_end:
+        try:
+            window = _bc.custom_window(
+                venue,
+                _dt.datetime.fromisoformat(str(explicit_start)),
+                _dt.datetime.fromisoformat(str(explicit_end)),
+            )
+        except (TypeError, ValueError) as exc:
+            return {
+                "success": False,
+                "data": {},
+                "error": f"start and end must be ISO 8601 datetimes: {exc}",
+            }
+        return {
+            "success": True,
+            "data": {
+                "periods": [
+                    {
+                        "label": window.label,
+                        "start": window.start.isoformat(),
+                        "end": window.end.isoformat(),
+                    }
+                ],
+                "timezone": tz_name,
+                "date_reference": _day_names_between(window.start, window.end),
+                "window": window.as_dict(),
+            },
+        }
 
     # The common vocabulary resolves in Python. It used to go to Haiku with the
     # business rules as prose, which meant the trading-day boundary was decided
@@ -1721,6 +1761,27 @@ def execute_consolidator(
             "error": "consolidator_config must contain function_code — see Settings > Connectors to edit",
         }
 
+    # Inject the caller's per-workflow run mode (approve_all / approve_fixes /
+    # autopilot) resolved from the thread's user. The consolidator reads it
+    # from params like dry_run; "unset" ⇒ the safest behaviour + an ask.
+    action = config.get("action")
+    if action and "mode" not in input_params:
+        from app.services.workflow_modes import WORKFLOW_KEYS, user_mode
+
+        if action in WORKFLOW_KEYS and thread_id:
+            from app.db.models import Thread, User
+
+            thread = db.query(Thread).filter(Thread.id == thread_id).first()
+            user = (
+                db.query(User).filter(User.id == thread.user_id).first()
+                if thread and thread.user_id
+                else None
+            )
+            input_params = {
+                **input_params,
+                "mode": (user_mode(user, action) if user else None) or "unset",
+            }
+
     from app.connectors.function_executor import execute_function
 
     result = execute_function(
@@ -1773,6 +1834,56 @@ def _get_automated_task_for_conversation(thread_id: str | None, db: Session):
         .filter(AutomatedTask.conversation_thread_id == thread_id)
         .first()
     )
+
+
+def _user_for_thread(thread_id: str | None, db: Session):
+    from app.db.models import Thread, User
+
+    if not thread_id:
+        return None
+    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    if not thread or not thread.user_id:
+        return None
+    return db.query(User).filter(User.id == thread.user_id).first()
+
+
+@register("norm", "get_workflow_mode")
+def _get_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Return the caller's run mode for a workflow (or 'unset')."""
+    from app.services.workflow_modes import WORKFLOW_KEYS, user_mode
+
+    workflow = params.get("workflow", "")
+    if workflow not in WORKFLOW_KEYS:
+        return {"success": False, "data": {}, "error": f"unknown workflow: {workflow}"}
+    user = _user_for_thread(thread_id, db)
+    return {
+        "success": True,
+        "data": {"workflow": workflow, "mode": user_mode(user, workflow) or "unset"},
+    }
+
+
+@register("norm", "set_workflow_mode")
+def _set_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Set the caller's run mode for a workflow."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.workflow_modes import MODE_IDS, WORKFLOW_KEYS
+
+    workflow = params.get("workflow", "")
+    mode = params.get("mode", "")
+    if workflow not in WORKFLOW_KEYS:
+        return {"success": False, "data": {}, "error": f"unknown workflow: {workflow}"}
+    if mode not in MODE_IDS:
+        return {"success": False, "data": {}, "error": f"unknown mode: {mode}"}
+    user = _user_for_thread(thread_id, db)
+    if not user:
+        return {"success": False, "data": {}, "error": "no user for this conversation"}
+    modes = dict(user.workflow_modes or {})
+    modes[workflow] = mode
+    user.workflow_modes = modes
+    flag_modified(user, "workflow_modes")
+    db.flush()
+    return {"success": True, "data": {"workflow": workflow, "mode": mode}}
 
 
 @register("norm", "update_task_config")
