@@ -22,6 +22,8 @@ const SOURCES = [
   'apps/web/app/components/display/roster/DayTimeline.tsx',
   'apps/web/app/components/display/roster/ShiftModal.tsx',
   'apps/web/app/lib/datetime.ts',
+  'apps/web/app/lib/rosterTime.ts',
+  'apps/web/app/components/display/roster/grid.ts',
   'apps/mcp-ui/src/registry.ts',
   'apps/mcp-ui/src/main.tsx',
   'apps/api/app/mcp/ui/_bridge.js',
