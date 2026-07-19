@@ -38,7 +38,7 @@ function ShiftForm({ initial, onSave, onCancel, saving, staffOptions, roleOption
     <div style={{ marginTop: '0.5rem' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem', marginBottom: '0.4rem' }}>
         <div>
-          <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 500 }}>Staff Member</label>
+          <label style={{ fontSize: '0.72rem', color: 'var(--text-soft)', fontWeight: 500 }}>Staff Member</label>
           {staffOptions && staffOptions.length > 0 ? (
             <select
               value={form.staff_member_id}
@@ -55,7 +55,7 @@ function ShiftForm({ initial, onSave, onCancel, saving, staffOptions, roleOption
           )}
         </div>
         <div>
-          <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 500 }}>Role</label>
+          <label style={{ fontSize: '0.72rem', color: 'var(--text-soft)', fontWeight: 500 }}>Role</label>
           {roleOptions && roleOptions.length > 0 ? (
             <select
               value={form.role_id}
@@ -72,12 +72,12 @@ function ShiftForm({ initial, onSave, onCancel, saving, staffOptions, roleOption
           )}
         </div>
         <div>
-          <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 500 }}>Clock In</label>
+          <label style={{ fontSize: '0.72rem', color: 'var(--text-soft)', fontWeight: 500 }}>Clock In</label>
           <input type="datetime-local" value={form.clockin_time ? form.clockin_time.slice(0, 16) : ''}
             onChange={e => setForm(f => ({ ...f, clockin_time: e.target.value ? e.target.value + ':00' : '' }))} style={formInputStyle} />
         </div>
         <div>
-          <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 500 }}>Clock Out</label>
+          <label style={{ fontSize: '0.72rem', color: 'var(--text-soft)', fontWeight: 500 }}>Clock Out</label>
           <input type="datetime-local" value={form.clockout_time ? form.clockout_time.slice(0, 16) : ''}
             onChange={e => setForm(f => ({ ...f, clockout_time: e.target.value ? e.target.value + ':00' : '' }))} style={formInputStyle} />
         </div>
@@ -85,12 +85,12 @@ function ShiftForm({ initial, onSave, onCancel, saving, staffOptions, roleOption
       <div style={{ display: 'flex', gap: '0.4rem' }}>
         <button onClick={() => onSave(form)} disabled={saving} style={{
           padding: '4px 12px', fontSize: '0.75rem', fontWeight: 600,
-          backgroundColor: '#28a745', color: '#fff', border: 'none', borderRadius: 4,
+          backgroundColor: 'var(--ok)', color: 'var(--bg)', border: 'none', borderRadius: 4,
           cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
         }}>{saving ? '...' : 'Save'}</button>
         <button onClick={onCancel} disabled={saving} style={{
           padding: '4px 12px', fontSize: '0.75rem',
-          backgroundColor: '#fff', color: '#666', border: '1px solid #ddd', borderRadius: 4,
+          backgroundColor: 'var(--bg)', color: 'var(--text-soft)', border: '1px solid var(--line)', borderRadius: 4,
           cursor: 'pointer', fontFamily: 'inherit',
         }}>Cancel</button>
       </div>
@@ -108,27 +108,27 @@ export default function ShiftModal({ editingShift, addingNew, saving, onSave, on
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }}>
       <div onClick={e => e.stopPropagation()} style={{
-        backgroundColor: '#fff', borderRadius: 10,
+        backgroundColor: 'var(--bg)', borderRadius: 10,
         boxShadow: '0 8px 30px rgba(0,0,0,0.18)',
         width: '100%', maxWidth: 460, padding: '1.25rem',
         maxHeight: '90vh', overflowY: 'auto',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#333' }}>
+          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>
             {editingShift ? 'Edit Shift' : 'New Shift'}
           </span>
           <button onClick={onClose} style={{
             border: 'none', background: 'none', cursor: 'pointer',
-            fontSize: '1.1rem', color: '#999', lineHeight: 1, padding: '2px 6px',
+            fontSize: '1.1rem', color: 'var(--muted)', lineHeight: 1, padding: '2px 6px',
           }}>&#10005;</button>
         </div>
         {editingShift && (
-          <div style={{ fontSize: '0.78rem', color: '#666', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-soft)', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span>{staffName(editingShift)} &middot; {editingShift.roleName}</span>
             {onDelete && (
               <button onClick={() => onDelete(editingShift)} disabled={saving} style={{
                 border: 'none', background: 'none', cursor: 'pointer',
-                fontSize: '0.75rem', color: '#e53e3e', fontFamily: 'inherit',
+                fontSize: '0.75rem', color: 'var(--error)', fontFamily: 'inherit',
               }}>Delete shift</button>
             )}
           </div>

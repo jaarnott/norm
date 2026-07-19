@@ -13,17 +13,40 @@ export interface ShiftBreak {
   deletedAt?: string | null;
 }
 
+/**
+ * A rostered shift.
+ *
+ * The field names are LoadedHub's, because LoadedHub is currently the only
+ * connector that serves rosters. If a second one arrives, normalise it into
+ * this shape at the connector seam (the `get_roster` tool's `response_transform`
+ * in the config DB) rather than teaching this component a second vocabulary —
+ * see the roster plan. The index signature is what makes that possible without
+ * a migration: extra connector fields ride along untouched.
+ *
+ * Semantics worth knowing (they match how Loaded's own rostering models them):
+ *  - no `staffMemberId` means an **open / unassigned** shift, not bad data;
+ *  - `datestampDeleted` is a **soft delete** — filter on it, don't assume the
+ *    row is gone (`shiftsForDay` in ./grid does this);
+ *  - times are ISO strings carrying the **venue's** offset. Never parse them
+ *    with the browser's clock; go through `app/lib/rosterTime.ts`;
+ *  - a shift may finish after midnight, so the day it *belongs* to is its
+ *    business day, not the calendar date of `clockoutTime`.
+ */
 export interface Shift {
   id?: string;
   rosterId?: string;
+  /** Absent for an open/unassigned shift. */
   staffMemberId?: string;
   staffMemberFirstName?: string;
   staffMemberLastName?: string;
   roleId?: string;
   roleName?: string;
+  /** ISO 8601 with the venue's UTC offset. */
   clockinTime?: string;
+  /** ISO 8601 with the venue's UTC offset; may fall on the next calendar day. */
   clockoutTime?: string;
   breaks?: ShiftBreak[];
+  /** Soft delete — set means removed. */
   datestampDeleted?: string | null;
   [key: string]: unknown;
 }
@@ -176,7 +199,7 @@ export function buildStaffRows(shifts: Shift[], days: Date[], prefs: VenueTimePr
 export const formInputStyle: React.CSSProperties = {
   width: '100%',
   padding: '4px 8px',
-  border: '1px solid #ddd',
+  border: '1px solid var(--line)',
   borderRadius: 4,
   fontSize: '0.82rem',
   fontFamily: 'inherit',

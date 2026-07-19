@@ -1,24 +1,41 @@
 /* Shared look for every Norm ui:// app. Injected server-side (ui_apps.py).
+   Status tokens mirror apps/web/app/globals.css — keep the two in step.
    Theme follows the host: it sets data-theme, else we fall back to the OS. */
 :root {
   --bg:#fff; --text:#1a1a1a; --muted:#8a8378; --line:#ece6df;
   --brand:#a08060; --accent:#8a6d3b; --accent-soft:#f4e8d8;
   --bar:#a08060; --bar-hi:#b89a76; --good:#5a7d5a; --warn:#b07a4a;
+  --ok:#28a745; --ok-bg:#eaf7ee; --error:#ef4444; --error-bg:#fde8e5;
+  --published:#28a745; --published-bg:#eaf7ee; --draft:#2563eb; --draft-bg:#eff6ff;
+  --open:#7a8499; --open-bg:#f1f3f7; --locked:#9aa3b2;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#1c1a17; --text:#f0ece6; --muted:#9a9284; --line:#33302a;
           --brand:#c4a882; --accent:#c4a882; --accent-soft:#3a3229;
-          --bar:#c4a882; --bar-hi:#d8c19a; --good:#8fb08f; --warn:#d0a06a; }
+          --bar:#c4a882; --bar-hi:#d8c19a; --good:#8fb08f; --warn:#d0a06a;
+  --ok:#6fbf7f; --ok-bg:#21311f; --error:#f28a80; --error-bg:#3a2320;
+  --published:#6fbf7f; --published-bg:#21311f; --draft:#6f9dff; --draft-bg:#1e2740;
+  --open:#98a1b5; --open-bg:#262a33; --locked:#7d8593;
+          --ok:#6fbf7f; --ok-bg:#21311f; --error:#f28a80; --error-bg:#3a2320;
+          --published:#6fbf7f; --published-bg:#21311f; --draft:#6f9dff; --draft-bg:#1e2740;
+          --open:#98a1b5; --open-bg:#262a33; --locked:#7d8593;
+        }
 }
 :root[data-theme="light"] {
   --bg:#fff; --text:#1a1a1a; --muted:#8a8378; --line:#ece6df;
   --brand:#a08060; --accent:#8a6d3b; --accent-soft:#f4e8d8;
   --bar:#a08060; --bar-hi:#b89a76; --good:#5a7d5a; --warn:#b07a4a;
+  --ok:#28a745; --ok-bg:#eaf7ee; --error:#ef4444; --error-bg:#fde8e5;
+  --published:#28a745; --published-bg:#eaf7ee; --draft:#2563eb; --draft-bg:#eff6ff;
+  --open:#7a8499; --open-bg:#f1f3f7; --locked:#9aa3b2;
 }
 :root[data-theme="dark"] {
   --bg:#1c1a17; --text:#f0ece6; --muted:#9a9284; --line:#33302a;
   --brand:#c4a882; --accent:#c4a882; --accent-soft:#3a3229;
   --bar:#c4a882; --bar-hi:#d8c19a; --good:#8fb08f; --warn:#d0a06a;
+  --ok:#6fbf7f; --ok-bg:#21311f; --error:#f28a80; --error-bg:#3a2320;
+  --published:#6fbf7f; --published-bg:#21311f; --draft:#6f9dff; --draft-bg:#1e2740;
+  --open:#98a1b5; --open-bg:#262a33; --locked:#7d8593;
 }
 * { box-sizing: border-box; }
 html, body { margin:0; background:var(--bg); color:var(--text);

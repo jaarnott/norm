@@ -165,7 +165,7 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
         borderRadius: 6,
         display: 'flex', alignItems: 'center',
         overflow: 'hidden',
-        boxShadow: isSelected ? '0 0 0 2px #2563eb' : resizePreview ? '0 0 0 2px rgba(255,255,255,0.5)' : '0 1px 3px rgba(0,0,0,0.12)',
+        boxShadow: isSelected ? '0 0 0 2px var(--focus)' : resizePreview ? '0 0 0 2px rgba(255,255,255,0.5)' : '0 1px 3px rgba(0,0,0,0.12)',
         opacity: isDragging ? 0.4 : 1,
         transition: resizePreview ? 'none' : 'box-shadow 0.15s, opacity 0.15s',
         zIndex: resizePreview ? 10 : 1,
@@ -237,7 +237,7 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
             }}
           >
             <span style={{
-              fontSize: '0.7rem', fontWeight: 600, color: '#fff',
+              fontSize: '0.7rem', fontWeight: 600, color: 'var(--bg)',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
               textShadow: '0 1px 2px rgba(0,0,0,0.25)',
             }}>
@@ -364,8 +364,8 @@ function Lane({ laneId, index, interactive, dayDate, prefs, onCreateShift, child
       onMouseLeave={handleMouseLeave}
       style={{
         width: TIMELINE_W, height: ROW_H, position: 'relative',
-        borderBottom: '1px solid #eee',
-        backgroundColor: isOver ? '#dbeafe' : index % 2 === 1 ? '#fafafa' : '#fff',
+        borderBottom: '1px solid var(--line)',
+        backgroundColor: isOver ? 'var(--draft-bg)' : index % 2 === 1 ? 'var(--surface)' : 'var(--bg)',
         transition: 'background-color 0.15s',
         cursor: interactive && onCreateShift ? 'crosshair' : 'default',
       }}
@@ -407,32 +407,32 @@ export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftI
 
   if (lanes.length === 0) {
     return (
-      <div style={{ padding: '2rem', textAlign: 'center', color: '#bbb', fontSize: '0.85rem' }}>
+      <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--muted-soft)', fontSize: '0.85rem' }}>
         No shifts scheduled for this day.
       </div>
     );
   }
 
   return (
-    <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+    <div style={{ border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
       <style>{`
         [data-shift]:hover .resize-grip { opacity: 1 !important; }
       `}</style>
       <div style={{ display: 'flex' }}>
         {/* Sidebar */}
-        <div style={{ width: SIDEBAR_W, flexShrink: 0, borderRight: '1px solid #e2e8f0', backgroundColor: '#fafafa' }}>
-          <div style={{ height: 32, borderBottom: '2px solid #e2e8f0', display: 'flex', alignItems: 'center', padding: '0 0.5rem' }}>
-            <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#999', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Staff</span>
+        <div style={{ width: SIDEBAR_W, flexShrink: 0, borderRight: '1px solid var(--line)', backgroundColor: 'var(--surface)' }}>
+          <div style={{ height: 32, borderBottom: '2px solid var(--line)', display: 'flex', alignItems: 'center', padding: '0 0.5rem' }}>
+            <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Staff</span>
           </div>
           {lanes.map((lane, i) => (
             <div key={lane.id} style={{
               height: ROW_H, padding: '0.3rem 0.5rem',
-              borderBottom: '1px solid #eee',
+              borderBottom: '1px solid var(--line)',
               display: 'flex', flexDirection: 'column', justifyContent: 'center',
-              backgroundColor: i % 2 === 1 ? '#f5f5f5' : '#fafafa',
+              backgroundColor: i % 2 === 1 ? 'var(--surface-alt)' : 'var(--surface)',
             }}>
-              <div style={{ fontWeight: 600, color: '#333', fontSize: '0.78rem', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lane.name}</div>
-              <div style={{ fontSize: '0.65rem', color: '#999' }}>{lane.role}</div>
+              <div style={{ fontWeight: 600, color: 'var(--text)', fontSize: '0.78rem', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lane.name}</div>
+              <div style={{ fontSize: '0.65rem', color: 'var(--muted)' }}>{lane.role}</div>
             </div>
           ))}
         </div>
@@ -440,13 +440,13 @@ export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftI
         {/* Timeline area */}
         <div style={{ flex: 1, overflowX: 'auto', minWidth: 0 }}>
           {/* Hour header */}
-          <div style={{ width: TIMELINE_W, height: 32, position: 'relative', borderBottom: '2px solid #e2e8f0' }}>
+          <div style={{ width: TIMELINE_W, height: 32, position: 'relative', borderBottom: '2px solid var(--line)' }}>
             {hourTicks.map((mins, i) => (
               <div key={i} style={{
                 position: 'absolute', left: i * HOUR_W, width: HOUR_W,
                 height: '100%', display: 'flex', alignItems: 'center',
-                borderRight: '1px solid #f0f0f0',
-                paddingLeft: 4, fontSize: '0.68rem', color: '#999', fontWeight: 500,
+                borderRight: '1px solid var(--line-soft)',
+                paddingLeft: 4, fontSize: '0.68rem', color: 'var(--muted)', fontWeight: 500,
               }}>
                 {formatHourLabel(mins)}
               </div>
@@ -461,7 +461,7 @@ export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftI
                 {hourTicks.map((_, i) => (
                   <div key={i} style={{
                     position: 'absolute', left: i * HOUR_W, top: 0, bottom: 0,
-                    borderRight: '1px solid #f5f5f5', pointerEvents: 'none',
+                    borderRight: '1px solid var(--surface-alt)', pointerEvents: 'none',
                   }} />
                 ))}
                 {/* Shift bars */}
@@ -486,13 +486,13 @@ export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftI
             {nowLine != null && (
               <div style={{
                 position: 'absolute', left: nowLine, top: 0, bottom: 0,
-                width: 2, backgroundColor: '#ef4444',
+                width: 2, backgroundColor: 'var(--error)',
                 zIndex: 5, pointerEvents: 'none',
               }}>
                 <div style={{
                   position: 'absolute', top: -4, left: -3,
                   width: 8, height: 8, borderRadius: '50%',
-                  backgroundColor: '#ef4444',
+                  backgroundColor: 'var(--error)',
                 }} />
               </div>
             )}

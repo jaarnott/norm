@@ -531,9 +531,9 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       onClick={() => setViewMode(mode)}
       style={{
         padding: '3px 10px', fontSize: '0.72rem', fontWeight: viewMode === mode ? 600 : 400,
-        border: '1px solid #ddd',
-        backgroundColor: viewMode === mode ? '#333' : '#fff',
-        color: viewMode === mode ? '#fff' : '#666',
+        border: '1px solid var(--line)',
+        backgroundColor: viewMode === mode ? 'var(--text)' : 'var(--bg)',
+        color: viewMode === mode ? 'var(--bg)' : 'var(--text-soft)',
         cursor: 'pointer', fontFamily: 'inherit',
         ...(mode === 'week' ? { borderRadius: '4px 0 0 4px' } : { borderRadius: '0 4px 4px 0', borderLeft: 'none' }),
       }}
@@ -544,14 +544,14 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     <div>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#333' }}>Roster</span>
+        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>Roster</span>
         {venues.length > 1 && (
           <select
             value={selectedVenue || ''}
             onChange={e => handleVenueChange(e.target.value)}
             style={{
-              padding: '3px 8px', fontSize: '0.75rem', border: '1px solid #ddd',
-              borderRadius: 6, fontFamily: 'inherit', color: '#555', backgroundColor: '#fff',
+              padding: '3px 8px', fontSize: '0.75rem', border: '1px solid var(--line)',
+              borderRadius: 6, fontFamily: 'inherit', color: 'var(--text-soft)', backgroundColor: 'var(--bg)',
             }}
           >
             {!selectedVenue && <option value="">Select venue</option>}
@@ -565,10 +565,10 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
             <button onClick={() => goWeek(-1)} disabled={loadingWeek} style={{
               border: 'none', background: 'none', cursor: loadingWeek ? 'default' : 'pointer',
-              fontSize: '1rem', color: loadingWeek ? '#ddd' : '#555', padding: '0 4px', fontFamily: 'inherit',
+              fontSize: '1rem', color: loadingWeek ? 'var(--line)' : 'var(--text-soft)', padding: '0 4px', fontFamily: 'inherit',
             }}>&lsaquo;</button>
             <label style={{ cursor: 'pointer', position: 'relative' }}>
-              <span style={{ fontSize: '0.82rem', color: loadingWeek ? '#bbb' : '#555', fontWeight: 500 }}>
+              <span style={{ fontSize: '0.82rem', color: loadingWeek ? 'var(--muted-soft)' : 'var(--text-soft)', fontWeight: 500 }}>
                 {loadingWeek ? 'Loading...' : dateRange || 'Select week'}
               </span>
               <input
@@ -582,7 +582,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
             </label>
             <button onClick={() => goWeek(1)} disabled={loadingWeek} style={{
               border: 'none', background: 'none', cursor: loadingWeek ? 'default' : 'pointer',
-              fontSize: '1rem', color: loadingWeek ? '#ddd' : '#555', padding: '0 4px', fontFamily: 'inherit',
+              fontSize: '1rem', color: loadingWeek ? 'var(--line)' : 'var(--text-soft)', padding: '0 4px', fontFamily: 'inherit',
             }}>&rsaquo;</button>
           </div>
         )}
@@ -591,26 +591,26 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
             <button onClick={() => goDay(-1)} disabled={!canPrev} style={{
               border: 'none', background: 'none', cursor: canPrev ? 'pointer' : 'default',
-              fontSize: '0.9rem', color: canPrev ? '#555' : '#ddd', padding: '0 4px', fontFamily: 'inherit',
+              fontSize: '0.9rem', color: canPrev ? 'var(--text-soft)' : 'var(--line)', padding: '0 4px', fontFamily: 'inherit',
             }}>&lsaquo;</button>
-            <span style={{ fontSize: '0.82rem', color: '#555', fontWeight: 500, minWidth: 90, textAlign: 'center' }}>
+            <span style={{ fontSize: '0.82rem', color: 'var(--text-soft)', fontWeight: 500, minWidth: 90, textAlign: 'center' }}>
               {DAY_NAMES[effectiveDate.getDay()]} {effectiveDate.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}
             </span>
             <button onClick={() => goDay(1)} disabled={!canNext} style={{
               border: 'none', background: 'none', cursor: canNext ? 'pointer' : 'default',
-              fontSize: '0.9rem', color: canNext ? '#555' : '#ddd', padding: '0 4px', fontFamily: 'inherit',
+              fontSize: '0.9rem', color: canNext ? 'var(--text-soft)' : 'var(--line)', padding: '0 4px', fontFamily: 'inherit',
             }}>&rsaquo;</button>
           </div>
         )}
 
-        <span style={{ fontSize: '0.75rem', color: '#aaa' }}>
+        <span style={{ fontSize: '0.75rem', color: 'var(--muted-soft)' }}>
           {activeShifts.length} shifts
           {meta.totalHours > 0 && ` · ${meta.totalHours.toFixed(1)}h`}
         </span>
         {workingDocId && (
           <span title={syncStatus} style={{
             width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
-            backgroundColor: syncStatus === 'synced' ? '#28a745' : syncStatus === 'syncing' || syncStatus === 'dirty' ? '#ffc107' : syncStatus === 'error' ? '#dc3545' : '#888',
+            backgroundColor: syncStatus === 'synced' ? 'var(--ok)' : syncStatus === 'syncing' || syncStatus === 'dirty' ? 'var(--warn)' : syncStatus === 'error' ? 'var(--error)' : 'var(--muted)',
           }} />
         )}
 
@@ -619,8 +619,8 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
           {onAction && (
             <button onClick={() => { setAddingNew(true); setEditingShift(null); }} disabled={saving} style={{
               padding: '4px 12px', fontSize: '0.75rem', fontWeight: 500,
-              border: '1px solid #28a745', borderRadius: 4, backgroundColor: '#fff',
-              color: '#28a745', cursor: 'pointer', fontFamily: 'inherit',
+              border: '1px solid var(--ok)', borderRadius: 4, backgroundColor: 'var(--bg)',
+              color: 'var(--ok)', cursor: 'pointer', fontFamily: 'inherit',
             }}>+ Add Shift</button>
           )}
         </div>
@@ -663,8 +663,8 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
               <div style={{
                 display: 'flex', alignItems: 'stretch', gap: 0,
                 borderRadius: 4, overflow: 'hidden',
-                border: '1px solid #2563eb',
-                backgroundColor: '#fff',
+                border: '1px solid var(--focus)',
+                backgroundColor: 'var(--bg)',
                 boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
                 fontSize: '0.78rem',
                 width: 'max-content',
@@ -672,10 +672,10 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
               }}>
                 <div style={{ width: 3, backgroundColor: color, flexShrink: 0 }} />
                 <div style={{ padding: '3px 8px' }}>
-                  <div style={{ fontWeight: 500, color: '#333', whiteSpace: 'nowrap' }}>
+                  <div style={{ fontWeight: 500, color: 'var(--text)', whiteSpace: 'nowrap' }}>
                     {formatClock(activeShift.clockinTime as string, timePrefs)}–{formatClock(activeShift.clockoutTime as string, timePrefs)}
                   </div>
-                  {hrs > 0 && <div style={{ fontSize: '0.68rem', color: '#888' }}>{hrs.toFixed(1)}h</div>}
+                  {hrs > 0 && <div style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>{hrs.toFixed(1)}h</div>}
                 </div>
               </div>
             );
