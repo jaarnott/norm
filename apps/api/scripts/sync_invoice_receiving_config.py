@@ -270,7 +270,7 @@ CONSOLIDATOR_TOOL = {
     # with the narrated markdown report, so it opts out of the tool loop's
     # display-only early-exit rather than suppressing narration.
     "display_component": "invoice_fixes",
-    "display_props": {"title": "Proposed fixes"},
+    "display_props": {"title": "Receive invoices with suggested fixes"},
     "suppress_display_early_exit": True,
 }
 
@@ -301,7 +301,7 @@ ROLLOUT: ALWAYS pass dry_run=true. (Remove this line after production verificati
      f. Its reasons, if any, as a markdown bulleted list.
    - Invoices WITHOUT details.lines were skipped before any comparison ran (no PO linked, credit note, fetch failure) — list each as one bold line "**{reference_number}** — {supplier_name} — {total}" followed by the tool's reasons as bullets. No tables for these; the tool reports only the first blocking problem, so present the bullets as-is without speculating.
 3. Close with the summary counts and what manual work remains in Loaded (linking POs, adding freight lines, credit notes). Mention that the header comparison for any skipped invoice is available on request (it is in details.header of the same result).
-4. If the tool returns a non-empty `fixes` list, an interactive "Proposed fixes" card is shown beneath your report where the user can select fixes and click Apply — Norm then links the purchase order and/or corrects the unit (and matching stock-item variant) in Loaded. Add one sentence inviting the user to use it and to re-run the review afterwards to receive any newly-fixable invoices. Never claim you have already applied the fixes — the user applies them from the card.
+4. If the tool returns a non-empty `fix_invoices` list, a full editable **Receive Invoice** card is shown beneath your report for each invoice with a recommended change — the user can adjust units (pre-filled with the recommendation), the linked PO, quantities and costs, then click **Accept & Receive** to update Loaded and receive the invoice in one step. Add one sentence pointing the user to the cards. Never claim you have applied anything or received anything — the user does that from each card.
 
 If the user asks why a specific invoice was skipped, use get_invoice_detail together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
     "tool_filter": [

@@ -57,9 +57,7 @@ class TestLinkPo:
             {"/1.0/stock/internal/purchase-orders": PO_LIST},
             {"inv-1": _invoice()},
         )
-        msg = IF._apply_link_po(
-            lh, {"invoice_id": "inv-1", "po_number": "PO#1520987"}
-        )
+        msg = IF._apply_link_po(lh, {"invoice_id": "inv-1", "po_number": "PO#1520987"})
         assert "1520987" in msg
         method, path, body = lh.writes[-1]
         assert method == "PUT" and path.endswith("/invoices/inv-1")
@@ -138,3 +136,100 @@ class TestUnit:
         assert "variant" not in msg
         assert [w for w in lh.writes if w[0] == "PATCH"] == []
         assert [w for w in lh.writes if w[0] == "PUT"]
+
+
+class TestReceive:
+    """The Accept & Receive orchestration: link PO, apply line edits, receive,
+    then PATCH changed variants."""
+
+    def _req(self, **over):
+        base = dict(
+            venue_id="v1",
+            invoice_id="inv-1",
+            linked_purchase_order_id=None,
+            po_number=None,
+            lines=[],
+            variant_updates=[],
+            receive=True,
+        )
+        base.update(over)
+        return IF.ReceiveRequest(**base)
+
+    def _inv(self):
+        return {
+            "id": "inv-1",
+            "linkedSupplierId": "sup-1",
+            "linkedPurchaseOrderId": None,
+            "purchaseOrderNumber": None,
+            "lines": [
+                {
+                    "id": "ln-1",
+                    "code": "NAP",
+                    "unit": "Each",
+                    "linkedUnitId": "u-each",
+                    "quantityReceived": 1,
+                    "unitCost": 3.99,
+                },
+            ],
+        }
+
+    def _lh(self):
+        item = {
+            "suppliers": [{"id": "var-1", "supplierId": "sup-1", "stockCode": "NAP"}]
+        }
+        return FakeLoaded(
+            {
+                "/1.0/stock/internal/purchase-orders": PO_LIST,
+                "/1.0/stock/internal/items/": item,
+            },
+            {"inv-1": self._inv()},
+        )
+
+    def test_links_po_edits_line_receives_and_patches_variant(self):
+        lh = self._lh()
+        req = self._req(
+            po_number="1520987",
+            lines=[
+                {
+                    "id": "ln-1",
+                    "unit": "100 piece",
+                    "linked_unit_id": "u-100pc",
+                    "unit_ratio": 100.0,
+                    "quantity_received": 1,
+                    "unit_cost": 3.99,
+                    "total_cost": 3.99,
+                }
+            ],
+            variant_updates=[
+                {"linked_item_id": "item-1", "line_code": "NAP", "unit_id": "u-100pc"}
+            ],
+        )
+        out = IF._do_receive(lh, req)
+        assert out["ok"] and out["received"]
+        assert out["linked_purchase_order"] == "1520987"
+        put = [w for w in lh.writes if w[0] == "PUT"][0]
+        body = put[2]
+        assert body["linkedPurchaseOrderId"] == "po-1"
+        assert body["isReceived"] is True and body["receivedAt"]
+        assert body["lines"][0]["linkedUnitId"] == "u-100pc"
+        assert body["lines"][0]["quantityReceived"] == 1
+        patch = [w for w in lh.writes if w[0] == "PATCH"][0]
+        assert patch[1].endswith("/item-supplier-variant/var-1")
+        assert patch[2] == {"unitId": "u-100pc"}
+        assert out["variant_updates"] == [{"code": "NAP", "ok": True}]
+
+    def test_receive_false_leaves_draft(self):
+        lh = self._lh()
+        out = IF._do_receive(lh, self._req(receive=False))
+        assert out["received"] is False
+        put = [w for w in lh.writes if w[0] == "PUT"][0]
+        assert "isReceived" not in put[2]
+
+    def test_unknown_po_number_raises(self):
+        lh = self._lh()
+        try:
+            IF._do_receive(lh, self._req(po_number="9999"))
+            assert False, "expected failure"
+        except Exception as e:
+            assert "not found" in str(e)
+        assert [w for w in lh.writes if w[0] == "PUT"] == []

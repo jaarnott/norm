@@ -896,3 +896,37 @@ class TestFixDerivation:
         pdf = make_pdf()
         pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure=uom)
         return pdf
+
+
+class TestFixInvoicesPayload:
+    """fix_invoices carries raw editable data for the Receive Invoice card."""
+
+    def test_link_po_invoice_has_raw_lines_no_copy(self):
+        api = api_for(make_invoice(linkedPurchaseOrderId=None))
+        fi = run_consolidator(api)["fix_invoices"]
+        assert len(fi) == 1
+        inv = fi[0]
+        assert inv["invoice_id"] == INV_ID
+        assert inv["purchase_order_number"] == "PO#1520987"
+        assert [s["type"] for s in inv["suggestions"]] == ["link_po"]
+        ln = inv["lines"][0]
+        # raw numeric values, not strings
+        assert ln["quantity_received"] == 4.95
+        assert ln["unit_cost"] == 44.40
+        assert ln["linked_item_id"] == ITEM_SALMON
+        assert ln["copy_unit"] is None  # no pdf for link_po skips
+
+    def test_unit_invoice_pairs_copy_and_recommendation(self):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure="100 piece")
+        api = api_for(make_invoice(lines=[make_line(unit="Each")]), pdf=pdf)
+        inv = run_consolidator(api)["fix_invoices"][0]
+        assert [s["type"] for s in inv["suggestions"]] == ["unit"]
+        ln = inv["lines"][0]
+        assert ln["unit"] == "Each"
+        assert ln["recommended_unit"] == "100 piece"
+        assert ln["copy_unit"] == "Kg"
+        assert ln["copy_quantity"] == 4.95
+
+    def test_clean_invoice_has_no_fix_invoices(self):
+        assert run_consolidator(api_for(make_invoice()))["fix_invoices"] == []

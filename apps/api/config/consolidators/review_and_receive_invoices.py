@@ -291,6 +291,10 @@ def run(params, call_api, log, call_api_parallel=None):
     )
 
     received, skipped = [], []
+    # Full editable "Receive Invoice" payloads — one per invoice that has a
+    # concrete auto-fix (link_po or unit). Raw values (numbers, ids) for the
+    # interactive card; built from data already fetched, no extra API calls.
+    fix_invoices = []
 
     for stub in drafts:
         inv_id = stub.get("id")
@@ -310,6 +314,9 @@ def run(params, call_api, log, call_api_parallel=None):
         # hand — no extra API calls during review. The card/handler resolve
         # ids (PO, unit, variant) at apply time.
         fixes = []
+        # Copy (pdf) values paired to each invoice line id, captured during the
+        # Layer 6 line match so the editable card can show copy-vs-invoice.
+        copy_by_line_id = {}
         ref = detail.get("referenceNumber") or "(no number)"
         total = dec(detail.get("total"))
         lines = [ln for ln in detail.get("lines") or [] if not ln.get("deletedAt")]
@@ -367,6 +374,50 @@ def run(params, call_api, log, call_api_parallel=None):
                     + " more lines checked but omitted from this detail view"
                 }
             )
+
+        def make_fix_invoice():
+            # Raw, machine-usable payload for the editable Receive Invoice card.
+            # All lines (uncapped — only display rows are capped), numeric
+            # values as numbers, paired with the copy where available.
+            raw_lines = []
+            for ln in lines:
+                cp = copy_by_line_id.get(ln.get("id")) or {}
+                raw_lines.append(
+                    {
+                        "id": ln.get("id"),
+                        "code": ln.get("code"),
+                        "description": ln.get("description"),
+                        "brand": ln.get("brand"),
+                        "linked_item_id": ln.get("linkedItemId"),
+                        "linked_unit_id": ln.get("linkedUnitId"),
+                        "linked_brand_id": ln.get("linkedBrandId"),
+                        "unit": ln.get("unit"),
+                        "quantity_received": ln.get("quantityReceived"),
+                        "unit_cost": ln.get("unitCost"),
+                        "total_cost": ln.get("totalCost"),
+                        "copy_unit": cp.get("unit"),
+                        "copy_quantity": cp.get("quantity"),
+                        "copy_unit_price": cp.get("unit_price_ex_tax"),
+                        "copy_line_total": cp.get("line_total_ex_tax"),
+                        "recommended_unit": cp.get("unit_of_measure"),
+                    }
+                )
+            return {
+                "invoice_id": inv_id,
+                "reference_number": ref,
+                "supplier_name": detail.get("supplierName"),
+                "linked_supplier_id": detail.get("linkedSupplierId"),
+                "purchase_order_number": po_number_hint,
+                "linked_purchase_order_id": detail.get("linkedPurchaseOrderId"),
+                "issued_at": detail.get("issuedAt"),
+                "due_at": detail.get("dueAt"),
+                "subtotal": detail.get("subtotal"),
+                "tax_amount": detail.get("taxAmount"),
+                "total": detail.get("total"),
+                "file_id": detail.get("fileId"),
+                "lines": raw_lines,
+                "suggestions": list(fixes),
+            }
 
         def verdict_now():
             symbol = {"pass": "✓", "fail": "✗"}
@@ -554,6 +605,8 @@ def run(params, call_api, log, call_api_parallel=None):
                     }
                 )
             _fail(checks, reasons, "po_linked", msg)
+            if fixes:
+                fix_invoices.append(make_fix_invoice())
             skipped.append(verdict_now())
             continue
         checks["po_linked"] = "pass"
@@ -771,6 +824,13 @@ def run(params, call_api, log, call_api_parallel=None):
                     )
                     continue
                 unclaimed.remove(match)
+                copy_by_line_id[ln.get("id")] = {
+                    "unit": match.get("unit"),
+                    "quantity": match.get("quantity"),
+                    "unit_price_ex_tax": match.get("unit_price_ex_tax"),
+                    "line_total_ex_tax": match.get("line_total_ex_tax"),
+                    "unit_of_measure": match.get("unit_of_measure"),
+                }
                 if rec:
                     rec["on_copy"] = "✓"
                     rec["unit"]["copy"] = match.get("unit")
@@ -980,6 +1040,8 @@ def run(params, call_api, log, call_api_parallel=None):
         verdict = verdict_now()
 
         if reasons:
+            if fixes:
+                fix_invoices.append(make_fix_invoice())
             skipped.append(verdict)
             continue
 
@@ -1051,6 +1113,7 @@ def run(params, call_api, log, call_api_parallel=None):
         "received": received,
         "skipped": skipped,
         "fixes": all_fixes,
+        "fix_invoices": fix_invoices,
         "summary": {"received": len(received), "skipped": len(skipped)},
     }
 

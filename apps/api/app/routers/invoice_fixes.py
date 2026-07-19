@@ -51,6 +51,19 @@ class ApplyFixesRequest(BaseModel):
     fixes: list[dict]
 
 
+class ReceiveRequest(BaseModel):
+    venue_id: str
+    invoice_id: str
+    # Optional PO to link before receiving (id preferred; number resolved).
+    linked_purchase_order_id: str | None = None
+    po_number: str | None = None
+    # Per-line edits, keyed by line id. Only supplied fields are applied.
+    lines: list[dict] = []
+    # Variant unit updates: {linked_item_id, line_code, unit_id}.
+    variant_updates: list[dict] = []
+    receive: bool = True
+
+
 def _norm(text: object) -> str:
     return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
 
@@ -239,3 +252,168 @@ async def apply_invoice_fixes(
             results.append({"id": fid, "ok": False, "message": str(exc)})
     applied = sum(1 for r in results if r["ok"])
     return {"results": results, "applied": applied, "total": len(results)}
+
+
+# ---------------------------------------------------------------------------
+# Reference reads + full "Accept & Receive" for the editable card
+# ---------------------------------------------------------------------------
+
+
+@router.get("/invoice-fixes/units")
+async def list_units(
+    venue_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Loaded units catalog for the card's unit dropdown."""
+    lh = _Loaded(db, config_db, venue_id)
+    units = lh.get("/1.0/stock/internal/units")
+    return {
+        "units": [
+            {
+                "id": u.get("id"),
+                "name": u.get("name"),
+                "type": u.get("stockUnitType"),
+                "ratio": u.get("ratio"),
+            }
+            for u in (units or [])
+            if not u.get("datestampDeleted")
+        ]
+    }
+
+
+@router.get("/invoice-fixes/purchase-orders")
+async def list_purchase_orders(
+    venue_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Loaded purchase orders for the card's Order Number picker."""
+    lh = _Loaded(db, config_db, venue_id)
+    pos = lh.get("/1.0/stock/internal/purchase-orders?from=1901-01-01&to=9999-12-31")
+    pos = pos if isinstance(pos, list) else (pos or {}).get("data") or []
+    return {
+        "purchase_orders": [
+            {
+                "id": p.get("id"),
+                "order_number": p.get("orderNumber"),
+                "supplier_name": p.get("supplierName"),
+                "supplier_id": p.get("supplierId"),
+            }
+            for p in pos
+            if not p.get("datestampDeleted")
+        ]
+    }
+
+
+def _do_receive(lh: "_Loaded", body: "ReceiveRequest") -> dict:
+    """Apply the card's edits to a draft invoice and (optionally) receive it.
+
+    One PUT carries every header + line edit; variant unit changes are PATCHed
+    after. Pure orchestration over an authenticated client, so it is unit-
+    testable with a scripted fake.
+    """
+    import datetime
+
+    inv = lh.invoice(body.invoice_id)
+
+    # Header: link a PO if requested (id wins; else resolve the number).
+    po_id = body.linked_purchase_order_id
+    po_number = None
+    if not po_id and body.po_number:
+        want = _po_key(body.po_number)
+        pos = lh.get(
+            "/1.0/stock/internal/purchase-orders?from=1901-01-01&to=9999-12-31"
+        )
+        pos = pos if isinstance(pos, list) else (pos or {}).get("data") or []
+        matches = [p for p in pos if _po_key(p.get("orderNumber")) == want]
+        if not matches:
+            raise HTTPException(400, f"purchase order {body.po_number} not found")
+        if len(matches) > 1:
+            raise HTTPException(400, f"purchase order {body.po_number} is ambiguous")
+        po_id = matches[0]["id"]
+        po_number = matches[0].get("orderNumber")
+    elif po_id:
+        po_number = body.po_number
+    if po_id:
+        inv["linkedPurchaseOrderId"] = po_id
+        if po_number:
+            inv["purchaseOrderNumber"] = po_number
+
+    # Per-line edits by id — only apply the fields the card sent.
+    edits = {e.get("id"): e for e in body.lines if e.get("id")}
+    _LINE_FIELDS = {
+        "unit": "unit",
+        "linked_unit_id": "linkedUnitId",
+        "unit_ratio": "linkedUnitRatio",
+        "quantity_received": "quantityReceived",
+        "unit_cost": "unitCost",
+        "total_cost": "totalCost",
+    }
+    for ln in inv.get("lines") or []:
+        e = edits.get(ln.get("id"))
+        if not e:
+            continue
+        for src, dst in _LINE_FIELDS.items():
+            if src in e and e[src] is not None:
+                ln[dst] = e[src]
+
+    if body.receive:
+        inv["isReceived"] = True
+        inv["receivedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    lh.request("PUT", f"/1.0/stock/internal/invoices/{body.invoice_id}", inv)
+
+    # Variant unit updates (Loaded's "update variant?" step), isolated.
+    variant_results = []
+    for vu in body.variant_updates:
+        try:
+            item = lh.get(f"/1.0/stock/internal/items/{vu['linked_item_id']}")
+            code = _norm(vu.get("line_code"))
+            supplier = inv.get("linkedSupplierId")
+            variant = next(
+                (
+                    v
+                    for v in (item or {}).get("suppliers") or []
+                    if v.get("supplierId") == supplier
+                    and _norm(v.get("stockCode")) == code
+                ),
+                None,
+            )
+            if variant:
+                lh.request(
+                    "PATCH",
+                    f"/1.0/stock/internal/item-supplier-variant/{variant['id']}",
+                    {"unitId": vu.get("unit_id")},
+                )
+                variant_results.append({"code": vu.get("line_code"), "ok": True})
+            else:
+                variant_results.append(
+                    {"code": vu.get("line_code"), "ok": False, "message": "no variant"}
+                )
+        except Exception as exc:  # noqa: BLE001 — isolate each variant
+            logger.warning("variant update failed: %s", exc)
+            variant_results.append(
+                {"code": vu.get("line_code"), "ok": False, "message": str(exc)}
+            )
+
+    return {
+        "ok": True,
+        "received": bool(body.receive),
+        "linked_purchase_order": po_number,
+        "variant_updates": variant_results,
+    }
+
+
+@router.post("/invoice-fixes/receive")
+async def receive_invoice(
+    body: ReceiveRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Apply the card's edits to a draft invoice and (optionally) receive it."""
+    lh = _Loaded(db, config_db, body.venue_id)
+    return _do_receive(lh, body)
