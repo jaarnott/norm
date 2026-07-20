@@ -233,3 +233,77 @@ class TestReceive:
         except Exception as e:
             assert "not found" in str(e)
         assert [w for w in lh.writes if w[0] == "PUT"] == []
+
+
+class TestLinkedPoNumberIsWrittenForDisplay:
+    """Linking by id must also correct the invoice's displayed PO number.
+
+    Loaded's invoice LIST renders invoice.purchaseOrderNumber, which the
+    supplier feed fills with the SUPPLIER's own order number (e.g. Bidfood
+    "12195941-1"). The card links by id and sends no number, so without an
+    explicit lookup the invoice ends up linked to the right purchase order
+    while the list shows a number matching no Loaded PO — and disagreeing with
+    the invoice's own detail screen.
+    """
+
+    def _inv(self):
+        return {
+            "id": "inv-1",
+            "linkedSupplierId": "sup-1",
+            "linkedPurchaseOrderId": None,
+            # what the supplier feed put there: Bidfood's own order number
+            "purchaseOrderNumber": "12195941-1",
+            "lines": [],
+        }
+
+    def _lh(self):
+        # More specific path first — FakeLoaded matches by prefix, in order.
+        return FakeLoaded(
+            {
+                "/1.0/stock/internal/purchase-orders/po-1": {
+                    "id": "po-1",
+                    "orderNumber": "1520387",
+                },
+                "/1.0/stock/internal/purchase-orders": PO_LIST,
+            },
+            {"inv-1": self._inv()},
+        )
+
+    def _req(self, **over):
+        base = dict(
+            venue_id="v1",
+            invoice_id="inv-1",
+            linked_purchase_order_id="po-1",
+            po_number=None,
+            lines=[],
+            variant_updates=[],
+            receive=True,
+        )
+        base.update(over)
+        return IF.ReceiveRequest(**base)
+
+    def test_supplier_number_is_replaced_with_the_linked_po(self):
+        lh = self._lh()
+        out = IF._do_receive(lh, self._req())
+        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
+        assert body["linkedPurchaseOrderId"] == "po-1"
+        assert body["purchaseOrderNumber"] == "1520387"
+        assert out["linked_purchase_order"] == "1520387"
+
+    def test_explicit_number_still_wins(self):
+        lh = self._lh()
+        IF._do_receive(lh, self._req(po_number="1520999"))
+        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
+        assert body["purchaseOrderNumber"] == "1520999"
+
+    def test_lookup_failure_does_not_block_the_receive(self):
+        # A PO that can't be read must still link and receive — only the
+        # display number is best-effort.
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST},
+            {"inv-1": self._inv()},
+        )
+        out = IF._do_receive(lh, self._req())
+        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
+        assert out["ok"] and body["linkedPurchaseOrderId"] == "po-1"
+        assert body["purchaseOrderNumber"] == "12195941-1"  # untouched

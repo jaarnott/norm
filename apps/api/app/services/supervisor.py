@@ -41,6 +41,7 @@ def handle_message(
 
     # Track whether we're continuing a meta/unknown thread
     prior_thread = None
+    original_user_text = None
     venue_name = None
     venue_timezone = None
 
@@ -60,7 +61,12 @@ def handle_message(
                     venue_name = venue_obj.name
                     venue_timezone = venue_obj.timezone
 
-            # Detect automated task "Run Now" — skip playbook routing
+            # An automated task's conversation is ABOUT that task. Resolve it up
+            # front so every message in the thread keeps that identity — without
+            # it the agent has no task id, so "add my email to this" reaches for
+            # create_automated_task and silently leaves a duplicate draft while
+            # the real task is unchanged.
+            automated_task_ctx = None
             if thread.intent and thread.intent.endswith(".automated_conversation"):
                 from app.db.models import AutomatedTask
 
@@ -69,6 +75,18 @@ def handle_message(
                     .filter(AutomatedTask.conversation_thread_id == thread_id)
                     .first()
                 )
+                if at:
+                    schedule = at.schedule_type or "manual"
+                    cfg = at.schedule_config or {}
+                    if cfg.get("hour") is not None:
+                        schedule += f" at {int(cfg['hour']):02d}:{int(cfg.get('minute') or 0):02d}"
+                    automated_task_ctx = {
+                        "id": at.id,
+                        "title": at.title,
+                        "prompt": at.prompt,
+                        "status": at.status,
+                        "schedule": schedule,
+                    }
                 if at and " ".join(message.split()) == " ".join(
                     (at.prompt or "").split()
                 ):
@@ -96,6 +114,57 @@ def handle_message(
                             anthropic_tools,
                             config_db=_cdb,
                         )
+
+            # A thread that is waiting on a venue answer: the very next message
+            # IS that answer, so resolve it here — before the follow-up
+            # classifier. The classifier reads a bare venue name as a topic
+            # change, and once it has, `message` is rewritten into a
+            # "[Prior conversation] ..." blob that no longer means what the
+            # user typed.
+            if thread.intent == "venue_clarification":
+                unresolved = _resume_venue_clarification(message, thread, db)
+                if unresolved is not None:
+                    return unresolved
+
+                # Venue recorded on the thread — resume the original request
+                # in this same thread, using the routing the router already
+                # worked out before it asked.
+                message = thread.raw_prompt or message
+                venue_id = thread.venue_id
+                venue_name = None
+                venue_timezone = None
+                if venue_id:
+                    from app.db.models import Venue
+
+                    venue_obj = db.query(Venue).filter(Venue.id == venue_id).first()
+                    if venue_obj:
+                        venue_name = venue_obj.name
+                        venue_timezone = venue_obj.timezone
+
+                agent = get_agent(thread.domain)
+                if agent:
+                    from app.agents.tool_loop import run_tool_loop, _emit_event
+
+                    system_prompt, anthropic_tools = agent.get_tool_definitions(
+                        db,
+                        user_id=user_id,
+                        active_venue_name=venue_name,
+                        venue_timezone=venue_timezone,
+                        config_db=_cdb,
+                        playbook=_stored_playbook(thread, _cdb),
+                    )
+                    # Same id as the thread the user is already looking at —
+                    # the frontend needs it to stay put, not swap threads.
+                    _emit_event({"type": "thread_created", "thread_id": thread.id})
+                    return run_tool_loop(
+                        message,
+                        thread,
+                        db,
+                        system_prompt,
+                        anthropic_tools,
+                        context=agent.build_context(db, user_id),
+                        config_db=_cdb,
+                    )
 
             # Classify the follow-up to decide how to handle it
             from app.agents.router import classify_followup
@@ -135,13 +204,54 @@ def handle_message(
                 followup.get("reason", ""),
             )
 
+            if action == "new_thread" and automated_task_ctx:
+                # Never spin a new thread out of an automated task's own
+                # conversation. Doing so abandons the task the user is looking
+                # at — the thread "forgets" which task it belongs to and the
+                # next request lands somewhere they cannot see.
+                logger.info(
+                    "Follow-up wanted a new thread, but this is automated task "
+                    "%s's conversation — staying put",
+                    automated_task_ctx["id"][:12],
+                )
+                action = "continue"
+
+            if action == "new_thread" and (
+                thread.status == "awaiting_tool_approval" or thread.agent_loop_state
+            ):
+                # A suspended tool loop belongs to the agent that suspended it,
+                # and its state lives in columns on this thread. Moving on would
+                # send the thread down the migrate-and-delete path and take the
+                # pending approval with it — the approval card would point at a
+                # thread that no longer exists, leaving the write neither
+                # approvable nor rejectable. Answer here instead.
+                logger.info(
+                    "Follow-up wanted a new thread, but thread %s has a tool "
+                    "approval pending — staying put",
+                    thread.id[:12],
+                )
+                action = "continue"
+
             if action == "new_thread":
-                # User switched topics — fall through to normal routing below.
+                rebound = _rebind_thread_agent(
+                    followup.get("domain"), thread, message, db, _cdb, user_id
+                )
+                if rebound is not None:
+                    return rebound
+
+                # Not safe to rebind — fall through to normal routing below,
+                # which creates a fresh thread and migrates this one into it.
                 # Prepend conversation context so the full classifier can
                 # still infer venue, names, etc. from the prior exchange.
                 thread_id = None
                 prior_thread = thread
                 if recent_summary:
+                    # Keep what the user actually typed. The blob is scaffolding
+                    # for the router; storing it verbatim leaves the user
+                    # staring at a transcript of themselves where their question
+                    # should be, and it is redundant once the prior
+                    # conversation is migrated into the new thread below.
+                    original_user_text = message
                     message = f"[Prior conversation]\n{recent_summary}\n\n[New request]\n{message}"
             else:
                 # Load playbook for THIS message if the classifier matched one
@@ -184,70 +294,11 @@ def handle_message(
                         venue_timezone=venue_timezone,
                         config_db=_cdb,
                         playbook=message_playbook,
+                        automated_task=automated_task_ctx,
                     )
-            # Handle venue clarification follow-ups — resolve venue from reply
-            # and re-route the original message
-            if thread.intent == "venue_clarification":
-                from app.services.venue_service import resolve_venue_id
-                from app.db.models import Venue
-
-                user_reply = message.strip().lower()
-                db.add(Message(thread_id=thread.id, role="user", content=message))
-                db.flush()
-
-                # "All venues" — re-route without a specific venue
-                if user_reply in ("all", "all venues"):
-                    original_message = thread.raw_prompt or message
-                    prior_thread = thread
-                    message = original_message
-                    # venue_id stays None — agent gets all venues
-                elif resolved_id := resolve_venue_id(message.strip(), db):
-                    venue_obj = db.query(Venue).filter(Venue.id == resolved_id).first()
-                    # Re-route the original message with the resolved venue
-                    original_message = thread.raw_prompt or message
-                    prior_thread = thread
-                    venue_id = resolved_id
-                    venue_name = venue_obj.name if venue_obj else message.strip()
-                    venue_timezone = venue_obj.timezone if venue_obj else None
-                    message = original_message
-                else:
-                    # Couldn't resolve — ask again
-                    from app.services.venue_service import get_user_venues
-
-                    venues = get_user_venues(db)
-                    venue_list = ", ".join(v.name for v in venues)
-                    reply = f"I couldn't find a venue called '{message.strip()}'. Available venues: {venue_list}"
-                    db.add(Message(thread_id=thread.id, role="user", content=message))
-                    db.add(
-                        Message(thread_id=thread.id, role="assistant", content=reply)
-                    )
-                    db.commit()
-                    db.refresh(thread)
-                    return {
-                        "id": thread.id,
-                        "domain": "unknown",
-                        "intent": "venue_clarification",
-                        "title": thread.title,
-                        "message": message,
-                        "status": "needs_clarification",
-                        "created_at": thread.created_at.isoformat(),
-                        "updated_at": thread.updated_at.isoformat(),
-                        "conversation": [
-                            {
-                                "role": m.role,
-                                "text": m.content,
-                                "created_at": m.created_at.isoformat()
-                                if m.created_at
-                                else None,
-                            }
-                            for m in sorted(thread.messages, key=lambda x: x.created_at)
-                        ],
-                        "clarification_question": reply,
-                    }
-
             # For meta/unknown threads: remember the old thread so we can
             # migrate its conversation into whatever thread comes next.
-            elif thread.domain in ("meta", "unknown"):
+            if thread.domain in ("meta", "unknown"):
                 prior_thread = thread
 
     # 2. Classify the message to a domain
@@ -387,6 +438,7 @@ def handle_message(
 
         # Migrate prior meta/unknown conversation into the new thread
         if prior_thread and result.get("id"):
+            _restore_user_text(result["id"], message, original_user_text, db)
             _migrate_prior_thread(prior_thread, result["id"], db)
             # Re-read conversation so the response includes the full history
             new_thread = db.query(Thread).filter(Thread.id == result["id"]).first()
@@ -442,26 +494,268 @@ def _llm_call_to_dict(llm_call: LlmCall) -> dict:
     }
 
 
+def _stored_playbook(thread: Thread, config_db: Session):
+    """The playbook the router picked before it stopped to ask for a venue.
+
+    `_create_venue_clarification` stashes the whole routing result on the
+    thread so the original request can be resumed without re-classifying it.
+    """
+    from app.db.config_models import Playbook
+
+    slug = ((thread.extracted_fields or {}).get("routing") or {}).get("playbook")
+    if not slug:
+        return None
+    bare_slug = slug.split("/")[-1] if "/" in slug else slug
+    return (
+        config_db.query(Playbook)
+        .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
+        .first()
+    )
+
+
+def _rebind_thread_agent(
+    target_domain: str | None,
+    thread: Thread,
+    message: str,
+    db: Session,
+    config_db: Session,
+    user_id: str | None,
+) -> dict | None:
+    """Hand this conversation to a different agent without splitting it.
+
+    `classify_followup`'s "new_thread" means a *domain switch* — the request
+    belongs to another agent — and the old answer to that was to abandon the
+    thread, build a new one, migrate the conversation across and delete the
+    original. `Thread.domain` is just a column: set it and carry on, so the
+    user keeps one conversation and the new agent gets the real history
+    instead of a 4-message, 100-chars-each summary blob.
+
+    Returns the agent's response, or None when rebinding is not safe and the
+    caller should fall back to spawning a new thread.
+    """
+    if not target_domain or target_domain == thread.domain:
+        return None
+
+    # Only ordinary tool-loop conversations. Every other kind of thread carries
+    # an identity in its intent that a rebind would erase: `.mcp_playbook` runs,
+    # `.automated_conversation` threads (four call sites key off that suffix to
+    # find the task they belong to), and the legacy structured order/HR threads
+    # whose serialisation in routers/threads.py is keyed on domain.
+    if not (thread.intent or "").endswith(".tool_use"):
+        return None
+
+    agent = get_agent(target_domain)
+    if agent is None:
+        return None
+
+    venue_name = None
+    venue_timezone = None
+    if thread.venue_id:
+        from app.db.models import Venue
+
+        venue_obj = db.query(Venue).filter(Venue.id == thread.venue_id).first()
+        if venue_obj:
+            venue_name = venue_obj.name
+            venue_timezone = venue_obj.timezone
+
+    system_prompt, anthropic_tools = agent.get_tool_definitions(
+        db,
+        user_id=user_id,
+        active_venue_name=venue_name,
+        venue_timezone=venue_timezone,
+        config_db=config_db,
+    )
+    # An agent with no bound tools does not answer in the thread it was given —
+    # it builds and commits one of its own (see marketing/time_attendance
+    # agent.py). Rebinding into that would relabel this thread and then reply
+    # somewhere else entirely, so leave it to the normal path.
+    if not anthropic_tools:
+        return None
+
+    from app.agents.tool_loop import _emit_event, run_tool_loop
+
+    previous_domain = thread.domain
+    thread.domain = target_domain
+    thread.intent = f"{target_domain}.tool_use"
+    db.flush()
+    logger.info(
+        "Thread %s handed from %s to %s in place",
+        thread.id[:12],
+        previous_domain,
+        target_domain,
+    )
+
+    # Tell the frontend who is answering now. It rewrites the thread's agent
+    # in place from this event; without it the old agent's label sits there
+    # for the whole turn.
+    from app.services.agent_config_service import get_all_capabilities_summary
+
+    caps = get_all_capabilities_summary(config_db)
+    _emit_event(
+        {
+            "type": "routing",
+            "domain": target_domain,
+            "title": thread.title,
+            "agent_label": caps.get(target_domain, {}).get(
+                "display_name", target_domain.title()
+            ),
+        }
+    )
+    _emit_event({"type": "thread_created", "thread_id": thread.id})
+
+    db.add(Message(thread_id=thread.id, role="user", content=message))
+    db.flush()
+
+    return run_tool_loop(
+        message,
+        thread,
+        db,
+        system_prompt,
+        anthropic_tools,
+        context=agent.build_context(db, user_id),
+        config_db=config_db,
+    )
+
+
+def _resume_venue_clarification(
+    message: str, thread: Thread, db: Session
+) -> dict | None:
+    """Answer a pending venue question on the thread that asked it.
+
+    Returns a response dict when the reply names no venue we know (we ask
+    again), or None once the venue is recorded on the thread and the caller
+    should resume the original request.
+    """
+    from app.services.venue_service import get_user_venues, resolve_venue_id
+
+    reply = message.strip()
+    db.add(Message(thread_id=thread.id, role="user", content=message))
+    db.flush()
+
+    resolved_id = None
+    if reply.lower() not in ("all", "all venues"):
+        resolved_id = resolve_venue_id(reply, db)
+        if not resolved_id:
+            venues = get_user_venues(db)
+            venue_list = ", ".join(v.name for v in venues)
+            question = (
+                f"I couldn't find a venue called '{reply}'. "
+                f"Available venues: {venue_list}"
+            )
+            db.add(Message(thread_id=thread.id, role="assistant", content=question))
+            thread.clarification_question = question
+            db.commit()
+            db.refresh(thread)
+            return {
+                "id": thread.id,
+                "domain": thread.domain,
+                "intent": "venue_clarification",
+                "title": thread.title,
+                "message": message,
+                "status": "needs_clarification",
+                "created_at": thread.created_at.isoformat(),
+                "updated_at": thread.updated_at.isoformat(),
+                "conversation": [
+                    {
+                        "role": m.role,
+                        "text": m.content,
+                        "created_at": m.created_at.isoformat()
+                        if m.created_at
+                        else None,
+                    }
+                    for m in sorted(thread.messages, key=lambda x: x.created_at)
+                ],
+                "clarification_question": question,
+            }
+
+    # Resolved (or "all venues"). Record the venue and stand the thread down
+    # from clarification — without this the thread stays armed forever and
+    # every later message gets read as another venue reply.
+    thread.venue_id = resolved_id
+    thread.intent = f"{thread.domain}.tool_use"
+    thread.status = "in_progress"
+    thread.missing_fields = []
+    thread.clarification_question = None
+    db.commit()
+    return None
+
+
+def _restore_user_text(
+    thread_id: str, stored_text: str, real_text: str | None, db: Session
+) -> None:
+    """Put the user's own words back where the router's context blob was stored.
+
+    On a topic change the message handed to the router is the user's request
+    wrapped in a "[Prior conversation] ..." summary. The agent persists
+    whatever it was given, so the thread ends up showing that blob instead of
+    the question the user asked — which reads as their message having been
+    replaced. The blob has done its job by now, and the prior conversation is
+    about to be migrated into this thread anyway.
+    """
+    if not real_text or real_text == stored_text:
+        return
+
+    msg = (
+        db.query(Message)
+        .filter(
+            Message.thread_id == thread_id,
+            Message.role == "user",
+            Message.content == stored_text,
+        )
+        .order_by(Message.created_at.desc())
+        .first()
+    )
+    if msg:
+        msg.content = real_text
+
+    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    if thread and thread.raw_prompt == stored_text:
+        thread.raw_prompt = real_text
+    db.flush()
+
+
 def _migrate_prior_thread(
     prior_thread: Thread, new_thread_id: str, db: Session
 ) -> None:
-    """Move conversation & LLM calls from a meta/unknown thread into the new real thread, then delete the old one."""
-    old_thread_id = prior_thread.id
+    """Move a prior thread's conversation into the new thread, then retire it."""
+    from sqlalchemy.exc import SQLAlchemyError
 
-    # Re-parent messages and LLM calls via bulk UPDATE (avoids SQLAlchemy
-    # relationship cascade conflicts with the subsequent delete).
-    db.query(Message).filter(Message.thread_id == old_thread_id).update(
-        {Message.thread_id: new_thread_id}, synchronize_session="fetch"
-    )
-    db.query(LlmCall).filter(LlmCall.thread_id == old_thread_id).update(
-        {LlmCall.thread_id: new_thread_id}, synchronize_session="fetch"
-    )
+    from app.db.models import ToolCall
+
+    old_thread_id = prior_thread.id
+    if old_thread_id == new_thread_id:
+        return
+
+    # Re-parent conversation rows via bulk UPDATE (avoids SQLAlchemy
+    # relationship cascade conflicts with the subsequent delete). tool_calls
+    # matters as much as messages: a thread that ran any tool has rows here,
+    # and they hold the display blocks the conversation renders from.
+    for model, column in (
+        (Message, Message.thread_id),
+        (LlmCall, LlmCall.thread_id),
+        (ToolCall, ToolCall.thread_id),
+    ):
+        db.query(model).filter(column == old_thread_id).update(
+            {column: new_thread_id}, synchronize_session="fetch"
+        )
     db.flush()
 
-    # Now safe to delete the orphaned thread (no child rows remain)
-    db.query(Thread).filter(Thread.id == old_thread_id).delete(
-        synchronize_session="fetch"
-    )
+    # Retire the emptied thread. Twelve other tables carry an FK to threads.id
+    # and none of them are re-parented above, so this delete can legitimately
+    # fail — do it inside a SAVEPOINT and keep the thread if it does. Tidying
+    # up must never cost the user the answer they just waited for.
+    try:
+        with db.begin_nested():
+            db.query(Thread).filter(Thread.id == old_thread_id).delete(
+                synchronize_session="fetch"
+            )
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "Kept thread %s after migrating it into %s — still referenced: %s",
+            old_thread_id[:12],
+            new_thread_id[:12],
+            exc,
+        )
     db.commit()
 
 

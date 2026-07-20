@@ -2010,3 +2010,98 @@ def _delegate_to_agent(params: dict, db: Session, thread_id: str | None) -> dict
         config_db.close()
 
     return {"success": True, "data": result, "error": None}
+
+
+def _principal_for_memory(thread_id: str | None, db: Session):
+    """(user_id, organization_id) for the thread, or (None, None).
+
+    Memory is scoped to a person and an organisation; without both we cannot
+    store or recall safely, so the tools no-op rather than guessing.
+    """
+    from app.db.models import OrganizationMembership, Thread
+
+    if not thread_id:
+        return None, None
+    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    if not thread or not thread.user_id:
+        return None, None
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(OrganizationMembership.user_id == thread.user_id)
+        .first()
+    )
+    return thread.user_id, (membership.organization_id if membership else None)
+
+
+@register("norm", "remember")
+def _remember(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Store something durable about this user or organisation.
+
+    Admission control runs server-side (app.services.memory_rules), so a
+    refusal here is authoritative — it names the rule and where the fact
+    belongs instead. Do not rephrase and retry a refused memory.
+    """
+    from app.services.memory_service import remember
+
+    user_id, org_id = _principal_for_memory(thread_id, db)
+    if not user_id or not org_id:
+        return {
+            "success": False,
+            "data": {},
+            "error": "No user/organisation context for this conversation.",
+        }
+
+    result = remember(
+        db,
+        user_id=user_id,
+        organization_id=org_id,
+        memory_type=(params.get("type") or "").strip(),
+        title=(params.get("title") or "").strip(),
+        body=(params.get("body") or "").strip(),
+        why=params.get("why"),
+        how_to_apply=params.get("how_to_apply"),
+        thread_id=thread_id,
+        trigger=params.get("trigger") or "explicit",
+        requested_scope=params.get("scope"),
+        venue_id=params.get("venue_id"),
+    )
+    if not result.get("stored"):
+        return {"success": False, "data": result, "error": result.get("reason")}
+    return {"success": True, "data": result}
+
+
+@register("norm", "recall_memory")
+def _recall_memory(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Fetch the full detail of one memory listed in the index."""
+    from app.services.memory_service import get_memory
+
+    _user_id, org_id = _principal_for_memory(thread_id, db)
+    memory_id = (params.get("memory_id") or "").strip()
+    if not org_id or not memory_id:
+        return {"success": False, "data": {}, "error": "memory_id is required"}
+
+    memory = get_memory(db, memory_id, org_id)
+    if not memory:
+        return {"success": False, "data": {}, "error": f"No memory {memory_id}"}
+
+    from app.db.models import _now
+
+    memory.last_used_at = _now()
+    db.flush()
+    return {
+        "success": True,
+        "data": {
+            "id": memory.id,
+            "type": memory.type,
+            "scope": memory.scope,
+            "title": memory.title,
+            "body": memory.body,
+            "why": memory.why,
+            "how_to_apply": memory.how_to_apply,
+            "recorded": memory.created_at.isoformat() if memory.created_at else None,
+            "note": (
+                "This was true when recorded. Verify anything that names a "
+                "venue, tool or field before acting on it."
+            ),
+        },
+    }

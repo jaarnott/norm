@@ -227,14 +227,23 @@ def _build_task_context(automated_task, agent_context: dict) -> dict:
     return ctx
 
 
-# How much of a run's output is mirrored into the task conversation. Generous
-# enough that a reconciliation table isn't cut off mid-row; the full text stays
-# on the execution thread.
-_CONVERSATION_SUMMARY_CHARS = 4000
+# Ceiling on the run output mirrored into the conversation. The result is meant
+# to be shown in full, so this is only a safety valve against a pathological
+# output — and it matters because the conversation is also the memory every
+# future run loads.
+_CONVERSATION_SUMMARY_CHARS = 12000
 
 
-def _post_run_to_conversation(automated_task, run, db, body: str) -> None:
-    """Mirror a run's outcome into the task's persistent conversation.
+def _post_run_to_conversation(
+    automated_task, run, db, body: str, display_blocks=None
+) -> None:
+    """Post a run into the task's conversation as an ordinary turn.
+
+    The instruction collapses behind a disclosure ("Run the scheduled task: …")
+    because it is the same prompt every time and would otherwise bury the part
+    that changes; the result underneath is shown in full. Assistant messages
+    render as markdown with raw HTML enabled, so <details> works with no
+    frontend involvement.
 
     Called on every path — success, empty result and failure — so the
     conversation is a complete run log. Best-effort: it must never be the
@@ -244,13 +253,36 @@ def _post_run_to_conversation(automated_task, run, db, body: str) -> None:
 
     if not automated_task.conversation_thread_id:
         return
+    tz = _resolve_timezone(automated_task.schedule_config)
+    when = (run.started_at or datetime.now(timezone.utc)).astimezone(tz)
+    # "ran" not "success": the status only means no exception was raised. The
+    # output below it is the evidence of what actually happened.
+    outcome = "✓ ran" if run.status == "success" else f"✗ {run.status}"
+    headline = [
+        f"Run the scheduled task: {automated_task.title}",
+        when.strftime("%-d %b %Y, %-I:%M%p").lower(),
+        outcome,
+    ]
+    if run.duration_ms:
+        headline.append(f"{round(run.duration_ms / 1000)}s")
+    if run.tool_calls_count:
+        headline.append(f"{run.tool_calls_count} tool calls")
+
+    instruction = (automated_task.prompt or "").strip()
+    content = (
+        "<details>\n"
+        f"<summary>{' · '.join(headline)}</summary>\n\n"
+        f"{instruction}\n\n"
+        "</details>\n\n"
+        f"{(body or '').strip()[:_CONVERSATION_SUMMARY_CHARS]}"
+    )
     try:
         db.add(
             Message(
                 thread_id=automated_task.conversation_thread_id,
                 role="assistant",
-                content=f"[Run {run.id[:8]} — {run.status}]\n"
-                f"{(body or '').strip()[:_CONVERSATION_SUMMARY_CHARS]}",
+                content=content,
+                display_blocks=display_blocks or None,
             )
         )
     except Exception:  # noqa: BLE001 — logging the run must not break the run
@@ -387,18 +419,21 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             if task.overrides_next_run:
                 task.overrides_next_run = None
 
-            # Post run summary to conversation task. Always post something —
-            # an empty model response must still leave a trace, or a run that
+            # Mirror the run into the conversation. Always post something — an
+            # empty model response must still leave a trace, or a run that
             # produced nothing is indistinguishable from one that never ran.
+            # The run's display blocks come along so the cards and tables it
+            # produced render inline, exactly as they did during the run.
             _post_run_to_conversation(
                 task,
                 run,
                 db,
                 result_text
                 or (
-                    f"Task completed but produced no summary "
+                    f"Task completed but produced no output "
                     f"({tool_calls_count} tool call(s), {duration_ms}ms)."
                 ),
+                display_blocks=result.get("display_blocks"),
             )
 
             db.commit()

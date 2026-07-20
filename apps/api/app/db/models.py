@@ -864,3 +864,113 @@ class EmailTemplate(Base):
     category = Column(String, nullable=False)  # billing|task|auth|report
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class Memory(Base):
+    """A durable fact Norm has learned about a user or an organisation.
+
+    Deliberately in the MAIN database, not the config DB. The config DB has no
+    ``organization_id`` and is shared across every environment *and* every
+    organisation, so an org-scoped row there would be visible to other tenants.
+
+    Scope is decided by one question: would a colleague asking the same thing
+    want a different answer? Yes → ``user``. No → ``org``. Venue-specific facts
+    are org memories tagged with ``venue_id`` rather than a third scope, because
+    a venue fact is an org fact that happens to be narrow.
+
+    What may live here is deliberately narrow — see ``memory_rules``. Nothing
+    that changes a number, gates money, or can be queried from a connector: the
+    trading-day work proved that a rule expressed as advice fails silently, so
+    those belong in enforced code, not here. Memory carries judgement only.
+    """
+
+    __tablename__ = "memories"
+
+    id = Column(String, primary_key=True, default=_uuid)
+
+    # Scope. Exactly one of user_id / organization_id drives visibility, but
+    # organization_id is always set so an org admin can see what their people
+    # have taught Norm.
+    scope = Column(String, nullable=False)  # "user" | "org"
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+
+    # Content. `title` is what goes in the always-loaded index; the rest is
+    # fetched on demand, which is what keeps the per-turn cost bounded.
+    type = Column(String, nullable=False)  # vocabulary|preference|context|correction
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=False)
+    why = Column(Text, nullable=True)
+    how_to_apply = Column(Text, nullable=True)
+
+    # Provenance. Without it a memory is an unattributable assertion that
+    # quietly shapes answers, which is the thing that makes learned state
+    # untrustworthy.
+    thread_id = Column(
+        String, ForeignKey("threads.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by = Column(String, nullable=False, default="agent")  # agent|user
+    trigger = Column(String, nullable=True)  # explicit|correction|draft_edit|rejection
+
+    # Lifecycle. Candidates are proposed but do not influence answers until
+    # confirmed — org-scoped writes always land here first, because a shared
+    # write changes other people's answers.
+    status = Column(
+        String, nullable=False, default="active"
+    )  # candidate|active|archived|superseded
+    superseded_by = Column(
+        String, ForeignKey("memories.id", ondelete="SET NULL"), nullable=True
+    )
+    #: `context` memories rot ("Mr Murdochs is closed" has a shelf life);
+    #: preferences and vocabulary do not, and leave this null.
+    review_after = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class MemorySignal(Base):
+    """Raw evidence that something might be worth remembering.
+
+    Deliberately not a ``Memory``. A single draft edit — "changed quantity from
+    5 to 8" — is not a fact about the business; it becomes one only when it
+    recurs or a human confirms it. Writing straight to memory would fill the
+    store with noise that shapes answers, which is the failure mode the
+    admission rules exist to prevent.
+
+    So signals are captured verbatim and interpreted later. The important part
+    is capture: these were previously **destroyed**. ``pending_ops`` on a
+    working document is a sync outbox — it is drained and cleared once the
+    connector accepts the change, taking with it the delta between what Norm
+    drafted and what the human actually wanted. That delta is the highest-value
+    learning signal in the product and nothing was keeping it.
+    """
+
+    __tablename__ = "memory_signals"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    thread_id = Column(
+        String, ForeignKey("threads.id", ondelete="SET NULL"), nullable=True
+    )
+
+    #: draft_edit | rejection
+    kind = Column(String, nullable=False)
+    #: Human-readable one-liner — what changed, in words.
+    summary = Column(Text, nullable=False)
+    #: The structured evidence (the ops, or the approval note).
+    detail = Column(JSON, nullable=True)
+
+    #: Set once this signal has been turned into a candidate memory, so the
+    #: same evidence is not proposed twice.
+    promoted_to_memory_id = Column(
+        String, ForeignKey("memories.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), default=_now)

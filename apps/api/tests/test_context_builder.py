@@ -281,3 +281,259 @@ class TestEnsureAlternation:
     def test_single_message(self):
         msgs = [{"role": "user", "content": "hello"}]
         assert _ensure_alternation(msgs) == msgs
+
+
+class TestUserMessageNotDuplicated:
+    """The caller persists the user's message before invoking the loop.
+
+    base.py adds the user Message row and flushes it, then calls run_tool_loop
+    with the same text; _build_messages reads task.messages (which now contains
+    that row) and appended new_message a second time. _ensure_alternation then
+    merged the two consecutive user turns, so the model received the user's
+    words twice, concatenated — costing tokens and misrepresenting the turn.
+    """
+
+    def test_persisted_copy_of_the_new_message_is_not_sent_twice(self):
+        msgs = [
+            _make_msg("user", "what were sales yesterday?", minutes_ago=10),
+            _make_msg("assistant", "La Zeppa did $9,434.", minutes_ago=9),
+            # base.py has already written this row:
+            _make_msg("user", "and the week before?", minutes_ago=0),
+        ]
+        result = build_conversation_messages(msgs, "and the week before?")
+        assert result[-1]["content"].count("and the week before?") == 1
+
+    def test_context_block_still_attaches_to_the_deduplicated_turn(self):
+        """The persisted row has no [Context]; the appended one does. Dropping
+        the wrong copy would silently lose the context block."""
+        msgs = [_make_msg("user", "sales?", minutes_ago=0)]
+        result = build_conversation_messages(
+            msgs, "sales?", context={"venue": "La Zeppa"}
+        )
+        assert result[-1]["content"].count("sales?") == 1
+        assert "[Context]" in result[-1]["content"]
+        assert "La Zeppa" in result[-1]["content"]
+
+    def test_a_genuinely_repeated_message_is_preserved(self):
+        """Answering 'yes' twice is real. Only the just-persisted copy is
+        dropped — the earlier identical turn must survive."""
+        msgs = [
+            _make_msg("user", "yes", minutes_ago=10),
+            _make_msg("assistant", "Which venue?", minutes_ago=9),
+            _make_msg("user", "yes", minutes_ago=0),
+        ]
+        result = build_conversation_messages(msgs, "yes")
+        user_turns = [m for m in result if m["role"] == "user"]
+        assert len(user_turns) == 2
+
+    def test_unpersisted_callers_are_unaffected(self):
+        """task_scheduler routes the prompt through a temp task, so the row is
+        not in `messages`. The new message must still be appended."""
+        msgs = [_make_msg("assistant", "Ready.", minutes_ago=1)]
+        result = build_conversation_messages(msgs, "run the weekly report")
+        assert result[-1]["content"] == "run the weekly report"
+
+
+def _make_tool_call(tc_id, tool_name, params, payload, connector="loadedhub"):
+    tc = MagicMock()
+    tc.id = tc_id
+    tc.tool_name = tool_name
+    tc.input_params = params
+    tc.result_payload = payload
+    tc.connector_name = connector
+    tc.status = "executed"
+    return tc
+
+
+def _db_returning(rows):
+    db = MagicMock()
+    chain = db.query.return_value.filter.return_value.order_by.return_value.limit
+    chain.return_value.all.return_value = rows
+    return db
+
+
+class TestToolResultManifest:
+    """Advertising data fetched in earlier turns.
+
+    Tool results are never persisted as Messages — they live in the loop's
+    in-memory list for one turn and then vanish. A follow-up question about
+    data Norm just fetched therefore forced a re-fetch of the same rows. The
+    payloads are durable in ToolCall.result_payload and already addressable,
+    because ToolCall.id IS the Anthropic tool_use block id that
+    norm__search_tool_result takes. The manifest is a pointer, not the data.
+    """
+
+    def test_lists_retrievable_results_with_their_ids(self):
+        from app.agents.context_builder import build_tool_result_manifest
+
+        rows = [
+            _make_tool_call(
+                "tu_01ABC",
+                "loadedhub__get_sales_for_period",
+                {"period": "yesterday", "venue": "La Zeppa"},
+                {"window": {}, "data": [{"x": 1}, {"x": 2}]},
+            )
+        ]
+        out = build_tool_result_manifest(MagicMock(), _db_returning(rows))
+        assert "tu_01ABC" in out
+        assert "loadedhub__get_sales_for_period" in out
+        assert "period=yesterday" in out
+        assert "2 rows" in out
+        assert "norm__search_tool_result" in out
+
+    def test_unwraps_the_consolidator_envelope_for_the_row_count(self):
+        """*_for_period tools return {window, data}. Counting the envelope
+        would report '2 rows' for every one of them."""
+        from app.agents.context_builder import build_tool_result_manifest
+
+        rows = [
+            _make_tool_call(
+                "t1", "x", {}, {"window": {"start": "..."}, "data": [1, 2, 3, 4, 5]}
+            )
+        ]
+        assert "5 rows" in build_tool_result_manifest(MagicMock(), _db_returning(rows))
+
+    def test_results_with_no_payload_are_not_advertised(self):
+        """Advertising an id that search_tool_result cannot resolve would send
+        the model to fetch nothing."""
+        from app.agents.context_builder import build_tool_result_manifest
+
+        rows = [_make_tool_call("t1", "x", {}, None)]
+        assert build_tool_result_manifest(MagicMock(), _db_returning(rows)) is None
+
+    def test_plumbing_args_are_not_shown(self):
+        """venue_id and mode are injected by the executor, not chosen by the
+        model — echoing them back is noise it has to read every turn."""
+        from app.agents.context_builder import build_tool_result_manifest
+
+        rows = [
+            _make_tool_call(
+                "t1", "x", {"venue_id": "uuid-here", "mode": "autopilot", "period": "yesterday"}, [1]
+            )
+        ]
+        out = build_tool_result_manifest(MagicMock(), _db_returning(rows))
+        assert "uuid-here" not in out
+        assert "autopilot" not in out
+        assert "period=yesterday" in out
+
+    def test_no_tool_calls_yields_nothing(self):
+        from app.agents.context_builder import build_tool_result_manifest
+
+        assert build_tool_result_manifest(MagicMock(), _db_returning([])) is None
+
+    def test_missing_thread_or_db_is_safe(self):
+        from app.agents.context_builder import build_tool_result_manifest
+
+        assert build_tool_result_manifest(None, MagicMock()) is None
+        assert build_tool_result_manifest(MagicMock(), None) is None
+
+    def test_a_db_failure_never_breaks_the_conversation(self):
+        """The manifest is an optimisation. If the query fails the turn must
+        still go through, just without the pointers."""
+        from app.agents.context_builder import build_tool_result_manifest
+
+        db = MagicMock()
+        db.query.side_effect = RuntimeError("connection lost")
+        assert build_tool_result_manifest(MagicMock(), db) is None
+
+    def test_manifest_reaches_the_final_user_turn(self):
+        rows = [_make_tool_call("tu_9", "loadedhub__get_roster", {}, [1, 2])]
+        msgs = [_make_msg("user", "the roster?", minutes_ago=5)]
+        result = build_conversation_messages(
+            msgs, "and yesterday?", thread=MagicMock(), db=_db_returning(rows)
+        )
+        assert "tu_9" in result[-1]["content"]
+        assert result[-1]["role"] == "user"
+
+
+class TestTokenTriggeredCompaction:
+    """History is split by tokens as well as message count.
+
+    The count rule alone left a hole: a thread of ten messages each carrying a
+    pasted report never reached SUMMARY_THRESHOLD, so nothing was compacted,
+    the whole thing was sent verbatim every turn, and the conversation
+    eventually died on "prompt is too long" with no compaction ever attempted.
+    """
+
+    def test_short_cheap_threads_are_untouched(self):
+        from app.agents.context_builder import _split_history
+
+        msgs = [_make_msg("user", "hi", minutes_ago=i) for i in range(4)]
+        older, recent = _split_history(msgs)
+        assert older == []
+        assert len(recent) == 4
+
+    def test_many_small_messages_still_trigger_on_count(self):
+        from app.agents.context_builder import (
+            RECENT_AFTER_SUMMARY,
+            SUMMARY_THRESHOLD,
+            _split_history,
+        )
+
+        msgs = [
+            _make_msg("user", "hi", minutes_ago=100 - i)
+            for i in range(SUMMARY_THRESHOLD + 5)
+        ]
+        older, recent = _split_history(msgs)
+        assert older
+        assert len(recent) == RECENT_AFTER_SUMMARY
+
+    def test_few_enormous_messages_now_trigger_on_tokens(self):
+        """The case the count rule missed entirely."""
+        from app.agents.context_builder import MAX_HISTORY_TOKENS, _split_history
+
+        huge = "x" * (MAX_HISTORY_TOKENS * 4)  # ~MAX_HISTORY_TOKENS tokens each
+        msgs = [_make_msg("user", huge, minutes_ago=5 - i) for i in range(5)]
+        older, recent = _split_history(msgs)
+        assert older, "5 huge messages must compact even though count <= threshold"
+        assert len(recent) < 5
+
+    def test_at_least_one_message_always_survives(self):
+        """Summarising the message we are about to answer is self-defeating."""
+        from app.agents.context_builder import MAX_HISTORY_TOKENS, _split_history
+
+        colossal = "x" * (MAX_HISTORY_TOKENS * 40)
+        msgs = [_make_msg("user", colossal, minutes_ago=i) for i in range(3)]
+        _older, recent = _split_history(msgs)
+        assert len(recent) >= 1
+
+    def test_recent_messages_stay_in_chronological_order(self):
+        from app.agents.context_builder import SUMMARY_THRESHOLD, _split_history
+
+        msgs = [
+            _make_msg("user", f"m{i}", minutes_ago=100 - i)
+            for i in range(SUMMARY_THRESHOLD + 3)
+        ]
+        _older, recent = _split_history(msgs)
+        assert [m.content for m in recent] == sorted(
+            [m.content for m in recent], key=lambda c: int(c[1:])
+        )
+
+    def test_empty_history_is_safe(self):
+        from app.agents.context_builder import _split_history
+
+        assert _split_history([]) == ([], [])
+
+
+class TestSummaryPreservesRetrievalIds:
+    def test_the_prompt_demands_verbatim_tool_call_ids(self):
+        """Payloads are not persisted as Messages, so a tool_call_id is the
+        only route back to the data once a turn is compacted. Losing the ids
+        would turn compaction into permanent data loss."""
+        from app.agents.context_builder import _SUMMARY_SYSTEM_PROMPT
+
+        assert "tool_call_id" in _SUMMARY_SYSTEM_PROMPT
+        assert "verbatim" in _SUMMARY_SYSTEM_PROMPT
+
+    def test_summariser_input_carries_the_id_alongside_the_result(self):
+        import json as _json
+
+        from app.agents.context_builder import _format_messages_for_summary
+
+        msg = _make_msg(
+            "user",
+            _json.dumps(
+                [{"type": "tool_result", "tool_use_id": "tu_42", "content": "rows"}]
+            ),
+        )
+        assert "tu_42" in _format_messages_for_summary([msg])

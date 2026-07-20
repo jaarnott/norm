@@ -530,6 +530,21 @@ def _do_receive(lh: "_Loaded", body: "ReceiveRequest") -> dict:
         po_number = matches[0].get("orderNumber")
     elif po_id:
         po_number = body.po_number
+        if not po_number:
+            # The card links by id and sends no number, so resolve it here.
+            # Loaded's invoice LIST renders invoice.purchaseOrderNumber, which
+            # the supplier feed fills with the SUPPLIER's own order number
+            # (Bidfood "12195941-1") — not the buyer's PO. Leaving it alone
+            # links the right PO but leaves the list showing a number that
+            # matches no Loaded purchase order, disagreeing with the detail
+            # screen. Loaded's own receive screen writes the chosen PO here.
+            try:
+                po = lh.get(f"/1.0/stock/internal/purchase-orders/{po_id}")
+                po_number = po.get("orderNumber") if isinstance(po, dict) else None
+            except Exception as exc:  # noqa: BLE001 — display value is best-effort
+                logger.warning(
+                    "could not resolve linked PO %s for display: %s", po_id, exc
+                )
     if po_id:
         inv["linkedPurchaseOrderId"] = po_id
         if po_number:

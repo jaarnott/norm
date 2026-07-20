@@ -33,6 +33,13 @@ def setup_logging():
 
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[
+            # Without ExtraAdder, `logger.info("event", extra={...})` from a
+            # plain stdlib logger renders as the event name alone and every
+            # field is dropped. Fields passed to a *structlog* logger as kwargs
+            # survive, which is why the loss was easy to miss: request_complete
+            # printed its fields while mcp_tool_call and prompt_size printed
+            # nothing but their names.
+            structlog.stdlib.ExtraAdder(),
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             renderer,
         ],

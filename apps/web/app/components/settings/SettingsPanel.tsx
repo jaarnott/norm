@@ -17,6 +17,7 @@ import AgentsPanel from './AgentsPanel';
 import McpPanel from './McpPanel';
 import AdminThreadsPanel from './AdminThreadsPanel';
 import WorkflowModesTab from './WorkflowModesTab';
+import MemoryTab from './MemoryTab';
 import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
 import type { User } from '../../types';
@@ -1392,7 +1393,13 @@ export default function SettingsPanel() {
         {activeTab === 'mcp' && <McpPanel />}
 
         {/* ============ PREFERENCES TAB (all users) ============ */}
-        {activeTab === 'preferences' && <WorkflowModesTab />}
+        {activeTab === 'preferences' && (
+          <>
+            <WorkflowModesTab />
+            <div style={{ height: '2rem' }} />
+            <MemoryTab />
+          </>
+        )}
 
         {/* ============ VENUES TAB ============ */}
         {activeTab === 'venues' && <VenuesTab />}

@@ -34,6 +34,7 @@ class ProcurementAgent(BaseDomainAgent):
         config_db: Session | None = None,
         page_context: dict | None = None,
         playbook=None,
+        automated_task: dict | None = None,
     ) -> dict:
         # Try the agentic tool loop first (if tools are bound)
         system_prompt, anthropic_tools = self.get_tool_definitions(
@@ -44,6 +45,7 @@ class ProcurementAgent(BaseDomainAgent):
             config_db=config_db,
             page_context=page_context,
             playbook=playbook,
+            automated_task=automated_task,
         )
         if anthropic_tools:
             return self.handle_message_with_tools(
@@ -57,6 +59,7 @@ class ProcurementAgent(BaseDomainAgent):
                 config_db=config_db,
                 page_context=page_context,
                 playbook=playbook,
+                automated_task=automated_task,
             )
 
         # Classic single-shot interpretation (no tools bound)

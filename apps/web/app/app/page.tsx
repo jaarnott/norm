@@ -196,10 +196,27 @@ export default function Home() {
     const currentId = threadIdForRequest || optimisticId;
     // realThreadId is the confirmed backend ID — used for recovery re-fetches.
     let realThreadId: string | null = threadIdForRequest;
+
+    // Fold a re-fetched thread back into the list after a stream error.
+    // realThreadId comes from thread_created, which is not always the thread
+    // the user is looking at — the backend can move a conversation to a new
+    // thread mid-turn. Writing it into the visible slot regardless replaces
+    // that conversation wholesale, which on screen looks like the thread being
+    // wiped. Only take over the slot when it's the placeholder for a brand-new
+    // conversation, or when the ids actually agree.
+    const applyFreshThread = (freshThread: Thread) => {
+      setThreads(prev => {
+        if (!threadIdForRequest || freshThread.id === currentId) {
+          return prev.map(t => (t.id === currentId ? freshThread : t));
+        }
+        return prev.some(t => t.id === freshThread.id)
+          ? prev.map(t => (t.id === freshThread.id ? freshThread : t))
+          : [freshThread, ...prev];
+      });
+      setSelectedThreadId(freshThread.id);
+    };
     let streamErrored = false;
     let tokenBuffer = '';
-    let streamMode: 'pending' | 'tool' | 'conversation' = 'pending';
-    const TOOL_PREFIX = '[Tool]';
     let displayedLength = 0;
     let animFrameId: number | null = null;
 
@@ -231,6 +248,28 @@ export default function Home() {
       if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
     };
 
+    /**
+     * Settle the in-flight streaming bubble into a normal assistant message.
+     *
+     * Called when the model stops writing to call a tool. Showing the full
+     * buffer (not the typewriter's truncated slice) means a mid-turn tool call
+     * can never leave a half-rendered sentence on screen, and the text stays
+     * put instead of being deleted.
+     */
+    const flushStreamedText = () => {
+      const finished = tokenBuffer.trim();
+      setThreads(prev => prev.map(t => {
+        if (t.id !== currentId) return t;
+        const kept = (t.conversation || []).filter(m => m.role !== 'streaming');
+        return {
+          ...t,
+          conversation: finished
+            ? [...kept, { role: 'assistant' as const, text: finished }]
+            : kept,
+        };
+      }));
+    };
+
     try {
       const body: Record<string, unknown> = { message: messageText };
       if (threadIdForRequest) body.thread_id = threadIdForRequest;
@@ -254,21 +293,18 @@ export default function Home() {
               } : t
             ));
           } else if (event.type === 'stream_cancel') {
-            // LLM is calling a tool — clear any streaming conversation text
+            // The model is calling a tool. Close the streaming bubble but KEEP
+            // what it already wrote — that prose is answer text, and the
+            // backend now folds it into the stored message. Deleting it here
+            // is what used to make text vanish mid-turn.
             stopTypewriter();
-            streamMode = 'pending';
+            flushStreamedText();
             tokenBuffer = '';
             displayedLength = 0;
-            setThreads(prev => prev.map(t => {
-              if (t.id !== currentId) return t;
-              return { ...t, conversation: (t.conversation || []).filter(m => m.role !== 'streaming') };
-            }));
           } else if (event.type === 'thinking') {
-            // Tool reasoning from backend — show as thinking step, reset for next stream
-            stopTypewriter();
-            streamMode = 'pending';
-            tokenBuffer = '';
-            displayedLength = 0;
+            // Reasoning — either a summarized thinking block from the model or
+            // a tool-status line from the backend. Either way it is not the
+            // answer, so it goes to the thinking strip, never the transcript.
             setThreads(prev => prev.map(t => {
               if (t.id !== currentId) return t;
               return {
@@ -277,39 +313,11 @@ export default function Home() {
               };
             }));
           } else if (event.type === 'token') {
+            // Text deltas only — the backend classifies by content-block type,
+            // so anything arriving here is answer text. No [Tool]-prefix
+            // sniffing, no length guess.
             tokenBuffer += event.text || '';
-
-            if (streamMode === 'pending') {
-              // Check if this is tool reasoning (starts with [Tool]) or conversation
-              if (tokenBuffer.startsWith(TOOL_PREFIX)) {
-                streamMode = 'tool';
-                const explanation = tokenBuffer.slice(TOOL_PREFIX.length).replace(/^\s+/, '');
-                setThreads(prev => prev.map(t => {
-                  if (t.id !== currentId) return t;
-                  return {
-                    ...t,
-                    thinking_steps: [...(t.thinking_steps || []).filter(s => !s.startsWith('🔧 ')), '🔧 ' + explanation],
-                    conversation: (t.conversation || []).filter(m => m.role !== 'streaming'),
-                  };
-                }));
-              } else if (tokenBuffer.length >= TOOL_PREFIX.length) {
-                // Not a tool prefix — this is the final conversation response
-                streamMode = 'conversation';
-                startTypewriter();
-              }
-            } else if (streamMode === 'tool') {
-              const explanation = tokenBuffer.slice(TOOL_PREFIX.length).replace(/^\s+/, '');
-              setThreads(prev => prev.map(t => {
-                if (t.id !== currentId) return t;
-                return {
-                  ...t,
-                  thinking_steps: [...(t.thinking_steps || []).filter(s => !s.startsWith('🔧 ')), '🔧 ' + explanation],
-                };
-              }));
-            } else {
-              // conversation mode — typewriter loop handles rendering
-              // tokenBuffer is already updated, loop will pick it up
-            }
+            startTypewriter();
           } else if (event.type === 'complete') {
             stopTypewriter();
             const data = event.data as Thread;
@@ -353,9 +361,7 @@ export default function Home() {
         try {
           const res = await apiFetch(`/api/threads/${realThreadId}`);
           if (res.ok) {
-            const freshThread = await res.json();
-            setThreads(prev => prev.map(t => t.id === currentId ? freshThread : t));
-            setSelectedThreadId(freshThread.id);
+            applyFreshThread(await res.json());
             streamErrored = false;
           }
         } catch (e) { console.error(e); }
@@ -382,9 +388,7 @@ export default function Home() {
         try {
           const res = await apiFetch(`/api/threads/${realThreadId}`);
           if (res.ok) {
-            const freshThread = await res.json();
-            setThreads(prev => prev.map(t => t.id === currentId ? freshThread : t));
-            setSelectedThreadId(freshThread.id);
+            applyFreshThread(await res.json());
           }
         } catch (e) { console.error(e); }
       }

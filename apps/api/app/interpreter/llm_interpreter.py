@@ -103,7 +103,12 @@ def call_llm(
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
         )
-        raw = response.content[0].text
+        # First TEXT block, not content[0] — a response can lead with a
+        # non-text block, and indexing blindly would read the wrong one.
+        raw = next(
+            (b.text for b in response.content if getattr(b, "type", None) == "text"),
+            "",
+        )
         duration_ms = int((time.time() - t0) * 1000)
         parsed = _parse_response(raw)
 
@@ -207,6 +212,65 @@ def _persist_llm_call(
     return record.id
 
 
+# Anthropic builds the cache key over the prompt prefix in a fixed order:
+# tools → system → messages. Below a model-dependent minimum a breakpoint is
+# silently ignored — 1024 tokens for Sonnet/Opus, 2048 for Haiku. This is set to
+# the Sonnet figure because the agent loop is the consumer that matters; a
+# marginal segment simply fails to cache on Haiku, which costs nothing because
+# an ignored breakpoint is free.
+MIN_CACHEABLE_TOKENS = 1024
+
+#: Adaptive thinking for the agent loop. The model decides how much to think
+#: per turn; there is no token budget to tune (`budget_tokens` is rejected on
+#: Opus 4.7+). `display: "summarized"` returns readable reasoning — the default
+#: is "omitted", which still bills for thinking but streams empty text.
+#: Depth can be tuned later with output_config={"effort": ...}; the default is
+#: "high". Agent path only — the router runs Haiku, which predates adaptive
+#: thinking and would reject this.
+_THINKING = {"type": "adaptive", "display": "summarized"}
+
+
+def _cached_tools(tools: list[dict] | None) -> list[dict] | None:
+    """`tools` with a cache breakpoint on the last entry.
+
+    Deliberately separate from the system breakpoint. Tool schemas are ~9k
+    tokens and change only when an admin edits config, whereas the system
+    prompt carries per-turn page context (prompt_builder.py:522). Marking tools
+    on their own means a page change costs a system-block miss but still reads
+    the tool schemas from cache.
+
+    Verified against the live API at production scale (~10.8k tokens of tools):
+    an identical repeat call read all 10,827 tokens from cache, and changing
+    the system prompt still read 9,316 from cache while writing only the 1,516
+    that actually changed. The same test with a ~2.4k-token tool set showed no
+    reuse at all — the benefit only appears once the tools segment clears the
+    model's minimum, which production comfortably does.
+
+    Copies rather than mutating — `tools` belongs to the caller and is reused
+    across every iteration of the tool loop.
+    """
+    from app.agents.context_budget import estimate_tokens
+
+    if not tools or estimate_tokens(tools) < MIN_CACHEABLE_TOKENS:
+        return tools
+    cached = list(tools)
+    cached[-1] = {**cached[-1], "cache_control": {"type": "ephemeral"}}
+    return cached
+
+
+def _cached_system(system_prompt: str | None):
+    """System prompt as a content block, with a cache breakpoint when it is
+    large enough to be worth one."""
+    from app.agents.context_budget import estimate_tokens
+
+    if not system_prompt:
+        return system_prompt
+    block: dict = {"type": "text", "text": system_prompt}
+    if estimate_tokens(system_prompt) >= MIN_CACHEABLE_TOKENS:
+        block["cache_control"] = {"type": "ephemeral"}
+    return [block]
+
+
 def call_llm_with_tools(
     system_prompt: str,
     messages: list[dict],
@@ -241,18 +305,57 @@ def call_llm_with_tools(
     llm_call_id = None
     t0 = time.time()
 
+    # Measured before the send so it is available on the failure path too — an
+    # overflow is exactly when "what filled the window?" needs answering, and
+    # the exception itself never says.
+    from app.agents.context_budget import measure_prompt
+
+    breakdown = measure_prompt(system_prompt, tools, messages)
+
     try:
         from app.agents.tool_loop import _emit_event
 
         with client.messages.stream(
             model=resolved_model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=_cached_system(system_prompt),
             messages=messages,
-            tools=tools,
+            tools=_cached_tools(tools),
+            # Adaptive thinking makes reasoning a distinct content-block type,
+            # so the UI no longer has to guess which prose is "thinking" and
+            # which is the answer. `display` must be set explicitly: the
+            # default is "omitted", which streams thinking blocks with empty
+            # text and reads as a long silent pause before any output.
+            thinking=_THINKING,
         ) as stream:
-            for chunk in stream.text_stream:
-                _emit_event({"type": "token", "text": chunk})
+            # Raw events, not stream.text_stream — text_stream yields only text
+            # deltas, so thinking would be dropped on the floor.
+            #
+            # Answer text streams delta-by-delta (the typewriter wants it that
+            # way), but thinking is buffered and emitted once per block: a
+            # thinking step is a sentence the user reads, and emitting each
+            # delta would fill the strip with fragments like "I" / " need to".
+            thinking_buf: list[str] = []
+
+            def _flush_thinking() -> None:
+                text = "".join(thinking_buf).strip()
+                thinking_buf.clear()
+                if text:
+                    _emit_event({"type": "thinking", "text": text})
+
+            for event in stream:
+                etype = getattr(event, "type", None)
+                if etype == "content_block_delta":
+                    delta = event.delta
+                    kind = getattr(delta, "type", None)
+                    if kind == "text_delta":
+                        _emit_event({"type": "token", "text": delta.text})
+                    elif kind == "thinking_delta":
+                        thinking_buf.append(delta.thinking)
+                elif etype == "content_block_stop":
+                    _flush_thinking()
+            # A truncated turn can end without a closing block event.
+            _flush_thinking()
             response = stream.get_final_message()
         duration_ms = int((time.time() - t0) * 1000)
 
@@ -267,6 +370,27 @@ def call_llm_with_tools(
         # Extract token usage from response
         _input_tokens = response.usage.input_tokens if response.usage else None
         _output_tokens = response.usage.output_tokens if response.usage else None
+
+        # Reconcile the estimate against truth. The ratio is what tells us
+        # whether the budget this drives can be trusted; without it the
+        # chars/4 heuristic would be an article of faith.
+        breakdown.actual_input_tokens = _input_tokens
+        if response.usage:
+            breakdown.cache_read_tokens = getattr(
+                response.usage, "cache_read_input_tokens", None
+            )
+            breakdown.cache_write_tokens = getattr(
+                response.usage, "cache_creation_input_tokens", None
+            )
+        logger.info(
+            "prompt_size",
+            extra={
+                "thread_id": thread_id,
+                "call_type": call_type,
+                "model": resolved_model,
+                **breakdown.as_log_fields(),
+            },
+        )
 
         if db is not None:
             llm_call_id = _persist_llm_call(
@@ -289,6 +413,18 @@ def call_llm_with_tools(
 
     except Exception as exc:
         duration_ms = int((time.time() - t0) * 1000)
+        # The breakdown is the whole point on this path: an overflow says only
+        # "prompt is too long", never which component filled the window.
+        logger.warning(
+            "prompt_size_on_error",
+            extra={
+                "thread_id": thread_id,
+                "call_type": call_type,
+                "model": resolved_model,
+                "error": str(exc)[:200],
+                **breakdown.as_log_fields(),
+            },
+        )
         if db is not None:
             _persist_llm_call(
                 db,

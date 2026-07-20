@@ -10,6 +10,8 @@ import json
 import logging
 import threading
 import time
+
+import anthropic
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
@@ -128,8 +130,8 @@ def resume_tool_loop(
     iteration = state["iteration"]
 
     # Gather approved tool calls and inject their results
-    search_available = any(
-        t["name"] == "norm__search_tool_result" for t in anthropic_tools
+    anthropic_tools, _resume_meta, search_available = _ensure_search_tool(
+        anthropic_tools, _build_tool_meta(anthropic_tools, db)
     )
     pending_ids = task.pending_tool_call_ids or []
     tool_results_content = []
@@ -207,13 +209,29 @@ def _execute_loop(
     # Build a lookup from tool name -> tool metadata
     tool_meta = _build_tool_meta(anthropic_tools, db)
 
-    # Check if the search tool is available for this agent
-    search_available = any(
-        t["name"] == "norm__search_tool_result" for t in anthropic_tools
+    # The search tool is always available, for two reasons.
+    #
+    # Correctness: tool results are not persisted as Messages, so a payload
+    # fetched last turn is gone from context. context_builder advertises those
+    # results by tool_call_id (build_tool_result_manifest), and the model needs
+    # this tool to act on that manifest — otherwise the only way to answer a
+    # follow-up is to re-fetch the same rows.
+    #
+    # Caching: it used to be appended mid-loop on the first truncation, which
+    # changed the tool list between iterations and invalidated the tool cache
+    # prefix for every remaining call of that turn. A stable list caches.
+    anthropic_tools, tool_meta, search_available = _ensure_search_tool(
+        anthropic_tools, tool_meta
     )
 
     thinking_steps: list[str] = []
     display_blocks: list[dict] = []
+    #: Answer text from every iteration of this turn, in order. The model often
+    #: writes substantive prose before a tool call and then closes with a short
+    #: line; keeping only the last one silently dropped the real answer.
+    answer_parts: list[str] = []
+    #: Whether this turn has already shed its tool results to fit the window.
+    compacted = False
 
     iteration = start_iteration
     while iteration <= limit:
@@ -238,6 +256,23 @@ def _execute_loop(
                 logger.warning(
                     "Prompt too long in tool loop (iteration %d): %s", iteration, exc
                 )
+                # Compact and retry before giving up. The in-turn tool results
+                # are the usual cause — up to MAX_ITERATIONS of them accumulate
+                # in `messages`, each up to _tool_max_result_chars. They are
+                # also the safest thing to drop, because the payloads remain in
+                # ToolCall.result_payload and stay reachable by tool_call_id
+                # via norm__search_tool_result.
+                #
+                # Once only. If a compacted prompt still overflows, the problem
+                # is not the history and retrying again would just burn a call.
+                if not compacted:
+                    compacted = True
+                    messages = _compact_messages(messages)
+                    logger.info(
+                        "compacted_and_retrying",
+                        extra={"thread_id": task.id, "iteration": iteration},
+                    )
+                    continue
                 text = (
                     "I've gathered quite a bit of data but the conversation has become too long "
                     "for me to process in one go. Please try starting a new conversation for "
@@ -265,8 +300,9 @@ def _execute_loop(
 
         # Check stop reason
         if response.stop_reason == "end_turn":
-            # LLM is done — extract text and return
-            text = _extract_text(response)
+            # LLM is done — the answer is everything it wrote this turn, not
+            # just this final iteration.
+            text = _join_answer(answer_parts, _extract_text(response))
             db.add(
                 Message(
                     thread_id=task.id,
@@ -287,14 +323,13 @@ def _execute_loop(
             )
 
         if response.stop_reason == "tool_use":
-            # The LLM is calling a tool. Cancel the streaming conversation
-            # message. Don't re-emit the reasoning text as a thinking event —
-            # the frontend already captured it via the token stream.
+            # The LLM is calling a tool. The text it wrote before the call is
+            # answer text and the frontend already rendered it from the token
+            # stream, so `stream_cancel` now only closes the streaming bubble —
+            # it no longer tells the client to discard what it showed.
+            # (A dead `[Tool]`-prefix strip lived here; the prefix convention
+            # is gone now that thinking is a distinct block type.)
             reasoning = _extract_text(response)
-            if reasoning:
-                cleaned = reasoning.lstrip()
-                if cleaned.startswith("[Tool]"):
-                    cleaned = cleaned[6:].lstrip()
             _emit_event({"type": "stream_cancel"})
 
             pending_writes: list[ToolCall] = []
@@ -419,18 +454,6 @@ def _execute_loop(
                     max_chars=_tool_max_result_chars(tool_def),
                     search_available=search_available,
                 )
-                # Inject search tool on first truncation
-                if '"_too_large": true' in slimmed and not search_available:
-                    search_def = _build_search_tool_schema()
-                    if search_def:
-                        anthropic_tools.append(search_def)
-                        tool_meta["norm__search_tool_result"] = {
-                            "method": "GET",
-                            "connector": "norm",
-                            "action": "search_tool_result",
-                        }
-                        search_available = True
-
                 # Only store slimmed_content if actual slimming occurred
                 raw_serialized = json.dumps(result)
                 tc.slimmed_content = slimmed if slimmed != raw_serialized else None
@@ -675,8 +698,13 @@ def _execute_loop(
             # as token events. Prefix with [reasoning] so the Activity tab can
             # distinguish it from short status thinking steps.
             intermediate_text = _extract_text(response)
-            if intermediate_text and intermediate_text != "Done.":
+            if intermediate_text:
                 thinking_steps.append(_ts_step(f"[reasoning] {intermediate_text}"))
+                # Keep it as answer text too. Previously each iteration
+                # overwrote the last, so only the final iteration survived into
+                # the stored Message — that is the "we only show the last
+                # response" bug.
+                answer_parts.append(intermediate_text)
 
             if pending_writes:
                 # Serialize the assistant response content for state storage
@@ -686,6 +714,13 @@ def _execute_loop(
                 task.agent_loop_state = {
                     "messages": messages,
                     "iteration": iteration,
+                    # Pin the agent that suspended this loop. The thread's
+                    # domain can move on while an approval sits waiting (a
+                    # follow-up can hand the conversation to another agent),
+                    # and resuming a half-finished transcript against a
+                    # different agent's prompt and tool list would run the
+                    # pending write with the wrong tools.
+                    "domain": task.domain,
                 }
                 task.pending_tool_call_ids = [tc.id for tc in pending_writes]
                 task.status = "awaiting_tool_approval"
@@ -761,14 +796,14 @@ def _execute_loop(
                 and new_display_blocks > 0
                 and not needs_narration_block
             ):
-                # At least one display-only tool ran.  The LLM's text
-                # is the real answer — strip [Tool] prefix if present.
-                answer = reasoning.lstrip()
-                if answer.startswith("[Tool]"):
-                    answer = answer[len("[Tool]") :].lstrip()
-                # Only early-exit when the text is a real answer
-                # (not just a short tool-call explanation).
-                if len(answer) > 120:
+                # At least one display-only tool ran and the model wrote text
+                # alongside it — that text is the answer. There used to be a
+                # `len(answer) > 120` gate here to guess whether the text was a
+                # real answer or a tool-call preamble; with thinking separated
+                # at the API level, any text block is answer text, so a short
+                # caption beside a chart is no longer thrown away.
+                answer = _join_answer(answer_parts, reasoning)
+                if answer:
                     db.add(
                         Message(
                             thread_id=task.id,
@@ -799,7 +834,7 @@ def _execute_loop(
 
         else:
             # Unexpected stop reason — treat as end_turn
-            text = _extract_text(response)
+            text = _join_answer(answer_parts, _extract_text(response))
             db.add(
                 Message(
                     thread_id=task.id,
@@ -837,7 +872,12 @@ def _execute_loop(
         }
     )
     try:
-        final_response = call_llm_with_tools(
+        # Unpack — call_llm_with_tools returns (response, llm_call_id). Taking
+        # the tuple whole made _extract_text raise AttributeError, which the
+        # except below swallowed, replacing the summary the user had just
+        # watched stream in with the boilerplate. Only API/network failures
+        # should reach the fallback.
+        final_response, _ = call_llm_with_tools(
             system_prompt,
             messages,
             tools=[],  # No tools — forces text-only response
@@ -845,8 +885,8 @@ def _execute_loop(
             thread_id=task.id,
             call_type="tool_use",
         )
-        text = _extract_text(final_response)
-    except Exception:
+        text = _join_answer(answer_parts, _extract_text(final_response))
+    except (anthropic.APIError, ValueError, RuntimeError):
         logger.exception("Final summary LLM call failed after max iterations")
         text = (
             "I've done some research but ran out of tool calls before finishing. "
@@ -1175,6 +1215,10 @@ def _parse_tool_name(name: str) -> tuple[str, str]:
 
 
 MAX_TOOL_RESULT_CHARS = 30_000  # ~7-8k tokens — with search tool active
+# Not used by this loop: it is the budget for a caller with no search escape
+# hatch, and its only consumer is the stateless MCP surface
+# (mcp.results.MCP_MAX_RESULT_CHARS). Kept here so both budgets stay visible
+# side by side.
 MAX_TOOL_RESULT_CHARS_NO_SEARCH = (
     40_000  # ~10k tokens per result — room for multiple results + history
 )
@@ -1198,11 +1242,74 @@ def _tool_max_result_chars(tool_def: dict | None) -> int:
     return max(MAX_TOOL_RESULT_CHARS, min(override, HARD_MAX_TOOL_RESULT_CHARS))
 
 
-def _truncate_tool_result(content: str) -> str:
-    """Simple character-level truncation — safety net for already-processed results."""
-    if len(content) <= MAX_TOOL_RESULT_CHARS:
-        return content
-    return content[:MAX_TOOL_RESULT_CHARS] + "\n\n[... truncated — result too large]"
+def _compact_messages(messages: list) -> list:
+    """Replace bulky tool results with retrievable stubs.
+
+    Used only after the API has refused the prompt. Tool results are the
+    dominant term in a long turn — up to MAX_ITERATIONS of them, each up to
+    _tool_max_result_chars — and the safest to shed, because the full payload
+    stays in ToolCall.result_payload and remains reachable by tool_use_id
+    through norm__search_tool_result.
+
+    The stub keeps the id and says how to get the data back, so compaction
+    costs the model a round trip rather than the information.
+    """
+    compacted: list = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            compacted.append(msg)
+            continue
+
+        blocks = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                ref = block.get("tool_use_id", "")
+                blocks.append(
+                    {
+                        **block,
+                        "content": (
+                            "[Result dropped to fit the context window. Retrieve "
+                            f"it with norm__search_tool_result using tool_call_id "
+                            f'"{ref}".]'
+                        ),
+                    }
+                )
+            else:
+                blocks.append(block)
+        compacted.append({**msg, "content": blocks})
+    return compacted
+
+
+def _ensure_search_tool(
+    anthropic_tools: list, tool_meta: dict
+) -> tuple[list, dict, bool]:
+    """Return (tools, meta, search_available) with the search tool guaranteed.
+
+    Returns a *copy* of the tool list. The caller's list is built once per turn
+    and reused across every iteration, and it is now also the basis of the
+    prompt-cache key — mutating it in place would both leak across calls and
+    shift the cached prefix mid-turn.
+    """
+    if any(t.get("name") == "norm__search_tool_result" for t in anthropic_tools):
+        return anthropic_tools, tool_meta, True
+
+    search_def = _build_search_tool_schema()
+    if not search_def:
+        return anthropic_tools, tool_meta, False
+
+    return (
+        [*anthropic_tools, search_def],
+        {
+            **tool_meta,
+            "norm__search_tool_result": {
+                "method": "GET",
+                "connector": "norm",
+                "action": "search_tool_result",
+            },
+        },
+        True,
+    )
 
 
 def _build_search_tool_schema() -> dict:
@@ -1507,13 +1614,32 @@ def _is_read_only(method: str) -> bool:
     return method.upper() == "GET"
 
 
+def _join_answer(parts: list[str], final: str) -> str:
+    """Everything the assistant wrote this turn, in order, de-duplicated.
+
+    `parts` holds text from earlier iterations (before each tool call); `final`
+    is the closing text. A model that repeats its earlier prose in the closing
+    message shouldn't have it printed twice.
+    """
+    out: list[str] = []
+    for chunk in [*parts, final]:
+        chunk = (chunk or "").strip()
+        if chunk and chunk not in out:
+            out.append(chunk)
+    return "\n\n".join(out)
+
+
 def _extract_text(response) -> str:
-    """Extract text content from an Anthropic response."""
-    parts = []
-    for block in response.content:
-        if block.type == "text":
-            parts.append(block.text)
-    return "\n".join(parts) if parts else "Done."
+    """The assistant's answer text — `text` blocks only.
+
+    Returns "" when the response carried no text (e.g. a pure tool-use turn).
+    It used to return "Done.", which leaked to users as a literal answer and,
+    worse, made every `if reasoning:` guard downstream unconditionally true.
+    Thinking blocks are deliberately excluded: they are reasoning, not answer,
+    and are surfaced separately as `thinking` events.
+    """
+    parts = [block.text for block in response.content if block.type == "text"]
+    return "\n".join(parts)
 
 
 def _upsert_working_document(
@@ -1628,6 +1754,17 @@ def _serialize_block(block) -> dict:
             "name": block.name,
             "input": block.input,
         }
+    if block_type == "thinking":
+        # Must go back byte-identical, signature included — the API rejects a
+        # modified thinking block. Explicit rather than relying on the
+        # model_dump() fallback below, which this function exists to avoid.
+        return {
+            "type": "thinking",
+            "thinking": block.thinking,
+            "signature": block.signature,
+        }
+    if block_type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": block.data}
     # Fallback: use model_dump but strip any unknown extras
     if hasattr(block, "model_dump"):
         return block.model_dump()

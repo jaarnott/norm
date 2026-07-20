@@ -50,6 +50,51 @@ def _window_from(resolved):
     return window if isinstance(window, dict) else None
 
 
+def _rows_of(payload):
+    """The array of records inside a payload, if there is one."""
+    if isinstance(payload, list):
+        return payload if payload and isinstance(payload[0], dict) else None
+    if isinstance(payload, dict):
+        for value in payload.values():
+            if isinstance(value, list) and value and isinstance(value[0], dict):
+                return value
+    return None
+
+
+def _summarise(payload):
+    """Row count and column sums, so the answer is readable without the rows.
+
+    Why: the model was being handed 120 product rows to answer "what were
+    sales yesterday". Reading them costs tokens and doing arithmetic across
+    them is an error source — a total computed here is exact, whereas one the
+    model adds up by eye is a guess that looks like a fact.
+
+    `column_sums` is every numeric column added up, and is deliberately named
+    that rather than "totals": summing a rate or a unit price is meaningless,
+    so the caller has to pick the columns that make sense. Nothing is invented
+    — these are sums of values the API already returned.
+    """
+    rows = _rows_of(payload)
+    if not rows:
+        return None
+    sums = {}
+    for row in rows:
+        for key, value in row.items():
+            # bool is an int in Python; summing flags would be nonsense.
+            if value is True or value is False:
+                continue
+            if isinstance(value, int) or isinstance(value, float):
+                sums[key] = round(sums.get(key, 0) + value, 2)
+    summary = {"row_count": len(rows)}
+    if sums:
+        summary["column_sums"] = sums
+        summary["_note"] = (
+            "column_sums adds up every numeric column. Sums of rates or unit "
+            "prices are not meaningful — use only the columns that are."
+        )
+    return summary
+
+
 def run(params, call_api, log, call_api_parallel=None, options=None):
     options = options or {}
     wraps = options.get("wraps")
@@ -148,4 +193,11 @@ def run(params, call_api, log, call_api_parallel=None, options=None):
     # Always say which window produced these numbers. This is what turns a
     # silently wrong answer into a visible one — a $0 venue is only
     # diagnosable if you can see the window it was measured over.
-    return {"window": window, "data": data}
+    # The answer first, then the rows. A caller that only needs the headline
+    # never has to read the data at all.
+    result = {"window": window}
+    summary = _summarise(data)
+    if summary:
+        result["summary"] = summary
+    result["data"] = data
+    return result

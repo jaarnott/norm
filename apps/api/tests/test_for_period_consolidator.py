@@ -437,3 +437,113 @@ class TestWrappedArgumentsAreReachable:
             if f not in forwarded or not forwarded[f]
         ]
         assert missing == [], f"would fail with: Missing required fields: {missing}"
+
+
+class TestSummaryFieldsAreInherited:
+    """A wrapper must not be more context-hostile than the action it fronts.
+
+    The raw tool projects to its summary_fields when a result is oversized; the
+    wrapper had none, so it fell through to the "_too_large" stub and the model
+    got a sample row instead of the data. get_received_invoices carried
+    summary_fields while get_received_invoices_for_period did not.
+    """
+
+    def _module(self):
+        import importlib.util
+        import pathlib
+
+        path = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "sync_for_period_config.py"
+        )
+        spec = importlib.util.spec_from_file_location("sync_fp", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_summary_fields_carry_over_from_the_wrapped_action(self):
+        m = self._module()
+        tool = m.tool_for(
+            "get_received_invoices_for_period", "get_received_invoices",
+            "from", "to", "Invoices", "",
+            wrapped={
+                "required_fields": ["from", "to"],
+                "summary_fields": ["invoiceNumber", "supplierName", "total"],
+            },
+        )
+        assert tool["summary_fields"] == ["invoiceNumber", "supplierName", "total"]
+
+    def test_max_result_chars_carries_over_too(self):
+        m = self._module()
+        tool = m.tool_for(
+            "x_for_period", "x", "a", "b", "R", "",
+            wrapped={"required_fields": [], "max_result_chars": 100_000},
+        )
+        assert tool["max_result_chars"] == 100_000
+
+    def test_absent_slimming_config_is_not_invented(self):
+        m = self._module()
+        tool = m.tool_for("x_for_period", "x", "a", "b", "R", "", wrapped={})
+        assert "summary_fields" not in tool
+        assert "max_result_chars" not in tool
+
+
+class TestAggregation:
+    """The answer before the rows.
+
+    The model was handed 120 product rows to answer "what were sales
+    yesterday". Reading them costs tokens, and arithmetic across them is an
+    error source — a total computed in the consolidator is exact, one the model
+    adds up by eye is a guess that looks like a fact.
+    """
+
+    def _rows(self):
+        return [
+            {"product": "Peroni", "quantity": 32, "revenue": 392.56, "cost": 103.68},
+            {"product": "Stella", "quantity": 24, "revenue": 247.06, "cost": 53.21},
+        ]
+
+    def test_summary_carries_the_row_count_and_column_sums(self):
+        result = run_consolidator(Api(payload=self._rows()), period="yesterday")
+        summary = result["summary"]
+        assert summary["row_count"] == 2
+        assert summary["column_sums"]["revenue"] == 639.62
+        assert summary["column_sums"]["quantity"] == 56
+
+    def test_the_rows_are_still_returned(self):
+        """The summary is additive. The UI component and any follow-up question
+        still need the detail."""
+        result = run_consolidator(Api(payload=self._rows()), period="yesterday")
+        assert len(result["data"]) == 2
+        assert result["window"]["trading_aligned"] is True
+
+    def test_sums_are_labelled_as_column_sums_not_totals(self):
+        """Summing a rate or a unit price is meaningless. Naming them honestly
+        is what stops the model reporting sum(hourly_rate) as a cost."""
+        result = run_consolidator(Api(payload=self._rows()), period="yesterday")
+        assert "column_sums" in result["summary"]
+        assert "not meaningful" in result["summary"]["_note"]
+
+    def test_booleans_are_not_summed(self):
+        """bool is an int in Python; adding up flags would be nonsense."""
+        rows = [{"reconciled": True, "total": 10}, {"reconciled": False, "total": 5}]
+        result = run_consolidator(Api(payload=rows), period="yesterday")
+        assert "reconciled" not in result["summary"]["column_sums"]
+        assert result["summary"]["column_sums"]["total"] == 15
+
+    def test_nested_row_arrays_are_found(self):
+        """Several actions wrap their rows in an envelope."""
+        payload = {"meta": "x", "results": [{"amount": 3}, {"amount": 4}]}
+        result = run_consolidator(Api(payload=payload), period="yesterday")
+        assert result["summary"]["row_count"] == 2
+        assert result["summary"]["column_sums"]["amount"] == 7
+
+    def test_a_non_tabular_payload_gets_no_summary(self):
+        """Inventing a summary for a scalar result would be noise."""
+        result = run_consolidator(Api(payload={"total": 15945}), period="yesterday")
+        assert "summary" not in result
+
+    def test_an_empty_result_gets_no_summary(self):
+        result = run_consolidator(Api(payload=[]), period="yesterday")
+        assert "summary" not in result

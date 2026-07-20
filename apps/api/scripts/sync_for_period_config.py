@@ -222,6 +222,14 @@ def tool_for(
         if k in inherited_fields
     }
 
+    # Inherit result-slimming config too. Without this a wrapper is *more*
+    # likely to blow the context window than the action it fronts: the raw tool
+    # projects to its summary_fields when oversized, the wrapper had none and
+    # fell through to the "_too_large" stub. get_received_invoices carried
+    # summary_fields while get_received_invoices_for_period did not.
+    summary_fields = wrapped.get("summary_fields")
+    max_result_chars = wrapped.get("max_result_chars")
+
     return {
         "action": action,
         # Deliberate, and the same choice the other consolidators make:
@@ -266,6 +274,8 @@ def tool_for(
                 ),
             },
         },
+        **({"summary_fields": summary_fields} if summary_fields else {}),
+        **({"max_result_chars": max_result_chars} if max_result_chars else {}),
         "consolidator_config": {
             "max_api_calls": 6,
             "allowed_write_actions": [],

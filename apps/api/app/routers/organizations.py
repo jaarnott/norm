@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
 from app.db.models import (
+    Memory,
     Organization,
     OrganizationMembership,
     UserVenueAccess,
@@ -438,6 +439,11 @@ async def delete_venue(
         HiringCriteria,
         AutomatedTask,
         WorkingDocument,
+        # A memory's venue_id is a tag, not ownership — "Mr Murdochs is
+        # closed" is an org fact that happens to be narrow. Deleting the venue
+        # should not delete what the org learned, so drop the tag and keep the
+        # memory.
+        Memory,
     ):
         db.query(model).filter(model.venue_id == venue_id).update(
             {model.venue_id: None}, synchronize_session=False

@@ -275,13 +275,47 @@ async def approve(
     raise HTTPException(status_code=400, detail="Unsupported domain")
 
 
+def _rejection_org_id(db, user) -> str | None:
+    from app.db.models import OrganizationMembership
+
+    if not user:
+        return None
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(OrganizationMembership.user_id == user.id)
+        .first()
+    )
+    return membership.organization_id if membership else None
+
+
 @router.post("/threads/{thread_id}/reject")
 async def reject(
     thread_id: str,
+    body: dict | None = None,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
+    """Reject a proposed action, optionally saying why.
+
+    ``notes`` is what makes a rejection informative. Without it the record says
+    only "no", which teaches nothing — and until this was added, no call site
+    ever populated Approval.notes, so the column had been write-only-in-theory
+    since it was created. A supplied reason is banked as a learning signal.
+    """
+    notes = (body or {}).get("notes") if isinstance(body, dict) else None
+    if notes:
+        from app.services.memory_signals import record_rejection
+
+        _t = db.query(Thread).filter(Thread.id == thread_id).first()
+        record_rejection(
+            db,
+            organization_id=_rejection_org_id(db, user),
+            user_id=getattr(user, "id", None),
+            thread_id=_t.id if _t else None,
+            notes=notes,
+        )
+
     # Check if this is a tool-rejection request
     raw_thread = db.query(Thread).filter(Thread.id == thread_id).first()
     if raw_thread and raw_thread.status == "awaiting_tool_approval":
@@ -419,11 +453,22 @@ def _approve_tool_calls(
 
     # Resume the loop
     system_prompt, anthropic_tools = build_tool_definitions(
-        thread.domain, db, user_id=user.id, config_db=config_db
+        _suspended_domain(thread), db, user_id=user.id, config_db=config_db
     )
     return resume_tool_loop(
         thread, db, system_prompt, anthropic_tools, config_db=config_db
     )
+
+
+def _suspended_domain(thread: Thread) -> str:
+    """The agent that suspended this loop, not whoever owns the thread now.
+
+    A follow-up can hand a conversation to a different agent while an approval
+    is still waiting. Rebuilding tools from the thread's current domain would
+    resume a half-finished transcript against the wrong agent's prompt and tool
+    list, and fire the pending write with tools it was never planned against.
+    """
+    return (thread.agent_loop_state or {}).get("domain") or thread.domain
 
 
 def _reject_tool_calls(
@@ -454,7 +499,7 @@ def _reject_tool_calls(
 
     # Resume the loop — the tool results will contain rejection messages
     system_prompt, anthropic_tools = build_tool_definitions(
-        thread.domain, db, user_id=user.id, config_db=config_db
+        _suspended_domain(thread), db, user_id=user.id, config_db=config_db
     )
     return resume_tool_loop(
         thread, db, system_prompt, anthropic_tools, config_db=config_db

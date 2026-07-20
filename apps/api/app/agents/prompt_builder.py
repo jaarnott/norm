@@ -225,6 +225,59 @@ def build_input_schema(tool: dict, extra_properties: dict | None = None) -> dict
     }
 
 
+def automated_tasks_guidance(
+    has_automated_tasks: bool, automated_task: dict | None
+) -> str:
+    """Guidance for the automated-task tools.
+
+    Inside an existing task's conversation the advice INVERTS: the task already
+    exists, so telling the model to "create one" silently leaves a duplicate
+    draft while the task the user is looking at goes unchanged.
+    """
+    if automated_task:
+        schedule = automated_task.get("schedule") or "not scheduled"
+        task_id = automated_task.get("id")
+        return f"""
+
+## You are inside an existing automated task
+This conversation belongs to the automated task **{automated_task.get("title")}**
+(`task_id`: `{task_id}`), which runs {schedule} and is currently
+**{automated_task.get("status")}**.
+
+Its instruction is:
+{automated_task.get("prompt")}
+
+To change ANYTHING about this task — what it does, its schedule, whether it is
+active, or who it emails — call `update_automated_task` with
+`task_id="{task_id}"`. When the user asks to change what the task does, pass the
+full revised instruction as `prompt`, keeping the parts they did not ask to
+change.
+
+Do NOT call `create_automated_task` in this conversation. The task already
+exists; creating another leaves a duplicate draft and the user's change appears
+to have done nothing.
+
+### Make lasting instructions stick
+If the user says something that should apply to FUTURE runs — "always email me
+the results", "skip Bidfood from now on", "include last week too" — write it
+into the task with `update_automated_task` and confirm what you changed. Do not
+rely on it being remembered from this conversation: older messages are
+summarised as the thread grows, so an instruction left only in chat quietly
+stops applying after a few weeks.
+Answer questions about past runs, or anything that applies only right now,
+normally — those do not need a task update.
+"""
+    if has_automated_tasks:
+        return """
+
+## Automated Tasks
+When a user asks to do something regularly or automatically, first execute the request so they can see the result, then offer to save it as an automated task.
+Call `create_automated_task` with `intent` (describe what to do — be specific with names and venues). The `agent_slug` is auto-detected from the current agent. Schedule and prompt are auto-generated.
+After creating a task, tell the user which agent/domain it was created under (from the response's `agent_slug`) so they can find it in the Tasks page.
+"""
+    return ""
+
+
 def build_tool_definitions(
     domain: str,
     db: Session,
@@ -235,6 +288,7 @@ def build_tool_definitions(
     page_context: dict | None = None,
     playbook=None,
     tool_filter: list[str] | None = None,
+    automated_task: dict | None = None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
@@ -311,24 +365,19 @@ Today's date is {today_str}.
 ## Rules
 - Only present data returned by tool calls. Never fabricate or estimate data.
 - Use markdown tables for tabular data. Be concise.
-- Start tool calls with "[Tool] " prefix explaining what you're doing.
 - Use date formats exactly as shown in each tool's field description.{venue_line}
 """
     else:
         # --- STANDARD MODE: full prompt with all guidance sections ---
 
-        # Inject automated tasks guidance if those tools are available
+        # Inject automated tasks guidance if those tools are available.
+        # Inside an existing task's conversation the advice inverts: the task
+        # already exists, so "create one" would silently leave a duplicate
+        # draft instead of changing the task the user is looking at.
         has_automated_tasks = any(
             t.get("action") == "create_automated_task" for t in tools
         )
-        if has_automated_tasks:
-            system_prompt += """
-
-## Automated Tasks
-When a user asks to do something regularly or automatically, first execute the request so they can see the result, then offer to save it as an automated task.
-Call `create_automated_task` with `intent` (describe what to do — be specific with names and venues). The `agent_slug` is auto-detected from the current agent. Schedule and prompt are auto-generated.
-After creating a task, tell the user which agent/domain it was created under (from the response's `agent_slug`) so they can find it in the Tasks page.
-"""
+        system_prompt += automated_tasks_guidance(has_automated_tasks, automated_task)
 
         # Add chart visualization guidance if render_chart tool is available
         has_render_chart = any(t.get("action") == "render_chart" for t in tools)

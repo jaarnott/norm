@@ -84,6 +84,22 @@ async def patch_document(
 
     # Track pending ops for sync (exclude set_status — it's local-only)
     syncable_ops = [o for o in body.ops if o.get("op") != "set_status"]
+
+    # Bank the correction before pending_ops is drained. This delta — what Norm
+    # drafted versus what the human actually wanted — is the best learning
+    # signal in the product, and it was being destroyed on successful sync.
+    if syncable_ops:
+        from app.services.memory_signals import record_draft_edit
+
+        record_draft_edit(
+            db,
+            organization_id=_signal_org_id(db, doc),
+            user_id=getattr(user, "id", None),
+            thread_id=doc.thread_id,
+            document_kind=doc.doc_type if hasattr(doc, "doc_type") else None,
+            ops=syncable_ops,
+        )
+
     if syncable_ops:
         pending = doc.pending_ops or []
         pending.extend(syncable_ops)
@@ -364,6 +380,21 @@ def _doc_to_dict(doc: WorkingDocument) -> dict:
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
     }
+
+
+def _signal_org_id(db, doc) -> str | None:
+    """Organisation for a working document, via its thread's owner."""
+    from app.db.models import OrganizationMembership, Thread
+
+    thread = db.query(Thread).filter(Thread.id == doc.thread_id).first()
+    if not thread or not thread.user_id:
+        return None
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(OrganizationMembership.user_id == thread.user_id)
+        .first()
+    )
+    return membership.organization_id if membership else None
 
 
 def _apply_op(data: dict | list, op: dict) -> dict | list:
