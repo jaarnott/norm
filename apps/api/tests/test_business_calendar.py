@@ -277,3 +277,105 @@ class TestResolveDatesExplicitRange:
         r = self._run({"start": "last tuesday", "end": "whenever"})
         assert r["success"] is False
         assert "ISO 8601" in r["error"]
+
+
+class TestDaylightSaving:
+    """The offset depends on the date being resolved, not on today.
+
+    A live production bug: `resolve_dates`' LLM fallback took today's UTC
+    offset and instructed the model to stamp it on every timestamp it produced.
+    Asked in July (NZST, +12:00) for a week in October (NZDT, +13:00) it
+    returned 07:00+12:00 — which is 08:00 local, an hour past the trading-day
+    start, for the whole NZ summer. Invisible in winter, wrong from late
+    September, and the same silent-wrong-window shape as the original
+    midnight-to-midnight bug.
+
+    NZ moves to NZDT on Sunday 27 September 2026.
+    """
+
+    def test_a_week_wholly_inside_daylight_saving_uses_the_summer_offset(self):
+        w = bc.trading_week(venue(), dt.datetime(2026, 10, 7, 12, tzinfo=dt.timezone.utc))
+        assert w.start.utcoffset() == dt.timedelta(hours=13)
+        assert w.start.strftime("%H:%M") == "07:00"
+
+    def test_a_week_spanning_the_transition_changes_offset_across_it(self):
+        """The start is NZST and the end is NZDT. A window that used one offset
+        for both ends would run an hour long."""
+        w = bc.trading_week(venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc))
+        assert w.start.utcoffset() == dt.timedelta(hours=12)
+        assert w.end.utcoffset() == dt.timedelta(hours=13)
+
+    def test_the_local_trading_boundary_holds_on_both_sides(self):
+        """What actually matters: 07:00 to 06:59 in local wall-clock terms,
+        whichever side of the transition each end falls."""
+        w = bc.trading_week(venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc))
+        assert w.start.strftime("%H:%M") == "07:00"
+        assert w.end.strftime("%H:%M") == "06:59"
+
+    def test_the_spanning_week_is_one_hour_shorter_in_real_time(self):
+        """Spring forward means the trading week really is 167 hours, not 168.
+
+        Both ends must be converted to UTC to measure this: subtracting two
+        aware datetimes in the SAME zone uses wall-clock semantics and would
+        report 168 hours regardless, hiding exactly what is being checked.
+        """
+        span = bc.trading_week(venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc))
+        plain = bc.trading_week(venue(), dt.datetime(2026, 10, 7, 12, tzinfo=dt.timezone.utc))
+
+        def absolute(w):
+            return w.end.astimezone(dt.timezone.utc) - w.start.astimezone(dt.timezone.utc)
+
+        assert absolute(plain) == dt.timedelta(days=7) - dt.timedelta(seconds=1)
+        assert absolute(span) == absolute(plain) - dt.timedelta(hours=1)
+
+
+class TestWeekBeginning:
+    """Paging through weeks without computing timestamps or asking an LLM.
+
+    A navigator has two tempting wrong options: add seven days itself (breaks
+    across a DST boundary) or phrase it for the LLM resolver (which is where
+    the offset bug lived). This keeps the caller doing date-only arithmetic and
+    Norm doing the instant.
+    """
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "the week beginning Monday 5 October 2026",
+            "week beginning 5 October 2026",
+            "week commencing 5 Oct 2026",
+            "week of 2026-10-05",
+            "Week Of 5 Oct 2026",
+        ],
+    )
+    def test_the_shapes_a_navigator_produces_all_resolve(self, phrase):
+        w = bc.resolve_phrase(venue(), phrase)
+        assert w is not None, phrase
+        assert w.start.date() == dt.date(2026, 10, 5)
+
+    def test_it_returns_the_trading_week_containing_the_date(self):
+        """Any day in the week resolves to that week, so the caller can hand
+        over a date without first working out which Monday it belongs to."""
+        w = bc.resolve_phrase(venue(), "week of 2026-10-08")  # a Thursday
+        assert w.start.date() == dt.date(2026, 10, 5)
+        assert w.kind == "trading_week"
+
+    def test_it_carries_the_right_offset_for_that_date_not_today(self):
+        """The whole point of the fix."""
+        w = bc.resolve_phrase(venue(), "week beginning 5 October 2026")
+        assert w.start.utcoffset() == dt.timedelta(hours=13)
+        assert w.start.strftime("%H:%M") == "07:00"
+
+    def test_it_respects_a_venue_day_start_other_than_seven(self):
+        w = bc.resolve_phrase(venue(day_start="05:00"), "week of 2026-10-05")
+        assert w.start.strftime("%H:%M") == "05:00"
+
+    def test_genuinely_fuzzy_phrases_still_fall_through(self):
+        """None means 'ask the LLM', not 'error'. Over-matching here would
+        silently answer questions this cannot actually resolve."""
+        assert bc.resolve_phrase(venue(), "the week before the long weekend") is None
+        assert bc.resolve_phrase(venue(), "week beginning whenever") is None
+
+    def test_an_unparseable_date_does_not_raise(self):
+        assert bc.week_beginning(venue(), "not a date") is None
+        assert bc.week_beginning(venue(), "") is None

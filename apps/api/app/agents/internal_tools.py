@@ -704,8 +704,6 @@ def _resolve_dates(params: dict, db: Session, thread_id: str | None) -> dict:
     now = _dt.datetime.now(tz)
     day_name = now.strftime("%A")  # e.g. "Thursday"
     date_str = now.strftime("%Y-%m-%d")  # e.g. "2026-03-26"
-    utc_offset = now.strftime("%z")  # e.g. "+1300"
-    offset_formatted = f"{utc_offset[:3]}:{utc_offset[3:]}"  # "+13:00"
 
     # Compute reference dates in Python so Haiku has anchors
     # Monday of current week
@@ -724,7 +722,7 @@ def _resolve_dates(params: dict, db: Session, thread_id: str | None) -> dict:
 
     system_prompt = f"""You are a date resolver for a hospitality platform in New Zealand.
 
-Today is {day_name} {date_str} (timezone: {tz_name}, UTC offset: {offset_formatted}).
+Today is {day_name} {date_str} (timezone: {tz_name}).
 
 Reference dates (computed, use these as anchors):
 - This Monday: {this_monday}
@@ -740,10 +738,12 @@ Business rules (this venue's configured trading day — do not assume midnight):
 
 Convert the user's time reference into exact ISO 8601 periods.
 Return ONLY valid JSON — no markdown, no explanation:
-{{"periods": [{{"label": "Mon 16 Mar", "start": "2026-03-16T07:00:00{offset_formatted}", "end": "2026-03-23T06:59:59{offset_formatted}"}}]}}
+{{"periods": [{{"label": "Mon 16 Mar", "start": "2026-03-16T07:00:00", "end": "2026-03-23T06:59:59"}}]}}
 
 Rules:
-- All timestamps MUST include the timezone offset ({offset_formatted})
+- Return LOCAL wall-clock times with NO timezone offset and no "Z" suffix.
+  Norm attaches the correct offset itself, because the right offset depends on
+  the date being resolved (daylight saving), not on today's date.
 - For "last week": one period, last Monday 7am to this Monday 6:59am
 - For "last month": one period, 1st 00:00:00 to last day 23:59:59
 - For recurring periods (e.g., "every Friday 5pm-9pm for 12 weeks"): one period per occurrence
@@ -769,12 +769,30 @@ Rules:
                 "error": "No periods resolved from the query",
             }
 
-        # Validate and fix labels with Python-computed day names
+        # Attach the timezone offset HERE, per period, rather than telling the
+        # model which offset to use.
+        #
+        # The prompt used to carry today's UTC offset and instruct the model to
+        # stamp it on every timestamp. That is wrong for any date on the other
+        # side of a daylight-saving boundary: asked in July (NZST, +12:00) for a
+        # week in October (NZDT, +13:00), it returned 07:00+12:00 — 08:00 local,
+        # an hour past the trading-day start, for the whole NZ summer. Silent,
+        # and the same failure shape as computing a civil day instead of a
+        # trading day.
+        #
+        # ZoneInfo derives the offset from the local time itself, so replacing
+        # tzinfo on a naive wall-clock value is correct on both sides of a
+        # transition. A value the model still returns with an offset is honoured
+        # as given rather than second-guessed.
         for p in periods:
             try:
+                for key in ("start", "end"):
+                    parsed_dt = _dt.datetime.fromisoformat(str(p[key]))
+                    if parsed_dt.tzinfo is None:
+                        parsed_dt = parsed_dt.replace(tzinfo=tz)
+                    p[key] = parsed_dt.isoformat()
                 start = _dt.datetime.fromisoformat(p["start"])
-                _dt.datetime.fromisoformat(p["end"])
-                # Override Haiku-generated label with correct Python-computed one
+                # Override the model's label with a Python-computed one.
                 p["label"] = start.strftime("%A %d %b")  # e.g., "Monday 23 Mar"
             except (KeyError, ValueError) as ve:
                 logger.warning("Invalid period in resolve_dates: %s – %s", p, ve)

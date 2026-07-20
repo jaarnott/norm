@@ -33,6 +33,7 @@ Two deliberate choices:
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -254,6 +255,64 @@ def custom_window(venue, start: dt.datetime, end: dt.datetime) -> Window:
     )
 
 
+_WEEK_OF = re.compile(
+    r"^(?:the\s+)?week\s+(?:beginning|starting|commencing|of|beg)\s+"
+    r"(?:mon(?:day)?\s+)?(.+?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def week_beginning(venue, date_text: str) -> Window | None:
+    """The trading week containing a given calendar date, or None.
+
+    Exists so a caller can page through weeks without either computing
+    timestamps itself or falling through to the LLM resolver. Both are traps:
+    naive `+7 days` arithmetic breaks across a daylight-saving boundary, and the
+    LLM path used to stamp today's UTC offset on every date it produced.
+
+    Takes a *calendar date* and returns the trading week that contains it, so
+    the caller only ever does date arithmetic — which has no clock, and so no
+    DST hazard. The instant, the day start and the offset stay here.
+    """
+    text = (date_text or "").strip().rstrip(".,")
+    if not text:
+        return None
+    parsed: dt.date | None = None
+    for fmt in (
+        "%Y-%m-%d",
+        "%d %B %Y",
+        "%d %b %Y",
+        "%d %B",
+        "%d %b",
+        "%B %d %Y",
+        "%b %d %Y",
+    ):
+        try:
+            got = dt.datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        # Formats without a year default to 1900; assume the current year.
+        parsed = got.date()
+        if "%Y" not in fmt:
+            parsed = parsed.replace(year=dt.date.today().year)
+        break
+    if parsed is None:
+        return None
+
+    tz = timezone_for(venue)
+    # Midday avoids any transition hour; the week is derived from the date.
+    anchor = dt.datetime(parsed.year, parsed.month, parsed.day, 12, 0, tzinfo=tz)
+    week = trading_week(venue, anchor, 0)
+    return Window(
+        week.start,
+        week.end,
+        "trading_week",
+        f"Week of {week.start.strftime('%d %b')}",
+        str(tz),
+        week.day_start,
+    )
+
+
 def resolve_phrase(
     venue, phrase: str, moment: dt.datetime | None = None
 ) -> Window | None:
@@ -273,7 +332,15 @@ def resolve_phrase(
         "last month": lambda: trading_month(venue, moment, -1),
     }
     handler = handlers.get(key)
-    return handler() if handler else None
+    if handler:
+        return handler()
+
+    # "week beginning 10 August 2026" — the shape a week-by-week navigator
+    # needs, resolved here rather than by the LLM.
+    match = _WEEK_OF.match(key)
+    if match:
+        return week_beginning(venue, match.group(1))
+    return None
 
 
 __all__ = [
@@ -287,4 +354,5 @@ __all__ = [
     "trading_day",
     "trading_month",
     "trading_week",
+    "week_beginning",
 ]
