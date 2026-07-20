@@ -271,6 +271,65 @@ def _cached_system(system_prompt: str | None):
     return [block]
 
 
+# How many times to (re)issue a streaming LLM call before giving up. Small: a
+# retry only helps a genuinely transient blip, and a persistent overload should
+# surface quickly rather than stall a 90s workflow behind three backoffs.
+_LLM_MAX_ATTEMPTS = 3
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """True for LLM errors worth retrying — a passing infrastructure blip, not
+    a bad request.
+
+    The motivating case: Anthropic answers a *streaming* request with HTTP 200
+    and then sends ``overloaded_error`` as the first stream event. The SDK's
+    own retries don't cover that (the request already succeeded), so without
+    this a single overload surfaced as a hard "workflow could not be completed"
+    — the roster_viewer failure in the demo, which was the API being busy, not
+    a bug in Norm.
+
+    Retryable: connection/timeout, rate limits, 5xx, 529 overloaded. NOT
+    retryable: 4xx (bad request, auth, not found) — retrying can't fix those.
+    """
+    import anthropic
+
+    if isinstance(
+        exc,
+        (
+            anthropic.APIConnectionError,
+            anthropic.APITimeoutError,
+            anthropic.RateLimitError,
+            anthropic.InternalServerError,
+        ),
+    ):
+        return True
+    if isinstance(exc, anthropic.APIStatusError):
+        if getattr(exc, "status_code", None) in (500, 502, 503, 504, 529):
+            return True
+        body = getattr(exc, "body", None)
+        etype = (
+            (body or {}).get("error", {}).get("type")
+            if isinstance(body, dict)
+            else None
+        )
+        if etype in ("overloaded_error", "api_error", "rate_limit_error"):
+            return True
+    # Last resort: the overloaded signal is unmistakable in the message even
+    # when the status code isn't one of the above.
+    return "overloaded" in str(exc).lower()
+
+
+def _llm_retry_backoff(attempt: int) -> float:
+    """Seconds to wait before retrying attempt ``attempt`` (0-based).
+
+    Exponential with jitter, so a fleet of concurrent workflows hitting the
+    same overload don't retry in lockstep.
+    """
+    import random
+
+    return min(8.0, 0.6 * (2**attempt)) + random.uniform(0, 0.4)
+
+
 def call_llm_with_tools(
     system_prompt: str,
     messages: list[dict],
@@ -315,48 +374,77 @@ def call_llm_with_tools(
     try:
         from app.agents.tool_loop import _emit_event
 
-        with client.messages.stream(
-            model=resolved_model,
-            max_tokens=max_tokens,
-            system=_cached_system(system_prompt),
-            messages=messages,
-            tools=_cached_tools(tools),
-            # Adaptive thinking makes reasoning a distinct content-block type,
-            # so the UI no longer has to guess which prose is "thinking" and
-            # which is the answer. `display` must be set explicitly: the
-            # default is "omitted", which streams thinking blocks with empty
-            # text and reads as a long silent pause before any output.
-            thinking=_THINKING,
-        ) as stream:
-            # Raw events, not stream.text_stream — text_stream yields only text
-            # deltas, so thinking would be dropped on the floor.
-            #
-            # Answer text streams delta-by-delta (the typewriter wants it that
-            # way), but thinking is buffered and emitted once per block: a
-            # thinking step is a sentence the user reads, and emitting each
-            # delta would fill the strip with fragments like "I" / " need to".
-            thinking_buf: list[str] = []
+        # Answer text streams delta-by-delta (the typewriter wants it that way),
+        # but thinking is buffered and emitted once per block: a thinking step
+        # is a sentence the user reads, and emitting each delta would fill the
+        # strip with fragments like "I" / " need to".
+        thinking_buf: list[str] = []
 
-            def _flush_thinking() -> None:
-                text = "".join(thinking_buf).strip()
-                thinking_buf.clear()
-                if text:
-                    _emit_event({"type": "thinking", "text": text})
+        def _flush_thinking() -> None:
+            text = "".join(thinking_buf).strip()
+            thinking_buf.clear()
+            if text:
+                _emit_event({"type": "thinking", "text": text})
 
-            for event in stream:
-                etype = getattr(event, "type", None)
-                if etype == "content_block_delta":
-                    delta = event.delta
-                    kind = getattr(delta, "type", None)
-                    if kind == "text_delta":
-                        _emit_event({"type": "token", "text": delta.text})
-                    elif kind == "thinking_delta":
-                        thinking_buf.append(delta.thinking)
-                elif etype == "content_block_stop":
+        # Retry a transient stream failure — but only while nothing has been
+        # emitted this turn. Once tokens have streamed to the user, restarting
+        # would double them, so a mid-stream blip is re-raised instead.
+        response = None
+        for attempt in range(_LLM_MAX_ATTEMPTS):
+            emitted_any = False
+            thinking_buf.clear()
+            try:
+                with client.messages.stream(
+                    model=resolved_model,
+                    max_tokens=max_tokens,
+                    system=_cached_system(system_prompt),
+                    messages=messages,
+                    tools=_cached_tools(tools),
+                    # Adaptive thinking makes reasoning a distinct content-block
+                    # type, so the UI no longer has to guess which prose is
+                    # "thinking" and which is the answer. `display` must be set
+                    # explicitly: the default is "omitted", which streams
+                    # thinking blocks with empty text and reads as a long silent
+                    # pause before any output.
+                    thinking=_THINKING,
+                ) as stream:
+                    # Raw events, not stream.text_stream — text_stream yields
+                    # only text deltas, so thinking would be dropped on the
+                    # floor.
+                    for event in stream:
+                        etype = getattr(event, "type", None)
+                        if etype == "content_block_delta":
+                            delta = event.delta
+                            kind = getattr(delta, "type", None)
+                            if kind == "text_delta":
+                                _emit_event({"type": "token", "text": delta.text})
+                                emitted_any = True
+                            elif kind == "thinking_delta":
+                                thinking_buf.append(delta.thinking)
+                                emitted_any = True
+                        elif etype == "content_block_stop":
+                            _flush_thinking()
+                    # A truncated turn can end without a closing block event.
                     _flush_thinking()
-            # A truncated turn can end without a closing block event.
-            _flush_thinking()
-            response = stream.get_final_message()
+                    response = stream.get_final_message()
+                break
+            except Exception as stream_exc:
+                if (
+                    not emitted_any
+                    and attempt < _LLM_MAX_ATTEMPTS - 1
+                    and _is_transient_llm_error(stream_exc)
+                ):
+                    logger.warning(
+                        "llm_transient_retry",
+                        extra={
+                            "thread_id": thread_id,
+                            "attempt": attempt + 1,
+                            "error": str(stream_exc)[:160],
+                        },
+                    )
+                    time.sleep(_llm_retry_backoff(attempt))
+                    continue
+                raise
         duration_ms = int((time.time() - t0) * 1000)
 
         # Serialize for audit logging

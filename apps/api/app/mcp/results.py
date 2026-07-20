@@ -31,6 +31,14 @@ from app.agents.tool_loop import (
     _unwrap_array,
 )
 
+__all__ = [
+    "MCP_MAX_RESULT_CHARS",
+    "MCP_MAX_UI_RESULT_CHARS",
+    "shape_result",
+    "ui_content_summary",
+    "ui_payload",
+]
+
 MCP_MAX_RESULT_CHARS = MAX_TOOL_RESULT_CHARS_NO_SEARCH
 
 # A tool bound to an MCP App sends its data twice: a shaped copy in ``content``
@@ -61,6 +69,44 @@ def _serialize(payload: Any) -> str | None:
         return json.dumps(payload, default=str)
     except (TypeError, ValueError):
         return None
+
+
+def ui_content_summary(payload: Any) -> Any:
+    """Compact, model-facing content for a tool whose result renders in a card.
+
+    The card (``structuredContent``) holds the full data; the model only needs
+    to know the tool succeeded and a few headline fields to talk about. So the
+    payload is returned with long nested arrays sampled down — never the
+    "this result contains N items, too many to return, narrow the request"
+    envelope ``shape_result`` produces for an oversized payload.
+
+    That envelope is correct for a plain data tool, but a lie for a UI one: the
+    data isn't lost, it's on screen. Handing it to the model reads as a failure
+    and sends it chasing the data in chunks or falling back to another tool —
+    exactly the roster incident where a fully-rendered 115-shift grid drove the
+    model to re-fetch, hit the same envelope again, and detour through the
+    attendance view while the user watched a perfectly good grid.
+    """
+    window = None
+    body = payload
+    if isinstance(payload, dict) and "window" in payload and "data" in payload:
+        window, body = payload["window"], payload["data"]
+
+    out: dict = {
+        "_rendered_in_ui": True,
+        "message": (
+            "This result is shown to the user in an interactive card. The full "
+            "data is on their screen; below is the same data with long lists "
+            "sampled to a few rows. Do NOT narrow the request or re-fetch to "
+            '"get all of it" — the user can already see everything. Use the '
+            "headline fields to answer, and only call another tool if the user "
+            "asks for something this result does not contain."
+        ),
+        "data": _truncate_nested_arrays(body),
+    }
+    if window is not None:
+        out["window"] = window
+    return out
 
 
 def shape_result(

@@ -26,7 +26,7 @@ from app.connectors.mcp_protocol import INVALID_PARAMS, error_result, tools_call
 from app.mcp.principal import McpPrincipal
 from app.mcp.projection import McpTool, project_tools, to_mcp_tool_dict
 from app.mcp.audit import reset_touched, write_audit
-from app.mcp.results import shape_result, ui_payload
+from app.mcp.results import shape_result, ui_content_summary, ui_payload
 from app.mcp.server import McpContext, McpDispatchError
 
 logger = logging.getLogger(__name__)
@@ -221,6 +221,18 @@ class NormMcpContext(McpContext):
             else (None, False)
         )
 
+        # A tool bound to a display-block UI renders the full payload in the
+        # card. If its model-facing content would be truncated, hand the model
+        # a compact "it's on screen" summary instead of the "too many, narrow
+        # the request" envelope — the envelope reads as a failure and sends the
+        # model re-fetching a roster the user is already looking at. Only when
+        # the card actually holds the data (ui_payload not None); if the payload
+        # is too big even for the card, the honest envelope stands.
+        structured = ui_payload(result.payload) if tool.ui_resource else None
+        if structured is not None and truncated and result.success:
+            payload = ui_content_summary(result.payload)
+            truncated = False
+
         logger.info(
             "mcp_tool_call",
             extra={
@@ -249,12 +261,10 @@ class NormMcpContext(McpContext):
         if not result.success:
             return error_result(result.error or "Tool execution failed")
 
-        # A tool with an embedded UI renders from `structuredContent`, so give
-        # the app the FULL payload — the shaping above exists to protect the
-        # model's context, and applying it to the app's copy is what left a
-        # week-long roster with nothing to draw. Falls back to the shaped
-        # payload if even the UI budget can't hold it.
-        structured = ui_payload(result.payload) if tool.ui_resource else None
+        # The app renders from `structuredContent` — the FULL payload (computed
+        # above as `structured`; the content shaping exists to protect the
+        # model's context, and applying it to the app's copy is what once left
+        # a week-long roster with nothing to draw). Wrap it as a display block.
         if structured is not None:
             structured = self._as_display_block(tool, structured)
         return tools_call_result(payload, structured=structured)

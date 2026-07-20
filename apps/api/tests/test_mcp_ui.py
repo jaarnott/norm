@@ -264,6 +264,59 @@ class TestUiPayloadSeparation:
         assert res["structuredContent"] == {"a": 1}
 
 
+class TestUiContentSummary:
+    """The MODEL-facing content of a UI tool must not read as a failure.
+
+    A fully-rendered 115-shift roster grid was handing the model the
+    "too many to return, narrow the request" envelope — so the model re-fetched
+    in chunks, hit the same envelope, and detoured through another tool while
+    the user watched a perfectly good grid. For a UI tool the content is a
+    compact "it's on screen" summary instead.
+    """
+
+    def _roster_wrapped(self, n):
+        return {
+            "window": {
+                "label": "This week",
+                "start": "2026-07-20",
+                "end": "2026-07-26",
+            },
+            "data": [
+                {
+                    "id": "wk",
+                    "totalHours": 283.25,
+                    "rosteredShifts": [
+                        {"staffMemberFirstName": f"S{i}", "totalHours": 4.0}
+                        for i in range(n)
+                    ],
+                }
+            ],
+        }
+
+    def test_summary_keeps_headline_fields_and_samples_shifts(self):
+        from app.mcp.results import ui_content_summary
+
+        out = ui_content_summary(self._roster_wrapped(115))
+        assert out["_rendered_in_ui"] is True
+        assert out["window"]["label"] == "This week"
+        item = out["data"][0]
+        assert item["totalHours"] == 283.25  # headline preserved
+        # long list sampled, not dumped and not a "too many" envelope
+        assert len(item["rosteredShifts"]) < 115
+        assert "_too_large" not in out
+        # The message instructs AGAINST narrowing — the opposite of the
+        # shape_result envelope that says "narrow the request".
+        assert "not narrow" in out["message"].lower()
+
+    def test_message_tells_the_model_not_to_refetch(self):
+        from app.mcp.results import ui_content_summary
+
+        out = ui_content_summary(self._roster_wrapped(115))
+        msg = out["message"].lower()
+        assert "already" in msg or "on their screen" in msg
+        assert "do not" in msg or "don't" in msg
+
+
 # ── Bundle freshness ─────────────────────────────────────────────────────
 
 
