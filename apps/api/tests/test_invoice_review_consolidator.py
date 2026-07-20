@@ -1042,3 +1042,61 @@ class TestRunModes:
         assert result["auto_submit"] is True
         # the unit-fix invoice still gets a card (auto-applied client-side)
         assert any(fi["reference_number"] == "X-1" for fi in result["fix_invoices"])
+
+
+class TestCardChecks:
+    """The card carries the review's own checklist, packed one char per check.
+
+    Without it the card could only re-derive the few checks it computes
+    client-side, and a card whose review stopped early rendered as "all checks
+    pass" while every line read "copy not compared" — a contradiction with no
+    way to see which check actually failed.
+    """
+
+    # Must match CHECK_LABELS order in the consolidator and CHECK_ORDER in
+    # apps/web/app/components/display/InvoiceFixesCard.tsx.
+    ORDER = [
+        "credit_note",
+        "pdf_present",
+        "po_linked",
+        "po_supplier",
+        "items_matched",
+        "totals",
+        "pdf_readable",
+        "pdf_invoice_number",
+        "pdf_lines",
+        "unit_of_measure",
+        "pdf_total",
+    ]
+
+    def decode(self, packed):
+        return dict(zip(self.ORDER, packed))
+
+    def test_packed_checks_are_one_char_per_check(self):
+        api = api_for(make_invoice(linkedPurchaseOrderId=None))
+        inv = run_consolidator(api)["fix_invoices"][0]
+        assert len(inv["checks"]) == len(self.ORDER)
+        assert set(inv["checks"]) <= {"p", "f", "-"}
+
+    def test_short_circuit_marks_later_checks_not_reached(self):
+        # An unlinked invoice fails at the PO gate, so every check after it
+        # never runs — those must read "-" (not reached), never "p".
+        api = api_for(make_invoice(linkedPurchaseOrderId=None))
+        inv = run_consolidator(api)["fix_invoices"][0]
+        checks = self.decode(inv["checks"])
+        assert checks["credit_note"] == "p"
+        assert checks["pdf_present"] == "p"
+        assert checks["po_linked"] == "f"
+        for key in self.ORDER[self.ORDER.index("po_linked") + 1 :]:
+            assert checks[key] == "-", f"{key} should not have been reached"
+
+    def test_unit_fix_invoice_reaches_the_copy_checks(self):
+        # An invoice that gets as far as the unit comparison must show the
+        # copy-dependent checks as actually run, not skipped.
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure="100 piece")
+        api = api_for(make_invoice(lines=[make_line(unit="Each")]), pdf=pdf)
+        checks = self.decode(run_consolidator(api)["fix_invoices"][0]["checks"])
+        assert checks["po_linked"] == "p"
+        assert checks["pdf_readable"] == "p"
+        assert checks["unit_of_measure"] == "f"

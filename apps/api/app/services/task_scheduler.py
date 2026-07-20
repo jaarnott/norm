@@ -227,6 +227,36 @@ def _build_task_context(automated_task, agent_context: dict) -> dict:
     return ctx
 
 
+# How much of a run's output is mirrored into the task conversation. Generous
+# enough that a reconciliation table isn't cut off mid-row; the full text stays
+# on the execution thread.
+_CONVERSATION_SUMMARY_CHARS = 4000
+
+
+def _post_run_to_conversation(automated_task, run, db, body: str) -> None:
+    """Mirror a run's outcome into the task's persistent conversation.
+
+    Called on every path — success, empty result and failure — so the
+    conversation is a complete run log. Best-effort: it must never be the
+    reason a run is reported as failed.
+    """
+    from app.db.models import Message
+
+    if not automated_task.conversation_thread_id:
+        return
+    try:
+        db.add(
+            Message(
+                thread_id=automated_task.conversation_thread_id,
+                role="assistant",
+                content=f"[Run {run.id[:8]} — {run.status}]\n"
+                f"{(body or '').strip()[:_CONVERSATION_SUMMARY_CHARS]}",
+            )
+        )
+    except Exception:  # noqa: BLE001 — logging the run must not break the run
+        logger.exception("Could not post run %s to task conversation", str(run.id)[:12])
+
+
 def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
     """Execute an automated task immediately. Returns the run result dict.
 
@@ -357,17 +387,19 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             if task.overrides_next_run:
                 task.overrides_next_run = None
 
-            # Post run summary to conversation task
-            if task.conversation_thread_id and result_text:
-                run_label = f"[Run {run.id[:8]} — {run.status}]"
-                summary = result_text[:1000] if result_text else "Task completed."
-                db.add(
-                    Message(
-                        thread_id=task.conversation_thread_id,
-                        role="assistant",
-                        content=f"{run_label}\n{summary}",
-                    )
-                )
+            # Post run summary to conversation task. Always post something —
+            # an empty model response must still leave a trace, or a run that
+            # produced nothing is indistinguishable from one that never ran.
+            _post_run_to_conversation(
+                task,
+                run,
+                db,
+                result_text
+                or (
+                    f"Task completed but produced no summary "
+                    f"({tool_calls_count} tool call(s), {duration_ms}ms)."
+                ),
+            )
 
             db.commit()
 
@@ -390,6 +422,10 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             run.error_message = str(exc)[:1000]
             run.completed_at = datetime.now(timezone.utc)
             run.duration_ms = duration_ms
+            # Record the failure in the conversation too. Without this a broken
+            # scheduled task looks exactly like one that never fired — the only
+            # trace is a row the owner cannot see.
+            _post_run_to_conversation(task, run, db, f"Failed: {run.error_message}")
             db.commit()
 
             logger.exception("Automated task %s failed", task_id[:12])

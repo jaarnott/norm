@@ -180,3 +180,81 @@ class TestRunDueEndpoint:
             )
         assert resp.status_code == 200
         assert resp.json()["claimed"] == 0
+
+
+class TestRunOutcomeReachesTheConversation:
+    """Every run must leave a trace in the task's conversation.
+
+    A scheduled task is unattended: if a run produces nothing, or blows up, the
+    only place the owner can notice is the task conversation. Previously the
+    summary was posted only on the success path and only when the model
+    returned text, so an empty or failed run was indistinguishable from a task
+    that never fired at all.
+    """
+
+    def _run(self, db_session, admin_user, loop_result=None, loop_error=None):
+        from app.db.models import Message, Thread
+
+        task = _make_task(db_session, schedule_type="daily")
+        task.created_by = admin_user.id
+        conv = Thread(
+            user_id=admin_user.id,
+            domain="procurement",
+            intent="procurement.automated_task_conversation",
+            status="in_progress",
+            raw_prompt="conversation",
+        )
+        db_session.add(conv)
+        db_session.flush()
+        task.conversation_thread_id = conv.id
+        db_session.flush()
+
+        agent = MagicMock()
+        agent.get_tool_definitions.return_value = ("system prompt", [])
+        agent.build_context.return_value = {}
+
+        with (
+            patch("app.agents.registry.get_agent", return_value=agent),
+            patch("app.agents.tool_loop.run_tool_loop") as mock_loop,
+            patch(
+                "app.agents.context_builder.build_conversation_messages",
+                return_value=[],
+            ),
+        ):
+            if loop_error is not None:
+                mock_loop.side_effect = loop_error
+            else:
+                mock_loop.return_value = loop_result
+            task_scheduler.execute_task_now(task.id, mode="live", db=db_session)
+
+        return [
+            m.content
+            for m in db_session.query(Message)
+            .filter(Message.thread_id == conv.id, Message.role == "assistant")
+            .all()
+        ]
+
+    def test_success_posts_the_summary(self, db_session, admin_user):
+        posted = self._run(
+            db_session,
+            admin_user,
+            loop_result={"message": "Reconciled 3 invoices", "tool_calls": []},
+        )
+        assert len(posted) == 1
+        assert "Reconciled 3 invoices" in posted[0]
+        assert "success" in posted[0]
+
+    def test_empty_result_still_posts(self, db_session, admin_user):
+        posted = self._run(
+            db_session, admin_user, loop_result={"message": "", "tool_calls": []}
+        )
+        assert len(posted) == 1
+        assert "no summary" in posted[0].lower()
+
+    def test_failure_posts_the_error(self, db_session, admin_user):
+        posted = self._run(
+            db_session, admin_user, loop_error=RuntimeError("connector exploded")
+        )
+        assert len(posted) == 1
+        assert "error" in posted[0].lower()
+        assert "connector exploded" in posted[0]

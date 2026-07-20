@@ -11,6 +11,8 @@ from app.auth.dependencies import require_permission
 from app.db.engine import get_db, get_config_db_rw
 from app.db.config_models import E2ETest
 from app.db.models import (
+    AutomatedTask,
+    AutomatedTaskRun,
     Deployment,
     E2ETestRun,
     SystemSecret,
@@ -771,3 +773,126 @@ def get_admin_thread_detail(
         data["user_email"] = None
 
     return data
+
+
+# ── Automated task diagnostics ──────────────────────────────────────
+# Read-only. Answers "why isn't my scheduled task working?" in one call,
+# without opening the (private-IP) production database. Deliberately returns
+# schedule/preference metadata only — never connector credentials or tokens.
+
+# The agent tool that sends a run's report by email. A task only emails if its
+# tool_filter permits this action AND its prompt asks for it — the difference
+# between a task that mails its owner and one that silently doesn't.
+_EMAIL_TOOL_ACTION = "send_report_email"
+
+
+def _iso(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+@router.get("/admin/automated-tasks/{task_id}/diagnostics")
+def automated_task_diagnostics(
+    task_id: str,
+    run_limit: int = 10,
+    user: User = Depends(require_permission("admin:system")),
+    db: Session = Depends(get_db),
+):
+    """Everything needed to explain why a scheduled task is or isn't working.
+
+    Bundles the task's schedule/config, its owner's run-mode preferences, and
+    recent run outcomes (including error messages, which are otherwise only
+    visible in the database).
+    """
+    from app.services.workflow_modes import DEFAULT_MODE, WORKFLOWS, user_mode
+
+    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
+    if not task:
+        raise HTTPException(404, "Automated task not found")
+
+    owner = (
+        db.query(User).filter(User.id == task.created_by).first()
+        if task.created_by
+        else None
+    )
+
+    runs = (
+        db.query(AutomatedTaskRun)
+        .filter(AutomatedTaskRun.automated_task_id == task.id)
+        .order_by(AutomatedTaskRun.started_at.desc())
+        .limit(max(1, min(run_limit, 50)))
+        .all()
+    )
+
+    tool_filter = task.tool_filter
+    # A null tool_filter means "all tools allowed"; a list restricts to those.
+    email_tool_enabled = tool_filter is None or any(
+        _EMAIL_TOOL_ACTION in str(t) for t in tool_filter
+    )
+
+    # The run mode each workflow's consolidator would see for this task's owner.
+    # An unset mode falls back to DEFAULT_MODE (approve_all), which runs the
+    # consolidators read-only — on an unattended schedule that means nothing is
+    # ever written, so it is the first thing to check on a "it runs but nothing
+    # happens" report.
+    effective_modes = {
+        w["key"]: {
+            "stored": (user_mode(owner, w["key"]) if owner else None),
+            "effective": (user_mode(owner, w["key"]) if owner else None)
+            or DEFAULT_MODE,
+        }
+        for w in WORKFLOWS
+    }
+
+    return {
+        "task": {
+            "id": task.id,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status,
+            "agent_slug": task.agent_slug,
+            "prompt": task.prompt,
+            "schedule_type": task.schedule_type,
+            "schedule_config": task.schedule_config,
+            "next_run_at": _iso(task.next_run_at),
+            "last_run_at": _iso(task.last_run_at),
+            "venue_id": task.venue_id,
+            "tool_filter": tool_filter,
+            "conversation_thread_id": task.conversation_thread_id,
+            "overrides_next_run": task.overrides_next_run,
+            "created_at": _iso(task.created_at),
+            "updated_at": _iso(task.updated_at),
+        },
+        "owner": (
+            {
+                "id": owner.id,
+                "email": owner.email,
+                "full_name": owner.full_name,
+                "role": owner.role,
+                "workflow_modes": owner.workflow_modes,
+            }
+            if owner
+            else None
+        ),
+        "runs": [
+            {
+                "id": r.id,
+                "status": r.status,
+                "mode": r.mode,
+                "started_at": _iso(r.started_at),
+                "completed_at": _iso(r.completed_at),
+                "duration_ms": r.duration_ms,
+                "tool_calls_count": r.tool_calls_count,
+                "error_message": r.error_message,
+                "result_summary": r.result_summary,
+                "thread_id": r.thread_id,
+            }
+            for r in runs
+        ],
+        "derived": {
+            "email_tool_enabled": email_tool_enabled,
+            "email_tool_action": _EMAIL_TOOL_ACTION,
+            "is_scheduled": task.status == "active" and task.schedule_type != "manual",
+            "effective_run_modes": effective_modes,
+            "default_run_mode": DEFAULT_MODE,
+        },
+    }
