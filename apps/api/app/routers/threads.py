@@ -160,6 +160,10 @@ async def get_all_threads(
             Thread.user_id == user.id,
             # Exclude automated task execution runs — only show conversation threads
             or_(Thread.intent.is_(None), ~Thread.intent.like("%.automated_task")),
+            # Exclude delegated sub-runs. A consulted agent gets its own thread to
+            # keep its tool calls off the caller's, but the user asked one
+            # question and should see one thread — the parent reports the answer.
+            Thread.parent_thread_id.is_(None),
         )
         .order_by(Thread.created_at.desc())
         .all()

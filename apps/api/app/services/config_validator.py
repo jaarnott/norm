@@ -185,7 +185,87 @@ def check_connector_tools(
                 )
             )
 
+        issues.extend(_check_stale_aggregates(where, tool))
+
     return issues
+
+
+# Words that mean a field summarises the rows beneath it rather than describing
+# the object itself.
+_AGGREGATE_HINTS = ("total", "sum", "count", "avg", "average")
+
+
+def _check_stale_aggregates(where: str, tool: dict) -> list[ConfigIssue]:
+    """Flag a transform that filters rows but passes a summary field through.
+
+    `apply_response_transform` can drop rows from a nested array
+    (`rosteredShifts[].isFromOtherVenue equals false`) while copying a
+    top-level field straight across (`totalHours -> totalHours`). The survivors
+    and the summary then describe different sets of rows, and nothing errors —
+    the payload is simply, quietly wrong.
+
+    That shipped: `get_roster` requested every venue's shifts, filtered them
+    down to one venue, and kept LoadedHub's all-venue `totalHours`. A week
+    showing 66 shifts worth 146.5 hours reported a total of 332.25. It was only
+    noticed because two agents answered the same question differently.
+
+    Whoever hits this next has two honest options — narrow the request so the
+    source computes the summary over the right rows (what get_roster now does),
+    or stop passing the summary through and let the caller add up the rows.
+    """
+    transform = tool.get("response_transform")
+    if not isinstance(transform, dict) or not transform.get("enabled"):
+        return []
+
+    filtered_arrays = sorted(
+        {
+            f["field"].split("[].", 1)[0]
+            for f in transform.get("filters") or []
+            if isinstance(f, dict) and "[]." in (f.get("field") or "")
+        }
+    )
+    if not filtered_arrays:
+        return []
+
+    fields = transform.get("fields") or {}
+    if not isinstance(fields, dict):
+        return []
+
+    # A field the transform re-derives from the surviving rows is by definition
+    # not stale.
+    recomputed = {
+        r.get("field") for r in transform.get("recompute") or [] if isinstance(r, dict)
+    }
+
+    stale = sorted(
+        name
+        for name, dest in fields.items()
+        if "[]" not in name
+        and dest  # "" means the field is dropped, which is safe
+        and name not in recomputed
+        and any(hint in name.lower() for hint in _AGGREGATE_HINTS)
+    )
+    if not stale:
+        return []
+
+    return [
+        ConfigIssue(
+            severity="error",
+            where=where,
+            problem=(
+                f"response_transform filters rows out of {', '.join(filtered_arrays)} "
+                f"but passes the summary field(s) {', '.join(stale)} through "
+                "unchanged, so they describe rows that are no longer there"
+            ),
+            fix=(
+                f"Add a response_transform 'recompute' entry for {stale[0]} "
+                "(e.g. {'field': 'totalHours', 'from': 'rows[].totalHours', "
+                "'op': 'sum'}), narrow the request so the source totals only the "
+                f'rows you keep, or map {stale[0]} to "" and let the caller '
+                "sum the rows."
+            ),
+        )
+    ]
 
 
 def check_binding_capabilities(

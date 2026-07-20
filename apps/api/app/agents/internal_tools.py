@@ -1953,3 +1953,60 @@ def _update_thread_summary(params: dict, db: Session, thread_id: str | None) -> 
     db.flush()
 
     return {"success": True, "data": {"thread_summary": summary}}
+
+
+@register("norm", "delegate_to_agent")
+def _delegate_to_agent(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Ask another Norm agent a question and get its answer back.
+
+    The sub-agent runs read-only in its own thread with its own prompt and no
+    sight of this conversation, and only its final answer comes back — see
+    app/services/delegation.py for why it is shaped that way.
+
+    Guard failures (unknown target, loop, depth, budget) come back as a normal
+    error string rather than an exception: the calling model should read it and
+    answer with what it has, not have its turn die.
+    """
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.models import Thread
+    from app.services.delegation import DelegationError, delegate
+
+    target = (params.get("target") or "").strip()
+    question = (params.get("question") or "").strip()
+    context = params.get("context")
+
+    if not target or not question:
+        return {
+            "success": False,
+            "data": {},
+            "error": "target and question are both required",
+        }
+    if not thread_id:
+        return {
+            "success": False,
+            "data": {},
+            "error": "Delegation needs a thread to hang the sub-run from.",
+        }
+
+    parent = db.query(Thread).filter(Thread.id == thread_id).first()
+    if not parent:
+        return {"success": False, "data": {}, "error": "Parent thread not found"}
+
+    # Its own config session, as the other handlers here do — the tool-loop
+    # dispatch doesn't pass one through (InternalHandler is (params, db, tid)).
+    config_db = _ConfigSessionLocal()
+    try:
+        result = delegate(parent, target, question, context, db, config_db)
+    except DelegationError as exc:
+        return {"success": False, "data": {}, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — a failed consult must not kill the turn
+        logger.exception("Delegation to %s failed", target)
+        return {
+            "success": False,
+            "data": {},
+            "error": f"Could not consult {target}: {exc}",
+        }
+    finally:
+        config_db.close()
+
+    return {"success": True, "data": result, "error": None}

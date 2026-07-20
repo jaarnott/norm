@@ -300,3 +300,122 @@ class TestAvailableModelsStayCurrent:
         offered = {m["id"] for m in AVAILABLE_MODELS}
         assert settings.LLM_INTERPRETER_MODEL in offered
         assert settings.ROUTER_MODEL in offered
+
+
+class TestStaleAggregates:
+    """A transform that drops rows must not keep a summary of the old set.
+
+    From a real incident: `get_roster` asked LoadedHub for every venue's shifts,
+    filtered them down to one venue, and passed the all-venue `totalHours`
+    through. The payload then said 66 shifts / 332.25 hours when those 66 shifts
+    were worth 146.5. Nothing errored — one agent quoted the header, another
+    summed the rows, and they disagreed by 2.3x.
+    """
+
+    def _tool(self, fields, filters, enabled=True):
+        return {
+            "action": "get_roster",
+            # A path_template so the unrelated template-mode rule stays quiet.
+            "path_template": "//loadedhub.com/api/time/rosters",
+            "response_transform": {
+                "enabled": enabled,
+                "fields": fields,
+                "filters": filters,
+            },
+        }
+
+    def test_the_real_bug_is_caught(self):
+        issues = check_connector_tools(
+            "loadedhub",
+            "template",
+            [
+                self._tool(
+                    {"id": "id", "totalHours": "totalHours"},
+                    [
+                        {
+                            "field": "rosteredShifts[].isFromOtherVenue",
+                            "operator": "equals",
+                            "value": "false",
+                        }
+                    ],
+                )
+            ],
+        )
+        assert len(issues) == 1
+        assert "totalHours" in issues[0].problem
+        assert "rosteredShifts" in issues[0].problem
+
+    def test_dropping_the_summary_is_the_accepted_fix(self):
+        """Mapping it to "" removes it from the payload — nothing to be stale."""
+        assert (
+            check_connector_tools(
+                "loadedhub",
+                "template",
+                [
+                    self._tool(
+                        {"id": "id", "totalHours": ""},
+                        [{"field": "rosteredShifts[].deleted", "operator": "is_empty"}],
+                    )
+                ],
+            )
+            == []
+        )
+
+    def test_no_row_filter_means_no_problem(self):
+        """Passing a summary through is fine when every row survives."""
+        assert (
+            check_connector_tools(
+                "loadedhub",
+                "template",
+                [self._tool({"totalHours": "totalHours"}, [])],
+            )
+            == []
+        )
+
+    def test_top_level_filters_do_not_trigger_it(self):
+        """Filtering whole rosters doesn't desync a roster's own total."""
+        assert (
+            check_connector_tools(
+                "loadedhub",
+                "template",
+                [
+                    self._tool(
+                        {"totalHours": "totalHours"},
+                        [{"field": "datestampDeleted", "operator": "is_empty"}],
+                    )
+                ],
+            )
+            == []
+        )
+
+    def test_disabled_transform_is_ignored(self):
+        assert (
+            check_connector_tools(
+                "loadedhub",
+                "template",
+                [
+                    self._tool(
+                        {"totalHours": "totalHours"},
+                        [{"field": "rosteredShifts[].x", "operator": "equals"}],
+                        enabled=False,
+                    )
+                ],
+            )
+            == []
+        )
+
+    def test_non_summary_fields_pass_through_freely(self):
+        """Only summary-shaped names are suspect; ids and names are per-object."""
+        assert (
+            check_connector_tools(
+                "loadedhub",
+                "template",
+                [
+                    self._tool(
+                        {"id": "id", "name": "name", "startDateTime": "startDateTime"},
+                        [{"field": "rosteredShifts[].x", "operator": "equals"}],
+                    )
+                ],
+            )
+            == []
+        )

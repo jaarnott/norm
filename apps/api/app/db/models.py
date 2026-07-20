@@ -188,6 +188,13 @@ class Thread(Base):
     conversation_summary = Column(Text, nullable=True)
     summary_through_count = Column(Integer, nullable=True)
     playbook_id = Column(String, nullable=True)
+    # Delegation: set when this thread is a sub-run created by another agent's
+    # delegate_to_agent call. Deliberately NOT a ForeignKey — the parent row is
+    # still uncommitted when the child is created inside the parent's turn.
+    # Depth is derived server-side by walking this chain, never taken from
+    # model-supplied params, so an agent can't talk its way past the cap.
+    parent_thread_id = Column(String, nullable=True, index=True)
+    delegation_depth = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 

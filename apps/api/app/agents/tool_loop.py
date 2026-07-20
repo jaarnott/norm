@@ -82,12 +82,16 @@ def run_tool_loop(
     test_mode: bool = False,
     config_db: Session | None = None,
     messages_override: list[dict] | None = None,
+    max_iterations: int | None = None,
 ) -> dict:
     """Run the agentic tool loop for a user message.
 
     Returns a result dict suitable for the API response.
     If test_mode=True, write tools (POST/PUT/DELETE) are simulated.
     If messages_override is provided, use it instead of building from task history.
+    If max_iterations is given, it overrides MAX_ITERATIONS for this run — a
+    delegated sub-run gets a lower ceiling so one user turn can't stack two
+    full-length loops.
     """
     # Build initial messages list from conversation history
     messages = messages_override or _build_messages(task, message, context, db=db)
@@ -101,6 +105,7 @@ def run_tool_loop(
         start_iteration=1,
         test_mode=test_mode,
         config_db=config_db,
+        max_iterations=max_iterations,
     )
 
 
@@ -193,8 +198,10 @@ def _execute_loop(
     start_iteration: int = 1,
     test_mode: bool = False,
     config_db: Session | None = None,
+    max_iterations: int | None = None,
 ) -> dict:
-    """Run the agentic loop up to MAX_ITERATIONS."""
+    """Run the agentic loop up to MAX_ITERATIONS (or max_iterations)."""
+    limit = max_iterations or MAX_ITERATIONS
     from app.interpreter.llm_interpreter import call_llm_with_tools
 
     # Build a lookup from tool name -> tool metadata
@@ -209,7 +216,7 @@ def _execute_loop(
     display_blocks: list[dict] = []
 
     iteration = start_iteration
-    while iteration <= MAX_ITERATIONS:
+    while iteration <= limit:
         display_blocks_before = len(display_blocks)
         # Set when a display block added THIS iteration came from a tool that
         # opted out of the "display-only early-exit" (suppress_display_early_exit)

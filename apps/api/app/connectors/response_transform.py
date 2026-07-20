@@ -281,6 +281,58 @@ def _evaluate_filters(item: dict, filters: list[dict]) -> bool:
     return True
 
 
+def _apply_recompute(result, recompute: list) -> None:
+    """Re-derive summary fields from the rows that actually survived, in place.
+
+    Filtering a nested array leaves any top-level total describing rows that are
+    no longer in the payload. `get_roster` shipped that way: it kept LoadedHub's
+    all-venue `totalHours` beside a shift list narrowed to one venue, so a week
+    holding 66 shifts worth 146.5 hours reported 332.25.
+
+    Config shape:
+        "recompute": [
+            {"field": "totalHours", "from": "rosteredShifts[].totalHours", "op": "sum"}
+        ]
+
+    Opt-in — a transform without a `recompute` key is untouched. Only `sum` and
+    `count` are supported; anything else is left alone rather than guessed at.
+
+    The source path is read AFTER filtering and field mapping, so it must name
+    the output field, which for a pass-through mapping is the same name.
+    """
+    if not isinstance(result, dict) or not recompute:
+        return
+
+    for rule in recompute:
+        if not isinstance(rule, dict):
+            continue
+        dest = rule.get("field")
+        source = rule.get("from") or ""
+        op = (rule.get("op") or "sum").lower()
+        if not dest or "[]." not in source or op not in ("sum", "count"):
+            continue
+
+        arr_name, sub_field = source.split("[].", 1)
+        rows = result.get(arr_name)
+        if not isinstance(rows, list):
+            continue
+
+        if op == "count":
+            result[dest] = len(rows)
+            continue
+
+        total = 0.0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            value = row.get(sub_field)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                total += value
+        # Money and hours both come back with at most two decimals; rounding
+        # here keeps 146.49999999999997 out of an agent's answer.
+        result[dest] = round(total, 2)
+
+
 def apply_response_transform(
     payload: dict | list,
     transform_config: dict,
@@ -294,7 +346,8 @@ def apply_response_transform(
             "enabled": bool,
             "fields": {"source.path": "output_name|tz|dow", "arr[].field": "name"},
             "flatten": ["arr_name"],
-            "filters": [{"field": "...", "operator": "...", "value": "..."}]
+            "filters": [{"field": "...", "operator": "...", "value": "..."}],
+            "recompute": [{"field": "total", "from": "rows[].amount", "op": "sum"}],
         }
         venue_timezone: IANA timezone name for tz/dow field options (e.g., "Pacific/Auckland").
 
@@ -347,7 +400,13 @@ def apply_response_transform(
             else:
                 transformed_items.append(result)
 
+        recompute_rules = transform_config.get("recompute") or []
         if wrapper_key is None:
+            # A bare list of objects, each holding its own nested rows — a list
+            # of rosters, each with rosteredShifts. Every one needs its own
+            # total re-derived.
+            for item in transformed_items:
+                _apply_recompute(item, recompute_rules)
             return transformed_items
 
         # Reconstruct the wrapper structure
@@ -355,10 +414,12 @@ def apply_response_transform(
             outer_key, inner_key = wrapper_key.split(".", 1)
             out = {**payload}
             out[outer_key] = {**payload[outer_key], inner_key: transformed_items}
+            _apply_recompute(out.get(outer_key), recompute_rules)
             return out
 
         out = {**payload}
         out[wrapper_key] = transformed_items
+        _apply_recompute(out, recompute_rules)
         return out
 
     # Single object or non-standard structure
@@ -375,6 +436,7 @@ def apply_response_transform(
         result = _transform_item(
             payload, fields, flatten, venue_tz=venue_tz, nested_filters=nested_filters
         )
+        _apply_recompute(result, transform_config.get("recompute") or [])
         return result
 
     return payload
