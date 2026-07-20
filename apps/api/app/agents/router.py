@@ -67,12 +67,22 @@ def classify_followup(
             pb_lines = [f"- {pb.slug}: {pb.description}" for pb in playbooks]
             playbook_section = "\n\nAvailable playbooks:\n" + "\n".join(pb_lines)
 
+    # The model has to pick from the agents that actually exist. Without this it
+    # invents plausible-sounding slugs — "inventory" for a stock question, when
+    # stock lives in procurement — and the caller can only discard the answer.
+    from app.agents.registry import registered_domains
+
+    domain_list = "\n".join(f"- {d}" for d in registered_domains())
+
     system = f"""You are a message router for Norm, a hospitality operations platform.
 The user is sending a follow-up message in an existing thread.
 
 Current thread: {thread_domain} agent
 Recent conversation:
 {recent_summary}{playbook_section}
+
+The ONLY domains that exist:
+{domain_list}
 
 Decide how to handle this follow-up:
 a) "continue" — the message continues the current conversation naturally. If a playbook matches this specific message, include its slug.
@@ -83,13 +93,15 @@ Return ONLY valid JSON:
 
 If a playbook listed above matches this message, include its slug in "playbook".
 If no playbook matches, set playbook to null (agent gets full tool access).
-If action is "new_thread", set domain to the appropriate domain.
+If action is "new_thread", "domain" MUST be copied exactly from the list above —
+never invent a slug. Stock, inventory, suppliers, orders and invoices are all
+procurement.
 These capabilities are available in EVERY agent and NEVER require a domain switch:
 - Automated task creation/scheduling ("set up a task", "do this daily", "automate this")
 - Email sending ("email me this", "send this to...")
 - Chart rendering ("make a chart", "visualize this")
 
-Default to "continue" — only use "new_thread" for genuine domain switches (e.g., asking about inventory in an HR thread)."""
+Default to "continue" — only use "new_thread" for genuine domain switches (e.g., asking about staff hours in a procurement thread)."""
 
     client = anthropic.Anthropic(api_key=api_key)
     t0 = time.time()
