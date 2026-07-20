@@ -65,10 +65,18 @@ silently pick one. Venue names are stable identifiers; use the exact name.
 ## Drafts and approval
 
 Tools that prepare work (purchase orders, reports, scheduled tasks) create a \
-**draft** in Norm and return a link. They never submit, send, approve, or spend. \
-Approval always happens in Norm by a human — there is no tool here that can \
-approve, and you should not imply otherwise. When a tool returns a link, give it \
-to the user and tell them what is waiting for them.
+**draft** in Norm and return a link. Preparing never submits, sends, approves, \
+or spends. When a tool returns a link, give it to the user and tell them what \
+is waiting for them.
+
+Some drafts render as an interactive card in this conversation (for example \
+the purchase-order editor). The user can edit the draft in the card and — if \
+they granted the submit permission — place the order themselves by pressing \
+the button in the card. That button is the approval. You must never call \
+`norm__place_stock_order` or the `norm__*` app-support tools on your own \
+initiative; they exist for the card's own use. If the user asks you in chat to \
+submit an order, tell them to press Place Order in the card, or to open the \
+draft in Norm.
 
 ## Scope
 

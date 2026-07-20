@@ -8,7 +8,6 @@ LLM tool system entirely).
 import logging
 import re
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -356,188 +355,15 @@ async def execute_component_api(
     Looks up the config, resolves credentials, renders the URL/body,
     makes the HTTP call, and returns the raw response. No working
     documents, no response transforms, no LLM involvement.
+
+    The execution itself lives in ``services.component_api`` so the MCP
+    app-support tools run the identical path.
     """
-    from app.connectors.spec_executor import _apply_auth, _jinja_env
+    from app.services.component_api import ComponentApiError, execute_component_action
 
-    # 1. Find the component API config
-    cfg = (
-        config_db.query(ComponentApiConfig)
-        .filter(
-            ComponentApiConfig.component_key == component_key,
-            ComponentApiConfig.action_name == action_name,
-            ComponentApiConfig.enabled.is_(True),
-        )
-        .first()
-    )
-    if not cfg:
-        raise HTTPException(404, f"No config for {component_key}/{action_name}")
-
-    # 2. Find connector credentials
-    cred_query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == cfg.connector_name,
-        ConnectorConfig.enabled == "true",
-    )
-    if body.venue_id:
-        cred_query = cred_query.filter(ConnectorConfig.venue_id == body.venue_id)
-    cred_row = cred_query.first()
-    if not cred_row:
-        raise HTTPException(
-            400,
-            f"No credentials for {cfg.connector_name}"
-            + (f" (venue {body.venue_id})" if body.venue_id else ""),
-        )
-    credentials = cred_row.config or {}
-
-    # 3. Get connector spec for auth config
-    spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == cfg.connector_name)
-        .first()
-    )
-    if not spec:
-        raise HTTPException(404, f"Connector spec not found: {cfg.connector_name}")
-
-    # 4. Render URL from path_template
-    template_ctx = {
-        "creds": credentials,
-        **(body.params if isinstance(body.params, dict) else {}),
-    }
     try:
-        url = _jinja_env.from_string(cfg.path_template).render(**template_ctx).strip()
-    except Exception as e:
-        raise HTTPException(400, f"URL template error: {e}") from e
-
-    # Ensure protocol
-    if url.startswith("//"):
-        url = "https:" + url
-
-    # Encode '+' in query params as %2B (servers interpret bare + as space)
-    from urllib.parse import urlsplit, urlunsplit
-
-    parts = urlsplit(url)
-    if parts.query:
-        encoded_query = re.sub(
-            r"(\d{2}:\d{2}:\d{2})\+(\d{1,2}:\d{2})", r"\1%2B\2", parts.query
+        return execute_component_action(
+            component_key, action_name, body.params, body.venue_id, db, config_db
         )
-        url = urlunsplit(
-            (parts.scheme, parts.netloc, parts.path, encoded_query, parts.fragment)
-        )
-
-    # 5. Render request body (for POST/PUT/PATCH)
-    req_body = None
-    if cfg.request_body_template and cfg.method in ("POST", "PUT", "PATCH"):
-        try:
-            rendered = _jinja_env.from_string(cfg.request_body_template).render(
-                **template_ctx
-            )
-            import json
-
-            try:
-                req_body = json.loads(rendered)
-            except json.JSONDecodeError:
-                req_body = rendered
-        except Exception as e:
-            raise HTTPException(400, f"Body template error: {e}") from e
-
-    # If no template but params exist, pass through as body
-    if req_body is None and cfg.method in ("POST", "PUT", "PATCH"):
-        if body.params:
-            req_body = body.params
-
-    # 6. Build headers
-    headers = {"Content-Type": "application/json"}
-    # Apply headers from auth_config (e.g., x-loaded-company-id)
-    for k, v in (spec.auth_config or {}).items():
-        try:
-            headers[k] = _jinja_env.from_string(str(v)).render(**template_ctx).strip()
-        except Exception:
-            headers[k] = str(v)
-    # Apply headers from component config (override if set)
-    for k, v in (cfg.headers or {}).items():
-        try:
-            headers[k] = _jinja_env.from_string(str(v)).render(**template_ctx).strip()
-        except Exception:
-            headers[k] = str(v)
-
-    # 7. Apply auth
-    headers, httpx_auth = _apply_auth(
-        headers,
-        spec.auth_type,
-        spec.auth_config or {},
-        credentials,
-        spec=spec,
-        db=db,
-        venue_id=body.venue_id,
-    )
-
-    # 8. Execute HTTP request
-    try:
-        resp = httpx.request(
-            method=cfg.method,
-            url=url,
-            headers=headers,
-            json=req_body if isinstance(req_body, (dict, list)) else None,
-            content=req_body if isinstance(req_body, str) else None,
-            auth=httpx_auth,
-            timeout=30.0,
-        )
-    except httpx.TimeoutException:
-        raise HTTPException(504, "Request timed out")
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, f"HTTP error: {exc}")
-
-    # 9. Parse response
-    try:
-        data = resp.json()
-    except Exception:
-        data = resp.text
-
-    if resp.status_code >= 400:
-        return {"data": data, "status_code": resp.status_code, "error": True}
-
-    # 10. Apply response field mapping (for load endpoints)
-    if cfg.response_field_mapping and isinstance(data, (dict, list)):
-        data = _apply_response_mapping(data, cfg.response_field_mapping)
-
-    return {"data": data, "status_code": resp.status_code}
-
-
-def _apply_response_mapping(data: dict | list, mapping: dict[str, str]) -> dict | list:
-    """Remap field names in response data using the configured mapping.
-
-    mapping is {"componentFieldName": "apiFieldName"} — the reverse lookup
-    renames API fields to component field names.
-    Handles both single objects and arrays of objects.
-    Nested arrays (e.g., rosteredShifts) are also processed.
-    """
-    # Invert: build api_field → component_field lookup
-    reverse: dict[str, str] = {}
-    for comp_field, api_field in mapping.items():
-        if api_field:  # skip unmapped
-            reverse[api_field] = comp_field
-
-    def _remap_item(item: dict) -> dict:
-        result: dict = {}
-        for key, value in item.items():
-            new_key = reverse.get(key, key)  # rename if mapped, keep original otherwise
-            if isinstance(value, list) and value and isinstance(value[0], dict):
-                result[new_key] = [_remap_item(v) for v in value]
-            else:
-                result[new_key] = value
-        return result
-
-    if isinstance(data, list):
-        return [_remap_item(item) if isinstance(item, dict) else item for item in data]
-    if isinstance(data, dict):
-        # Check for common wrapper keys
-        for wrapper_key in ("data", "items", "results"):
-            if wrapper_key in data and isinstance(data[wrapper_key], list):
-                return {
-                    **data,
-                    wrapper_key: [
-                        _remap_item(item) if isinstance(item, dict) else item
-                        for item in data[wrapper_key]
-                    ],
-                }
-        return _remap_item(data)
-    return data
+    except ComponentApiError as e:
+        raise HTTPException(e.status_code, str(e)) from e

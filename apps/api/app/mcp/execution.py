@@ -164,6 +164,13 @@ class NormMcpContext(McpContext):
             self._audit(name, "read", arguments, False, error_code="not_authorized")
             raise McpDispatchError(INVALID_PARAMS, f"Unknown tool: {name}")
 
+        # App-support tools (embedded MCP Apps' callback surface) validate
+        # their own venue_id argument against the principal — they carry ids,
+        # not display names, so name-based venue resolution below doesn't
+        # apply to them.
+        if tool.kind == "app":
+            return self._call_app_tool(tool, dict(arguments))
+
         params = dict(arguments)
         venue_name = params.pop("venue", None)
 
@@ -251,6 +258,58 @@ class NormMcpContext(McpContext):
         if structured is not None:
             structured = self._as_display_block(tool, structured)
         return tools_call_result(payload, structured=structured)
+
+    def _call_app_tool(self, tool: McpTool, params: dict) -> dict:
+        """Run an app-support tool (app_tools.py) with audit and error mapping.
+
+        No result reshaping: the caller is an app that parses the payload, so
+        a `_slimmed` envelope would break it. app_tools bounds its own result
+        sizes (paging) instead.
+        """
+        from app.mcp.app_tools import AppToolError, execute_app_tool
+
+        t0 = time.time()
+        try:
+            payload = execute_app_tool(
+                tool.name, params, self.principal, self.db, self.config_db
+            )
+            success, error = True, None
+        except AppToolError as exc:
+            payload, success, error = None, False, str(exc)
+        except Exception:
+            logger.exception("mcp_app_tool_failed", extra={"mcp_tool": tool.name})
+            payload, success, error = None, False, "The request could not be completed."
+
+        duration_ms = int((time.time() - t0) * 1000)
+        logger.info(
+            "mcp_tool_call",
+            extra={
+                "mcp_tool": tool.name,
+                "connector": None,
+                "action": None,
+                "venue_id": params.get("venue_id"),
+                "duration_ms": duration_ms,
+                "status": "ok" if success else "error",
+                "truncated": False,
+                "arg_keys": sorted(params),
+            },
+        )
+        self._audit(
+            tool.name,
+            tool.access,
+            params,
+            success,
+            error_message=error,
+            duration_ms=duration_ms,
+            venue_id=params.get("venue_id"),
+        )
+        if not success:
+            # AppToolError refusals are recoverable (wrong venue, missing doc,
+            # bad params) — mark them so, matching the venue errors above.
+            return error_result(
+                error or "Tool execution failed", code="VALIDATION_ERROR"
+            )
+        return tools_call_result(payload)
 
     def _consented_venues(self) -> list[tuple[str, str]]:
         """(id, name) for the principal's consented venues, ordered by name.
@@ -490,4 +549,18 @@ class NormMcpContext(McpContext):
             return error_result(
                 payload["error"], code=payload.get("code", "INTERNAL_ERROR")
             )
-        return tools_call_result(payload)
+
+        # A playbook bound to the display-block app renders through a real
+        # Norm component — for create_stock_order, the purchase-order editor
+        # itself, with its lines pre-resolved server-side. Failure to build
+        # the block must not fail the workflow; the app falls back to the
+        # plain payload (workflow card).
+        structured = None
+        if tool.ui_resource:
+            from app.mcp.po_display import playbook_display_block
+
+            block = playbook_display_block(
+                payload, venue_id, self.principal, self.db, self.config_db
+            )
+            structured = ui_payload(block) if block else None
+        return tools_call_result(payload, structured=structured)

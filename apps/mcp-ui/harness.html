@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>MCP App harness — renders ui:// apps the way claude.ai does</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; background: #f5f4f0; }
+  .bar { padding: 10px 16px; background: #fff; border-bottom: 1px solid #ddd;
+    display: flex; gap: 10px; align-items: center; font-size: 13px; flex-wrap: wrap; }
+  .bar input, .bar select { font: inherit; padding: 4px 6px; }
+  #toolName { width: 280px; } #toolArgs { width: 340px; }
+  /* claude.ai renders MCP apps in a card in the chat column (~660px). */
+  .chat { width: 660px; margin: 24px auto; }
+  .card { border: 1px solid #d9d5cd; border-radius: 12px; overflow: hidden; background: #fff; }
+  .cardhead { font-size: 12px; color: #777; padding: 6px 12px; border-bottom: 1px solid #eee; }
+  iframe { width: 100%; border: 0; display: block; height: 200px; }
+  #log { font: 11px/1.5 monospace; color: #555; padding: 8px 16px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <label>API <input id="api" value="http://localhost:8000" size="18"></label>
+  <label>Token <input id="token" value="dev-local-only-token" size="16"></label>
+  <label>Tool <input id="toolName" value="loadedhub__get_roster_for_period"></label>
+  <label>Args <input id="toolArgs" value='{"period":"this week"}'></label>
+  <label>Theme <select id="theme"><option>light</option><option>dark</option></select></label>
+  <label>Width <input id="width" value="660" size="4"></label>
+  <label>Canned <input id="canned" size="18" placeholder="(url of result json)"></label>
+  <button id="run">Run</button>
+</div>
+<div class="chat"><div class="card">
+  <div class="cardhead" id="cardhead">ui:// app</div>
+  <iframe id="app" sandbox="allow-scripts" title="MCP app"></iframe>
+</div></div>
+<div id="log"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const log = (...a) => { $("log").textContent += a.map(x => typeof x === "string" ? x : JSON.stringify(x)).join(" ") + "\n"; };
+
+let pendingResult = null;   // tools/call result to push once app initializes
+let appReady = false;
+
+async function mcp(method, params) {
+  const res = await fetch($("api").value + "/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + $("token").value },
+    body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params: params || {} }),
+  });
+  const body = await res.json();
+  if (body.error) throw new Error(body.error.message || JSON.stringify(body.error));
+  return body.result;
+}
+
+function pushResult() {
+  if (!appReady || !pendingResult) return;
+  $("app").contentWindow.postMessage(
+    { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: pendingResult }, "*");
+  log("host → tool-result pushed");
+}
+
+window.addEventListener("message", async (ev) => {
+  const m = ev.data;
+  if (!m || m.jsonrpc !== "2.0") return;
+  const reply = (result) => $("app").contentWindow.postMessage({ jsonrpc: "2.0", id: m.id, result }, "*");
+  const fail = (message) => $("app").contentWindow.postMessage({ jsonrpc: "2.0", id: m.id, error: { code: -32000, message } }, "*");
+
+  if (m.method === "ui/initialize") {
+    log("app → ui/initialize");
+    reply({ protocolVersion: "2025-06-18", hostInfo: { name: "harness" },
+            hostContext: { theme: $("theme").value } });
+  } else if (m.method === "ui/notifications/initialized") {
+    log("app → initialized");
+    appReady = true;
+    pushResult();
+  } else if (m.method === "ui/notifications/size-changed") {
+    // claude.ai grows the card with the app, within limits.
+    const h = Math.min(Math.max((m.params && m.params.height || 0) + 2, 60), 1400);
+    $("app").style.height = h + "px";
+  } else if (m.method === "tools/call") {
+    log("app → tools/call", m.params && m.params.name, m.params && m.params.arguments);
+    try { reply(await mcp("tools/call", m.params)); }
+    catch (e) { log("tools/call failed:", e.message); fail(e.message); }
+  } else if (m.method === "ui/open-link") {
+    log("app → open-link", m.params && m.params.url);
+    if (m.id != null) reply({});
+  }
+});
+
+let runSeq = 0;
+async function run() {
+  const seq = ++runSeq;   // a newer run invalidates every await of an older one
+  const live = () => seq === runSeq;
+  $("log").textContent = "";
+  appReady = false; pendingResult = null;
+  document.querySelector(".chat").style.width = $("width").value + "px";
+  const toolName = $("toolName").value.trim();
+
+  let result;
+  if ($("canned").value.trim()) {
+    // Canned mode: render a saved tools/call result instead of calling live.
+    result = await (await fetch($("canned").value.trim())).json();
+    log("using canned result");
+  }
+  if (!live()) return;
+
+  // Which ui:// app does this tool bind to?
+  const tools = (await mcp("tools/list")).tools;
+  if (!live()) return;
+  const tool = tools.find(t => t.name === toolName);
+  if (!tool) { log("unknown tool " + toolName); return; }
+  const uri = tool._meta && tool._meta.ui && tool._meta.ui.resourceUri;
+  $("cardhead").textContent = toolName + " → " + (uri || "(no ui binding)");
+  if (!uri) { log("tool has no ui:// binding"); return; }
+
+  const resource = await mcp("resources/read", { uri });
+  if (!live()) return;
+  const html = resource.contents[0].text;
+
+  if (!result) {
+    log("calling", toolName, "...");
+    result = await mcp("tools/call", { name: toolName, arguments: JSON.parse($("toolArgs").value || "{}") });
+    if (!live()) return;
+  }
+  pendingResult = result;
+  log("result: isError=" + (result.isError || false),
+      "structuredContent=" + (result.structuredContent ? "yes" : "no"));
+
+  const f = $("app");
+  f.style.height = "200px";
+  f.srcdoc = html;   // fresh document; bridge will re-handshake
+}
+$("run").addEventListener("click", run);
+run();
+</script>
+</body>
+</html>

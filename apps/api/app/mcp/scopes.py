@@ -35,13 +35,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Access levels. v1 ships read + draft; "write" exists in the type so the
-# boundary is expressible, but no scope below declares it.
+# Access levels. Direct connector tools are still projected read-only and
+# playbooks top out at draft — that hasn't moved. "write" is declared by
+# exactly one scope (mcp:orders:submit), which exists so a human can press
+# "Place Order" inside an embedded app in Claude. It is never exercised by the
+# model on its own initiative: the only caller is the purchase-order app, and
+# the click is the approval.
 ACCESS_READ = "read"
 ACCESS_DRAFT = "draft"
 ACCESS_WRITE = "write"
 
 V1_ACCESS_LEVELS = frozenset({ACCESS_READ, ACCESS_DRAFT})
+ALLOWED_ACCESS_LEVELS = frozenset({ACCESS_READ, ACCESS_DRAFT, ACCESS_WRITE})
 
 
 @dataclass(frozen=True)
@@ -116,6 +121,16 @@ MCP_SCOPES: dict[str, McpScope] = {
         access_level=ACCESS_DRAFT,
         requires=frozenset({"tasks:read", "tasks:write"}),
     ),
+    "mcp:orders:submit": McpScope(
+        name="mcp:orders:submit",
+        label="Place purchase orders you approve",
+        description="Lets YOU place a drafted order with the supplier by "
+        "pressing Place Order inside the embedded order editor. Claude cannot "
+        "trigger this itself — only your click in the order card submits, and "
+        "the order goes to the supplier exactly as shown.",
+        access_level=ACCESS_WRITE,
+        requires=frozenset({"orders:read", "orders:write"}),
+    ),
 }
 
 
@@ -155,10 +170,18 @@ def validate_scope_vocabulary() -> list[str]:
             problems.append(
                 f"{name}: has no `requires` — it would be granted to any role"
             )
-        if scope.access_level not in V1_ACCESS_LEVELS:
+        if scope.access_level not in ALLOWED_ACCESS_LEVELS:
             problems.append(
-                f"{name}: access_level '{scope.access_level}' is not "
-                f"permitted in v1 (read/draft only)"
+                f"{name}: access_level '{scope.access_level}' is not a "
+                f"known access level"
+            )
+        if scope.access_level == ACCESS_WRITE and name != "mcp:orders:submit":
+            # Deliberate friction: each write scope is a boundary decision,
+            # not a pattern to copy. Add the name here only after deciding it
+            # the way mcp:orders:submit was decided (user-gesture-only, from
+            # an embedded app, with consent text saying exactly what fires).
+            problems.append(
+                f"{name}: write scopes must be individually allowlisted here"
             )
     return problems
 

@@ -14,19 +14,6 @@ import { REGISTRY, type BlockProps } from './registry';
 // Side-effect import: defines window.NormApp.
 import '../../api/app/mcp/ui/_bridge.js';
 
-declare global {
-  interface Window {
-    NormApp: {
-      onResult: (cb: (params: ToolResult) => void) => void;
-      callTool: (name: string, args?: unknown) => Promise<unknown>;
-      openLink: (url: string) => void;
-      reportSize: () => void;
-      truncationMessage: (d: unknown) => string | null;
-      unwrap: (d: unknown) => unknown;
-    };
-  }
-}
-
 interface ToolResult {
   structuredContent?: Record<string, unknown>;
   content?: { type: string; text?: string }[];
@@ -79,14 +66,39 @@ function App() {
   if (error) return <p className="err">{error}</p>;
   if (!block) return <p className="err">Loading…</p>;
 
-  const Component = REGISTRY[block.component];
-  if (!Component) {
-    // Never leave a blank card: fall back to the universal table.
-    const Fallback = REGISTRY.generic_table;
-    return <Fallback data={block.data} props={block.props} />;
-  }
-  const props: BlockProps = { data: block.data, props: block.props };
-  return <Component {...props} />;
+  const Component = REGISTRY[block.component] ?? REGISTRY.generic_table;
+  const props: BlockProps = {
+    data: block.data,
+    props: block.props,
+    // Working-document components (the PO editor) need the thread to address
+    // their draft; the server sends it on props.
+    threadId: (block.props?.thread_id as string | undefined)
+      ?? (block.data?.thread_id as string | undefined),
+  };
+  const openInNorm = block.props?.open_in_norm as string | undefined;
+
+  return (
+    <>
+      {/* Norm's components lay out for the app's workspace pane (the roster
+          grid alone wants 700px). A host card can be narrower — scroll the
+          component inside the card rather than letting the host clip it. */}
+      <div style={{ overflowX: 'auto' }}>
+        <Component {...props} />
+      </div>
+      {openInNorm && (
+        <div style={{ marginTop: 10 }}>
+          <button
+            className="btn"
+            style={{ background: 'transparent', color: 'var(--accent)',
+                     border: '1px solid var(--accent)' }}
+            onClick={() => window.NormApp.openLink(openInNorm)}
+          >
+            Open in Norm
+          </button>
+        </div>
+      )}
+    </>
+  );
 }
 
 createRoot(document.getElementById('root')!).render(

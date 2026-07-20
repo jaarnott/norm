@@ -17,6 +17,7 @@ const root = join(here, '..', '..', '..');
 const SOURCES = [
   'apps/web/app/components/display/GenericTable.tsx',
   'apps/web/app/components/display/RosterEditor.tsx',
+  'apps/web/app/components/display/PurchaseOrderEditor.tsx',
   'apps/web/app/components/display/roster/shared.ts',
   'apps/web/app/components/display/roster/WeekGrid.tsx',
   'apps/web/app/components/display/roster/DayTimeline.tsx',
@@ -27,6 +28,9 @@ const SOURCES = [
   'apps/web/app/components/display/roster/warnings.ts',
   'apps/mcp-ui/src/registry.ts',
   'apps/mcp-ui/src/main.tsx',
+  'apps/mcp-ui/src/sandbox-api.ts',
+  'apps/mcp-ui/src/WorkflowResult.tsx',
+  'apps/mcp-ui/vite.config.ts',
   'apps/api/app/mcp/ui/_bridge.js',
 ];
 

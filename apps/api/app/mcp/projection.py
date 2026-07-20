@@ -189,7 +189,7 @@ class McpTool:
     """A projected, authorized MCP tool."""
 
     name: str
-    kind: str  # "connector" | "playbook"
+    kind: str  # "connector" | "playbook" | "app"
     connector: str | None
     action: str | None
     playbook_slug: str | None
@@ -245,7 +245,10 @@ def to_mcp_tool_dict(tool: McpTool) -> dict:
         "inputSchema": tool.input_schema,
         "annotations": {
             "readOnlyHint": tool.is_read_only,
-            "destructiveHint": False,  # v1 is read + draft only
+            # Nothing on this surface deletes or overwrites existing data.
+            # The one write (norm__place_stock_order) creates an order; it is
+            # consequential but not destructive in MCP's sense.
+            "destructiveHint": False,
         },
     }
     # MCP Apps: bind the tool to its embedded UI. The host preloads this ui://
@@ -458,6 +461,35 @@ def project_tools(
                     else None
                 ),
                 multi_venue=multi_venue,
+            )
+        )
+
+    # App-support tools — the callback surface for embedded MCP Apps
+    # (SEP-1865). Code-defined in app_tools.py, not config rows: each one is a
+    # security decision. Scope-gated like everything else; appended last so a
+    # curated capability with the same name (which would be a config bug) wins
+    # via `seen` rather than silently shadowing a code-defined handler.
+    from app.mcp.app_tools import app_tool_defs
+
+    for spec_def in app_tool_defs(settings.MCP_UI_ENABLED):
+        if not spec_def["scopes"] <= granted:
+            continue
+        if spec_def["name"] in seen:
+            continue
+        seen.add(spec_def["name"])
+        tools.append(
+            McpTool(
+                name=spec_def["name"],
+                kind="app",
+                connector=None,
+                action=None,
+                playbook_slug=None,
+                method=spec_def["method"],
+                access=spec_def["access"],
+                scopes=spec_def["scopes"],
+                description=spec_def["description"],
+                input_schema=spec_def["input_schema"],
+                venue_scoped=False,
             )
         )
 

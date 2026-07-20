@@ -63,8 +63,12 @@ class TestRegistry:
         assert ui_resource_for("loadedhub", "get_roster") == DISPLAY_BLOCK_URI
         assert component_for("loadedhub", "get_roster") == "roster_editor"
 
-    def test_playbook_bound_to_workflow_app(self):
-        assert ui_resource_for_playbook("create_stock_order") == WORKFLOW_URI
+    def test_stock_order_playbook_renders_the_real_editor(self):
+        """create_stock_order binds to display-block — the SAME
+        PurchaseOrderEditor the web app mounts — not the hand-written summary
+        card. The card was the reason the Claude demo looked nothing like
+        Norm."""
+        assert ui_resource_for_playbook("create_stock_order") == DISPLAY_BLOCK_URI
         assert ui_resource_for_playbook("cogs_analysis") is None
         assert ui_resource_for_playbook(None) is None
 
@@ -276,6 +280,7 @@ class TestBundleFreshness:
     SOURCES = [
         "apps/web/app/components/display/GenericTable.tsx",
         "apps/web/app/components/display/RosterEditor.tsx",
+        "apps/web/app/components/display/PurchaseOrderEditor.tsx",
         "apps/web/app/components/display/roster/shared.ts",
         "apps/web/app/components/display/roster/WeekGrid.tsx",
         "apps/web/app/components/display/roster/DayTimeline.tsx",
@@ -286,6 +291,9 @@ class TestBundleFreshness:
         "apps/web/app/components/display/roster/warnings.ts",
         "apps/mcp-ui/src/registry.ts",
         "apps/mcp-ui/src/main.tsx",
+        "apps/mcp-ui/src/sandbox-api.ts",
+        "apps/mcp-ui/src/WorkflowResult.tsx",
+        "apps/mcp-ui/vite.config.ts",
         "apps/api/app/mcp/ui/_bridge.js",
     ]
 

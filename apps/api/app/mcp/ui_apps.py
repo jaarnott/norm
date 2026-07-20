@@ -120,12 +120,19 @@ TOOL_COMPONENT: dict[tuple[str, str], str] = {
 }
 
 # Bespoke apps for a connector tool, keyed by (connector, action). Empty: the
-# only bespoke app left is the playbook workflow card below.
+# only bespoke app left is the playbook workflow card.
 TOOL_UI: dict[tuple[str, str], str] = {}
 
 # Which playbook workflow renders into which app, keyed by playbook slug.
+#
+# create_stock_order renders into display-block — the REAL PurchaseOrderEditor,
+# same one the web app mounts, with lines pre-resolved server-side
+# (po_display.py) and its edits/submit routed back through the app-support
+# tools (app_tools.py). The hand-written workflow.html card remains for any
+# playbook that only has a text outcome; display-block also carries a
+# `workflow_result` component for non-draft outcomes of bound playbooks.
 PLAYBOOK_UI: dict[str, str] = {
-    "create_stock_order": _WORKFLOW.uri,
+    "create_stock_order": _DISPLAY_BLOCK.uri,
 }
 
 
