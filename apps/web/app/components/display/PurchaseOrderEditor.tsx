@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch, callComponentApi, getStoredUser } from '../../lib/api';
 
@@ -160,6 +160,29 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   const [livePrices, setLivePrices] = useState<Record<string, { cost: number; unitName: string; documentNumber: string }>>({});
   const connectorName = (props?.connector_name as string) || '';
   const isAdmin = getStoredUser()?.role === 'admin';
+  const embedded = !!props?.embedded;
+
+  // Embedded (MCP App) only: the card renders the instant the tool returns, but
+  // the agent may keep refining the draft afterwards — resolving an ambiguous
+  // product ("which Corona?"), converting bottles to packs. With no session to
+  // push updates into the iframe, `userTookOver` guards a poll (below) that
+  // pulls the working document until the user starts editing, after which their
+  // state wins. Inert in Norm, where the page already reflects live edits.
+  const [userTookOver, setUserTookOver] = useState(false);
+  const [pollExhausted, setPollExhausted] = useState(false);
+  const lastVersionRef = useRef(0);
+
+  // Embedded-only: a raw draft can carry a not-yet-resolved line — a bare
+  // {itemId, quantity} the sandbox can't expand, or an ambiguous item parked
+  // in needs_selection — which extractOrder turns into a phantom row (a
+  // quantity with no product). In Norm the on-mount reference fetch resolves
+  // those; the sandbox can't, so drop phantoms and let the "preparing" state
+  // and the poll show through until a real, named line exists.
+  const usableLines = useCallback(
+    (ls: LineItem[]) =>
+      embedded ? ls.filter(l => (l.product || '').trim().length > 0) : ls,
+    [embedded],
+  );
 
   useEffect(() => {
     if (!workingDocId || !threadId) return;
@@ -169,14 +192,42 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
         if (doc) {
           setOrderData(doc.data);
           setDocVersion(doc.version);
+          lastVersionRef.current = doc.version;
           setSyncStatus(doc.sync_status);
           const parsed = extractOrder(doc.data);
-          setLines(parsed.lines);
+          setLines(usableLines(parsed.lines));
           setNotes(parsed.notes);
         }
       })
       .catch(() => {});
-  }, [workingDocId, threadId]);
+  }, [workingDocId, threadId, usableLines]);
+
+  // The catch-up poll. Runs only while embedded and untouched; a bumped version
+  // means the agent changed the draft, so re-derive from it. Stops on submit,
+  // on user takeover, or after ~110s (matches the playbook's own timeout).
+  useEffect(() => {
+    if (!embedded || !workingDocId || !threadId || userTookOver) return;
+    if (status === 'submitted' || status === 'approved') return;
+    let polls = 0;
+    const id = setInterval(async () => {
+      if (++polls > 45) { clearInterval(id); setPollExhausted(true); return; }
+      try {
+        const res = await apiFetch(`/api/threads/${threadId}/working-documents/${workingDocId}`);
+        if (!res.ok) return;
+        const doc = await res.json();
+        if (!doc || typeof doc.version !== 'number' || doc.version <= lastVersionRef.current) return;
+        lastVersionRef.current = doc.version;
+        setOrderData(doc.data);
+        setDocVersion(doc.version);
+        setSyncStatus(doc.sync_status);
+        const parsed = extractOrder(doc.data);
+        setLines(usableLines(parsed.lines));
+        setNotes(parsed.notes);
+        if (parsed.status) setStatus(parsed.status);
+      } catch { /* transient — try again next tick */ }
+    }, 2500);
+    return () => clearInterval(id);
+  }, [embedded, workingDocId, threadId, userTookOver, status, usableLines]);
 
   useEffect(() => {
     if (workingDocId) return;
@@ -404,6 +455,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   }, [workingDocId, threadId, docVersion]);
 
   const handleQtyChange = useCallback((idx: number, qty: number) => {
+    setUserTookOver(true);
     setLines(prev => prev.map((l, i) => i === idx ? { ...l, quantity: Math.max(0, qty) } : l));
     if (workingDocId) {
       patchDoc([{ op: 'update_line', index: idx, fields: { quantity: qty } }]);
@@ -413,6 +465,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   }, [workingDocId, patchDoc, onAction, connectorName]);
 
   const handleRemove = useCallback((idx: number) => {
+    setUserTookOver(true);
     setLines(prev => prev.filter((_, i) => i !== idx));
     if (workingDocId) {
       patchDoc([{ op: 'remove_line', index: idx }]);
@@ -422,6 +475,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   }, [workingDocId, patchDoc, onAction, connectorName]);
 
   const handleAddFromSearch = useCallback((item: StockItem) => {
+    setUserTookOver(true);
     // Find default variant: default supplier + defaultForSupplier=true
     const defaultVariant = item.suppliers.find(
       s => s.supplierId === item.defaultSupplierId && s.defaultForSupplier
@@ -462,6 +516,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   }, [workingDocId, patchDoc, onAction, connectorName]);
 
   const handleVariantChange = useCallback((lineIndex: number, variant: SupplierVariant) => {
+    setUserTookOver(true);
     setLines(prev => prev.map((l, i) => {
       if (i !== lineIndex) return l;
       return {
@@ -556,6 +611,7 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   }, [buildBatchPayload, props]);
 
   const handleNotesChange = useCallback((value: string) => {
+    setUserTookOver(true);
     setNotes(value);
     if (workingDocId) {
       patchDoc([{ op: 'update_notes', value }]);
@@ -724,7 +780,14 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
             {lines.length === 0 && (
               <tr>
                 <td colSpan={hasPrice ? 8 : 6} style={{ padding: '1.5rem', textAlign: 'center', color: '#9ca3af', fontSize: '0.82rem' }}>
-                  No items yet
+                  {embedded && !userTookOver && !pollExhausted ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ display: 'inline-block', width: 12, height: 12, border: '2px solid #e5e7eb', borderTopColor: '#9ca3af', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                      Norm is preparing this order&hellip;
+                    </span>
+                  ) : embedded && pollExhausted ? (
+                    'Still preparing — open in Norm to finish this order.'
+                  ) : 'No items yet'}
                 </td>
               </tr>
             )}

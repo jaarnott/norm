@@ -114,6 +114,18 @@ def _po_editor_block(
         }
         flag_modified(doc, "data")
         db.commit()
+    elif not data.get("lines"):
+        # Unresolved: the item was ambiguous ("which Corona?") or the agent
+        # hasn't picked one yet, so there is nothing to draw. Do NOT hand the
+        # editor the bare `order_lines`/`needs_selection` — it would render a
+        # phantom line (a quantity with no product), which is exactly the
+        # "rendered before Claude was ready" the demo hit. Show the editor's
+        # "preparing" empty state instead; the card polls and fills in the real
+        # lines once the agent resolves the draft. The DRAFT keeps order_lines
+        # (this only strips the block's copy).
+        data["lines"] = []
+        data.pop("order_lines", None)
+        data.pop("needs_selection", None)
 
     props: dict = {
         "embedded": True,

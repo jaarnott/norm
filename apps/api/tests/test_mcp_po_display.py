@@ -241,6 +241,69 @@ class TestPlaybookDisplayBlock:
         assert "working_document_id" not in doc.data
         assert "thread_id" not in doc.data
 
+    def test_unresolved_draft_strips_phantom_lines(self, db_session, fake_reference):
+        """An ambiguous item ("which Corona?") parks in needs_selection with an
+        empty order_lines. The editor must render its "preparing" empty state,
+        not a phantom line — so the block hands it no order_lines and no
+        needs_selection to fall back onto."""
+        org = _org(db_session)
+        v = _venue(db_session, org)
+        u = _user(db_session)
+        t = Thread(
+            id=str(uuid.uuid4()),
+            user_id=u.id,
+            venue_id=v.id,
+            domain="procurement",
+            intent="procurement.tool_use",
+            status="completed",
+            raw_prompt="24 coronas",
+            extracted_fields={},
+            missing_fields=[],
+        )
+        db_session.add(t)
+        db_session.flush()
+        doc = WorkingDocument(
+            id=str(uuid.uuid4()),
+            thread_id=t.id,
+            venue_id=v.id,
+            doc_type="order",
+            connector_name="norm",
+            sync_mode="submit",
+            data={
+                "venue": v.name,
+                "venue_id": v.id,
+                "order_lines": [],
+                "needs_selection": [
+                    {
+                        "query": "corona",
+                        "quantity": 24,
+                        "options": ["Corona Extra", "Corona 0%"],
+                    }
+                ],
+            },
+            version=1,
+        )
+        db_session.add(doc)
+        db_session.flush()
+        block = playbook_display_block(
+            {
+                "status": "draft_created",
+                "working_document_id": doc.id,
+                "doc_type": "order",
+            },
+            v.id,
+            _principal(u, org, v),
+            db_session,
+            db_session,
+        )
+        assert block["component"] == "purchase_order_editor"
+        assert block["data"]["lines"] == []
+        assert "order_lines" not in block["data"]
+        assert "needs_selection" not in block["data"]
+        # The draft itself is untouched — the agent still needs order_lines.
+        db_session.refresh(doc)
+        assert doc.data["needs_selection"]
+
     def test_someone_elses_doc_id_gets_the_card_not_the_editor(
         self, db_session, fake_reference
     ):
