@@ -5,6 +5,7 @@
   "description": "Bundles Norm's real display components into self-contained MCP App HTML.",
   "scripts": {
     "build": "vite build && node scripts/emit.mjs",
+    "build:artifact": "vite build --config vite.artifact.config.ts && node scripts/emit-artifact.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

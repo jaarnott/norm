@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Norm — Roster</title>
+<style>
+/* Norm's palette, self-contained.
+   The MCP App gets these from _base.css, injected by the server at read time;
+   an artifact is served by claude.ai and has no such step, so the variables
+   the roster components reference live here. Both themes are defined: the
+   viewer's theme toggle stamps data-theme on the root, and that must win over
+   the media query in either direction. */
+:root {
+  --bg:#ffffff; --surface:#fafafa; --surface-alt:#f5f5f5;
+  --text:#1a1a1a; --text-soft:#555555; --muted:#8a8378; --muted-soft:#bbbbbb;
+  --line:#ece6df; --line-soft:#f0f0f0;
+  --brand:#a08060; --accent:#8a6d3b; --focus:#2563eb;
+  --ok:#28a745; --error:#ef4444; --error-bg:#fde8e5;
+  --warn:#b07a4a; --warn-bg:#fbf1de;
+  --published:#28a745; --published-bg:#eaf7ee;
+  --draft:#2563eb; --draft-bg:#eff6ff;
+  --open:#7a8499; --open-bg:#f1f3f7; --locked:#9aa3b2;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#1c1a17; --surface:#221f1b; --surface-alt:#2a2621;
+    --text:#f0ece6; --text-soft:#cfc8bd; --muted:#9a9284; --muted-soft:#6f695f;
+    --line:#33302a; --line-soft:#2b2823;
+    --brand:#c4a882; --accent:#c4a882; --focus:#6f9dff;
+    --ok:#6fbf7f; --error:#f28a80; --error-bg:#3a2320;
+    --warn:#d0a06a; --warn-bg:#35291b;
+    --published:#6fbf7f; --published-bg:#21311f;
+    --draft:#6f9dff; --draft-bg:#1e2740;
+    --open:#98a1b5; --open-bg:#262a33; --locked:#7d8593;
+  }
+}
+:root[data-theme="light"] {
+  --bg:#ffffff; --surface:#fafafa; --surface-alt:#f5f5f5;
+  --text:#1a1a1a; --text-soft:#555555; --muted:#8a8378; --muted-soft:#bbbbbb;
+  --line:#ece6df; --line-soft:#f0f0f0;
+  --brand:#a08060; --accent:#8a6d3b; --focus:#2563eb;
+  --ok:#28a745; --error:#ef4444; --error-bg:#fde8e5;
+  --warn:#b07a4a; --warn-bg:#fbf1de;
+  --published:#28a745; --published-bg:#eaf7ee;
+  --draft:#2563eb; --draft-bg:#eff6ff;
+  --open:#7a8499; --open-bg:#f1f3f7; --locked:#9aa3b2;
+}
+:root[data-theme="dark"] {
+  --bg:#1c1a17; --surface:#221f1b; --surface-alt:#2a2621;
+  --text:#f0ece6; --text-soft:#cfc8bd; --muted:#9a9284; --muted-soft:#6f695f;
+  --line:#33302a; --line-soft:#2b2823;
+  --brand:#c4a882; --accent:#c4a882; --focus:#6f9dff;
+  --ok:#6fbf7f; --error:#f28a80; --error-bg:#3a2320;
+  --warn:#d0a06a; --warn-bg:#35291b;
+  --published:#6fbf7f; --published-bg:#21311f;
+  --draft:#6f9dff; --draft-bg:#1e2740;
+  --open:#98a1b5; --open-bg:#262a33; --locked:#7d8593;
+}
+
+/* System faces, matching Norm's own _base.css rather than inlining a display
+   face: this page is a window onto Norm, and chrome that announced itself in a
+   different typeface would read as a different product. The care goes into the
+   scale and the figures instead — a roster is columns of times, hours and
+   money, so every numeral on the page is tabular. */
+html, body { margin:0; background:var(--bg); color:var(--text);
+  font:14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing:antialiased; }
+body { font-variant-numeric: tabular-nums; }
+.page { padding:0 18px 28px; max-width:100%; }
+
+/* Sticky: a full roster is taller than the viewport, and the week you are
+   looking at and the control that changes it must not scroll away from each
+   other. */
+.bar { position:sticky; top:0; z-index:5; background:var(--bg);
+  display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px;
+  padding:14px 0 12px; margin-bottom:14px; border-bottom:1px solid var(--line); }
+.ident { display:flex; align-items:baseline; gap:8px; }
+.brand { font-weight:800; color:var(--brand); letter-spacing:-.01em; }
+.muted { color:var(--muted); font-size:.82rem; }
+.ident .muted { text-transform:uppercase; letter-spacing:.08em; font-size:.7rem; }
+
+.venue { display:flex; align-items:center; gap:6px; }
+.venue .muted { text-transform:uppercase; letter-spacing:.08em; font-size:.7rem; }
+.venue select { font:inherit; font-weight:600; padding:5px 8px; border-radius:7px;
+  border:1px solid var(--line); background:var(--surface); color:var(--text); }
+
+.weeknav { display:flex; align-items:center; gap:6px; margin-left:auto; }
+.week { font-weight:600; min-width:12rem; text-align:center; }
+.freshness { display:flex; align-items:center; gap:10px; }
+
+button { font:inherit; padding:5px 10px; border-radius:7px; cursor:pointer;
+  border:1px solid var(--line); background:var(--surface); color:var(--text); }
+button:hover { background:var(--surface-alt); border-color:var(--muted-soft); }
+button:active { background:var(--line-soft); }
+.weeknav button { min-width:2.1rem; font-size:1rem; line-height:1.1; }
+.today { color:var(--accent); font-weight:600; }
+
+/* One visible focus treatment for every control, including the select. */
+button:focus-visible, select:focus-visible {
+  outline:2px solid var(--focus); outline-offset:1px; }
+
+.notice { border:1px solid var(--line); background:var(--surface);
+  border-radius:10px; padding:14px 16px; margin:10px 0; max-width:46rem; }
+.notice strong { display:block; margin-bottom:4px; }
+.notice p { margin:0 0 10px; color:var(--text-soft); font-size:.9rem; }
+.notice p:last-child { margin-bottom:0; }
+
+/* The grid is wide by nature. Scroll it inside its own box so the page body
+   never scrolls sideways. */
+.grid-wrap { overflow-x:auto; }
+img, svg { max-width:100%; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/artifact-main.tsx"></script>
+</body>
+</html>

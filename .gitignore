@@ -10,6 +10,7 @@ venv/
 .next/
 out/
 dist/
+dist-artifact/
 build/
 *.egg-info/
 
