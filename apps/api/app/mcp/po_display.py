@@ -43,9 +43,16 @@ def playbook_display_block(
     """The ``{component, data, props}`` block for a playbook outcome, or None.
 
     draft_created + an order doc -> the real purchase-order editor.
-    Everything else -> the workflow status card (also a bundled component).
+    needs_input -> no card at all: a clarification is a question, and the model
+    asks it in chat. A card here just duplicates that question (and offers an
+    "open in Norm" to an empty draft), which is the clunk the user flagged.
+    Everything else (completed, running, pending_approval) -> the workflow
+    status card, whose summary is worth showing.
     """
     if not isinstance(payload, dict):
+        return None
+
+    if payload.get("status") == "needs_input":
         return None
 
     try:

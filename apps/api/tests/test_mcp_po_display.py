@@ -323,6 +323,25 @@ class TestPlaybookDisplayBlock:
         )
         assert block["component"] == "workflow_result"
 
+    def test_needs_input_renders_no_card(self, db_session):
+        """A clarification is a question the model asks in chat. A card here
+        just duplicates it (and offers open-in-Norm to an empty draft), so
+        needs_input gets no structuredContent."""
+        block = playbook_display_block(
+            {
+                "status": "needs_input",
+                "clarify": [{"requested": "corona", "options": ["Corona 0%", "Corona Extra"]}],
+                "summary": "Which Corona did you mean?",
+            },
+            None,
+            McpPrincipal(
+                user_id="u", organization_id="o", venue_ids=(), scopes=frozenset()
+            ),
+            db_session,
+            db_session,
+        )
+        assert block is None
+
     def test_non_draft_outcomes_get_the_status_card(self, db_session):
         for status in ("completed", "running", "pending_approval"):
             block = playbook_display_block(
