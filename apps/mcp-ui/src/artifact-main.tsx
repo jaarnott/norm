@@ -28,7 +28,14 @@ import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import RosterEditor from '../../web/app/components/display/RosterEditor';
 
-const SERVER = 'claude_ai_Norm';
+// The connector's DISPLAY NAME, as the viewer sees it in claude.ai Settings —
+// not the `mcp__claude_ai_Norm__…` prefix those tools carry inside Claude Code.
+// That prefix is a client-side spelling; publishing it produced a manifest that
+// matched no connector, and every call came back `not_in_manifest`. The
+// authority is the connector list (`/v1/mcp_servers` → `display_name`), and it
+// says "Norm". The same string must be used here and in the published
+// manifest, or the two disagree and nothing resolves.
+const SERVER = 'Norm';
 const TOOL = 'loadedhub__get_roster_for_period';
 
 /**
@@ -143,9 +150,14 @@ function explain(err: McpErrorish): { title: string; detail: string; canRetry: b
         canRetry: false,
       };
     case 'not_in_manifest':
+      // Almost always a fault in the PAGE, not in the viewer's setup: the
+      // published manifest named a connector or tool that does not resolve.
+      // The first version of this copy told the viewer to reload and approve,
+      // which no amount of approving could fix — it sent them chasing a
+      // permission problem that did not exist. Say who has to fix it.
       return {
-        title: 'This page may not read the roster',
-        detail: 'The roster tool is outside what you approved for this page. Reload and approve it, or reopen the artifact.',
+        title: 'This page is asking for the wrong thing',
+        detail: `This page did not ask for ${server} correctly, so it cannot read the roster. Reloading will not help — the page itself needs updating.`,
         canRetry: false,
       };
     case 'blocked_by_policy':
