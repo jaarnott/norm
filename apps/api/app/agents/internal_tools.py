@@ -807,17 +807,54 @@ Rules:
                 while d <= e:
                     date_ref[d.isoformat()] = d.strftime("%A")
                     d += _dt.timedelta(days=1)
-            except (KeyError, ValueError):
+            # TypeError belongs here too: the loop above leaves a period it
+            # could not parse exactly as the model sent it, so `start` may not
+            # be a string at all. Skipping that period costs its day names;
+            # letting the error escape costs the whole reply, including the
+            # periods that resolved perfectly.
+            except (KeyError, ValueError, TypeError):
                 pass
 
-        return {
-            "success": True,
-            "data": {
-                "periods": periods,
-                "timezone": tz_name,
-                "date_reference": date_ref,
-            },
+        # Describe a single resolved period as a window, exactly as the
+        # deterministic path does.
+        #
+        # Every `*_for_period` tool reads `window` and refuses the call when it
+        # is absent — so without this, a phrase the Python vocabulary doesn't
+        # know ("the week before the long weekend", "week beginning 13 July")
+        # resolved perfectly here and then failed downstream with "could not
+        # resolve that to a date range". The date WAS resolved; only the shape
+        # was missing. Tools advertise "a period in plain English", so the two
+        # resolver paths must answer in the same shape.
+        #
+        # kind="custom" is the honest label — an LLM-resolved range is not a
+        # named business period. Alignment is not asserted either: Window
+        # derives `trading_aligned` from the start time against the venue's
+        # day_start, so a model that returns midnight is caught by the same
+        # confirmation gate that guards an explicit start/end. Recurring
+        # queries resolve to many periods and get no window: there is no one
+        # range to hand a single-window caller, and the refusal is then true.
+        data: dict = {
+            "periods": periods,
+            "timezone": tz_name,
+            "date_reference": date_ref,
         }
+        if len(periods) == 1:
+            try:
+                data["window"] = _bc.Window(
+                    start=_dt.datetime.fromisoformat(periods[0]["start"]),
+                    end=_dt.datetime.fromisoformat(periods[0]["end"]),
+                    kind="custom",
+                    label=periods[0].get("label") or query,
+                    timezone=tz_name,
+                    day_start=day_start,
+                ).as_dict()
+            except (KeyError, ValueError, TypeError) as ve:
+                # The period survives even if it cannot be described: this is
+                # an addition to the reply, and a caller reading `periods` must
+                # not start failing because the extra key could not be built.
+                logger.warning("Could not build window from %s – %s", periods[0], ve)
+
+        return {"success": True, "data": data}
     except _json.JSONDecodeError as e:
         logger.error("resolve_dates JSON parse error: %s", e)
         return {

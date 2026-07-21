@@ -62,6 +62,16 @@ COMPONENT_API_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
 # norm__place_stock_order, never through the read bridge.
 SUBMIT_COMPONENT = ("purchase_order_editor", "create_orders_batch")
 
+# Document kinds the ORDER scope may open. A draft scope authorizes one kind
+# of document, not every document that happens to hang off the same thread:
+# mcp:orders:draft must not be a way to edit a roster. That is not
+# hypothetical — _apply_op already handles add_shift/update_shift/
+# delete_shift, and document_sync maps doc_type="roster" to real LoadedHub
+# calls, so the write path is complete. Only roster drafts carrying
+# thread_id=None keeps it out of reach today, and that is an accident of how
+# they are created, not an invariant worth resting authorization on.
+ORDER_DOC_TYPES: frozenset[str] = frozenset({"order", "purchase_order"})
+
 # Keys kept when slimming stock items for transport. The purchase-order
 # editor reads exactly these (see PurchaseOrderEditor.tsx reference-data load).
 _STOCK_ITEM_KEYS = (
@@ -243,17 +253,32 @@ def _authorize_venue_id(principal: McpPrincipal, venue_id: str, db: Session) -> 
         raise AppToolError("No access to this venue.")
 
 
-def _load_owned_doc(principal: McpPrincipal, doc_id: str, db: Session):
-    """The working document, if it belongs to a thread this principal owns.
+def _load_owned_doc(
+    principal: McpPrincipal,
+    doc_id: str,
+    db: Session,
+    allowed_doc_types: frozenset[str],
+):
+    """The working document, if this principal owns it AND may open its kind.
 
-    Ownership is the thread's user - a draft is the artifact of one user's
-    workflow run, and MCP must not become a way to read another user's
-    drafts by guessing ids.
+    Two independent checks, both failing closed to the same message:
+
+    - Ownership is the thread's user - a draft is the artifact of one user's
+      workflow run, and MCP must not become a way to read another user's
+      drafts by guessing ids.
+    - Kind is the caller's scope. Ownership alone would let a scope granted
+      for orders open any other draft on the same thread; the caller names
+      the kinds its scope covers (see ORDER_DOC_TYPES).
+
+    A wrong-kind draft reads as missing, like a wrong-owner one: telling the
+    caller a document exists but is off-limits is itself an oracle.
     """
     from app.db.models import Thread, WorkingDocument
 
     doc = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id).first()
     if doc is None:
+        raise AppToolError("Draft not found.")
+    if doc.doc_type not in allowed_doc_types:
         raise AppToolError("Draft not found.")
     thread = db.query(Thread).filter(Thread.id == doc.thread_id).first()
     if thread is None or thread.user_id != principal.user_id:
@@ -296,7 +321,12 @@ def execute_app_tool(
 
 
 def _get_working_document(params: dict, principal: McpPrincipal, db: Session) -> dict:
-    doc = _load_owned_doc(principal, str(params.get("working_document_id") or ""), db)
+    doc = _load_owned_doc(
+        principal,
+        str(params.get("working_document_id") or ""),
+        db,
+        ORDER_DOC_TYPES,
+    )
     return _doc_payload(doc)
 
 
@@ -308,7 +338,12 @@ def _update_working_document(
     # ops, memory signal, background sync).
     from app.routers.working_documents import _apply_op, _trigger_sync
 
-    doc = _load_owned_doc(principal, str(params.get("working_document_id") or ""), db)
+    doc = _load_owned_doc(
+        principal,
+        str(params.get("working_document_id") or ""),
+        db,
+        ORDER_DOC_TYPES,
+    )
 
     ops = params.get("ops")
     if not isinstance(ops, list) or not ops:

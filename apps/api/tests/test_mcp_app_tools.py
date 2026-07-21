@@ -7,6 +7,8 @@ that argument, in the same spirit as test_mcp_execution.py:
 
 - a venue_id argument is input to be checked, never an assertion;
 - another user's draft must be indistinguishable from a missing one;
+- so must a draft of the wrong KIND: mcp:orders:draft authorizes orders, not
+  every document sharing the thread — a roster draft's ops sync to LoadedHub;
 - the read bridge must not become "run any configured HTTP call";
 - the submit path is scope-gated behind mcp:orders:submit, a scope that must
   stay individually allowlisted (scopes.py) rather than becoming a pattern.
@@ -86,7 +88,7 @@ def _principal(user, org, venues, scopes=("mcp:orders:read", "mcp:orders:draft")
     )
 
 
-def _draft(db, user, venue, data=None, sync_mode="submit"):
+def _draft(db, user, venue, data=None, sync_mode="submit", doc_type="order"):
     t = Thread(
         id=str(uuid.uuid4()),
         user_id=user.id,
@@ -104,7 +106,7 @@ def _draft(db, user, venue, data=None, sync_mode="submit"):
         id=str(uuid.uuid4()),
         thread_id=t.id,
         venue_id=venue.id,
-        doc_type="order",
+        doc_type=doc_type,
         connector_name="norm",
         sync_mode=sync_mode,
         data=data
@@ -229,6 +231,53 @@ class TestWorkingDocuments:
                 None,
             )
         assert str(exc2.value) == missing
+
+    def test_roster_draft_reads_as_missing(self, db_session):
+        """mcp:orders:draft opens orders. A roster on the same thread is not one.
+
+        The owner is the caller here — ownership passes, and only the kind
+        check stands between an orders scope and a roster whose ops
+        (add_shift/update_shift/delete_shift) sync to LoadedHub.
+        """
+        org = _org(db_session)
+        v = _venue(db_session, "La Zeppa", org)
+        u = _user(db_session)
+        _grant(db_session, u, v)
+        _t, doc = _draft(db_session, u, v, doc_type="roster")
+        with pytest.raises(AppToolError) as exc:
+            execute_app_tool(
+                "norm__get_working_document",
+                {"working_document_id": doc.id},
+                _principal(u, org, [v]),
+                db_session,
+                None,
+            )
+        # Indistinguishable from a nonexistent id, like the wrong-owner case.
+        assert str(exc.value) == "Draft not found."
+
+    def test_roster_draft_cannot_be_edited(self, db_session):
+        """The write half of the same gap — the one that would reach LoadedHub."""
+        org = _org(db_session)
+        v = _venue(db_session, "La Zeppa", org)
+        u = _user(db_session)
+        _grant(db_session, u, v)
+        _t, doc = _draft(db_session, u, v, doc_type="roster")
+        before = doc.version
+        with pytest.raises(AppToolError):
+            execute_app_tool(
+                "norm__update_working_document",
+                {
+                    "working_document_id": doc.id,
+                    "ops": [{"op": "delete_shift", "index": 0}],
+                    "version": before,
+                },
+                _principal(u, org, [v]),
+                db_session,
+                None,
+            )
+        db_session.refresh(doc)
+        assert doc.version == before
+        assert not doc.pending_ops
 
     def test_update_applies_ops_and_bumps_version(self, db_session, monkeypatch):
         import app.routers.working_documents as wd_router
