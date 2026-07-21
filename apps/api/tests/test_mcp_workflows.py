@@ -217,6 +217,87 @@ class TestOutcomeMapping:
         assert p["status"] == "pending_approval"
         assert "approval" in p["note"].lower()
 
+    def test_wholly_ambiguous_order_asks_instead_of_claiming_success(self, db_session):
+        """ "24 coronas" matched nothing (Corona Extra vs Corona 0%), so the
+        draft is empty. It must come back as needs_input carrying the options —
+        not draft_created, which made the model say "done" over an empty card."""
+        from app.db.models import WorkingDocument
+        from app.mcp.workflows import _map_outcome
+
+        t = self._thread(db_session, status="completed")
+        doc = WorkingDocument(
+            id=str(uuid.uuid4()),
+            thread_id=t.id,
+            doc_type="order",
+            connector_name="norm",
+            data={
+                "venue": "La Zeppa",
+                "order_lines": [],
+                "needs_selection": [
+                    {
+                        "query": "corona",
+                        "quantity": 24,
+                        "candidates": [
+                            {"id": "1", "name": "Corona 0%"},
+                            {"id": "2", "name": "CORONA EXTRA BEER 330ML"},
+                        ],
+                    }
+                ],
+            },
+        )
+        db_session.add(doc)
+        db_session.flush()
+        p = _map_outcome(db_session, t, {"message": "created"})
+        assert p["status"] == "needs_input"
+        assert "working_document_id" not in p  # no empty editor renders
+        assert p["clarify"][0]["options"] == ["Corona 0%", "CORONA EXTRA BEER 330ML"]
+        assert "which" in p["summary"].lower()
+        assert "not tell the user the order was created" in p["note"].lower()
+
+    def test_partially_resolved_order_still_drafts(self, db_session):
+        """Some lines matched — that's a real draft; render it, don't block on
+        the one ambiguous item."""
+        from app.db.models import WorkingDocument
+        from app.mcp.workflows import _map_outcome
+
+        t = self._thread(db_session, status="completed")
+        doc = WorkingDocument(
+            id=str(uuid.uuid4()),
+            thread_id=t.id,
+            doc_type="order",
+            connector_name="norm",
+            data={
+                "order_lines": [{"itemId": "beer-1", "quantity": 2}],
+                "needs_selection": [{"query": "corona", "candidates": []}],
+            },
+        )
+        db_session.add(doc)
+        db_session.flush()
+        p = _map_outcome(db_session, t, {"message": "drafted"})
+        assert p["status"] == "draft_created"
+        assert p["working_document_id"] == doc.id
+
+    def test_unfindable_item_asks_rather_than_empty_draft(self, db_session):
+        from app.db.models import WorkingDocument
+        from app.mcp.workflows import _map_outcome
+
+        t = self._thread(db_session, status="completed")
+        doc = WorkingDocument(
+            id=str(uuid.uuid4()),
+            thread_id=t.id,
+            doc_type="order",
+            connector_name="norm",
+            data={
+                "order_lines": [],
+                "resolution_report": {"failed": [{"name": "unicorn tears"}]},
+            },
+        )
+        db_session.add(doc)
+        db_session.flush()
+        p = _map_outcome(db_session, t, {"message": "created"})
+        assert p["status"] == "needs_input"
+        assert "unicorn tears" in p["unfindable"]
+
     def test_unknown_playbook(self, db_session):
         payload = workflows.execute_playbook_tool(
             "nope", "x", None, _principal(), db_session, db_session

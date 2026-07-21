@@ -163,6 +163,67 @@ def execute_playbook_tool(
     )
 
 
+def _order_clarification(doc) -> dict | None:
+    """A clarification request for an order draft that resolved nothing, or None.
+
+    ``create_purchase_order`` builds a working document even when it matched no
+    stock item — an ambiguous name ("corona" → Corona Extra, Corona 0%, …) or
+    one it couldn't find. Reporting that as ``draft_created`` is the bug behind
+    the empty card: the model reads "draft created", says "done", and renders a
+    PO editor with zero lines. When nothing resolved, this returns a
+    ``needs_input`` outcome instead — carrying the candidate products — so the
+    model asks the user which one, the way it should, and no empty editor
+    renders. A *partially* resolved order (some lines matched) is a real draft
+    and returns None, so it still renders with what it has.
+    """
+    data = doc.data or {}
+    if doc.doc_type not in ("order", "purchase_order"):
+        return None
+    if data.get("lines") or data.get("order_lines"):
+        return None  # something matched — a real (if partial) draft
+
+    needs = data.get("needs_selection") or []
+    failed = (data.get("resolution_report") or {}).get("failed") or []
+    if not needs and not failed:
+        return None  # empty for some other reason — leave it to draft_created
+
+    clarify = [
+        {
+            "requested": a.get("query"),
+            "quantity": a.get("quantity"),
+            "options": [
+                c.get("name") for c in (a.get("candidates") or []) if c.get("name")
+            ][:8],
+        }
+        for a in needs
+    ]
+    unfindable = [f.get("name") for f in failed if f.get("name")]
+
+    parts: list[str] = []
+    for c in clarify:
+        opts = ", ".join(c["options"]) if c["options"] else "several products"
+        parts.append(f'"{c["requested"]}" matches {opts}')
+    if unfindable:
+        parts.append("couldn't find: " + ", ".join(unfindable))
+    message = (
+        "Before this order can be drafted it needs one thing cleared up — "
+        + "; ".join(parts)
+        + ". Which did you mean?"
+    )
+
+    return {
+        "status": "needs_input",
+        "thread_id": doc.thread_id,
+        "clarify": clarify,
+        "unfindable": unfindable,
+        "summary": message,
+        "note": "Nothing has been drafted yet. Ask the user which product they "
+        "mean, then create the order again naming that specific item. Do not "
+        "tell the user the order was created.",
+        "open_in_norm": links.thread_link(doc.thread_id),
+    }
+
+
 def _map_outcome(db, thread, result: dict) -> dict:
     """Map final thread state to an MCP workflow outcome payload."""
     from app.db.models import WorkingDocument
@@ -174,6 +235,9 @@ def _map_outcome(db, thread, result: dict) -> dict:
         .first()
     )
     if doc is not None:
+        clarification = _order_clarification(doc)
+        if clarification is not None:
+            return clarification
         return {
             "status": "draft_created",
             "working_document_id": doc.id,

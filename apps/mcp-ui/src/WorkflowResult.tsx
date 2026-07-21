@@ -13,6 +13,7 @@ import type { BlockProps } from './registry';
 const LABELS: Record<string, { text: string; color: string }> = {
   draft_created: { text: 'Draft created', color: 'var(--accent)' },
   pending_approval: { text: 'Needs approval', color: 'var(--warn)' },
+  needs_input: { text: 'Needs your input', color: 'var(--warn)' },
   completed: { text: 'Completed', color: 'var(--good)' },
   running: { text: 'Still running', color: 'var(--muted)' },
 };
