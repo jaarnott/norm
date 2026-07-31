@@ -119,7 +119,42 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
     window.location.reload();
   }
 
+  // A connector whose authorization has died surfaces the same way from every
+  // backend path (a data fetch, a working-document load, a component-api call):
+  // the error carries "Reconnect <connector> in Settings → Connectors". Catch it
+  // once, here, and fire an app-wide event so the reconnect card can pop up
+  // wherever the user hit it — no per-page wiring, and no persistent banner.
+  if (!res.ok && res.status >= 400 && typeof window !== 'undefined') {
+    detectConnectorAuthFailure(res.clone());
+  }
+
   return res;
+}
+
+/** Fire `norm:connector-auth` with the connector name if a response is a
+ *  connector-authorization failure. Best-effort; never throws into the caller. */
+async function detectConnectorAuthFailure(res: Response): Promise<void> {
+  try {
+    const text = await res.text();
+    // detail may be a JSON string body or a structured {detail:{...}} object.
+    let connector: string | null = null;
+    try {
+      const body = JSON.parse(text);
+      const detail = body?.detail;
+      if (detail && typeof detail === 'object' && detail.error === 'connector_auth') {
+        connector = detail.connector_name || null;
+      }
+    } catch { /* not JSON — fall through to string match */ }
+    if (!connector) {
+      const m = /reconnect\s+([a-z0-9_]+)\s+in\s+settings/i.exec(text);
+      if (m) connector = m[1];
+    }
+    if (connector) {
+      window.dispatchEvent(
+        new CustomEvent('norm:connector-auth', { detail: { connector } }),
+      );
+    }
+  } catch { /* best-effort */ }
 }
 
 /**

@@ -46,7 +46,11 @@ def execute_component_action(
     transport failures to it too — callers on both surfaces want a message,
     not an httpx traceback.
     """
-    from app.connectors.spec_executor import _apply_auth, _jinja_env
+    from app.connectors.spec_executor import (
+        ConnectorAuthError,
+        _apply_auth,
+        _jinja_env,
+    )
     from app.db.config_models import ComponentApiConfig, ConnectorSpec
     from app.db.models import ConnectorConfig
 
@@ -143,15 +147,21 @@ def execute_component_action(
         except Exception:
             headers[k] = str(v)
 
-    headers, httpx_auth = _apply_auth(
-        headers,
-        spec.auth_type,
-        spec.auth_config or {},
-        credentials,
-        spec=spec,
-        db=db,
-        venue_id=venue_id,
-    )
+    try:
+        headers, httpx_auth = _apply_auth(
+            headers,
+            spec.auth_type,
+            spec.auth_config or {},
+            credentials,
+            spec=spec,
+            db=db,
+            venue_id=venue_id,
+        )
+    except ConnectorAuthError as exc:
+        # A dead connector token surfaces the same actionable message here as it
+        # does through the agent path, so the frontend can offer the reconnect
+        # card instead of a bare 500. 409 = "you need to fix the connection".
+        raise ComponentApiError(str(exc), status_code=409) from exc
 
     try:
         resp = httpx.request(

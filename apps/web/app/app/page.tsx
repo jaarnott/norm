@@ -10,7 +10,6 @@ import SettingsPanel from '../components/settings/SettingsPanel';
 import LoginForm from '../components/auth/LoginForm';
 import FunctionalPage from '../components/pages/FunctionalPage';
 import QuotaExceededModal from '../components/layout/QuotaExceededModal';
-import ConnectorHealthBanner from '../components/layout/ConnectorHealthBanner';
 import ConnectorConnectCard from '../components/display/ConnectorConnectCard';
 import { FUNCTIONAL_PAGES } from '../components/pages/pageRegistry';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
@@ -87,6 +86,17 @@ export default function Home() {
     // Only on first authenticated render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authChecked, token]);
+
+  // Any API call that fails because a connector needs reconnecting (fired
+  // centrally from apiFetch) pops the reconnect card, wherever the user hit it.
+  useEffect(() => {
+    const onAuthFail = (e: Event) => {
+      const connector = (e as CustomEvent).detail?.connector;
+      if (connector) setConnectConnector(connector);
+    };
+    window.addEventListener('norm:connector-auth', onAuthFail);
+    return () => window.removeEventListener('norm:connector-auth', onAuthFail);
+  }, []);
 
   // Load threads when authenticated
   useEffect(() => {
@@ -643,7 +653,6 @@ export default function Home() {
         <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
           {mobileQuotaModal}
           {connectOverlay}
-          <ConnectorHealthBanner onFix={() => { setActiveAgent('settings'); setMobileView('settings'); }} />
           <button onClick={() => setMobileView('list')} style={{
             position: 'absolute', top: 10, left: 10, zIndex: 10,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -664,7 +673,6 @@ export default function Home() {
         <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
           {mobileQuotaModal}
           {connectOverlay}
-          <ConnectorHealthBanner onFix={() => { setActiveAgent('settings'); setMobileView('settings'); }} />
           <button onClick={() => setMobileView('list')} style={{
             position: 'absolute', top: 10, left: 10, zIndex: 10,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -813,7 +821,6 @@ export default function Home() {
   return (
     <div style={{ display: 'flex', height: '100dvh', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
       {connectOverlay}
-      <ConnectorHealthBanner onFix={() => setActiveAgent('settings')} />
       {quotaExceeded && (
         <QuotaExceededModal
           used={quotaExceeded.used}

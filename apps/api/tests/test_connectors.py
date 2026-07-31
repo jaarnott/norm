@@ -3,8 +3,6 @@
 import uuid
 from unittest.mock import patch, MagicMock
 
-import pytest
-
 from app.db.models import ConnectorConfig
 
 
@@ -22,19 +20,7 @@ class TestListConnectors:
 
 
 class TestConnectorHealth:
-    """GET /api/connectors/health — the banner's one-call broken-connections list."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate(self, db_session):
-        """Clear pre-existing connector rows.
-
-        /connectors/health scans every ConnectorConfig, so a real broken row in
-        the shared dev DB (e.g. a genuinely-expired LoadedHub token) would leak
-        into these counts. Safe: the db_session fixture rolls back, and the
-        client override shares this same session.
-        """
-        db_session.query(ConnectorConfig).delete()
-        db_session.flush()
+    """The /connectors list exposes needs_reconnect (drives the Settings pill)."""
 
     def _broken_row(self, db_session, venue_id=None):
         from app.db.config_models import ConnectorSpec
@@ -63,57 +49,14 @@ class TestConnectorHealth:
         )
         db_session.flush()
 
-    def test_healthy_returns_empty(self, client, admin_headers):
-        resp = client.get("/api/connectors/health", headers=admin_headers)
-        assert resp.status_code == 200
-        assert resp.json() == {"broken": []}
-
-    def test_broken_connection_is_reported(self, client, db_session, admin_headers):
-        from tests.conftest import _make_venue
-
-        venue = _make_venue(db_session)
-        self._broken_row(db_session, venue_id=venue.id)
-
-        resp = client.get("/api/connectors/health", headers=admin_headers)
-        assert resp.status_code == 200
-        broken = resp.json()["broken"]
-        assert len(broken) == 1
-        assert broken[0]["connector_name"] == "loadedhub"
-        assert broken[0]["connector_label"] == "LoadedHub"
-        assert broken[0]["venue_name"] == venue.name
-        assert "invalid" in broken[0]["last_auth_error"]
-
-    def test_scoped_to_the_users_venues_even_for_admin(
-        self, client, db_session, admin_user, admin_headers
-    ):
-        """The banner must not name a venue that isn't on the user's list.
-
-        Reproduces the reported bug: a platform admin with access to only a
-        couple of venues saw "LoadedHub (La Zeppa)" for a venue they don't have.
-        """
-        from tests.conftest import _make_venue, _make_venue_access
-
-        mine = _make_venue(db_session, name="Mine")
-        others = _make_venue(db_session, name="Not Mine")
-        _make_venue_access(db_session, admin_user, mine)  # admin scoped to Mine only
-        self._broken_row(db_session, venue_id=others.id)
-
-        resp = client.get("/api/connectors/health", headers=admin_headers)
-        assert resp.status_code == 200
-        assert resp.json()["broken"] == []
-
     def test_list_exposes_needs_reconnect(self, client, db_session, admin_headers):
         from tests.conftest import _make_venue
 
         venue = _make_venue(db_session)
         self._broken_row(db_session, venue_id=venue.id)
 
-        resp = client.get(
-            f"/api/connectors?venue_id={venue.id}", headers=admin_headers
-        )
-        entry = next(
-            c for c in resp.json()["connectors"] if c["name"] == "loadedhub"
-        )
+        resp = client.get(f"/api/connectors?venue_id={venue.id}", headers=admin_headers)
+        entry = next(c for c in resp.json()["connectors"] if c["name"] == "loadedhub")
         assert entry["needs_reconnect"] is True
 
 
