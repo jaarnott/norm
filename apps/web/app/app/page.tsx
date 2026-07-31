@@ -10,6 +10,8 @@ import SettingsPanel from '../components/settings/SettingsPanel';
 import LoginForm from '../components/auth/LoginForm';
 import FunctionalPage from '../components/pages/FunctionalPage';
 import QuotaExceededModal from '../components/layout/QuotaExceededModal';
+import ConnectorHealthBanner from '../components/layout/ConnectorHealthBanner';
+import ConnectorConnectCard from '../components/display/ConnectorConnectCard';
 import { FUNCTIONAL_PAGES } from '../components/pages/pageRegistry';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
 import { PanelLeft as PanelLeftIcon, ArrowLeft, Menu, Settings, LogOut } from 'lucide-react';
@@ -35,6 +37,10 @@ export default function Home() {
   const [venues, setVenues] = useState<VenueDetail[]>([]);
   const [activeVenueId, setActiveVenueId] = useState<string | null>(null);
   const [quotaExceeded, setQuotaExceeded] = useState<{ used: number; quota: number } | null>(null);
+  // Set from a ?connect=<connector> deep link (the MCP surface hands users here
+  // to finish an OAuth/credential connect the iframe can't run). Shows the
+  // connect card as an overlay.
+  const [connectConnector, setConnectConnector] = useState<string | null>(null);
   const { isMobile } = useBreakpoint();
   const [mobileView, setMobileView] = useState<'list' | 'detail' | 'home' | 'settings'>('home');
 
@@ -73,6 +79,8 @@ export default function Home() {
         setSelectedThreadId(threadId);
         if (isMobile) setMobileView('detail');
       }
+      const connect = params.get('connect');
+      if (connect) setConnectConnector(connect);
     } catch {
       /* no-op */
     }
@@ -586,6 +594,29 @@ export default function Home() {
     return <LoginForm onSuccess={handleAuthSuccess} />;
   }
 
+  // Connect overlay from a ?connect= deep link (MCP → web handoff). Rendered in
+  // both layouts so a manager who followed the link from Claude lands straight
+  // on the connect card.
+  const connectOverlay = connectConnector ? (
+    <div
+      onClick={() => setConnectConnector(null)}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.35)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem',
+      }}
+    >
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 12, padding: '1.1rem 1.2rem', maxWidth: 500, width: '100%', boxShadow: '0 8px 30px rgba(0,0,0,0.25)' }}>
+        <ConnectorConnectCard data={{ connector_name: connectConnector }} onAction={(action) => handleWidgetAction(selectedThreadId || '', action)} />
+        <button
+          onClick={() => setConnectConnector(null)}
+          style={{ marginTop: '0.75rem', padding: '5px 12px', fontSize: '0.78rem', border: '1px solid #ddd', borderRadius: 6, background: '#fff', color: '#555', cursor: 'pointer', fontFamily: 'inherit' }}
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  ) : null;
+
   // Mobile layout: conversation-first with hamburger for thread list
   if (isMobile) {
     const showSettings = user && (user.role === 'admin' || user.permissions?.some(p =>
@@ -611,6 +642,8 @@ export default function Home() {
       return (
         <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
           {mobileQuotaModal}
+          {connectOverlay}
+          <ConnectorHealthBanner onFix={() => { setActiveAgent('settings'); setMobileView('settings'); }} />
           <button onClick={() => setMobileView('list')} style={{
             position: 'absolute', top: 10, left: 10, zIndex: 10,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -630,6 +663,8 @@ export default function Home() {
       return (
         <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
           {mobileQuotaModal}
+          {connectOverlay}
+          <ConnectorHealthBanner onFix={() => { setActiveAgent('settings'); setMobileView('settings'); }} />
           <button onClick={() => setMobileView('list')} style={{
             position: 'absolute', top: 10, left: 10, zIndex: 10,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -777,6 +812,8 @@ export default function Home() {
   // Desktop layout: three-panel
   return (
     <div style={{ display: 'flex', height: '100dvh', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+      {connectOverlay}
+      <ConnectorHealthBanner onFix={() => setActiveAgent('settings')} />
       {quotaExceeded && (
         <QuotaExceededModal
           used={quotaExceeded.used}

@@ -31,3 +31,17 @@ def working_document_link(doc_id: str, thread_id: str | None = None) -> str:
 
 def report_link(report_id: str) -> str:
     return f"{_base()}/app?report={report_id}"
+
+
+def connect_link(connector: str, venue_id: str | None = None) -> str:
+    """Deep link that opens Norm and starts connecting a connector.
+
+    A connector connect is an OAuth handshake or a credential form, neither of
+    which can run inside Claude's sandboxed iframe — so on the MCP surface the
+    user follows this link into the Norm web app (authenticated as themselves)
+    and completes it there.
+    """
+    url = f"{_base()}/app?connect={connector}"
+    if venue_id:
+        url += f"&venue={venue_id}"
+    return url

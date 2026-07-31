@@ -484,6 +484,8 @@ async def list_venue_connectors(
                 "connector_name": c.connector_name,
                 "enabled": c.enabled == "true",
                 "has_oauth": bool(c.access_token),
+                "needs_reconnect": bool(c.needs_reconnect),
+                "last_auth_error": c.last_auth_error,
                 "oauth_metadata": c.oauth_metadata,
             }
             for c in configs

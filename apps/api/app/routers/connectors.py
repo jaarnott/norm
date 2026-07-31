@@ -117,9 +117,142 @@ async def list_connectors(
             }
             if spec.auth_type == "oauth2" and config_row:
                 entry["oauth_connected"] = bool(config_row.access_token)
+            if config_row:
+                # Connection health — bool(access_token) can't distinguish a
+                # live connection from one whose refresh token has died, so the
+                # UI keys "Reconnect needed" off this instead.
+                entry["needs_reconnect"] = bool(config_row.needs_reconnect)
+                entry["last_auth_error"] = config_row.last_auth_error
             result.append(entry)
 
     return {"connectors": result}
+
+
+@router.get("/connectors/health")
+async def connector_health(
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Broken connections the caller can see — one cheap call for the banner.
+
+    A connection is "broken" once a token refresh was rejected by the provider
+    (needs_reconnect), which `bool(access_token)` cannot tell you. Scoped to the
+    venues this user has access to so the banner never names a venue they can't
+    act on; a platform admin sees all.
+    """
+    from app.db.models import UserVenueAccess, Venue
+
+    rows = (
+        db.query(ConnectorConfig)
+        .filter(ConnectorConfig.needs_reconnect.is_(True))
+        .all()
+    )
+    if not rows:
+        return {"broken": []}
+
+    if user.role != "admin":
+        allowed = {
+            a.venue_id
+            for a in db.query(UserVenueAccess)
+            .filter(UserVenueAccess.user_id == user.id)
+            .all()
+        }
+        rows = [r for r in rows if r.venue_id is None or r.venue_id in allowed]
+
+    venue_names = {
+        v.id: v.name
+        for v in db.query(Venue)
+        .filter(Venue.id.in_([r.venue_id for r in rows if r.venue_id]))
+        .all()
+    }
+    labels = {
+        s.connector_name: s.display_name for s in config_db.query(ConnectorSpec).all()
+    }
+
+    return {
+        "broken": [
+            {
+                "connector_name": r.connector_name,
+                "connector_label": labels.get(r.connector_name, r.connector_name),
+                "venue_id": r.venue_id,
+                "venue_name": venue_names.get(r.venue_id),
+                "last_auth_error": r.last_auth_error,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.get("/connectors/{connector}/connect-info")
+async def connector_connect_info(
+    connector: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("settings:connectors")),
+):
+    """Everything the in-conversation connect card needs for one connector.
+
+    Connector meta plus this user's venues each tagged connected /
+    needs_reconnect / not_connected — the single source the card renders from,
+    scoped to venues the caller can act on (a platform admin sees all).
+    """
+    from app.db.models import UserVenueAccess, Venue
+
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == connector)
+        .first()
+    )
+    if not spec:
+        raise HTTPException(404, f"Unknown connector: {connector}")
+
+    if user.role == "admin":
+        venues = db.query(Venue).order_by(Venue.name).all()
+    else:
+        allowed = [
+            a.venue_id
+            for a in db.query(UserVenueAccess)
+            .filter(UserVenueAccess.user_id == user.id)
+            .all()
+        ]
+        venues = (
+            db.query(Venue).filter(Venue.id.in_(allowed)).order_by(Venue.name).all()
+            if allowed
+            else []
+        )
+
+    configs = {
+        c.venue_id: c
+        for c in db.query(ConnectorConfig)
+        .filter(ConnectorConfig.connector_name == connector)
+        .all()
+    }
+
+    def _status(cfg) -> str:
+        if not cfg or not cfg.access_token:
+            return "not_connected"
+        if cfg.needs_reconnect:
+            return "needs_reconnect"
+        return "connected"
+
+    return {
+        "connector_name": spec.connector_name,
+        "display_name": spec.display_name,
+        "auth_type": spec.auth_type,
+        "credential_fields": spec.credential_fields or [],
+        "venues": [
+            {
+                "venue_id": v.id,
+                "venue_name": v.name,
+                "status": _status(configs.get(v.id)),
+                "last_auth_error": (
+                    configs.get(v.id).last_auth_error if configs.get(v.id) else None
+                ),
+            }
+            for v in venues
+        ],
+    }
 
 
 class ConnectorConfigBody(BaseModel):

@@ -562,6 +562,7 @@ def execute_spec(
             reference=None,
             response_payload={},
             error_message=str(exc),
+            auth_failed=True,
         ), empty_request
 
     result = execute_http(
@@ -628,7 +629,11 @@ def _refresh_and_retry(
         )
     except ConnectorAuthError as exc:
         return ConnectorResult(
-            success=False, reference=None, response_payload={}, error_message=str(exc)
+            success=False,
+            reference=None,
+            response_payload={},
+            error_message=str(exc),
+            auth_failed=True,
         )
     except Exception as exc:
         return ConnectorResult(
@@ -639,6 +644,7 @@ def _refresh_and_retry(
                 f"{connector} authorization expired and could not be refreshed: {exc}. "
                 f"Reconnect {connector} in Settings → Connectors."
             ),
+            auth_failed=True,
         )
 
     return execute_http(

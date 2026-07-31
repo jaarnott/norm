@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import get_db, get_config_db
 from app.db.models import ConnectorSpec, ConnectorConfig, User
-from app.auth.dependencies import get_current_user, require_role
+from app.auth.dependencies import get_current_user, require_role, require_permission
 from app.services.oauth_service import build_authorize_url, exchange_code
 
 logger = logging.getLogger(__name__)
@@ -40,9 +40,29 @@ async def oauth_authorize(
     venue_id: str | None = None,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("settings:connectors")),
 ):
-    """Start the OAuth flow. Returns the authorization URL to redirect the user to."""
+    """Start the OAuth flow. Returns the authorization URL to redirect the user to.
+
+    Managers and owners can connect (``settings:connectors``), not just platform
+    admins — this is what lets a venue manager self-serve a reconnect from the
+    conversation. A non-admin may only connect a venue they actually have access
+    to, so a broad permission can't be used to authorize someone else's venue.
+    """
+    if venue_id and user.role != "admin":
+        from app.db.models import UserVenueAccess
+
+        has_access = (
+            db.query(UserVenueAccess)
+            .filter(
+                UserVenueAccess.user_id == user.id,
+                UserVenueAccess.venue_id == venue_id,
+            )
+            .first()
+        )
+        if not has_access:
+            raise HTTPException(403, "You don't have access to that venue")
+
     spec = (
         config_db.query(ConnectorSpec)
         .filter(
@@ -298,6 +318,8 @@ async def oauth_status(
     return {
         "connected": True,
         "expired": expired,
+        "needs_reconnect": bool(config_row.needs_reconnect),
+        "last_auth_error": config_row.last_auth_error,
         "has_refresh_token": bool(config_row.refresh_token),
         "expires_at": config_row.token_expires_at.isoformat()
         if config_row.token_expires_at
@@ -348,6 +370,8 @@ async def oauth_venues_status(
                 "venue_name": v.name,
                 "connected": connected,
                 "expired": expired,
+                "needs_reconnect": bool(c and c.needs_reconnect),
+                "last_auth_error": c.last_auth_error if c else None,
                 "has_refresh_token": bool(c and c.refresh_token),
                 "expires_at": c.token_expires_at.isoformat()
                 if c and c.token_expires_at

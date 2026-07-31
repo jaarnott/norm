@@ -1206,6 +1206,25 @@ def _show_orders(params: dict, db: Session, thread_id: str | None) -> dict:
     )
 
 
+@register("norm", "show_connect")
+def _show_connect(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Show the connect/reconnect card for a connector.
+
+    Called when the user asks to connect or reconnect a system ("connect
+    LoadedHub"). The card itself fetches per-venue status and drives the OAuth
+    (or credential) flow — this only names which connector to show, so the
+    payload is deliberately tiny.
+    """
+    connector = (params.get("connector_name") or params.get("connector") or "").strip()
+    if not connector:
+        return {
+            "success": False,
+            "data": {},
+            "error": "connector_name is required (e.g. 'loadedhub')",
+        }
+    return {"success": True, "data": {"connector_name": connector}}
+
+
 # ---------------------------------------------------------------------------
 # Automated Tasks
 # ---------------------------------------------------------------------------

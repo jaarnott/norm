@@ -20,6 +20,71 @@ class TestListConnectors:
         assert "anthropic" in names
 
 
+class TestConnectorHealth:
+    """GET /api/connectors/health — the banner's one-call broken-connections list."""
+
+    def _broken_row(self, db_session, venue_id=None):
+        from app.db.config_models import ConnectorSpec
+
+        db_session.add(
+            ConnectorSpec(
+                id=str(uuid.uuid4()),
+                connector_name="loadedhub",
+                display_name="LoadedHub",
+                category="pos",
+                auth_type="oauth2",
+                enabled=True,
+            )
+        )
+        db_session.add(
+            ConnectorConfig(
+                connector_name="loadedhub",
+                venue_id=venue_id,
+                config={},
+                enabled="true",
+                access_token="stale",
+                refresh_token="dead",
+                needs_reconnect=True,
+                last_auth_error='Token refresh failed (400): "invalid"',
+            )
+        )
+        db_session.flush()
+
+    def test_healthy_returns_empty(self, client, admin_headers):
+        resp = client.get("/api/connectors/health", headers=admin_headers)
+        assert resp.status_code == 200
+        assert resp.json() == {"broken": []}
+
+    def test_broken_connection_is_reported(self, client, db_session, admin_headers):
+        from tests.conftest import _make_venue
+
+        venue = _make_venue(db_session)
+        self._broken_row(db_session, venue_id=venue.id)
+
+        resp = client.get("/api/connectors/health", headers=admin_headers)
+        assert resp.status_code == 200
+        broken = resp.json()["broken"]
+        assert len(broken) == 1
+        assert broken[0]["connector_name"] == "loadedhub"
+        assert broken[0]["connector_label"] == "LoadedHub"
+        assert broken[0]["venue_name"] == venue.name
+        assert "invalid" in broken[0]["last_auth_error"]
+
+    def test_list_exposes_needs_reconnect(self, client, db_session, admin_headers):
+        from tests.conftest import _make_venue
+
+        venue = _make_venue(db_session)
+        self._broken_row(db_session, venue_id=venue.id)
+
+        resp = client.get(
+            f"/api/connectors?venue_id={venue.id}", headers=admin_headers
+        )
+        entry = next(
+            c for c in resp.json()["connectors"] if c["name"] == "loadedhub"
+        )
+        assert entry["needs_reconnect"] is True
+
+
 class TestUpsertConnector:
     """PUT /api/connectors/{name}"""
 

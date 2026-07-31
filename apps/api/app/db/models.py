@@ -409,6 +409,15 @@ class ConnectorConfig(Base):
     refresh_token = Column(Text, nullable=True)
     token_expires_at = Column(DateTime(timezone=True), nullable=True)
     oauth_metadata = Column(JSON, nullable=True)
+    # Connection health. Set when a token refresh (or a live call's reactive
+    # refresh) is rejected by the provider, cleared on the next successful token
+    # store. `bool(access_token)` only says a token was once issued — it stays
+    # true after the refresh token dies, which is exactly how a LoadedHub outage
+    # read as "Connected" while every fetch failed. This is the durable signal
+    # the UI and the in-conversation reconnect card read.
+    needs_reconnect = Column(Boolean, nullable=False, default=False)
+    last_auth_error = Column(Text, nullable=True)
+    last_auth_checked_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 

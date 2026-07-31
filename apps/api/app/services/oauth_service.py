@@ -16,6 +16,11 @@ from app.db.models import ConnectorConfig, ConnectorSpec, OAuthState, Venue
 
 logger = logging.getLogger(__name__)
 
+# How long an unconsumed OAuth state stays redeemable. A user has to complete
+# the provider's login within this window; long enough for a real login, short
+# enough that a leaked/abandoned state doesn't linger.
+OAUTH_STATE_TTL_MIN = 15
+
 
 def build_authorize_url(
     spec: ConnectorSpec,
@@ -79,6 +84,21 @@ def exchange_code(
         raise ValueError("Invalid or expired OAuth state")
     if oauth_state.connector_name != spec.connector_name:
         raise ValueError("OAuth state connector mismatch")
+    # Expire stale states. The state is single-use and unguessable, but now that
+    # any manager (not just a platform admin) can start a flow, a bounded
+    # lifetime keeps a leaked or abandoned state from being redeemable forever.
+    if oauth_state.created_at:
+        created = oauth_state.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - created > timedelta(
+            minutes=OAUTH_STATE_TTL_MIN
+        ):
+            db.delete(oauth_state)
+            db.commit()
+            raise ValueError(
+                "OAuth state has expired — please start the connection again"
+            )
     db.delete(oauth_state)
 
     oauth = spec.oauth_config or {}
@@ -125,6 +145,19 @@ def exchange_code(
     )
 
     return token_data
+
+
+def _mark_needs_reconnect(config_row: ConnectorConfig, error: str) -> None:
+    """Flag a connection as broken. Caller commits.
+
+    Set only when the provider *rejects* a refresh (a 4xx on the token
+    endpoint) — a dead or revoked refresh token that a human must re-authorize.
+    Transient failures (network, timeout) raise before this point and leave the
+    flag untouched, so a blip is not mistaken for "reconnect me".
+    """
+    config_row.needs_reconnect = True
+    config_row.last_auth_error = (error or "")[:1000]
+    config_row.last_auth_checked_at = datetime.now(timezone.utc)
 
 
 def refresh_access_token(
@@ -197,6 +230,13 @@ def refresh_access_token(
         logger.error(
             "OAuth token refresh failed: %s %s", resp.status_code, resp.text[:300]
         )
+        # Record the broken state on the (locked) row so the UI and the
+        # in-conversation reconnect card can see it without anyone having to
+        # attempt a fetch first. Commit releases the with_for_update lock.
+        _mark_needs_reconnect(
+            config_row, f"Token refresh failed ({resp.status_code}): {resp.text[:200]}"
+        )
+        db.commit()
         raise ValueError(
             f"Token refresh failed ({resp.status_code}): {resp.text[:200]}"
         )
@@ -389,5 +429,11 @@ def _store_tokens(
     extra = {k: v for k, v in token_data.items() if k not in known_keys}
     if extra:
         config_row.oauth_metadata = extra
+
+    # A fresh token means the connection is healthy again — clear any prior
+    # reconnect flag so the UI stops nagging.
+    config_row.needs_reconnect = False
+    config_row.last_auth_error = None
+    config_row.last_auth_checked_at = datetime.now(timezone.utc)
 
     db.commit()

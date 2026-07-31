@@ -23,6 +23,10 @@ class ToolResult:
     rendered_request: dict | None = None  # {method, url, headers, body}
     row_count: int = 0
     logs: list[str] | None = None  # consolidator execution logs
+    # True when the failure is a dead/rejected connector authorization the user
+    # must fix by reconnecting — lets the MCP surface offer a connect link
+    # instead of a bare error.
+    auth_failed: bool = False
 
 
 def execute_connector_tool(
@@ -191,6 +195,7 @@ def execute_connector_tool(
             payload=result.response_payload,
             error=result.error_message,
             rendered_request=rendered_dict,
+            auth_failed=getattr(result, "auth_failed", False),
         )
 
     # 5. Apply response_transform if configured

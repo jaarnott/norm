@@ -41,6 +41,8 @@ interface ConnectorMeta {
   enabled: boolean;
   config: Record<string, string>;
   oauth_connected?: boolean;
+  needs_reconnect?: boolean;
+  last_auth_error?: string | null;
   spec_driven?: boolean;
 }
 
@@ -54,6 +56,8 @@ interface VenueConnector {
   configured: boolean;
   enabled: boolean;
   oauth_connected?: boolean;
+  needs_reconnect?: boolean;
+  last_auth_error?: string | null;
   spec_driven?: boolean;
   fields?: { key: string; label: string; secret: boolean }[];
   config?: Record<string, string>;
@@ -248,7 +252,19 @@ function VenueCard({ venue, onDelete, onUpdate }: { venue: VenueDetail; onDelete
                     }}>
                       <span style={{ fontSize: '0.82rem', fontWeight: 500, color: '#333', flex: 1 }}>{c.label}</span>
                       {c.auth_type === 'oauth2' ? (
-                        c.oauth_connected ? (
+                        c.oauth_connected && c.needs_reconnect ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }} title={c.last_auth_error || 'This connection stopped working and needs to be reconnected.'}>
+                            <span style={{
+                              fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 8,
+                              backgroundColor: '#fee2e2', color: '#991b1b',
+                            }}>Reconnect needed</span>
+                            <button onClick={(e) => { e.stopPropagation(); handleOAuthConnect(c.name); }} style={{
+                              padding: '3px 10px', fontSize: '0.72rem', fontWeight: 600,
+                              border: 'none', borderRadius: 6, backgroundColor: '#b91c1c', color: '#fff',
+                              cursor: 'pointer', fontFamily: 'inherit',
+                            }}>Reconnect</button>
+                          </div>
+                        ) : c.oauth_connected ? (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                             <span style={{
                               fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 8,
@@ -1504,7 +1520,25 @@ export default function SettingsPanel() {
                   {/* OAuth2 connectors: show Connect button instead of manual fields */}
                   {c.auth_type === 'oauth2' ? (
                     <>
-                      {c.oauth_connected && (
+                      {c.oauth_connected && c.needs_reconnect ? (
+                        <div style={{
+                          fontSize: '0.78rem',
+                          color: '#b91c1c',
+                          marginBottom: '0.75rem',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }} title={c.last_auth_error || undefined}>
+                          <span style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            backgroundColor: '#b91c1c',
+                            display: 'inline-block',
+                          }} />
+                          Reconnect needed — this connection stopped working
+                        </div>
+                      ) : c.oauth_connected ? (
                         <div style={{
                           fontSize: '0.78rem',
                           color: '#38a169',
@@ -1522,7 +1556,7 @@ export default function SettingsPanel() {
                           }} />
                           OAuth connected
                         </div>
-                      )}
+                      ) : null}
 
                       {/* Still show non-secret credential fields (e.g. subdomain) */}
                       {c.fields.filter(f => !f.secret).map(f => (

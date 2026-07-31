@@ -47,6 +47,7 @@ from app.routers import (
     roles,
     component_apis,
     connector_specs,
+    oauth,
 )
 
 
@@ -69,6 +70,7 @@ _test_app.include_router(agents.router, prefix="/api")
 _test_app.include_router(roles.router, prefix="/api")
 _test_app.include_router(component_apis.router, prefix="/api")
 _test_app.include_router(connector_specs.router, prefix="/api")
+_test_app.include_router(oauth.router, prefix="/api")
 
 from app.routers import internal as _internal  # noqa: E402
 from app.routers import mcp as _mcp  # noqa: E402

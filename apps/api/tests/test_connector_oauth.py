@@ -525,3 +525,84 @@ class TestRefreshTokenRotation:
             .first()
         )
         assert row.refresh_token == "keep-me"
+
+
+class TestConnectionHealthIsPersisted:
+    """A dead refresh token must be visible before anyone attempts a fetch.
+
+    bool(access_token) stays true after the refresh token dies, so the UI read
+    "Connected" through the whole LoadedHub outage. These lock down the durable
+    signal the connectors list and the in-conversation reconnect card key off.
+    """
+
+    def _venue_row(self, db_session, *, needs_reconnect=False):
+        import uuid
+
+        from app.db.models import ConnectorConfig, Venue
+
+        venue = Venue(id=str(uuid.uuid4()), name="Health Venue", location="AKL")
+        db_session.add(venue)
+        row = ConnectorConfig(
+            connector_name="loadedhub",
+            venue_id=venue.id,
+            config={},
+            enabled="true",
+            access_token="old-access",
+            refresh_token="rt",
+            token_expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+            needs_reconnect=needs_reconnect,
+        )
+        db_session.add(row)
+        db_session.flush()
+        return venue, row
+
+    def test_a_refused_refresh_flags_needs_reconnect(self, db_session):
+        from app.services.oauth_service import refresh_access_token
+
+        venue, row = self._venue_row(db_session)
+        resp = MagicMock(
+            status_code=400, text='"Refresh token is invalid or expired."'
+        )
+        with patch("app.services.oauth_service.httpx.post", return_value=resp):
+            with pytest.raises(ValueError):
+                refresh_access_token(_oauth_spec(), db_session, venue_id=venue.id)
+
+        db_session.refresh(row)
+        assert row.needs_reconnect is True
+        assert "invalid or expired" in (row.last_auth_error or "")
+        assert row.last_auth_checked_at is not None
+
+    def test_a_transient_network_error_does_not_flag(self, db_session):
+        """A blip is not "reconnect me" — only a provider rejection is."""
+        import httpx
+
+        from app.services.oauth_service import refresh_access_token
+
+        venue, row = self._venue_row(db_session)
+        with patch(
+            "app.services.oauth_service.httpx.post",
+            side_effect=httpx.ConnectError("boom"),
+        ):
+            with pytest.raises(httpx.ConnectError):
+                refresh_access_token(_oauth_spec(), db_session, venue_id=venue.id)
+
+        db_session.refresh(row)
+        assert row.needs_reconnect is False
+
+    def test_a_successful_store_clears_the_flag(self, db_session):
+        from app.services.oauth_service import _store_tokens
+
+        venue, row = self._venue_row(db_session, needs_reconnect=True)
+        row.last_auth_error = "old error"
+        db_session.flush()
+
+        _store_tokens(
+            db_session,
+            "loadedhub",
+            {"access_token": "fresh", "refresh_token": "rt2", "expires_in": 3600},
+            venue_id=venue.id,
+        )
+
+        db_session.refresh(row)
+        assert row.needs_reconnect is False
+        assert row.last_auth_error is None

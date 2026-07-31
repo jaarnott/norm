@@ -259,6 +259,17 @@ class NormMcpContext(McpContext):
         )
 
         if not result.success:
+            # A dead connector authorization can't be fixed from inside Claude
+            # (the OAuth popup / credential form is web-only), so hand back a
+            # deep link into Norm to reconnect rather than a dead-end error.
+            if getattr(result, "auth_failed", False):
+                from app.mcp import links
+
+                link = links.connect_link(tool.connector, venue_id)
+                return error_result(
+                    f"{result.error or 'Authorization failed'} "
+                    f"Reconnect {tool.connector} here: {link}"
+                )
             return error_result(result.error or "Tool execution failed")
 
         # The app renders from `structuredContent` — the FULL payload (computed

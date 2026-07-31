@@ -226,6 +226,9 @@ def _execute_loop(
 
     thinking_steps: list[str] = []
     display_blocks: list[dict] = []
+    #: Connectors we've already shown a reconnect card for this turn — one card
+    #: per broken connector, even if several of its tools fail.
+    auth_carded: set[str] = set()
     #: Answer text from every iteration of this turn, in order. The model often
     #: writes substantive prose before a tool call and then closes with a short
     #: line; keeping only the last one silently dropped the real answer.
@@ -430,6 +433,27 @@ def _execute_loop(
             for block, connector, action, method in read_only_blocks:
                 tc = read_only_tcs[block.id]
                 result = execution_results[block.id]
+
+                # A rejected connector token surfaces a reconnect card in-chat
+                # rather than dead-ending on the error string, so a broken
+                # connector is fixable from where the user hit it. One card per
+                # connector per turn; the LLM still sees the error text and can
+                # explain it. Never for "norm" itself (internal, never OAuth).
+                if (
+                    isinstance(result, dict)
+                    and result.get("auth_failed")
+                    and connector
+                    and connector != "norm"
+                    and connector not in auth_carded
+                ):
+                    auth_carded.add(connector)
+                    display_blocks.append(
+                        {
+                            "component": "connector_connect",
+                            "data": {"connector_name": connector},
+                            "props": {},
+                        }
+                    )
 
                 # Check for document content block (e.g., resume PDF)
                 doc_block = None
@@ -1119,6 +1143,7 @@ def _execute_tool_call(
             "data": payload,
             "reference": result.reference,
             "error": result.error_message,
+            "auth_failed": getattr(result, "auth_failed", False),
         }
     except Exception as exc:
         tc.duration_ms = int((time.time() - t0) * 1000)
