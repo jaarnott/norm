@@ -3,6 +3,7 @@
 import uuid
 from unittest.mock import patch, MagicMock
 
+import pytest
 
 from app.db.models import ConnectorConfig
 
@@ -22,6 +23,18 @@ class TestListConnectors:
 
 class TestConnectorHealth:
     """GET /api/connectors/health — the banner's one-call broken-connections list."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, db_session):
+        """Clear pre-existing connector rows.
+
+        /connectors/health scans every ConnectorConfig, so a real broken row in
+        the shared dev DB (e.g. a genuinely-expired LoadedHub token) would leak
+        into these counts. Safe: the db_session fixture rolls back, and the
+        client override shares this same session.
+        """
+        db_session.query(ConnectorConfig).delete()
+        db_session.flush()
 
     def _broken_row(self, db_session, venue_id=None):
         from app.db.config_models import ConnectorSpec

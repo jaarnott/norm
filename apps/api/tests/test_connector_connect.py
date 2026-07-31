@@ -99,7 +99,9 @@ class TestAuthorizeAuthorization:
         )
         assert resp.status_code == 403
 
-    def test_user_without_permission_is_refused(self, client, db_session, manager_headers):
+    def test_user_without_permission_is_refused(
+        self, client, db_session, manager_headers
+    ):
         venue = _make_venue(db_session)
         _oauth_spec_row(db_session)
         # manager_headers has role="manager" but no membership/role → no perm
@@ -229,6 +231,71 @@ class TestAuthFailurePropagates:
 
         assert result["auth_failed"] is True
         assert result["success"] is False
+
+
+class TestConnectIntentDetection:
+    """'connect BambooHR' must show the card — it routes to meta (no tool loop),
+    so the supervisor detects it deterministically."""
+
+    def _specs(self, db_session):
+        for name, display, cat in [
+            ("loadedhub", "LoadedHub", "pos"),
+            ("bamboohr", "BambooHR", "hr"),
+            ("norm", "Norm", "_internal"),
+        ]:
+            db_session.add(
+                ConnectorSpec(
+                    id=str(uuid.uuid4()),
+                    connector_name=name,
+                    display_name=display,
+                    category=cat,
+                    auth_type="oauth2",
+                    enabled=True,
+                )
+            )
+        db_session.flush()
+
+    def test_detects_connector_by_name(self, db_session):
+        from app.services.supervisor import _detect_connect_intent
+
+        self._specs(db_session)
+        assert (
+            _detect_connect_intent("can you connect to bamboohr please", db_session)
+            == "bamboohr"
+        )
+        assert _detect_connect_intent("reconnect loadedhub", db_session) == "loadedhub"
+
+    def test_detects_via_alias(self, db_session):
+        from app.services.supervisor import _detect_connect_intent
+
+        self._specs(db_session)
+        assert (
+            _detect_connect_intent("please connect loaded", db_session) == "loadedhub"
+        )
+        assert _detect_connect_intent("connect bamboo hr", db_session) == "bamboohr"
+
+    def test_no_verb_no_match(self, db_session):
+        from app.services.supervisor import _detect_connect_intent
+
+        self._specs(db_session)
+        assert (
+            _detect_connect_intent("how were sales at loadedhub last week", db_session)
+            is None
+        )
+
+    def test_verb_but_no_connector(self, db_session):
+        from app.services.supervisor import _detect_connect_intent
+
+        self._specs(db_session)
+        assert (
+            _detect_connect_intent("connect the dots on our sales", db_session) is None
+        )
+
+    def test_never_matches_norm_internal(self, db_session):
+        from app.services.supervisor import _detect_connect_intent
+
+        self._specs(db_session)
+        assert _detect_connect_intent("connect to norm", db_session) is None
 
 
 class TestMcpConnectLink:

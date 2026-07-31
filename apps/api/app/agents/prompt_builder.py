@@ -588,7 +588,11 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
         )
 
     # Unified tool filtering — priority: explicit tool_filter > playbook > agent default
-    _ALWAYS_INCLUDE = {"resolve_dates"}  # search_tool_result injected on truncation
+    # Always available, regardless of agent bindings/playbook filter. These are
+    # cross-cutting: any conversation may need to resolve a date, or connect /
+    # reconnect a system (which can be asked in any domain, and for a connector
+    # that has never been bound to this agent).
+    _ALWAYS_INCLUDE = {"resolve_dates", "show_connect"}
     active_filter = tool_filter or (
         playbook.tool_filter
         if playbook and getattr(playbook, "tool_filter", None)

@@ -369,6 +369,15 @@ def handle_message(
         }
     )
 
+    # A connect/reconnect request shows the connect card, whatever domain the
+    # router picked (it usually picks meta, which runs no tool loop). Deterministic
+    # so it doesn't depend on the model choosing to call show_connect.
+    connect_target = _detect_connect_intent(message, _cdb)
+    if connect_target:
+        return _create_connect_response(
+            message, connect_target, db, user_id, prior_thread=prior_thread
+        )
+
     # Handle meta domain — self-description
     if domain == "meta":
         result = _build_capabilities_response(
@@ -822,6 +831,130 @@ def _build_capabilities_response(
             {
                 "role": m.role,
                 "text": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in sorted(thread.messages, key=lambda x: x.created_at)
+        ],
+    }
+
+
+# A connect/reconnect request is cross-cutting — it belongs to no data domain,
+# so the router sends it to "meta" (capabilities), which runs no tool loop and
+# can't call show_connect. Detecting it here, deterministically, is what makes
+# "connect BambooHR" actually show the connect card. A few obvious aliases on
+# top of each connector's own name/display name.
+_CONNECT_VERBS = (
+    "connect",
+    "reconnect",
+    "re-connect",
+    "reauthorize",
+    "reauthorise",
+    "authorize",
+    "authorise",
+    "link up",
+    "hook up",
+)
+_CONNECT_ALIASES = {
+    "loadedhub": ("loaded hub", "loaded", "loadedhub"),
+    "bamboohr": ("bamboo hr", "bamboohr", "bamboo"),
+    "microsoft_outlook": ("outlook", "microsoft"),
+    "gmail": ("gmail", "google mail"),
+}
+
+
+def _detect_connect_intent(message: str, config_db: Session) -> str | None:
+    """Return the connector the user wants to connect, or None.
+
+    Requires an explicit connect verb so it never hijacks an ordinary request,
+    and resolves the connector from the enabled specs' name/display name plus a
+    small alias map.
+    """
+    text = " ".join(message.lower().split())
+    if not any(v in text for v in _CONNECT_VERBS):
+        return None
+
+    from app.db.config_models import ConnectorSpec
+
+    best = None
+    for spec in config_db.query(ConnectorSpec).filter(ConnectorSpec.enabled == True):  # noqa: E712
+        # Skip Norm-internal plumbing — not a user-connectable system.
+        if spec.connector_name == "norm" or spec.category == "_platform":
+            continue
+        tokens = {spec.connector_name.lower(), (spec.display_name or "").lower()}
+        tokens |= set(_CONNECT_ALIASES.get(spec.connector_name, ()))
+        for tok in tokens:
+            tok = tok.strip()
+            if len(tok) >= 4 and tok in text:
+                # Prefer the longest match so "bamboo hr" beats "bamboo".
+                if best is None or len(tok) > best[1]:
+                    best = (spec.connector_name, len(tok))
+    return best[0] if best else None
+
+
+def _create_connect_response(
+    message: str,
+    connector_name: str,
+    db: Session,
+    user_id: str | None = None,
+    prior_thread: Thread | None = None,
+) -> dict:
+    """Answer a connect request with the in-conversation connect card."""
+    display_blocks = [
+        {"component": "connector_connect", "data": {"connector_name": connector_name}}
+    ]
+    answer = "Sure — here's the connection panel."
+
+    if prior_thread is not None:
+        thread = prior_thread
+        db.add(Message(thread_id=thread.id, role="user", content=message))
+        db.add(
+            Message(
+                thread_id=thread.id,
+                role="assistant",
+                content=answer,
+                display_blocks=display_blocks,
+            )
+        )
+        db.commit()
+        db.refresh(thread)
+    else:
+        thread = Thread(
+            user_id=user_id,
+            intent="meta.connect",
+            domain="meta",
+            status="completed",
+            raw_prompt=message,
+            extracted_fields={},
+            missing_fields=[],
+        )
+        db.add(thread)
+        db.flush()
+        db.add(Message(thread_id=thread.id, role="user", content=message))
+        db.add(
+            Message(
+                thread_id=thread.id,
+                role="assistant",
+                content=answer,
+                display_blocks=display_blocks,
+            )
+        )
+        db.commit()
+        db.refresh(thread)
+
+    return {
+        "id": thread.id,
+        "domain": "meta",
+        "intent": "meta.connect",
+        "title": thread.title,
+        "message": message,
+        "status": "completed",
+        "created_at": thread.created_at.isoformat(),
+        "updated_at": thread.updated_at.isoformat(),
+        "conversation": [
+            {
+                "role": m.role,
+                "text": m.content,
+                "display_blocks": m.display_blocks,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
             for m in sorted(thread.messages, key=lambda x: x.created_at)
