@@ -127,21 +127,33 @@ def _get_user_org(user: User, db: Session) -> Organization | None:
 async def list_organizations(
     db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    """List organizations the current user belongs to (all orgs for platform admins)."""
+    """List organizations the current user belongs to (all orgs for platform admins).
+
+    The user's own org (the one they're a member of) comes first. Clients pick
+    ``organizations[0]`` as the default, so for a platform admin — who gets every
+    org — that default must be *their* org, not an arbitrary first row. Without
+    this, an admin who owns "Cook Brothers Bars" opens Settings and sees some
+    other org's venues.
+    """
+    member_org_ids = [
+        m.organization_id
+        for m in db.query(OrganizationMembership)
+        .filter(OrganizationMembership.user_id == user.id)
+        .all()
+    ]
+
     if user.role == "admin":
         orgs = db.query(Organization).all()
     else:
-        memberships = (
-            db.query(OrganizationMembership)
-            .filter(OrganizationMembership.user_id == user.id)
-            .all()
-        )
-        org_ids = [m.organization_id for m in memberships]
         orgs = (
-            db.query(Organization).filter(Organization.id.in_(org_ids)).all()
-            if org_ids
+            db.query(Organization).filter(Organization.id.in_(member_org_ids)).all()
+            if member_org_ids
             else []
         )
+
+    # Membership orgs first, then the rest (only ever non-empty for admins).
+    member_set = set(member_org_ids)
+    orgs.sort(key=lambda o: (o.id not in member_set, (o.name or "").lower()))
     return {"organizations": [_org_to_dict(o, db) for o in orgs]}
 
 

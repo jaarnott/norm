@@ -66,6 +66,31 @@ class TestListOrganizations:
         ids = {o["id"] for o in resp.json()["organizations"]}
         assert organization.id not in ids
 
+    def test_admins_own_org_is_listed_first(
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
+    ):
+        """Clients use organizations[0] as the default. For a platform admin who
+        sees every org, that default must be *their* org — not an arbitrary
+        first row — else Settings shows some other org's venues.
+        """
+        from tests.conftest import _make_organization
+
+        # Another org that would sort ahead of the admin's org by name.
+        _make_organization(db_session, name="AAA Other Org")
+
+        resp = client.get("/api/organizations", headers=admin_headers)
+        assert resp.status_code == 200
+        orgs = resp.json()["organizations"]
+        assert orgs[0]["id"] == organization.id
+        # …but the other org is still in the list (admins can reach every org).
+        assert any(o["name"] == "AAA Other Org" for o in orgs)
+
 
 class TestCreateOrganization:
     """POST /api/organizations"""
