@@ -278,7 +278,7 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
                                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                                     <thead>
                                       <tr>
-                                        {['Item', 'Unit', 'Qty Ordered', 'Qty Received', 'Unit Cost', 'Line Total'].map(h => (
+                                        {['Item', 'Unit', 'Qty Ordered', 'Unit Cost', 'Line Total'].map(h => (
                                           <th key={h} style={{
                                             padding: '4px 8px', textAlign: h.includes('Cost') || h.includes('Total') ? 'right' : 'left',
                                             fontSize: '0.68rem', fontWeight: 600, color: colors.textSecondary,
@@ -293,7 +293,6 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
                                           <td style={{ padding: '4px 8px', fontSize: '0.76rem' }}>{line.itemName}</td>
                                           <td style={{ padding: '4px 8px', fontSize: '0.76rem' }}>{line.unitName}</td>
                                           <td style={{ padding: '4px 8px', fontSize: '0.76rem' }}>{line.quantityOrdered}</td>
-                                          <td style={{ padding: '4px 8px', fontSize: '0.76rem' }}>{line.quantityReceived}</td>
                                           <td style={{ padding: '4px 8px', fontSize: '0.76rem', textAlign: 'right' }}>{formatCurrency(line.unitCost)}</td>
                                           <td style={{ padding: '4px 8px', fontSize: '0.76rem', textAlign: 'right' }}>{formatCurrency(line.quantityOrdered * line.unitCost)}</td>
                                         </tr>
