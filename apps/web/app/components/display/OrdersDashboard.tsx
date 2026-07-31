@@ -172,7 +172,16 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
           </button>
           <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>New purchase order</h2>
         </div>
-        <PurchaseOrderEditor data={{}} props={{ activeVenueId: selectedVenue }} />
+        {/* onAction is what flips the editor into interactive mode (its add-item
+            search only shows when interactive). A standalone new order has no
+            working document or thread to sync line edits to — they live in the
+            editor's own state and submit via create_orders_batch — so this is a
+            no-op that exists only to enable editing. */}
+        <PurchaseOrderEditor
+          data={{}}
+          props={{ activeVenueId: selectedVenue }}
+          onAction={async () => {}}
+        />
       </div>
     );
   }
