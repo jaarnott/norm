@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { colors } from '../../lib/theme';
+import PurchaseOrderEditor from './PurchaseOrderEditor';
 
 interface OrderSummary {
   id: string;
@@ -61,6 +62,7 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
   // Venue selector — same pattern as RosterEditor
   const [venues, setVenues] = useState<VenueOption[]>([]);
   const [selectedVenue, setSelectedVenue] = useState<string | null>((props?.activeVenueId as string) || null);
+  const [creating, setCreating] = useState(false);
   const [orders, setOrders] = useState<OrderSummary[]>(() => extractOrders(data));
   const [loading, setLoading] = useState(false);
 
@@ -152,6 +154,29 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
 
   const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
 
+  // Create a new purchase order using the same editor the agent uses. Starts
+  // blank (no working document); it loads the venue's stock/suppliers itself and
+  // submits via create_orders_batch.
+  if (creating) {
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+          <button
+            onClick={() => setCreating(false)}
+            style={{
+              padding: '4px 12px', fontSize: '0.75rem', fontWeight: 600, border: `1px solid ${colors.border}`,
+              borderRadius: 6, backgroundColor: '#fff', color: colors.textSecondary, cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            ← Back to orders
+          </button>
+          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>New purchase order</h2>
+        </div>
+        <PurchaseOrderEditor data={{}} props={{ activeVenueId: selectedVenue }} />
+      </div>
+    );
+  }
+
   return (
     <div>
       {/* Header with venue selector */}
@@ -176,6 +201,18 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
             {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
           </select>
         )}
+          <button
+            onClick={() => setCreating(true)}
+            disabled={!selectedVenue}
+            title={selectedVenue ? 'Create a new purchase order' : 'Select a venue first'}
+            style={{
+              padding: '4px 12px', fontSize: '0.75rem', fontWeight: 600, border: 'none',
+              borderRadius: 6, backgroundColor: selectedVenue ? '#111' : '#ccc', color: '#fff',
+              cursor: selectedVenue ? 'pointer' : 'default', fontFamily: 'inherit', whiteSpace: 'nowrap',
+            }}
+          >
+            + New order
+          </button>
         </div>
       </div>
 
