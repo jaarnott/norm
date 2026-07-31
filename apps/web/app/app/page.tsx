@@ -36,9 +36,10 @@ export default function Home() {
   const [venues, setVenues] = useState<VenueDetail[]>([]);
   const [activeVenueId, setActiveVenueId] = useState<string | null>(null);
   const [quotaExceeded, setQuotaExceeded] = useState<{ used: number; quota: number } | null>(null);
-  // Set from a ?connect=<connector> deep link (the MCP surface hands users here
-  // to finish an OAuth/credential connect the iframe can't run). Shows the
-  // connect card as an overlay.
+  // The connector whose reconnect panel is currently shown in the content area.
+  // Set when a page load fails on a dead token (via the norm:connector-auth
+  // event from apiFetch) or from a ?connect=<connector> deep link (the MCP
+  // hand-off). Rendered inline in the page, not as a popup.
   const [connectConnector, setConnectConnector] = useState<string | null>(null);
   const { isMobile } = useBreakpoint();
   const [mobileView, setMobileView] = useState<'list' | 'detail' | 'home' | 'settings'>('home');
@@ -604,24 +605,38 @@ export default function Home() {
     return <LoginForm onSuccess={handleAuthSuccess} />;
   }
 
-  // Connect overlay from a ?connect= deep link (MCP → web handoff). Rendered in
-  // both layouts so a manager who followed the link from Claude lands straight
-  // on the connect card.
-  const connectOverlay = connectConnector ? (
-    <div
-      onClick={() => setConnectConnector(null)}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.35)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem',
-      }}
-    >
-      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 12, padding: '1.1rem 1.2rem', maxWidth: 500, width: '100%', boxShadow: '0 8px 30px rgba(0,0,0,0.25)' }}>
-        <ConnectorConnectCard data={{ connector_name: connectConnector }} onAction={(action) => handleWidgetAction(selectedThreadId || '', action)} />
+  // Inline reconnect panel — shown in the content area (not a popup) whenever a
+  // connector needs reconnecting: a page load failed on a dead token, or a
+  // ?connect= deep link from Claude. It replaces the errored page content, so
+  // the user gets a graceful "reconnect here" state instead of a raw error, and
+  // it works for every page through this one integration point.
+  const connectPanel = connectConnector ? (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '2rem 1.5rem', fontFamily: 'system-ui, sans-serif' }}>
+      <div style={{ maxWidth: 560, margin: '0 auto' }}>
+        <div style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+          This connection needs reconnecting
+        </div>
+        <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '1rem' }}>
+          We couldn&apos;t load this because the connection stopped working. Reconnect below to continue.
+        </div>
+        <ConnectorConnectCard
+          data={{ connector_name: connectConnector, reconnect: true }}
+          onAction={(action) => {
+            // The card signals a successful connect by asking to post a message.
+            // In this page panel there's no conversation to steer — just dismiss
+            // so the user can retry what they were doing.
+            if (action.action === 'send_message') {
+              setConnectConnector(null);
+              return Promise.resolve();
+            }
+            return handleWidgetAction(selectedThreadId || '', action);
+          }}
+        />
         <button
           onClick={() => setConnectConnector(null)}
-          style={{ marginTop: '0.75rem', padding: '5px 12px', fontSize: '0.78rem', border: '1px solid #ddd', borderRadius: 6, background: '#fff', color: '#555', cursor: 'pointer', fontFamily: 'inherit' }}
+          style={{ marginTop: '1rem', padding: '5px 12px', fontSize: '0.78rem', border: '1px solid #ddd', borderRadius: 6, background: '#fff', color: '#555', cursor: 'pointer', fontFamily: 'inherit' }}
         >
-          Close
+          Dismiss
         </button>
       </div>
     </div>
@@ -639,7 +654,7 @@ export default function Home() {
 
     // Thread detail view — back goes to home (conversation)
     if (mobileView === 'detail') {
-      const content = mobileView === 'detail' && activePage ? (() => {
+      const content = connectPanel ? connectPanel : mobileView === 'detail' && activePage ? (() => {
         const pageConfig = FUNCTIONAL_PAGES.find(p => p.id === activePage);
         if (!pageConfig) return null;
         return <FunctionalPage config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} />;
@@ -652,7 +667,6 @@ export default function Home() {
       return (
         <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
           {mobileQuotaModal}
-          {connectOverlay}
           <button onClick={() => setMobileView('list')} style={{
             position: 'absolute', top: 10, left: 10, zIndex: 10,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -672,7 +686,6 @@ export default function Home() {
       return (
         <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
           {mobileQuotaModal}
-          {connectOverlay}
           <button onClick={() => setMobileView('list')} style={{
             position: 'absolute', top: 10, left: 10, zIndex: 10,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -820,7 +833,6 @@ export default function Home() {
   // Desktop layout: three-panel
   return (
     <div style={{ display: 'flex', height: '100dvh', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
-      {connectOverlay}
       {quotaExceeded && (
         <QuotaExceededModal
           used={quotaExceeded.used}
@@ -883,6 +895,8 @@ export default function Home() {
         )}
         {activeAgent === 'settings' ? (
           <SettingsPanel />
+        ) : connectPanel ? (
+          connectPanel
         ) : activePage ? (() => {
           const pageConfig = FUNCTIONAL_PAGES.find(p => p.id === activePage);
           if (!pageConfig) return null;

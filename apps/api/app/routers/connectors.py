@@ -135,13 +135,14 @@ async def connector_connect_info(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("settings:connectors")),
 ):
-    """Everything the in-conversation connect card needs for one connector.
+    """Everything the connect card needs for one connector.
 
-    Connector meta plus this user's venues each tagged connected /
-    needs_reconnect / not_connected — the single source the card renders from,
-    scoped to venues the caller can act on (a platform admin sees all).
+    Connector meta plus the user's venues, each tagged connected /
+    needs_reconnect / not_connected. Scoped to exactly the venues the user works
+    with — the same set the venue picker shows (get_user_venues) — for everyone,
+    admins included, so the card never lists a venue that isn't on their list.
     """
-    from app.db.models import UserVenueAccess, Venue
+    from app.services.venue_service import get_user_venues
 
     spec = (
         config_db.query(ConnectorSpec)
@@ -151,20 +152,7 @@ async def connector_connect_info(
     if not spec:
         raise HTTPException(404, f"Unknown connector: {connector}")
 
-    if user.role == "admin":
-        venues = db.query(Venue).order_by(Venue.name).all()
-    else:
-        allowed = [
-            a.venue_id
-            for a in db.query(UserVenueAccess)
-            .filter(UserVenueAccess.user_id == user.id)
-            .all()
-        ]
-        venues = (
-            db.query(Venue).filter(Venue.id.in_(allowed)).order_by(Venue.name).all()
-            if allowed
-            else []
-        )
+    venues = get_user_venues(db, user.id)
 
     configs = {
         c.venue_id: c
