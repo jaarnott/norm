@@ -83,6 +83,25 @@ class TestConnectorHealth:
         assert broken[0]["venue_name"] == venue.name
         assert "invalid" in broken[0]["last_auth_error"]
 
+    def test_scoped_to_the_users_venues_even_for_admin(
+        self, client, db_session, admin_user, admin_headers
+    ):
+        """The banner must not name a venue that isn't on the user's list.
+
+        Reproduces the reported bug: a platform admin with access to only a
+        couple of venues saw "LoadedHub (La Zeppa)" for a venue they don't have.
+        """
+        from tests.conftest import _make_venue, _make_venue_access
+
+        mine = _make_venue(db_session, name="Mine")
+        others = _make_venue(db_session, name="Not Mine")
+        _make_venue_access(db_session, admin_user, mine)  # admin scoped to Mine only
+        self._broken_row(db_session, venue_id=others.id)
+
+        resp = client.get("/api/connectors/health", headers=admin_headers)
+        assert resp.status_code == 200
+        assert resp.json()["broken"] == []
+
     def test_list_exposes_needs_reconnect(self, client, db_session, admin_headers):
         from tests.conftest import _make_venue
 

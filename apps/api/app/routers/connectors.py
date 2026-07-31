@@ -137,11 +137,16 @@ async def connector_health(
     """Broken connections the caller can see — one cheap call for the banner.
 
     A connection is "broken" once a token refresh was rejected by the provider
-    (needs_reconnect), which `bool(access_token)` cannot tell you. Scoped to the
-    venues this user has access to so the banner never names a venue they can't
-    act on; a platform admin sees all.
+    (needs_reconnect), which `bool(access_token)` cannot tell you.
+
+    Scoped to exactly the venues the user works with — the same set the venue
+    picker shows (get_user_venues) — so the banner never names a venue that
+    isn't on their list. Platform admins are scoped too: this is a personal
+    "your work is blocked" nudge, and org-wide connector health belongs in
+    Settings, not here. Plus the user's own per-user connectors (e.g. email),
+    which are keyed by user_id rather than a venue.
     """
-    from app.db.models import UserVenueAccess, Venue
+    from app.services.venue_service import get_user_venues
 
     rows = (
         db.query(ConnectorConfig)
@@ -151,21 +156,16 @@ async def connector_health(
     if not rows:
         return {"broken": []}
 
-    if user.role != "admin":
-        allowed = {
-            a.venue_id
-            for a in db.query(UserVenueAccess)
-            .filter(UserVenueAccess.user_id == user.id)
-            .all()
-        }
-        rows = [r for r in rows if r.venue_id is None or r.venue_id in allowed]
+    user_venues = {v.id: v.name for v in get_user_venues(db, user.id)}
+    rows = [
+        r
+        for r in rows
+        if r.venue_id in user_venues
+        or (r.venue_id is None and r.user_id == user.id)
+    ]
+    if not rows:
+        return {"broken": []}
 
-    venue_names = {
-        v.id: v.name
-        for v in db.query(Venue)
-        .filter(Venue.id.in_([r.venue_id for r in rows if r.venue_id]))
-        .all()
-    }
     labels = {
         s.connector_name: s.display_name for s in config_db.query(ConnectorSpec).all()
     }
@@ -176,7 +176,7 @@ async def connector_health(
                 "connector_name": r.connector_name,
                 "connector_label": labels.get(r.connector_name, r.connector_name),
                 "venue_id": r.venue_id,
-                "venue_name": venue_names.get(r.venue_id),
+                "venue_name": user_venues.get(r.venue_id),
                 "last_auth_error": r.last_auth_error,
             }
             for r in rows
