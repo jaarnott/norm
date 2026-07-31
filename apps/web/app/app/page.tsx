@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import Sidebar from '../components/layout/Sidebar';
 import ThreadList from '../components/threads/ThreadList';
 import ThreadDetail from '../components/threads/ThreadDetail';
@@ -88,8 +88,8 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authChecked, token]);
 
-  // Any API call that fails because a connector needs reconnecting (fired
-  // centrally from apiFetch) pops the reconnect card, wherever the user hit it.
+  // Any API call that fails because a connector isn't usable (fired centrally
+  // from apiFetch) shows the reconnect panel, wherever the user hit it.
   useEffect(() => {
     const onAuthFail = (e: Event) => {
       const connector = (e as CustomEvent).detail?.connector;
@@ -98,6 +98,18 @@ export default function Home() {
     window.addEventListener('norm:connector-auth', onAuthFail);
     return () => window.removeEventListener('norm:connector-auth', onAuthFail);
   }, []);
+
+  // The reconnect panel belongs to the page that failed, not the whole app.
+  // Clear it whenever the user navigates: the new page loads its own data, and
+  // if that also hits a broken connector, apiFetch fires the event again and
+  // the panel returns — for the connector *this* page needs. So a page that
+  // doesn't touch the connection just loads normally. Skip the first run so a
+  // ?connect= deep link (set on mount) isn't wiped before it's shown.
+  const navMounted = useRef(false);
+  useEffect(() => {
+    if (!navMounted.current) { navMounted.current = true; return; }
+    setConnectConnector(null);
+  }, [activeAgent, activePage, selectedThreadId]);
 
   // Load threads when authenticated
   useEffect(() => {

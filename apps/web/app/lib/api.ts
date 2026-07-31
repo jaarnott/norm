@@ -131,23 +131,35 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
   return res;
 }
 
+// Every way the backend says "this connector isn't usable" — a dead token, no
+// token, or no credentials at all — across all connectors and endpoints. The
+// connector name is the capture group. This is the one place that has to know
+// the shapes, so a page never has to.
+const CONNECTOR_FAILURE_PATTERNS: RegExp[] = [
+  /reconnect\s+([a-z0-9_]+)\s+in\s+settings/i, // dead/expired OAuth token
+  /no credentials(?:\s+configured)?\s+for\s+([a-z0-9_]+)/i, // never set up
+  /no\s+([a-z0-9_]+)\s+access token/i, // token missing
+  /([a-z0-9_]+)\s+authorization failed/i, // auth rejected
+];
+
 /** Fire `norm:connector-auth` with the connector name if a response is a
- *  connector-authorization failure. Best-effort; never throws into the caller. */
+ *  connector-connection failure. Best-effort; never throws into the caller. */
 async function detectConnectorAuthFailure(res: Response): Promise<void> {
   try {
     const text = await res.text();
-    // detail may be a JSON string body or a structured {detail:{...}} object.
     let connector: string | null = null;
+    // Structured form first: {detail:{error:'connector_auth', connector_name}}.
     try {
-      const body = JSON.parse(text);
-      const detail = body?.detail;
+      const detail = JSON.parse(text)?.detail;
       if (detail && typeof detail === 'object' && detail.error === 'connector_auth') {
         connector = detail.connector_name || null;
       }
-    } catch { /* not JSON — fall through to string match */ }
+    } catch { /* not JSON — fall through to message matching */ }
     if (!connector) {
-      const m = /reconnect\s+([a-z0-9_]+)\s+in\s+settings/i.exec(text);
-      if (m) connector = m[1];
+      for (const re of CONNECTOR_FAILURE_PATTERNS) {
+        const m = re.exec(text);
+        if (m) { connector = m[1]; break; }
+      }
     }
     if (connector) {
       window.dispatchEvent(
