@@ -127,3 +127,62 @@ class TestCredentialHeaderSanitization:
             {"api_key": "  key-9  "},
         )
         assert headers["X-API-Key"] == "key-9"
+
+
+class TestAttachItemNames:
+    """The mirror's Description column: linked lines show the ITEM's name (as
+    Loaded's UI does), resolved once and persisted; raw description untouched."""
+
+    class FakeLh:
+        def __init__(self, items):
+            self.items = items
+            self.calls = []
+
+        def get(self, path):
+            self.calls.append(path)
+            item_id = path.rsplit("/", 1)[-1]
+            if item_id in self.items:
+                return {"id": item_id, "name": self.items[item_id]}
+            raise RuntimeError("item fetch failed")
+
+    def test_resolves_names_for_linked_lines_only(self):
+        from app.services.received_invoice import attach_item_names
+
+        data = {"lines": [
+            {"id": "l1", "description": "Spianata Piccante 2kg C6", "linked_item_id": "i-1"},
+            {"id": "l2", "description": "FREIGHT - FOOD", "linked_item_id": None},
+        ]}
+        lh = self.FakeLh({"i-1": "SPIANATA PICCANTE"})
+        attach_item_names(data, lh)
+        assert data["lines"][0]["item_name"] == "SPIANATA PICCANTE"
+        assert data["lines"][0]["item_name_for"] == "i-1"
+        assert data["lines"][0]["description"] == "Spianata Piccante 2kg C6"  # raw kept
+        assert "item_name" not in data["lines"][1]
+
+    def test_resolved_lines_are_not_refetched(self):
+        from app.services.received_invoice import attach_item_names
+
+        data = {"lines": [
+            {"id": "l1", "linked_item_id": "i-1", "item_name": "X", "item_name_for": "i-1"},
+        ]}
+        lh = self.FakeLh({"i-1": "X"})
+        attach_item_names(data, lh)
+        assert lh.calls == []  # persisted — no refetch on re-open
+
+    def test_relink_refreshes_the_name(self):
+        from app.services.received_invoice import attach_item_names
+
+        data = {"lines": [
+            {"id": "l1", "linked_item_id": "i-2", "item_name": "OLD", "item_name_for": "i-1"},
+        ]}
+        lh = self.FakeLh({"i-2": "NEW NAME"})
+        attach_item_names(data, lh)
+        assert data["lines"][0]["item_name"] == "NEW NAME"
+        assert data["lines"][0]["item_name_for"] == "i-2"
+
+    def test_failed_fetch_leaves_raw_description(self):
+        from app.services.received_invoice import attach_item_names
+
+        data = {"lines": [{"id": "l1", "description": "RAW", "linked_item_id": "i-x"}]}
+        attach_item_names(data, self.FakeLh({}))  # fetch raises
+        assert "item_name" not in data["lines"][0]

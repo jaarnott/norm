@@ -635,13 +635,13 @@ class TestChecklist:
         verdict = run_consolidator(api)["received"][0]
         # All-pass checklists collapse to a single string — keeps the report
         # payload under the tool-result slim threshold on large runs.
-        assert verdict["checklist"] == "All 11 checks passed ✓"
+        assert verdict["checklist"] == "All 12 checks passed ✓"
 
     def test_unlinked_invoice_shows_cross_then_unchecked(self):
         api = api_for(make_invoice(linkedPurchaseOrderId=None))
         verdict = run_consolidator(api)["skipped"][0]
         by_label = {c["check"]: c["result"] for c in verdict["checklist"]}
-        assert by_label["Not a credit note"] == "✓"
+        assert by_label["Not a credit note or statement"] == "✓"
         assert by_label["Invoice copy attached"] == "✓"  # checked EARLY now
         assert by_label["Linked to a purchase order"] == "✗"
         # everything after the failing layer is explicitly "not checked"
@@ -669,9 +669,9 @@ class TestChecklist:
             pdfs={FILE_ID: make_pdf()},
         )
         rows = {r["reference"]: r for r in run_consolidator(api)["results"]}
-        assert rows["F55755100"]["checks"] == "11✓"
+        assert rows["F55755100"]["checks"] == "12✓"
         # unlinked invoice: credit ✓, copy attached ✓, po_linked ✗, rest unchecked
-        assert rows["X-1"]["checks"] == "2✓ 1✗ 8 not checked"
+        assert rows["X-1"]["checks"] == "3✓ 1✗ 8 not checked"
 
 
 class TestAuditDetails:
@@ -883,7 +883,7 @@ class TestUnitOfMeasureGate:
         api = api_for(make_invoice(), pdf=self.pdf_with_uom("Kilo"))
         result = run_consolidator(api)
         assert result["summary"] == {"received": 1, "skipped": 0}
-        assert result["received"][0]["checklist"] == "All 11 checks passed ✓"
+        assert result["received"][0]["checklist"] == "All 12 checks passed ✓"
 
     def test_count_mismatch_blocks_with_fix_advice(self):
         # The real napkins case: Loaded says Each, copy is a 100-pack.
@@ -1111,6 +1111,7 @@ class TestCardChecks:
         "pdf_lines",
         "unit_of_measure",
         "pdf_total",
+        "duplicate",
     ]
 
     def decode(self, packed):
@@ -1132,6 +1133,10 @@ class TestCardChecks:
         assert checks["pdf_present"] == "p"
         assert checks["po_linked"] == "f"
         for key in self.ORDER[self.ORDER.index("po_linked") + 1 :]:
+            if key == "duplicate":
+                # Packed LAST (positional stability of the checks string) but
+                # evaluated FIRST (Layer 0) — checked even on early failure.
+                continue
             assert checks[key] == "-", f"{key} should not have been reached"
 
     def test_unit_fix_invoice_reaches_the_copy_checks(self):
@@ -1173,7 +1178,7 @@ class TestSingleInvoiceMode:
         fi = result["fix_invoices"][0]
         assert fi["invoice_id"] == INV_ID
         # a perfect invoice: all 11 checks pass, packed one char per check
-        assert len(fi["checks"]) == 11
+        assert len(fi["checks"]) == 12
         assert set(fi["checks"]) == {"p"}
 
     def test_carries_copy_comparison_for_the_one_invoice(self):
@@ -1253,7 +1258,7 @@ class TestSingleInvoicePoOverride:
         fi = run_consolidator(api, invoice_id=INV_ID, purchase_order_id=PO_ID)[
             "fix_invoices"
         ][0]
-        assert len(fi["checks"]) == 11
+        assert len(fi["checks"]) == 12
         # po_linked is a SUGGESTED change (auto-matched, not originally linked),
         # not a clean pass; every OTHER gate runs and passes.
         assert fi["checks"][2] == "s"
@@ -1402,6 +1407,126 @@ class TestSingleInvoiceRunsAllChecks:
         ln = fi["lines"][0]
         assert ln.get("copy_quantity_mismatch") is True
         assert ln.get("copy_quantity") == 99
+        # (No accept-able suggestion here: 99 x 44.40 != 219.78, so the guard
+        # withholds it — the self-consistent case below asserts the suggestion.)
+        assert not any(s.get("type") == "quantity" for s in fi["suggestions"])
+
+    def test_self_consistent_copy_quantity_is_suggested(self):
+        # qty x unit price = line total → the extracted qty is trustworthy and
+        # the one-click suggestion is emitted. (99 x 44.40 = 4395.60)
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(
+            pdf["lines"][0], quantity=99, unit_price_ex_tax=44.40,
+            line_total_ex_tax=4395.60,
+        )
+        api = Api(
+            invoices=[], details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()}, pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        qfix = next(s for s in fi["suggestions"] if s.get("type") == "quantity")
+        assert qfix["line_id"] == "line-1"
+        assert qfix["proposed_quantity"] == 99
+        assert "4.95 → 99" in qfix["summary"]
+
+    def test_statement_document_suggests_deleting_the_draft(self):
+        # A supplier STATEMENT uploaded as a draft invoice (rows of prior
+        # invoices/payments/balances, no products — live: Southern Hospitality).
+        # The review flags the document type, suggests deleting the draft, and
+        # produces NO line-vs-copy noise (statement rows aren't product lines).
+        pdf = make_pdf(document_type="statement")
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(linkedPurchaseOrderId=None)},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][0] == "f"  # document-type check (credit_note slot)
+        assert any(
+            "STATEMENT" in r and "deleted" in r for r in fi["check_reasons"]
+        )
+        assert any(s.get("type") == "delete_invoice" for s in fi["suggestions"])
+        # No copy-comparison noise from statement rows:
+        assert not any(
+            s.get("type") in ("quantity", "unit") for s in fi["suggestions"]
+        )
+        ln = fi["lines"][0]
+        assert ln.get("copy_quantity") is None  # line comparison skipped
+
+    def test_duplicate_of_received_invoice_suggests_deleting_the_draft(self):
+        # The received feed holds a sibling with the SAME invoice number and
+        # supplier (live: CN-19980, already received as a −$20 credit). Loaded's
+        # API carries no duplicate marker on the detail — the check is ours.
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+            received_feed=[{
+                "id": "other-received-id",
+                "invoiceNumber": "F55755100",
+                "supplierName": "Akaroa Salmon",
+                "receivedAt": "2026-06-29T22:26:47Z",
+                "total": -20.0,
+            }],
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][11] == "f"  # the duplicate check (appended last)
+        assert any("already received on 2026-06-29" in r for r in fi["check_reasons"])
+        assert any(s.get("type") == "delete_invoice" for s in fi["suggestions"])
+
+    def test_duplicate_batch_mode_skips_and_never_receives(self):
+        api = api_for(
+            make_invoice(),
+            received_feed=[{
+                "id": "other-received-id",
+                "invoiceNumber": "F55755100",
+                "supplierName": "Akaroa Salmon",
+                "receivedAt": "2026-06-29T22:26:47Z",
+                "total": -20.0,
+            }],
+        )
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 0, "skipped": 1}
+        assert api.received_bodies == []
+
+    def test_own_feed_echo_or_other_supplier_is_not_a_duplicate(self):
+        # The invoice's own id in the feed, or the same number from a DIFFERENT
+        # supplier, must not read as a duplicate.
+        api = api_for(
+            make_invoice(),
+            received_feed=[
+                {"id": INV_ID, "invoiceNumber": "F55755100", "supplierName": "Akaroa Salmon"},
+                {"id": "x", "invoiceNumber": "F55755100", "supplierName": "Someone Else"},
+            ],
+        )
+        assert run_consolidator(api)["summary"] == {"received": 1, "skipped": 0}
+
+    def test_invoice_document_type_does_not_trigger_the_statement_gate(self):
+        # An ordinary invoice with document_type present stays fully receivable.
+        api = api_for(make_invoice(), pdf=make_pdf(document_type="invoice"))
+        assert run_consolidator(api)["summary"] == {"received": 1, "skipped": 0}
+
+    def test_self_contradicting_copy_quantity_is_flagged_but_not_suggested(self):
+        # The extraction contradicts ITSELF: qty 4 x $4.53 = $18.12 but the line
+        # total reads $72.48 (the live BUTTERMILK misread — the real qty was 16,
+        # printed as a carton/singles split). One of the numbers is provably
+        # wrong, so the mismatch is FLAGGED but no one-click Accept is offered
+        # for a number we can prove is a misread.
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(
+            pdf["lines"][0], quantity=4, unit_price_ex_tax=4.53,
+            line_total_ex_tax=72.48,
+        )
+        api = Api(
+            invoices=[], details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()}, pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        ln = fi["lines"][0]
+        assert ln.get("copy_quantity_mismatch") is True  # still flagged
+        assert not any(s.get("type") == "quantity" for s in fi["suggestions"])
 
     def test_zero_dollar_duplicate_line_is_flagged_for_striking(self):
         # Two lines share a code; one carries the real amount, the other is an

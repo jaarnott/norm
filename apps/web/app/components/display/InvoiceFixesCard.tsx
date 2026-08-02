@@ -59,7 +59,7 @@ interface ReviewCheck { key: string; result: 'pass' | 'fail' | 'skip' }
 // config/consolidators/review_and_receive_invoices.py. The order decodes the
 // packed `checks` string; the labels aren't sent, to keep the payload small.
 const CHECK_ORDER: { key: string; label: string }[] = [
-  { key: 'credit_note', label: 'Not a credit note' },
+  { key: 'credit_note', label: 'Document is an invoice (not a credit note or statement)' },
   { key: 'pdf_present', label: 'Invoice copy attached' },
   { key: 'po_linked', label: 'Linked to a purchase order' },
   { key: 'po_supplier', label: 'Supplier matches the purchase order' },
@@ -70,6 +70,7 @@ const CHECK_ORDER: { key: string; label: string }[] = [
   { key: 'pdf_lines', label: 'Lines match the invoice copy' },
   { key: 'unit_of_measure', label: 'Unit of measure matches the copy' },
   { key: 'pdf_total', label: 'Total matches the invoice copy' },
+  { key: 'duplicate', label: 'Not a duplicate of an already-received invoice' },
 ];
 
 interface InvoiceStatus {

@@ -522,6 +522,57 @@ def _line_from_detail(ln: dict) -> dict:
     }
 
 
+def attach_item_names(data: dict, lh: LoadedInvoiceClient) -> None:
+    """Resolve linked stock items' NAMES onto the draft lines — the mirror's
+    Description column.
+
+    Loaded's "Stock Item Description" column shows the LINKED ITEM's name, not
+    the supplier's raw line text (verified live: line description "Spianata
+    Piccante 2kg C6" renders as the item's "SPIANATA PICCANTE"). The invoice
+    detail carries only the raw description, so the names need one item fetch
+    each. Latency-bounded: distinct ids fetched IN PARALLEL (one ~200-400ms
+    burst), and the result persists on the working doc (``item_name`` +
+    ``item_name_for``) so only the first open of a draft pays; a line is only
+    re-resolved when its ``linked_item_id`` changes (re-link). Best-effort per
+    item — a failed fetch leaves that line rendering the raw description.
+
+    The raw ``description`` is deliberately untouched: the review engine's
+    copy-matching, item-matching and the create-item prefill all key off it.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    lines = data.get("lines") or []
+    wanted = {
+        ln["linked_item_id"]
+        for ln in lines
+        if ln.get("linked_item_id")
+        and ln.get("item_name_for") != ln.get("linked_item_id")
+    }
+    if not wanted:
+        return
+
+    def fetch(item_id: str) -> tuple[str, str | None]:
+        try:
+            item = lh.get(f"/1.0/stock/internal/items/{item_id}")
+            name = item.get("name") if isinstance(item, dict) else None
+            return item_id, (str(name) if name else None)
+        except Exception:  # noqa: BLE001 — display enhancement, never blocks
+            return item_id, None
+
+    with ThreadPoolExecutor(max_workers=min(8, len(wanted))) as pool:
+        names = dict(pool.map(fetch, wanted))
+
+    for ln in lines:
+        item_id = ln.get("linked_item_id")
+        if item_id in names and names[item_id]:
+            ln["item_name"] = names[item_id]
+            ln["item_name_for"] = item_id
+        elif not item_id:
+            # Un-linked (or re-set to NEW): no item to name.
+            ln.pop("item_name", None)
+            ln.pop("item_name_for", None)
+
+
 def build_received_invoice_data(detail: dict) -> dict:
     """A raw ``get_invoice_detail`` payload → the received-invoice draft ``data``.
 

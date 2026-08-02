@@ -20,6 +20,13 @@
 # exact reasons.
 
 PDF_SCHEMA = {
+    "document_type": (
+        "one of 'invoice', 'credit_note', 'statement', 'other' — what the "
+        "document IS. A STATEMENT summarises an account: it lists prior "
+        "invoice numbers, payments and balances (e.g. 'Balance Brought "
+        "Forward', 'Payment') instead of billing products. An INVOICE bills "
+        "products/services with quantities and prices."
+    ),
     "supplier_name": "string or null",
     "invoice_number": "string or null",
     "invoice_date": "string or null",
@@ -28,7 +35,11 @@ PDF_SCHEMA = {
         {
             "code": "string or null — the product/item code column",
             "description": "string",
-            "quantity": "number — exactly as printed",
+            "quantity": (
+                "number — the TOTAL count of individual units billed for the "
+                "line, per the quantity rules in the instructions (NOT "
+                "necessarily a single printed column)"
+            ),
             "unit": "string or null — EXACTLY as printed on the document",
             "unit_of_measure": (
                 "string or null — the DELIVERED unit of ONE item, per the "
@@ -75,17 +86,21 @@ PO_EXTRACT_SCHEMA = {
 # tick/cross checklist in reports. Keys match the `checks` map; a key absent
 # from `checks` means an earlier layer failed first, shown as "—" (not checked).
 CHECK_LABELS = [
-    ("credit_note", "Not a credit note"),
+    ("credit_note", "Not a credit note or statement"),
     ("pdf_present", "Invoice copy attached"),
     ("po_linked", "Linked to a purchase order"),
     ("po_supplier", "Supplier matches the purchase order"),
-    ("items_matched", "Stock items, brands and units all exist in Loaded (no NEW)"),
+    ("items_matched", "No NEW stock items, brands or units"),
     ("totals", "Invoice totals consistent"),
     ("pdf_readable", "Invoice copy readable"),
     ("pdf_invoice_number", "Invoice number matches the copy"),
     ("pdf_lines", "Lines match the invoice copy"),
     ("unit_of_measure", "Unit of measure matches the copy"),
     ("pdf_total", "Total matches the invoice copy"),
+    # Appended LAST deliberately: the packed `checks` string is positional, so
+    # adding at the end keeps every existing index stable (an older cached
+    # 11-char string simply decodes this one as "not checked").
+    ("duplicate", "No duplicate"),
 ]
 
 # Conservative unit-name normalisation for the invoice-vs-copy unit check.
@@ -377,9 +392,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 for p in pos
                 if isinstance(p, dict) and _po_norm(p.get("orderNumber")) == want
             ]
-            if supplier_id and any(
-                p.get("supplierId") == supplier_id for p in matches
-            ):
+            if supplier_id and any(p.get("supplierId") == supplier_id for p in matches):
                 matches = [p for p in matches if p.get("supplierId") == supplier_id]
             if len({p.get("id") for p in matches}) == 1:
                 p = matches[0]
@@ -406,14 +419,18 @@ def run(params, call_api, log, call_api_parallel=None):
                 ):
                     continue
                 det = call_api(
-                    "loadedhub", "get_invoice_detail", dict(base, invoice_id=r.get("id"))
+                    "loadedhub",
+                    "get_invoice_detail",
+                    dict(base, invoice_id=r.get("id")),
                 )
                 if isinstance(det, dict) and det.get("linkedPurchaseOrderId"):
                     po_ids.add(det["linkedPurchaseOrderId"])
         if len(po_ids) == 1:
             pid = list(po_ids)[0]  # sandbox has no next()/iter()
             po = call_api(
-                "loadedhub", "get_stock_purchase_order", dict(base, purchase_order_id=pid)
+                "loadedhub",
+                "get_stock_purchase_order",
+                dict(base, purchase_order_id=pid),
             )
             return {
                 "id": pid,
@@ -472,6 +489,10 @@ def run(params, call_api, log, call_api_parallel=None):
         )
 
     received, skipped = [], []
+    # Received invoices indexed by normalized invoice number, for duplicate
+    # detection. Fetched lazily ONCE per run (wide window). None = not yet
+    # fetched; False = fetch failed (don't retry, leave the check unchecked).
+    received_by_ref = None
     # Full editable "Receive Invoice" payloads — one per invoice that has a
     # concrete auto-fix (link_po or unit). Raw values (numbers, ids) for the
     # interactive card; built from data already fetched, no extra API calls.
@@ -689,7 +710,9 @@ def run(params, call_api, log, call_api_parallel=None):
                 for rl in raw_lines
                 if not rl.get("linked_item_id")
             ]
-            if new_lines:
+            # A statement's rows ("Balance Brought Forward", invoice numbers)
+            # are not products — never offer to create/link them as stock items.
+            if new_lines and not any(f.get("type") == "delete_invoice" for f in fixes):
                 matched = call_api(
                     "norm", "match_stock_items", dict(base, lines=new_lines)
                 )
@@ -727,9 +750,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 # (`reasons`) is already carried once in the skipped/received
                 # verdicts, so it is not duplicated onto every card here.
                 "checks": "".join(
-                    {"pass": "p", "fail": "f", "suggest": "s"}.get(
-                        checks.get(key), "-"
-                    )
+                    {"pass": "p", "fail": "f", "suggest": "s"}.get(checks.get(key), "-")
                     for key, _label in CHECK_LABELS
                 ),
             }
@@ -896,6 +917,71 @@ def run(params, call_api, log, call_api_parallel=None):
         # hidden behind an earlier totals failure. Data-dependent layers still
         # guard on their inputs (``po`` fetched, ``fileId`` present).
         run_all = bool(only_invoice_id)
+
+        # Layer 0: duplicate of an already-received invoice? Same normalized
+        # invoice number + same supplier in the received feed, different id.
+        # Loaded's own UI banners this but its API carries NO marker on the
+        # detail (verified live: CN-19980) — so the check is ours, from the
+        # received feed we already pull for PO resolution.
+        if ref and ref != "(no number)":
+            if received_by_ref is None:
+                feed = call_api(
+                    "loadedhub",
+                    "list_received_invoices",
+                    dict(base, from_date=_feed_from, to_date=_feed_to),
+                )
+                if isinstance(feed, dict):
+                    feed = None if feed.get("error") else (feed.get("data") or [])
+                if feed is None:
+                    received_by_ref = False  # fetch failed — leave unchecked
+                else:
+                    received_by_ref = {}
+                    for r in feed:
+                        if isinstance(r, dict) and r.get("invoiceNumber"):
+                            received_by_ref.setdefault(
+                                norm(r.get("invoiceNumber")), []
+                            ).append(r)
+            if received_by_ref is not False:
+                dup = None
+                for r in received_by_ref.get(norm(ref), []):
+                    if r.get("id") != inv_id and norm(r.get("supplierName")) == norm(
+                        detail.get("supplierName")
+                    ):
+                        dup = r
+                        break
+                if dup is None:
+                    checks["duplicate"] = "pass"
+                else:
+                    dup_date = str(dup.get("receivedAt") or "")[:10]
+                    _fail(
+                        checks,
+                        reasons,
+                        "duplicate",
+                        "An invoice with number "
+                        + ref
+                        + " from "
+                        + str(detail.get("supplierName"))
+                        + " was already received on "
+                        + dup_date
+                        + " (total "
+                        + money(dup.get("total"))
+                        + ") — this draft is a duplicate and should be deleted",
+                    )
+                    fixes.append(
+                        {
+                            "type": "delete_invoice",
+                            "invoice_id": inv_id,
+                            "reference": ref,
+                            "summary": ref
+                            + " was already received on "
+                            + dup_date
+                            + " — delete this duplicate draft",
+                        }
+                    )
+                    if not run_all:
+                        card_once()
+                        skipped.append(verdict_now())
+                        continue
 
         # Layer 1: credit notes are out of scope
         if total is not None and total < 0:
@@ -1124,38 +1210,61 @@ def run(params, call_api, log, call_api_parallel=None):
         # (only reached when every cheaper gate passed — this is the one
         # LLM-extraction call per invoice; the copy's presence was checked
         # up front in layer 2)
-        pdf = extract_document(
-            "loadedhub",
-            "download_invoice_file",
-            dict(base, file_id=detail["fileId"]),
-            schema=PDF_SCHEMA,
-            instructions=(
-                "Extract every product line, every separate charge (freight "
-                "etc.), and the totals from this supplier invoice.\n\n"
-                "For each line also derive unit_of_measure — the unit ONE "
-                "delivered item is used in for recipe costing. Rules:\n"
-                "- It must be a weight, volume or count (never a length or a "
-                "bare packaging word like pkt/box/carton/outer/unit).\n"
-                "- Check the unit/size columns first; if unhelpful, look for "
-                "a size in the description (e.g. '900ml', '500g', '4 Litre').\n"
-                "- Multipacks ('2x5L', '5x3kg'): use the individual INNER item "
-                "('5L', '3kg') — UNLESS the line was delivered as a whole "
-                "OUTER/carton (its delivered quantity is in an OUTER/carton "
-                "column, not the INNER column). Then the unit is the WHOLE "
-                "pack, in the same 'NxM' form as the size ('5X3KG' → '5x3kg').\n"
-                "- Random weight billed at a per-kg price (e.g. 14.96 kg at "
-                "$20.56/kg — common for meat/seafood/produce): use 'Kilo', "
-                "never the total weight.\n"
-                "- Counted formats where the count matters: 'N piece' / "
-                "'N pack' (e.g. '100 piece', '12 pack').\n"
-                "- Keep the specific delivered size ('500g', '5L') — do NOT "
-                "convert to a base unit.\n"
-                "- Exactly 1 of a base unit drops the 1: '1kg' → 'Kilo', "
-                "'1L' → 'Litre', '1 each' → 'each'. Use 'Kilo' and 'Litre' "
-                "(not 'KG'/'L') for those base units.\n"
-                "- If no confident unit can be derived, return null."
-            ),
-        ) if detail.get("fileId") else None
+        pdf = (
+            extract_document(
+                "loadedhub",
+                "download_invoice_file",
+                dict(base, file_id=detail["fileId"]),
+                schema=PDF_SCHEMA,
+                instructions=(
+                    "Extract every product line, every separate charge (freight "
+                    "etc.), and the totals from this supplier invoice.\n\n"
+                    "FIRST determine document_type: a document headed "
+                    "'Statement' or structured as an account summary (rows of "
+                    "invoice numbers, payments, balances brought forward) is a "
+                    "'statement', NOT an invoice — still extract what you "
+                    "can.\n\n"
+                    "QUANTITY rules — quantity is the TOTAL number of individual "
+                    "units billed for the line:\n"
+                    "- Some suppliers SPLIT the quantity across columns (e.g. a "
+                    "cartons/CTN column and a single-units column): the billed "
+                    "quantity is cartons x pack size + singles (1 carton of 12 "
+                    "plus 4 singles = 16). Never report just one column of a "
+                    "split.\n"
+                    "- SELF-CHECK every line: quantity x unit_price_ex_tax must "
+                    "equal line_total_ex_tax (within a cent). If your quantity "
+                    "fails this check, re-read the line: derive the quantity from "
+                    "the pack breakdown, or from line_total / unit_price when "
+                    "that is a clean number.\n"
+                    "- unit_price_ex_tax is the price of ONE unit exactly as "
+                    "printed; never adjust it to make the arithmetic work.\n\n"
+                    "For each line also derive unit_of_measure — the unit ONE "
+                    "delivered item is used in for recipe costing. Rules:\n"
+                    "- It must be a weight, volume or count (never a length or a "
+                    "bare packaging word like pkt/box/carton/outer/unit).\n"
+                    "- Check the unit/size columns first; if unhelpful, look for "
+                    "a size in the description (e.g. '900ml', '500g', '4 Litre').\n"
+                    "- Multipacks ('2x5L', '5x3kg'): use the individual INNER item "
+                    "('5L', '3kg') — UNLESS the line was delivered as a whole "
+                    "OUTER/carton (its delivered quantity is in an OUTER/carton "
+                    "column, not the INNER column). Then the unit is the WHOLE "
+                    "pack, in the same 'NxM' form as the size ('5X3KG' → '5x3kg').\n"
+                    "- Random weight billed at a per-kg price (e.g. 14.96 kg at "
+                    "$20.56/kg — common for meat/seafood/produce): use 'Kilo', "
+                    "never the total weight.\n"
+                    "- Counted formats where the count matters: 'N piece' / "
+                    "'N pack' (e.g. '100 piece', '12 pack').\n"
+                    "- Keep the specific delivered size ('500g', '5L') — do NOT "
+                    "convert to a base unit.\n"
+                    "- Exactly 1 of a base unit drops the 1: '1kg' → 'Kilo', "
+                    "'1L' → 'Litre', '1 each' → 'each'. Use 'Kilo' and 'Litre' "
+                    "(not 'KG'/'L') for those base units.\n"
+                    "- If no confident unit can be derived, return null."
+                ),
+            )
+            if detail.get("fileId")
+            else None
+        )
         # The copy checks run only when a copy is attached; without a fileId pdf
         # stays None and pdf_readable (and the checks below) stay "—" not checked.
         if detail.get("fileId") and (not isinstance(pdf, dict) or pdf.get("error")):
@@ -1169,6 +1278,35 @@ def run(params, call_api, log, call_api_parallel=None):
             pdf = None
         elif isinstance(pdf, dict):
             checks["pdf_readable"] = "pass"
+
+        # A supplier STATEMENT uploaded as a draft invoice: it lists prior
+        # invoices, payments and balances instead of billing products, so it
+        # is not receivable — fail the document-type check, suggest deleting
+        # the draft, and skip the line-vs-copy comparison entirely (statement
+        # rows are not product lines; comparing them only produces noise).
+        if pdf and pdf.get("document_type") == "statement":
+            _fail(
+                checks,
+                reasons,
+                "credit_note",
+                "The attached copy is a supplier STATEMENT (it lists "
+                "invoices, payments and balances), not an invoice — this "
+                "draft should be deleted from Loaded",
+            )
+            fixes.append(
+                {
+                    "type": "delete_invoice",
+                    "invoice_id": inv_id,
+                    "reference": ref,
+                    "summary": "This document is a supplier statement, not an "
+                    "invoice — delete this draft in Loaded",
+                }
+            )
+            pdf = None
+            if not run_all:
+                card_once()
+                skipped.append(verdict_now())
+                continue
 
         if pdf:
             # The copy must be for THIS invoice (only fails on a live conflict —
@@ -1201,7 +1339,8 @@ def run(params, call_api, log, call_api_parallel=None):
             # otherwise the one freight amount is flagged twice (line "not found"
             # AND charge "no matching line").
             charges_unclaimed = [
-                c for c in (pdf.get("charges") or [])
+                c
+                for c in (pdf.get("charges") or [])
                 if dec(c.get("amount_ex_tax")) not in (None, D(0))
             ]
             for ln in lines:
@@ -1242,8 +1381,9 @@ def run(params, call_api, log, call_api_parallel=None):
                         charges_unclaimed.remove(charge)
                         if rec:
                             rec["on_copy"] = "✓"
-                        inv_amt, chg_amt = dec(ln.get("totalCost")), dec(
-                            charge.get("amount_ex_tax")
+                        inv_amt, chg_amt = (
+                            dec(ln.get("totalCost")),
+                            dec(charge.get("amount_ex_tax")),
                         )
                         if (
                             inv_amt is not None
@@ -1374,6 +1514,47 @@ def run(params, call_api, log, call_api_parallel=None):
                         + " does not equal the document's quantity "
                         + str(match.get("quantity"))
                     )
+                    # Fixable: set Qty received to the copy's quantity. A LOCAL
+                    # draft edit (applied on receive, never a Loaded write now) —
+                    # the editor lists it under Suggested Changes and also offers
+                    # it inline on the line.
+                    #
+                    # ONLY when the extracted line is self-consistent: quantity x
+                    # unit price must equal the line total. If it doesn't, one of
+                    # the three extracted numbers is a misread (seen live: qty 4
+                    # x $4.53 vs line total $72.48 — the real qty was 16, printed
+                    # as a carton/singles split), so we keep the mismatch FLAG
+                    # but withhold the one-click Accept for a provably wrong
+                    # number.
+                    _q = dec(match.get("quantity"))
+                    _p = dec(match.get("unit_price_ex_tax"))
+                    _t = dec(match.get("line_total_ex_tax"))
+                    if (
+                        _q is not None
+                        and _p is not None
+                        and _t is not None
+                        and close(_q * _p, _t, line_tol)
+                    ):
+                        fixes.append(
+                            {
+                                "type": "quantity",
+                                "invoice_id": inv_id,
+                                "reference": ref,
+                                "line_id": ln.get("id"),
+                                "line_code": ln.get("code"),
+                                "description": str(ln.get("description")),
+                                "current_quantity": ln.get("quantityReceived"),
+                                "proposed_quantity": match.get("quantity"),
+                                "summary": str(ln.get("code") or ref)
+                                + " · "
+                                + str(ln.get("description"))
+                                + ": Qty received "
+                                + str(ln.get("quantityReceived"))
+                                + " → "
+                                + str(match.get("quantity"))
+                                + " (per the invoice copy)",
+                            }
+                        )
                 elif rec:
                     rec["quantity"]["result"] = "✓"
                 if dec(match.get("unit_price_ex_tax")) != dec(ln.get("unitCost")):

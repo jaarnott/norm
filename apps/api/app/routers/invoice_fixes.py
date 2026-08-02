@@ -48,6 +48,7 @@ from app.services.received_invoice import (
     ReceiveRequest,
     _norm,
     _po_key,
+    attach_item_names,
     build_received_invoice_data,
     do_receive as _do_receive,
 )
@@ -108,6 +109,19 @@ def _apply_link_po(lh: _Loaded, fix: dict, db: Session) -> str:  # noqa: ARG001 
     inv["purchaseOrderNumber"] = resolved.get("order_number")
     lh.request("PUT", f"/1.0/stock/internal/invoices/{fix['invoice_id']}", inv)
     return f"Linked purchase order {resolved.get('order_number')}"
+
+
+def _apply_delete_invoice(lh: _Loaded, fix: dict, db: Session) -> str:  # noqa: ARG001 — db unused; uniform applier signature
+    """Delete a draft invoice from Loaded — the accept for the engine's
+    ``delete_invoice`` suggestion (a supplier STATEMENT uploaded as a draft).
+
+    Verified live in the Loaded test env (02 Aug 2026):
+    ``DELETE /1.0/stock/internal/invoices/{id}`` → 204 and the draft drops out
+    of the NotReceived list. Only ever offered by the review engine, and only
+    fired by the user's explicit Accept.
+    """
+    lh.request("DELETE", f"/1.0/stock/internal/invoices/{fix['invoice_id']}")
+    return "Draft deleted from Loaded"
 
 
 def _resolve_unit(lh: _Loaded, proposed: str) -> dict | None:
@@ -253,7 +267,11 @@ def _apply_unit(lh: _Loaded, fix: dict, db: Session) -> str:
     return f"{verb} unit to {unit.get('name')}{variant_note}"
 
 
-_APPLIERS = {"link_po": _apply_link_po, "unit": _apply_unit}
+_APPLIERS = {
+    "link_po": _apply_link_po,
+    "unit": _apply_unit,
+    "delete_invoice": _apply_delete_invoice,
+}
 
 
 @router.post("/invoice-fixes/apply")
@@ -310,6 +328,25 @@ async def accept_invoice_fix(
     # created first). The appliers PUT the invoice with only the change set —
     # they never set isReceived, so the invoice stays unreceived.
     message = applier(lh, fix, db)
+
+    if fix.get("type") == "delete_invoice":
+        # The invoice no longer exists in Loaded — remove the draft too (there
+        # is nothing to reshape) and tell the editor it's gone.
+        from app.db.models import WorkingDocument
+
+        for doc in (
+            db.query(WorkingDocument)
+            .filter(
+                WorkingDocument.doc_type == "received_invoice",
+                WorkingDocument.venue_id == body.venue_id,
+            )
+            .all()
+        ):
+            if (doc.external_ref or {}).get("invoice_id") == body.invoice_id:
+                db.delete(doc)
+        db.commit()
+        return {"message": message, "document": None, "deleted": True}
+
     document = _reshape_draft_after_write(db, lh, body.venue_id, body.invoice_id)
     return {"message": message, "document": document}
 
@@ -351,12 +388,20 @@ def _reshape_draft_after_write(
     try:
         detail = lh.invoice(invoice_id)
         fresh = build_received_invoice_data(detail)
-        for k in ("working_document_id", "thread_id", "venue_id"):
+        # actioned_suggestions rides along: the ✓ rows in Suggested Changes must
+        # survive the rebuild so the user can still see what was applied.
+        for k in (
+            "working_document_id",
+            "thread_id",
+            "venue_id",
+            "actioned_suggestions",
+        ):
             if k in (doc.data or {}):
                 fresh[k] = doc.data[k]
         # PO resolution from the copy is the consolidator's job (runs in /review);
         # the draft only mirrors Loaded's own linked PO deterministically.
         _attach_po_reference(fresh, lh)
+        attach_item_names(fresh, lh)
         fresh["checks"] = None
         fresh["suggestions"] = []
         fresh["check_reasons"] = []
@@ -1148,6 +1193,7 @@ async def create_receive_draft(
                 detail = lh.invoice(body.invoice_id)
                 _refresh_metadata(doc, detail)
                 _attach_po_reference(doc.data, lh)
+                attach_item_names(doc.data, lh)
                 # Fingerprint gate: the review is cached per invoice STATE. If
                 # the invoice changed in Loaded since the review ran (its content
                 # fingerprint moved — Loaded has no revision field), clear the
@@ -1176,6 +1222,7 @@ async def create_receive_draft(
         # Deterministic mirror only — PO retrieval from the copy is the
         # consolidator's job, run in /invoice-fixes/review.
         _attach_po_reference(data, lh)
+        attach_item_names(data, lh)
     except Exception as exc:  # noqa: BLE001 — reference data is enhancement
         logger.info("draft PO reference unavailable: %s", exc)
     doc = WorkingDocument(

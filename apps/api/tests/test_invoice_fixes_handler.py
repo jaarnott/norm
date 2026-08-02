@@ -83,6 +83,15 @@ class TestLinkPo:
         assert lh.writes == []  # nothing written on failure
 
 
+class TestDeleteInvoice:
+    def test_deletes_the_draft(self):
+        # Verified live in the Loaded test env: DELETE .../invoices/{id} -> 204.
+        lh = FakeLoaded({}, {})
+        msg = IF._apply_delete_invoice(lh, {"invoice_id": "inv-1"}, None)
+        assert "deleted" in msg.lower()
+        assert lh.writes == [("DELETE", "/1.0/stock/internal/invoices/inv-1", None)]
+
+
 class TestUnit:
     def _lh(self):
         item = {
