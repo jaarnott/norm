@@ -1960,6 +1960,60 @@ def _set_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict
     return {"success": True, "data": {"workflow": workflow, "mode": mode}}
 
 
+@register("norm", "match_stock_items")
+def _match_stock_items_tool(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Match NEW invoice lines to the venue's stock catalogue — an LLM function.
+
+    One schema-bound reasoning step (classify → department-filtered match) the
+    review engine calls via ``call_api("norm", "match_stock_items", ...)`` —
+    the ``resolve_dates`` pattern. Read-only; never raises; an LLM/catalogue
+    failure returns empty suggestions so callers degrade to plain create.
+
+    Params: ``venue`` (name) or ``venue_id``, and ``lines`` — a list of
+    ``{id, description, code, brand, unit}`` for the unlinked lines.
+    Results are cached by input hash (the extraction-cache infra), so a
+    re-review of an unchanged invoice re-pays nothing.
+    """
+    from app.connectors.function_executor import (
+        _extraction_cache_get,
+        _extraction_cache_key,
+        _extraction_cache_put,
+    )
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.models import Venue
+    from app.services.item_match import suggest_item_matches
+
+    lines = params.get("lines")
+    if not isinstance(lines, list) or not lines:
+        return {"success": True, "data": {"suggestions": {}}}
+
+    venue_id = params.get("venue_id")
+    if not venue_id and params.get("venue"):
+        venue_obj = (
+            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
+        )
+        venue_id = venue_obj.id if venue_obj else None
+    if not venue_id:
+        return {"success": False, "data": {}, "error": "venue not found"}
+
+    cache_key = _extraction_cache_key(
+        "norm", "match_stock_items", {"venue_id": venue_id, "lines": lines}, {}, ""
+    )
+    cached = _extraction_cache_get(db, cache_key)
+    if cached is not None:
+        return {"success": True, "data": {"suggestions": cached}}
+
+    config_db = _ConfigSessionLocal()
+    try:
+        suggestions = suggest_item_matches(venue_id, lines, db, config_db)
+    finally:
+        config_db.close()
+    # Cache only a real result — an empty {} may be a transient LLM failure.
+    if suggestions:
+        _extraction_cache_put(db, cache_key, "norm", "match_stock_items", suggestions)
+    return {"success": True, "data": {"suggestions": suggestions}}
+
+
 @register("norm", "update_task_config")
 def _update_task_config(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update a persistent configuration field on the automated task."""

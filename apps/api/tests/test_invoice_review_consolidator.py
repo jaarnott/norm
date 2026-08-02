@@ -28,12 +28,32 @@ FUNCTION_CODE = (
 class Api:
     """Scriptable fake for call_api / extract_document with call recording."""
 
-    def __init__(self, invoices, details, pos=None, pdfs=None, receive_error=None):
+    def __init__(
+        self,
+        invoices,
+        details,
+        pos=None,
+        pdfs=None,
+        receive_error=None,
+        po_list=None,
+        received_feed=None,
+        item_matches=None,
+    ):
         self.invoices = invoices
         self.details = details
         self.pos = pos or {}
         self.pdfs = pdfs or {}
         self.receive_error = receive_error
+        # For PO-number resolution (owned by the consolidator): the open-PO list
+        # and the received-invoice feed. Default empty → a number resolves to no
+        # Loaded PO (po_unresolved), matching an invoice with no matchable PO.
+        self.po_list = po_list or []
+        self.received_feed = received_feed or []
+        # Scripted result for the norm.match_stock_items LLM function (like the
+        # extract_document fake): {line_id: {matched_item, suggested_name,
+        # suggested_group_id}}. Default empty = matcher found nothing.
+        self.item_matches = item_matches or {}
+        self.match_calls = []
         self.received_bodies = []
 
     def call_api(self, connector, action, params=None):
@@ -44,6 +64,13 @@ class Api:
             return self.details[params["invoice_id"]]
         if action == "get_stock_purchase_order":
             return self.pos[params["purchase_order_id"]]
+        if action == "list_purchase_orders":
+            return self.po_list
+        if action == "list_received_invoices":
+            return self.received_feed
+        if action == "match_stock_items":
+            self.match_calls.append(params.get("lines") or [])
+            return {"suggestions": self.item_matches}
         if action == "receive_invoice":
             if self.receive_error:
                 return {"error": self.receive_error}
@@ -274,38 +301,36 @@ class TestSkips:
         assert "Not linked to a purchase order" in reason
         assert "PO#1520987" in reason
 
-    def test_freight_line_missing_from_copy_blocks(self):
-        # A freight line on the Loaded invoice that only shows as a separate
-        # charge on the copy: the product-line match fails on the copy side
-        # (the PO no longer matters for line membership).
+    def _freight_case(self, charge_amt=6.50):
         freight = make_line(
-            id="line-2",
-            code="FGT001",
-            description="FREIGHT - FOOD",
-            linkedItemId="item-freight",
-            linkedUnitId="unit-each",
-            quantityReceived=1,
-            unitCost=6.50,
-            totalCost=6.50,
+            id="line-2", code="FGT001", description="FREIGHT - FOOD",
+            linkedItemId="item-freight", linkedUnitId="unit-each",
+            quantityReceived=1, unitCost=6.50, totalCost=6.50,
         )
-        inv = make_invoice(
-            lines=[make_line(), freight],
-            subtotal=226.28,
-            taxAmount=33.94,
-            total=260.22,
-        )
+        inv = make_invoice(lines=[make_line(), freight], subtotal=226.28, taxAmount=33.94, total=260.22)
         pdf = make_pdf(
-            charges=[{"description": "Freight (ex GST)", "amount_ex_tax": 6.50}],
-            subtotal_ex_tax=226.28,
-            tax_amount=33.95,
-            total_incl_tax=260.23,
+            charges=[{"description": "Freight (ex GST)", "amount_ex_tax": charge_amt}],
+            subtotal_ex_tax=226.28, tax_amount=33.95, total_incl_tax=260.23,
         )
-        api = api_for(inv, pdf=pdf)
-        verdict = sole_skip(run_consolidator(api))
-        assert any(
-            "'FREIGHT - FOOD' not found on the attached invoice document" in r
-            for r in verdict["reasons"]
-        )
+        return api_for(inv, pdf=pdf)
+
+    def test_freight_line_reconciles_with_the_copy_charge(self):
+        # A freight line on the Loaded invoice is billed as a separate CHARGE on
+        # the copy ("Freight (ex GST)") — they reconcile by the shared word
+        # "freight", so the one amount is NOT double-flagged (neither "line not
+        # found" nor "charge with no matching invoice line") and it receives.
+        result = run_consolidator(self._freight_case())
+        assert result["summary"] == {"received": 1, "skipped": 0}
+
+    def test_freight_amount_discrepancy_flags_once(self):
+        # If the freight line's amount differs from the copy's charge, that's a
+        # real discrepancy — flagged ONCE (not as two separate problems).
+        verdict = sole_skip(run_consolidator(self._freight_case(charge_amt=9.00)))
+        freight_reasons = [
+            r for r in verdict["reasons"] if "FREIGHT" in r.upper() or "Freight" in r
+        ]
+        assert len(freight_reasons) == 1
+        assert "does not equal" in freight_reasons[0]
 
     def test_po_price_difference_does_not_block(self):
         # User decision: PO prices move between ordering and invoicing — the
@@ -330,15 +355,14 @@ class TestSkips:
         result = run_consolidator(api)
         assert result["summary"] == {"received": 1, "skipped": 0}
 
-    def test_unit_differs_from_copy_blocks(self):
+    def test_delivered_unit_differs_from_copy_blocks(self):
+        # The copy's DELIVERED unit (guideline-derived) differs from Loaded's — a
+        # real mismatch that blocks. The literal printed unit column is not compared.
         pdf = make_pdf()
-        pdf["lines"][0] = dict(pdf["lines"][0], unit="each")
-        api = api_for(make_invoice(), pdf=pdf)  # invoice unit is Kilo
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure="Litre")  # inv is Kilo
+        api = api_for(make_invoice(), pdf=pdf)
         verdict = sole_skip(run_consolidator(api))
-        assert any(
-            "unit Kilo does not match the document's unit each" in r
-            for r in verdict["reasons"]
-        )
+        assert any("delivered unit is 'Litre'" in r for r in verdict["reasons"])
 
     def test_unrecognised_copy_unit_is_not_checked(self):
         # "5.6 KG" is a pack descriptor, not a recognisable unit — a confident
@@ -559,7 +583,9 @@ class TestLayeredReporting:
         )
         run_consolidator(api)
         assert len(schemas) == 1  # exactly the PO header read
-        assert "customer_purchase_order_number" in schemas[0]  # header schema, not lines
+        assert (
+            "customer_purchase_order_number" in schemas[0]
+        )  # header schema, not lines
         assert "lines" not in schemas[0]
 
     def test_same_layer_failures_are_all_reported(self):
@@ -941,6 +967,24 @@ class TestFixDerivation:
     def test_received_invoice_has_no_fixes(self):
         assert run_consolidator(api_for(make_invoice()))["fixes"] == []
 
+    def test_outer_multipack_derives_and_proposes_the_pack_name(self):
+        # OUTER-delivered multipack: the copy's delivered unit is the whole pack
+        # '5x3kg'. Loaded's '15 KG' is ratio-equal but a different pack, so it is
+        # flagged (by NAME) and the fix proposes the multipack name.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="15 KG")]), pdf=self._pdf_uom("5x3kg")
+        )
+        fixes = [f for f in run_consolidator(api)["fixes"] if f["type"] == "unit"]
+        assert len(fixes) == 1
+        assert fixes[0]["proposed_unit"] == "5x3kg"
+
+    def test_line_already_on_the_multipack_unit_is_not_flagged(self):
+        # Loaded's unit IS the multipack name → matches by name → no unit fix.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="5x3kg")]), pdf=self._pdf_uom("5x3kg")
+        )
+        assert not any(f["type"] == "unit" for f in run_consolidator(api)["fixes"])
+
     def _pdf_uom(self, uom):
         pdf = make_pdf()
         pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure=uom)
@@ -1100,3 +1144,391 @@ class TestCardChecks:
         assert checks["po_linked"] == "p"
         assert checks["pdf_readable"] == "p"
         assert checks["unit_of_measure"] == "f"
+
+
+class TestSingleInvoiceMode:
+    """params.invoice_id reviews ONE invoice for the Invoices page.
+
+    It must reuse the exact gates (so the checklist never drifts from the batch
+    playbook), present-only (never auto-write), and skip the window list — the
+    one draft is fetched by id. Proven by an EMPTY invoice list: if the mode
+    still leaned on the list it would review nothing.
+    """
+
+    def _api(self, invoice, **kw):
+        return Api(
+            invoices=[],  # empty: single-invoice mode must not use the list
+            details={invoice["id"]: invoice},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+            **kw,
+        )
+
+    def test_reviews_the_named_invoice_despite_empty_list(self):
+        api = self._api(make_invoice())
+        result = run_consolidator(api, invoice_id=INV_ID, mode="autopilot")
+        # present-only regardless of the requested mode — nothing written
+        assert api.received_bodies == []
+        assert len(result["fix_invoices"]) == 1
+        fi = result["fix_invoices"][0]
+        assert fi["invoice_id"] == INV_ID
+        # a perfect invoice: all 11 checks pass, packed one char per check
+        assert len(fi["checks"]) == 11
+        assert set(fi["checks"]) == {"p"}
+
+    def test_carries_copy_comparison_for_the_one_invoice(self):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure="100 piece")
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(lines=[make_line(unit="Each")])},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        ln = fi["lines"][0]
+        assert ln["copy_unit"] == "Kg"
+        assert ln["recommended_unit"] == "100 piece"
+        assert [s["type"] for s in fi["suggestions"]] == ["unit"]
+
+
+class TestSingleInvoiceCarding:
+    """Single-invoice review ALWAYS surfaces the editable card, even when the
+    invoice fails a gate — so the editor's validation is populated. The batch
+    flow must NOT card a skipped invoice (force_card is False there).
+    """
+
+    def _freight_invoice(self):
+        # A freight line has no stock item, so items_matched fails ("NEW").
+        product = make_line()
+        freight = make_line(
+            id="ln-freight", code=None, description="FREIGHT - FOOD", linkedItemId=None
+        )
+        return make_invoice(lines=[product, freight])
+
+    def test_single_invoice_cards_even_when_a_gate_fails(self):
+        api = Api(
+            invoices=[],
+            details={INV_ID: self._freight_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        result = run_consolidator(api, invoice_id=INV_ID)
+        assert len(result["fix_invoices"]) == 1  # carded despite the failure
+        fi = result["fix_invoices"][0]
+        assert fi["invoice_id"] == INV_ID
+        assert "f" in fi["checks"]  # items_matched failed → recorded on the card
+
+    def test_batch_still_does_not_card_a_skipped_invoice(self):
+        # Guard: the force_card change must not leak into the batch flow.
+        api = api_for(self._freight_invoice())
+        result = run_consolidator(api, mode="approve_all")
+        assert result["fix_invoices"] == []
+
+
+class TestSingleInvoicePoOverride:
+    """A PO resolved on the Norm draft but not yet linked in Loaded is passed as
+    ``purchase_order_id``; single-invoice mode injects it into the fetched detail
+    so the PO-dependent gates run against it (validate-without-writeback). Batch
+    mode must ignore it.
+    """
+
+    def _api(self, inv):
+        return Api(
+            invoices=[],
+            details={INV_ID: inv},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+
+    def test_override_runs_the_po_gates_without_writeback(self):
+        # Loaded shows the invoice unlinked; without the override po_linked fails.
+        base = run_consolidator(
+            self._api(make_invoice(linkedPurchaseOrderId=None)), invoice_id=INV_ID
+        )["fix_invoices"][0]
+        assert base["checks"][2] == "f"  # po_linked failed, later gates not reached
+
+        # With the override it validates against the resolved PO — all gates run.
+        api = self._api(make_invoice(linkedPurchaseOrderId=None))
+        fi = run_consolidator(api, invoice_id=INV_ID, purchase_order_id=PO_ID)[
+            "fix_invoices"
+        ][0]
+        assert len(fi["checks"]) == 11
+        # po_linked is a SUGGESTED change (auto-matched, not originally linked),
+        # not a clean pass; every OTHER gate runs and passes.
+        assert fi["checks"][2] == "s"
+        assert set(fi["checks"]) == {"p", "s"}
+        # a link_po suggestion is emitted so the user sees the matched PO
+        assert any(s["type"] == "link_po" for s in fi["suggestions"])
+        assert api.received_bodies == []  # present-only: never written back
+
+    def test_editor_resolves_the_referenced_po_itself(self):
+        # No PO id passed in: the consolidator resolves the referenced number to a
+        # Loaded PO id ITSELF (the retrieval that used to live in the draft), then
+        # validates against it and suggests linking — without writing back.
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(linkedPurchaseOrderId=None)},  # refs PO#1520987
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+            po_list=[
+                {
+                    "id": PO_ID,
+                    "orderNumber": "1520987",
+                    "supplierId": "supplier-akaroa",
+                    "linkedInvoiceId": None,
+                }
+            ],
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][2] == "s"  # resolved → suggested change, not a clean pass
+        assert set(fi["checks"]) == {"p", "s"}
+        link = next(s for s in fi["suggestions"] if s["type"] == "link_po")
+        # The RESOLVED id rides on the suggestion so the editor's Order Number
+        # picker can show it in place (pre-filled, marked suggested).
+        assert link["purchase_order_id"] == PO_ID
+        assert api.received_bodies == []  # present-only, never written back
+
+    def test_editor_resolves_a_received_po_via_the_feed(self):
+        # The referenced PO isn't in the open-PO list (already received), so
+        # resolution falls back to the received-invoice feed: find a sibling
+        # invoice carrying the number and read its linkedPurchaseOrderId. Exercises
+        # Pass 2 — which the sandbox must run without next()/iter().
+        target = make_invoice(linkedPurchaseOrderId=None, purchaseOrderNumber="1520272")
+        api = Api(
+            invoices=[],
+            details={INV_ID: target, "sib-1": {"linkedPurchaseOrderId": "po-sib"}},
+            pos={"po-sib": make_po(id="po-sib", orderNumber="1520272")},
+            pdfs={FILE_ID: make_pdf()},
+            po_list=[],  # not in the open list
+            received_feed=[{"id": "sib-1", "purchaseOrderNumber": "1520272"}],
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][2] == "s"  # resolved via the feed → suggested change
+        assert any(s["type"] == "link_po" for s in fi["suggestions"])
+
+    def test_unresolvable_reference_suggests_nothing(self):
+        # The referenced number matches no Loaded PO (a supplier's own ref): the
+        # editor withholds the "Link PO" suggestion rather than surfacing noise.
+        api = self._api(make_invoice(linkedPurchaseOrderId=None))  # empty po_list/feed
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][2] == "f"  # po_linked still fails
+        assert not any(s["type"] == "link_po" for s in fi["suggestions"])
+
+    def test_batch_ignores_the_override(self):
+        api = api_for(make_invoice(linkedPurchaseOrderId=None))
+        result = run_consolidator(api, mode="approve_all", purchase_order_id=PO_ID)
+        # The override is single-invoice only — batch still sees it unlinked and
+        # never auto-receives it as valid; any card keeps po_linked failed.
+        assert api.received_bodies == []
+        for fi in result["fix_invoices"]:
+            assert fi["checks"][2] != "p"
+
+
+class TestSingleInvoiceRunsAllChecks:
+    """Single-invoice review runs every check it can even AFTER an earlier
+    failure (no short-circuit), so a line-vs-copy mismatch (e.g. a qty that
+    doesn't match the copy) isn't hidden behind an earlier totals failure.
+    Batch mode still short-circuits (covered by the batch short-circuit test).
+
+    Check positions in CHECK_LABELS order: 5=totals, 6=pdf_readable,
+    8=pdf_lines, 10=pdf_total.
+    """
+
+    def test_totals_failure_does_not_hide_the_copy_checks(self):
+        # Inflate the subtotal so line-sum != subtotal → the totals check fails.
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(subtotal=999.0)},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][5] == "f"  # totals failed
+        # ...but the Invoice Copy checks STILL ran (were not short-circuited):
+        assert fi["checks"][6] == "p"  # pdf_readable ran
+        assert fi["checks"][8] != "-"  # pdf_lines ran (p or f, not "not reached")
+        assert fi["checks"][10] != "-"  # pdf_total ran
+
+    def test_qty_mismatch_surfaces_even_with_a_totals_failure(self):
+        # The real 109759592 shape: a line's Loaded qty differs from the copy,
+        # which also makes the internal totals inconsistent. The qty mismatch
+        # must be reported (via pdf_lines), not swallowed by the totals failure.
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], quantity=99.0)  # copy says 99
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(subtotal=999.0)},  # totals also off
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][5] == "f"  # totals failed
+        assert fi["checks"][8] == "f"  # pdf_lines ran AND caught the qty mismatch
+        assert any("quantity" in r for r in fi["check_reasons"])
+
+    def test_non_derivable_copy_unit_is_not_flagged_or_suggested(self):
+        # A bogus / non-derivable delivered unit (a bare packaging word like "pkt")
+        # must NOT be flagged as a mismatch and must NOT be surfaced as "use X" —
+        # the whole point of gating: never tell the user to switch to a packaging
+        # word the extraction mis-read into unit_of_measure.
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure="pkt")
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        ln = fi["lines"][0]
+        assert not ln.get("copy_unit_mismatch")  # not flagged as a mismatch
+        assert ln.get("recommended_unit") is None  # not surfaced as "use X"
+        assert not any(s.get("type") == "unit" for s in fi["suggestions"])
+
+    def test_quantity_mismatch_sets_the_copy_quantity_mismatch_flag(self):
+        # The review DECIDES a qty mismatch (copy qty != received) and exposes it as
+        # a per-line copy_quantity_mismatch flag; the component renders the "use copy
+        # qty" edit from it — the component does not decide the mismatch itself.
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], quantity=99)  # copy says 99, invoice 4.95
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        ln = fi["lines"][0]
+        assert ln.get("copy_quantity_mismatch") is True
+        assert ln.get("copy_quantity") == 99
+
+    def test_zero_dollar_duplicate_line_is_flagged_for_striking(self):
+        # Two lines share a code; one carries the real amount, the other is an
+        # empty $0 twin (a re-scan / split-that-zeroed artifact). The copy has the
+        # item once, so the $0 twin must NOT be flagged "not found on the document"
+        # — it's flagged copy_duplicate and a strike suggestion is emitted, while
+        # the real line still reconciles against the copy. (Live: 109738996.)
+        real = make_line(
+            id="l-real", code="666756", description="CHEESE PARMESAN WEDGE",
+            quantityReceived=2.0, unitCost=50.0, totalCost=100.0,
+            linkedItemId="item-cheese",
+        )
+        dupe = make_line(
+            id="l-dupe", code="666756", description="CHEESE PARMESAN WEDGE",
+            quantityReceived=0.0, unitCost=0.0, totalCost=0.0,
+            linkedItemId="item-cheese",
+        )
+        inv = make_invoice(
+            lines=[real, dupe], linkedPurchaseOrderId=None,
+            subtotal=100.0, taxAmount=15.0, total=115.0,
+        )
+        pdf = make_pdf(
+            lines=[{
+                "code": "666756", "description": "CHEESE PARMESAN WEDGE",
+                "quantity": 2.0, "unit": "Each", "unit_of_measure": "Each",
+                "unit_price_ex_tax": 50.0, "line_total_ex_tax": 100.0,
+            }],
+            subtotal_ex_tax=100.0, tax_amount=15.0, total_incl_tax=115.0,
+        )
+        # Single-invoice review forces the card and runs the full copy comparison,
+        # so the "not found" path is actually exercised.
+        fi = run_consolidator(api_for(inv, pdf=pdf), invoice_id=INV_ID)["fix_invoices"][0]
+        by_id = {ln["id"]: ln for ln in fi["lines"]}
+        assert by_id["l-dupe"].get("copy_duplicate") is True
+        assert by_id["l-real"].get("copy_duplicate") is None  # real line untouched
+        assert any(
+            s.get("type") == "strike" and s.get("line_id") == "l-dupe"
+            for s in fi["suggestions"]
+        )
+        # The $0 twin is NOT double-flagged as missing from the document.
+        assert not any(
+            "not found on the attached invoice" in r
+            for r in fi.get("check_reasons") or []
+        )
+
+    def test_new_item_lines_carry_item_match_suggestions(self):
+        # The engine's artifact is COMPLETE: for NEW (unlinked) lines it calls the
+        # norm.match_stock_items LLM function and bakes the link-or-create
+        # suggestion onto the card lines — every surface renders the same thing.
+        new_line = make_line(
+            id="l-new", code="XX1", description="MYSTERY SAUCE",
+            linkedItemId=None, linkedUnitId=None,
+        )
+        inv = make_invoice(lines=[make_line(), new_line])
+        api = api_for(
+            inv,
+            item_matches={
+                "l-new": {
+                    "matched_item": {"id": "i-77", "name": "SAUCE MYSTERY"},
+                    "suggested_name": None,
+                    "suggested_group_id": None,
+                }
+            },
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        by_id = {ln["id"]: ln for ln in fi["lines"]}
+        assert by_id["l-new"]["matched_item"] == {"id": "i-77", "name": "SAUCE MYSTERY"}
+        # only the unlinked line was sent to the matcher
+        assert api.match_calls and [x["id"] for x in api.match_calls[0]] == ["l-new"]
+        # the linked line is untouched (no match fields set)
+        assert "matched_item" not in by_id["line-1"]
+
+    def test_fully_linked_invoice_never_calls_the_matcher(self):
+        # No NEW lines → zero LLM-function calls (the "no LLM unless it earns
+        # its keep" rule).
+        api = api_for(make_invoice())
+        run_consolidator(api, invoice_id=INV_ID)
+        assert api.match_calls == []
+
+    def test_matcher_failure_leaves_lines_bare(self):
+        # A failed/error matcher result degrades to plain create — no fields, no
+        # crash. (call_api surfaces errors as {"error": ...} dicts.)
+        new_line = make_line(id="l-new", code="XX1", linkedItemId=None)
+        api = api_for(make_invoice(lines=[make_line(), new_line]))
+        api.item_matches = None  # scripted: handler returned nothing usable
+
+        real_call = api.call_api
+
+        def flaky(connector, action, params=None):
+            if action == "match_stock_items":
+                return {"error": "LLM down"}
+            return real_call(connector, action, params)
+
+        api.call_api = flaky
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        by_id = {ln["id"]: ln for ln in fi["lines"]}
+        assert "matched_item" not in by_id["l-new"]
+
+    def test_split_po_suggestion_notes_it_is_not_relinked(self):
+        # The matched PO is already invoiced on another invoice (a split order):
+        # the suggestion says it was used to validate, not re-linked.
+        po = make_po()
+        po["linkedInvoiceId"] = "some-other-invoice"
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(linkedPurchaseOrderId=None)},
+            pos={PO_ID: po},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID, purchase_order_id=PO_ID)[
+            "fix_invoices"
+        ][0]
+        sug = next(s for s in fi["suggestions"] if s["type"] == "link_po")
+        assert sug["already_linked_elsewhere"] is True
+        assert "not re-linked" in sug["summary"]
+
+    def test_failure_reasons_ride_on_the_card(self):
+        # A line-vs-copy mismatch: the specific reason must reach the card so the
+        # editor can show WHAT didn't match, not just which check failed.
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], quantity=99.0)  # mismatch
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][8] == "f"  # pdf_lines failed
+        assert any("quantity" in r for r in fi["check_reasons"])

@@ -3,12 +3,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { ComponentApiConfig } from '../../types';
+import { REGISTERED_COMPONENTS } from '../display/DisplayBlockRenderer';
 
 interface ComponentField { name: string; required: boolean }
 
-const COMPONENTS: { key: string; label: string; description: string; internal: boolean; fields: ComponentField[] }[] = [
-  {
-    key: 'roster_editor', label: 'Roster Editor', internal: false,
+// Curated metadata OVERLAY only — the component LIST derives from the render
+// registry (DisplayBlockRenderer.REGISTERED_COMPONENTS), so a newly registered
+// component always appears here even before it gets a description. `internal`
+// defaults to true (no component-api template attachment) — set false only for
+// components whose data calls are wired through component_api_configs.
+const COMPONENT_META: Record<string, { label?: string; description?: string; internal?: boolean; fields?: ComponentField[] }> = {
+  roster_editor: {
+    label: 'Roster Editor', internal: false,
     description: 'Drag-and-drop shift scheduling with week/day views. Syncs changes to external rostering systems.',
     fields: [
       { name: 'id', required: false }, { name: 'rosterId', required: false },
@@ -22,8 +28,8 @@ const COMPONENTS: { key: string; label: string; description: string; internal: b
       { name: 'remunerationType', required: false },
     ],
   },
-  {
-    key: 'purchase_order_editor', label: 'Purchase Order Editor', internal: false,
+  purchase_order_editor: {
+    label: 'Purchase Order Editor', internal: false,
     description: 'Create and edit purchase orders with line items. Supports batch order creation grouped by supplier.',
     fields: [
       { name: 'id', required: false }, { name: 'stock_code', required: true },
@@ -36,8 +42,8 @@ const COMPONENTS: { key: string; label: string; description: string; internal: b
       { name: 'brandId', required: false },
     ],
   },
-  {
-    key: 'orders_dashboard', label: 'Orders Dashboard', internal: false,
+  orders_dashboard: {
+    label: 'Orders Dashboard', internal: false,
     description: 'View and manage purchase orders. Lists orders by venue with detail expansion and send-to-supplier capability.',
     fields: [
       { name: 'id', required: true }, { name: 'orderNumber', required: false },
@@ -47,16 +53,16 @@ const COMPONENTS: { key: string; label: string; description: string; internal: b
       { name: 'total', required: false }, { name: 'isReceived', required: false },
     ],
   },
-  {
-    key: 'criteria_editor', label: 'Criteria Editor', internal: false,
+  criteria_editor: {
+    label: 'Criteria Editor', internal: false,
     description: 'Edit screening criteria for job applications. Add, remove, and toggle required criteria.',
     fields: [
       { name: 'id', required: true }, { name: 'text', required: true },
       { name: 'required', required: false }, { name: 'category', required: false },
     ],
   },
-  {
-    key: 'hiring_board', label: 'Hiring Board', internal: false,
+  hiring_board: {
+    label: 'Hiring Board', internal: false,
     description: 'Job listings with candidate management. View jobs, applications, and candidate details.',
     fields: [
       { name: 'id', required: true }, { name: 'title', required: true },
@@ -64,47 +70,86 @@ const COMPONENTS: { key: string; label: string; description: string; internal: b
       { name: 'status', required: true }, { name: 'candidate_count', required: false },
     ],
   },
-  {
-    key: 'generic_table', label: 'Data Table', internal: true,
+  generic_table: {
+    label: 'Data Table',
     description: 'Renders tabular data from LLM tool responses. Auto-detects columns from the data.',
-    fields: [],
   },
-  {
-    key: 'roster_table', label: 'Roster Table (Read-only)', internal: true,
+  roster_table: {
+    label: 'Roster Table (Read-only)',
     description: 'Read-only roster view displayed inline in conversations. Shows shifts in a simple table format.',
-    fields: [],
   },
-  {
-    key: 'chart', label: 'Chart', internal: true,
+  chart: {
+    label: 'Chart',
     description: 'Visual chart component (bar, line, pie, etc.) rendered from LLM tool call data via render_chart.',
-    fields: [],
   },
-  {
-    key: 'report_builder', label: 'Report Builder', internal: true,
+  report_builder: {
+    label: 'Report Builder',
     description: 'Drag-and-drop report layout with a 24-column grid. Users arrange charts into custom report layouts.',
-    fields: [],
   },
-  {
-    key: 'saved_reports_board', label: 'Saved Reports', internal: true,
+  saved_reports_board: {
+    label: 'Saved Reports',
     description: 'Lists saved report layouts. Users can open, rename, or delete reports.',
-    fields: [],
   },
-  {
-    key: 'automated_task_board', label: 'Automated Tasks', internal: true,
+  automated_task_board: {
+    label: 'Automated Tasks',
     description: 'Lists automated/scheduled tasks with status, schedule, and run history.',
-    fields: [],
   },
-  {
-    key: 'automated_task_preview', label: 'Automated Task Preview', internal: true,
+  automated_task_preview: {
+    label: 'Automated Task Preview',
     description: 'Single automated task preview card shown inline in conversations.',
-    fields: [],
   },
-  {
-    key: 'tool_approval', label: 'Tool Approval Card', internal: true,
+  tool_approval: {
+    label: 'Tool Approval Card',
     description: 'Inline approval UI for write tool actions. Shows action summary with approve/reject buttons.',
-    fields: [],
   },
-];
+  invoices_dashboard: {
+    label: 'Invoices Dashboard',
+    description: 'Outstanding supplier invoices for a venue (self-loading from /invoice-fixes/outstanding). Opens each invoice in the Receive Invoice Editor.',
+  },
+  receive_invoice_editor: {
+    label: 'Receive Invoice Editor',
+    description: 'Mirrors LoadedHub’s Receive Invoice screen from a working document, then renders the review engine’s checks and suggestions on top (copy comparisons, PO link, unit fixes, $0-duplicate strike, NEW-item link/create matches). Renders only — all suggestions come from the review_and_receive_invoices consolidator via /invoice-fixes/review; receiving is one PUT via /invoice-fixes/receive.',
+  },
+  invoice_fixes: {
+    label: 'Invoice Review Card (batch)',
+    description: 'Batch results card for the review_and_receive_invoices consolidator in chat: per-invoice checklist with accept-able fixes.',
+  },
+  venue_picker: {
+    label: 'Venue Picker',
+    description: 'Inline venue selection card shown when a conversation needs a venue.',
+  },
+  stock_picker: {
+    label: 'Stock Picker',
+    description: 'Inline stock-item selection card used by ordering conversations.',
+  },
+  dashboard_view: {
+    label: 'Dashboard View',
+    description: 'Per-domain dashboard page (HR, procurement, reports, marketing, time & attendance).',
+  },
+  mcp_embed: {
+    label: 'MCP Embed',
+    description: 'Embeds an external MCP App (connector-served UI) inside a Norm page.',
+  },
+  connector_connect: {
+    label: 'Connector Connect Card',
+    description: 'Prompts the user to (re)connect a connector when credentials are missing or expired.',
+  },
+};
+
+const titleCase = (key: string) => key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+// Derived catalogue: every registered component, external (configurable) first.
+const COMPONENTS: { key: string; label: string; description: string; internal: boolean; fields: ComponentField[] }[] =
+  [...REGISTERED_COMPONENTS]
+    .map((key) => ({
+      key,
+      label: COMPONENT_META[key]?.label ?? titleCase(key),
+      description: COMPONENT_META[key]?.description
+        ?? 'No description yet — add this component to COMPONENT_META in ComponentsPanel.tsx.',
+      internal: COMPONENT_META[key]?.internal ?? true,
+      fields: COMPONENT_META[key]?.fields ?? [],
+    }))
+    .sort((a, b) => Number(a.internal) - Number(b.internal));
 
 /** Extract {{ placeholder }} names from a Jinja2 template string */
 function extractPlaceholders(template: string | null | undefined): string[] {

@@ -583,5 +583,13 @@ class NormMcpContext(McpContext):
             block = playbook_display_block(
                 payload, venue_id, self.principal, self.db, self.config_db
             )
+            if block:
+                # A deterministic review summary computed while building the
+                # block (the receive editor's checks / fix suggestions / NEW-item
+                # matches): surfaced to the MODEL via content — the card carries
+                # the interactive version, which the model cannot see.
+                summary = block.pop("result_summary", None)
+                if summary and isinstance(payload, dict):
+                    payload = {**payload, "review_summary": summary}
             structured = ui_payload(block) if block else None
         return tools_call_result(payload, structured=structured)

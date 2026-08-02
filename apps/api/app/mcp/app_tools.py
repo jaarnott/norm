@@ -72,6 +72,14 @@ SUBMIT_COMPONENT = ("purchase_order_editor", "create_orders_batch")
 # they are created, not an invariant worth resting authorization on.
 ORDER_DOC_TYPES: frozenset[str] = frozenset({"order", "purchase_order"})
 
+# The kinds the INVOICE draft tools may open. Kept a separate set from
+# ORDER_DOC_TYPES, and reached only through the dedicated invoice doc tools
+# (scoped to mcp:invoices:draft) — so an orders scope can never open an invoice
+# draft, nor the reverse. MCP scope projection is subset/all-of, so a single
+# shared tool couldn't be gated on "orders OR invoices" without regressing
+# one-scope connectors; dedicated tools per kind is the clean split.
+INVOICE_DOC_TYPES: frozenset[str] = frozenset({"received_invoice"})
+
 # Keys kept when slimming stock items for transport. The purchase-order
 # editor reads exactly these (see PurchaseOrderEditor.tsx reference-data load).
 _STOCK_ITEM_KEYS = (
@@ -164,6 +172,60 @@ def app_tool_defs(mcp_ui_enabled: bool) -> list[dict]:
             },
         },
         {
+            "name": "norm__get_invoice_document",
+            "method": "GET",
+            "access": ACCESS_READ,
+            "scopes": frozenset({"mcp:invoices:draft"}),
+            "description": (
+                "Read a received-invoice draft by id. Used by Norm's embedded "
+                "invoice editor to load the draft it renders; you rarely need "
+                "to call it yourself."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "working_document_id": {
+                        "type": "string",
+                        "description": "The draft's id, from the workflow result.",
+                    }
+                },
+                "required": ["working_document_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "norm__update_invoice_document",
+            "method": "POST",
+            "access": ACCESS_DRAFT,
+            "scopes": frozenset({"mcp:invoices:draft"}),
+            "description": (
+                "Apply edits (unit, quantity, unit cost, link a purchase order) "
+                "to a received-invoice draft. This edits the DRAFT only — "
+                "nothing is received into Loaded. Used by Norm's embedded "
+                "invoice editor when the user edits lines."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "working_document_id": {"type": "string"},
+                    "ops": {
+                        "type": "array",
+                        "description": "Patch operations, e.g. "
+                        '{"op":"update_line","index":0,"fields":'
+                        '{"quantity_received":2}}.',
+                        "items": {"type": "object"},
+                    },
+                    "version": {
+                        "type": "integer",
+                        "description": "The draft version these ops were made "
+                        "against (optimistic concurrency).",
+                    },
+                },
+                "required": ["working_document_id", "ops", "version"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "norm__component_api",
             "method": "GET",
             "access": ACCESS_READ,
@@ -214,6 +276,33 @@ def app_tool_defs(mcp_ui_enabled: bool) -> list[dict]:
                     },
                 },
                 "required": ["venue_id", "orders"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "norm__receive_invoice",
+            "method": "POST",
+            "access": ACCESS_WRITE,
+            "scopes": frozenset({"mcp:invoices:receive"}),
+            "description": (
+                "Receive a supplier invoice into Loaded. ONLY call this when the "
+                "user has pressed Accept & Receive in the embedded invoice "
+                "editor — never on your own initiative. It marks the invoice "
+                "received, links the chosen purchase order, and applies the line "
+                "edits and any supplier-variant unit changes exactly as shown."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "venue_id": {"type": "string"},
+                    "invoice": {
+                        "type": "object",
+                        "description": "The receive request the invoice editor "
+                        "built: invoice_id, linked_purchase_order_id, lines[], "
+                        "variant_updates[].",
+                    },
+                },
+                "required": ["venue_id", "invoice"],
                 "additionalProperties": False,
             },
         },
@@ -313,19 +402,32 @@ def execute_app_tool(
         return _get_working_document(params, principal, db)
     if name == "norm__update_working_document":
         return _update_working_document(params, principal, db)
+    if name == "norm__get_invoice_document":
+        return _get_invoice_document(params, principal, db)
+    if name == "norm__update_invoice_document":
+        return _update_invoice_document(params, principal, db)
     if name == "norm__component_api":
         return _component_api(params, principal, db, config_db)
     if name == "norm__place_stock_order":
         return _place_stock_order(params, principal, db, config_db)
+    if name == "norm__receive_invoice":
+        return _receive_invoice(params, principal, db, config_db)
     raise AppToolError(f"Unknown app tool: {name}")
 
 
 def _get_working_document(params: dict, principal: McpPrincipal, db: Session) -> dict:
+    return _get_doc(params, principal, db, ORDER_DOC_TYPES)
+
+
+def _get_invoice_document(params: dict, principal: McpPrincipal, db: Session) -> dict:
+    return _get_doc(params, principal, db, INVOICE_DOC_TYPES)
+
+
+def _get_doc(
+    params: dict, principal: McpPrincipal, db: Session, allowed: frozenset[str]
+) -> dict:
     doc = _load_owned_doc(
-        principal,
-        str(params.get("working_document_id") or ""),
-        db,
-        ORDER_DOC_TYPES,
+        principal, str(params.get("working_document_id") or ""), db, allowed
     )
     return _doc_payload(doc)
 
@@ -333,16 +435,25 @@ def _get_working_document(params: dict, principal: McpPrincipal, db: Session) ->
 def _update_working_document(
     params: dict, principal: McpPrincipal, db: Session
 ) -> dict:
+    return _update_doc(params, principal, db, ORDER_DOC_TYPES)
+
+
+def _update_invoice_document(
+    params: dict, principal: McpPrincipal, db: Session
+) -> dict:
+    return _update_doc(params, principal, db, INVOICE_DOC_TYPES)
+
+
+def _update_doc(
+    params: dict, principal: McpPrincipal, db: Session, allowed: frozenset[str]
+) -> dict:
     # The patch mechanics live in the working-documents router; imported so an
     # MCP edit and a web edit are the same code path (ops semantics, pending
     # ops, memory signal, background sync).
     from app.routers.working_documents import _apply_op, _trigger_sync
 
     doc = _load_owned_doc(
-        principal,
-        str(params.get("working_document_id") or ""),
-        db,
-        ORDER_DOC_TYPES,
+        principal, str(params.get("working_document_id") or ""), db, allowed
     )
 
     ops = params.get("ops")
@@ -521,3 +632,79 @@ def _place_stock_order(
         "status_code": result.get("status_code"),
         "detail": result.get("data"),
     }
+
+
+def _receive_invoice(
+    params: dict, principal: McpPrincipal, db: Session, config_db: Session
+) -> dict:
+    """Receive one supplier invoice — the invoice editor's Accept & Receive.
+
+    Reuses the same ``do_receive`` primitive the web endpoint uses (one receive
+    writer). Stricter than ``_place_stock_order``: it verifies the user actually
+    has an open ``received_invoice`` draft for this invoice, so a model that
+    fabricates an invoice id it was never shown cannot receive it.
+    """
+    from fastapi import HTTPException
+
+    from app.db.models import WorkingDocument
+    from app.services.received_invoice import (
+        LoadedInvoiceClient,
+        ReceiveRequest,
+        do_receive,
+    )
+
+    venue_id = str(params.get("venue_id") or "")
+    _authorize_venue_id(principal, venue_id, db)
+
+    inv = params.get("invoice")
+    if not isinstance(inv, dict) or not inv.get("invoice_id"):
+        raise AppToolError("invoice must be an object with an invoice_id.")
+    lines = inv.get("lines") or []
+    if not isinstance(lines, list) or len(lines) > 200:
+        raise AppToolError("lines must be a list of at most 200 entries.")
+    variant_updates = inv.get("variant_updates") or []
+    if not isinstance(variant_updates, list) or len(variant_updates) > 200:
+        raise AppToolError("variant_updates must be a list of at most 200 entries.")
+
+    invoice_id = str(inv.get("invoice_id"))
+    owns = (
+        db.query(WorkingDocument)
+        .filter(
+            WorkingDocument.doc_type == "received_invoice",
+            WorkingDocument.venue_id == venue_id,
+        )
+        .all()
+    )
+    if not any((d.external_ref or {}).get("invoice_id") == invoice_id for d in owns):
+        # Indistinguishable from any other refusal — never confirm an id exists.
+        raise AppToolError("No open invoice draft to receive.")
+
+    logger.info(
+        "mcp_receive_invoice",
+        extra={
+            "venue_id": venue_id,
+            "invoice_id": invoice_id,
+            "lines": len(lines),
+            "user_id": principal.user_id,
+        },
+    )
+
+    req = ReceiveRequest(
+        venue_id=venue_id,
+        invoice_id=invoice_id,
+        linked_purchase_order_id=inv.get("linked_purchase_order_id"),
+        po_number=inv.get("po_number"),
+        lines=lines,
+        variant_updates=variant_updates,
+        receive=bool(inv.get("receive", True)),
+    )
+    try:
+        lh = LoadedInvoiceClient(db, config_db, venue_id)
+        result = do_receive(lh, req)
+    except HTTPException as e:
+        # Upstream/validation refusal — inline data, not a tool error.
+        return {"submitted": False, "detail": e.detail}
+    except Exception as e:  # noqa: BLE001 — surface the reason next to the button
+        logger.warning("receive_invoice failed: %s", e)
+        return {"submitted": False, "detail": str(e)}
+    return {"submitted": True, "detail": result}

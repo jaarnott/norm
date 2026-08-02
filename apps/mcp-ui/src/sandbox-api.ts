@@ -82,34 +82,82 @@ function jsonResponse(ok: boolean, data: unknown, status?: number): Response {
   } as unknown as Response;
 }
 
-const WD_URL = /^\/api\/threads\/[^/]+\/working-documents\/([^/?]+)$/;
+// Working documents (purchase-order editor) — thread-scoped or taskless.
+const WD_URL = /\/(?:threads\/[^/]+\/)?working-documents\/([^/?]+)$/;
+// Received-invoice drafts use a distinct URL so they route to the invoice-scoped
+// tools (norm__*_invoice_document, scope mcp:invoices:draft) rather than the
+// orders tools — MCP scope projection is all-of, so the two can't share a tool.
+const INVOICE_WD_URL = /\/(?:threads\/[^/]+\/)?invoice-documents\/([^/?]+)$/;
+
+async function routeDoc(
+  docId: string,
+  getTool: string,
+  updateTool: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const method = (init?.method || 'GET').toUpperCase();
+  try {
+    if (method === 'GET') {
+      const reply = await window.NormApp.callTool(getTool, { working_document_id: docId });
+      const doc = toolPayload(reply);
+      return jsonResponse(!isErrorReply(reply) && !!doc, doc ?? {});
+    }
+    if (method === 'PATCH') {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      const reply = await window.NormApp.callTool(updateTool, {
+        working_document_id: docId,
+        ops: body.ops ?? [],
+        version: body.version,
+      });
+      const doc = toolPayload(reply);
+      if (doc && (doc as { conflict?: boolean }).conflict) {
+        return jsonResponse(false, doc, 409);
+      }
+      return jsonResponse(!isErrorReply(reply) && !!doc, doc ?? {});
+    }
+  } catch {
+    return jsonResponse(false, {}, 502);
+  }
+  return jsonResponse(false, { detail: 'Not available in this surface' }, 404);
+}
 
 export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const inv = url.match(INVOICE_WD_URL);
+  if (inv) {
+    return routeDoc(
+      inv[1],
+      'norm__get_invoice_document',
+      'norm__update_invoice_document',
+      init,
+    );
+  }
   const m = url.match(WD_URL);
   if (m) {
-    const docId = m[1];
-    const method = (init?.method || 'GET').toUpperCase();
+    return routeDoc(
+      m[1],
+      'norm__get_working_document',
+      'norm__update_working_document',
+      init,
+    );
+  }
+  // Accept & Receive — the one invoice write. Same contract the web editor POSTs.
+  if (/\/api\/invoice-fixes\/receive$/.test(url) && (init?.method || '').toUpperCase() === 'POST') {
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
     try {
-      if (method === 'GET') {
-        const reply = await window.NormApp.callTool('norm__get_working_document', {
-          working_document_id: docId,
-        });
-        const doc = toolPayload(reply);
-        return jsonResponse(!isErrorReply(reply) && !!doc, doc ?? {});
-      }
-      if (method === 'PATCH') {
-        const body = init?.body ? JSON.parse(String(init.body)) : {};
-        const reply = await window.NormApp.callTool('norm__update_working_document', {
-          working_document_id: docId,
-          ops: body.ops ?? [],
-          version: body.version,
-        });
-        const doc = toolPayload(reply);
-        if (doc && (doc as { conflict?: boolean }).conflict) {
-          return jsonResponse(false, doc, 409);
-        }
-        return jsonResponse(!isErrorReply(reply) && !!doc, doc ?? {});
-      }
+      const reply = await window.NormApp.callTool('norm__receive_invoice', {
+        venue_id: body.venue_id,
+        invoice: {
+          invoice_id: body.invoice_id,
+          linked_purchase_order_id: body.linked_purchase_order_id,
+          po_number: body.po_number,
+          lines: body.lines ?? [],
+          variant_updates: body.variant_updates ?? [],
+          receive: body.receive ?? true,
+        },
+      });
+      const p = (toolPayload(reply) ?? {}) as { submitted?: boolean; detail?: unknown };
+      if (isErrorReply(reply)) return jsonResponse(false, p, 400);
+      return jsonResponse(true, p);
     } catch {
       return jsonResponse(false, {}, 502);
     }

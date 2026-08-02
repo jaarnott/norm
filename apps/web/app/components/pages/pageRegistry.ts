@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, LayoutDashboard, Clock, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, Clock, type LucideIcon } from 'lucide-react';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -175,6 +175,16 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
       action: 'get_purchase_orders_summary',
       defaultParams: () => ({}),
     },
+  },
+  {
+    id: 'invoices',
+    label: 'Invoices',
+    icon: Receipt,
+    agent: 'procurement',
+    component: 'invoices_dashboard',
+    // Self-loading: the dashboard fetches /invoice-fixes/outstanding itself, so
+    // no connector loadAction (mirrors SavedReportsBoard's _none pattern).
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {
     id: 'tasks-procurement',

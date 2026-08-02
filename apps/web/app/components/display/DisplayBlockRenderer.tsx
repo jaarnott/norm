@@ -15,6 +15,8 @@ import ReportBuilder from './ReportBuilder';
 import SavedReportsBoard from './SavedReportsBoard';
 import ToolApprovalCard from './ToolApprovalCard';
 import InvoiceFixesCard from './InvoiceFixesCard';
+import ReceiveInvoiceEditor from './ReceiveInvoiceEditor';
+import InvoicesDashboard from './InvoicesDashboard';
 import DashboardView from './DashboardView';
 import VenuePicker from './VenuePicker';
 import StockPicker from './StockPicker';
@@ -29,8 +31,12 @@ export interface DisplayBlockProps {
 }
 
 /** Components that render full-width above the conversation instead of inline in chat bubbles */
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'dashboard_view']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'dashboard_view']);
 
+// The single source of truth for which display components EXIST. The admin
+// Settings → Components panel derives its catalogue from these keys (with a
+// metadata overlay), so registering a component here surfaces it there
+// automatically — never maintain a second hand-written list.
 const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   generic_table: GenericTable,
   roster_table: RosterTable,
@@ -44,14 +50,19 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   report_builder: ReportBuilder,
   saved_reports_board: SavedReportsBoard,
   orders_dashboard: OrdersDashboard,
+  invoices_dashboard: InvoicesDashboard,
   tool_approval: ToolApprovalCard,
   invoice_fixes: InvoiceFixesCard,
+  receive_invoice_editor: ReceiveInvoiceEditor,
   venue_picker: VenuePicker,
   stock_picker: StockPicker,
   dashboard_view: DashboardView,
   mcp_embed: McpEmbed,
   connector_connect: ConnectorConnectCard,
 };
+
+/** Every registered display-component key — what the admin catalogue derives from. */
+export const REGISTERED_COMPONENTS: string[] = Object.keys(REGISTRY);
 
 interface DisplayBlockRendererProps {
   block: DisplayBlock;

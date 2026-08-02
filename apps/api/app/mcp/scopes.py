@@ -48,6 +48,12 @@ ACCESS_WRITE = "write"
 V1_ACCESS_LEVELS = frozenset({ACCESS_READ, ACCESS_DRAFT})
 ALLOWED_ACCESS_LEVELS = frozenset({ACCESS_READ, ACCESS_DRAFT, ACCESS_WRITE})
 
+# The write scopes, each an individually-decided boundary (user-gesture-only,
+# from an embedded app, with consent text saying exactly what fires). A write
+# scope NOT listed here fails validate_scope_vocabulary at import — deliberate
+# friction so a new write is never added by pattern.
+_WRITE_SCOPES = frozenset({"mcp:orders:submit", "mcp:invoices:receive"})
+
 
 @dataclass(frozen=True)
 class McpScope:
@@ -131,6 +137,38 @@ MCP_SCOPES: dict[str, McpScope] = {
         access_level=ACCESS_WRITE,
         requires=frozenset({"orders:read", "orders:write"}),
     ),
+    # Invoices — a distinct vocabulary from orders. Receiving an invoice is a
+    # different action and a different consent than placing an order (it marks
+    # stock received, links a PO and can change supplier variant units), so it
+    # gets its own scopes rather than reusing mcp:orders:*.
+    "mcp:invoices:read": McpScope(
+        name="mcp:invoices:read",
+        label="View supplier invoices",
+        description="See outstanding and received supplier invoices, their line "
+        "items, linked purchase orders and totals.",
+        access_level=ACCESS_READ,
+        requires=frozenset({"orders:read"}),
+    ),
+    "mcp:invoices:draft": McpScope(
+        name="mcp:invoices:draft",
+        label="Prepare invoices for receiving",
+        description="Prepare a supplier invoice for you to review and receive in "
+        "Norm — matching units, quantities and the purchase order. Claude cannot "
+        "receive it into Loaded.",
+        access_level=ACCESS_DRAFT,
+        requires=frozenset({"orders:read", "orders:write"}),
+    ),
+    "mcp:invoices:receive": McpScope(
+        name="mcp:invoices:receive",
+        label="Receive invoices you approve",
+        description="Lets YOU receive a prepared supplier invoice into Loaded by "
+        "pressing Accept & Receive inside the embedded invoice editor. This marks "
+        "the stock received, links the purchase order and may update the "
+        "supplier's unit on matched items. Claude cannot trigger this itself — "
+        "only your click receives the invoice, exactly as shown.",
+        access_level=ACCESS_WRITE,
+        requires=frozenset({"orders:read", "orders:write"}),
+    ),
 }
 
 
@@ -175,7 +213,7 @@ def validate_scope_vocabulary() -> list[str]:
                 f"{name}: access_level '{scope.access_level}' is not a "
                 f"known access level"
             )
-        if scope.access_level == ACCESS_WRITE and name != "mcp:orders:submit":
+        if scope.access_level == ACCESS_WRITE and name not in _WRITE_SCOPES:
             # Deliberate friction: each write scope is a boundary decision,
             # not a pattern to copy. Add the name here only after deciding it
             # the way mcp:orders:submit was decided (user-gesture-only, from

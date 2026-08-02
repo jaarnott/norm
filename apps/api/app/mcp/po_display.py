@@ -63,6 +63,14 @@ def playbook_display_block(
             block = _po_editor_block(payload, venue_id, principal, db, config_db)
             if block is not None:
                 return block
+        if payload.get("status") == "draft_created" and (
+            payload.get("doc_type") == "received_invoice"
+        ):
+            from app.mcp.receive_display import receive_editor_block
+
+            block = receive_editor_block(payload, venue_id, principal, db, config_db)
+            if block is not None:
+                return block
     except Exception:
         # Resolution is enhancement, not correctness — fall through to the card.
         logger.exception("po_display_block_failed")

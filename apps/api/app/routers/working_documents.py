@@ -416,6 +416,17 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
             data["notes"] = op.get("value", "")
         return data
 
+    # --- Header operations (top-level field merge) ---
+    # Used by the received-invoice editor to link a PO (linked_purchase_order_id
+    # + purchase_order_number) and set header state, without a bespoke op per
+    # field. Generic and safe: only the fields the caller names are merged.
+    if op_type == "update_header":
+        if isinstance(data, dict):
+            fields = op.get("fields")
+            if isinstance(fields, dict):
+                data.update(fields)
+        return data
+
     # --- Order operations (lines-based documents) ---
     if op_type in ("update_line", "add_line", "remove_line"):
         if not isinstance(data, dict):

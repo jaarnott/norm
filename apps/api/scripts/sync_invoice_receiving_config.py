@@ -27,6 +27,7 @@ _CONSOLIDATORS_DIR = (
 )
 FUNCTION_CODE_PATH = _CONSOLIDATORS_DIR / "review_and_receive_invoices.py"
 RECONCILE_FUNCTION_CODE_PATH = _CONSOLIDATORS_DIR / "reconcile_received_invoices.py"
+PREPARE_FUNCTION_CODE_PATH = _CONSOLIDATORS_DIR / "prepare_receive_invoice.py"
 
 # All stock endpoints verified against the live LoadedHub app (16 Jul 2026):
 # the web UI drives api.loadedhub.com/1.0/stock/... and the OAuth connector
@@ -72,6 +73,23 @@ SPEC_TOOLS = [
         "path_template": "//api.loadedhub.com/1.0/stock/internal/purchase-orders/{{ purchase_order_id }}",
         "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
         "required_fields": ["purchase_order_id"],
+    },
+    {
+        "action": "list_purchase_orders",
+        "method": "GET",
+        "description": (
+            "List the venue's OPEN purchase orders (order number, supplier, linked "
+            "invoice). Loaded has no PO-by-number search, so the review consolidator "
+            "uses this to resolve a referenced PO number to its id."
+        ),
+        "path_template": (
+            "//api.loadedhub.com/1.0/stock/internal/purchase-orders"
+            "?from={{ from_date | default('1901-01-01') }}"
+            "&to={{ to_date | default('9999-12-31') }}"
+        ),
+        "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
+        "required_fields": [],
+        "optional_fields": ["from_date", "to_date"],
     },
     {
         "action": "download_invoice_file",
@@ -265,6 +283,65 @@ CONSOLIDATOR_TOOL = {
     "suppress_display_early_exit": True,
 }
 
+# The single-invoice "open one and receive it" tool. Unlike the batch review
+# (which renders the read-only-until-you-act fix cards), this materialises a
+# `received_invoice` WORKING DOCUMENT from the shaped invoice and renders the
+# editable receive_invoice_editor over it — the same editor the Invoices page
+# inline-expands, dual-surface (web chat + Claude via receive_display.py).
+PREPARE_RECEIVE_TOOL = {
+    "action": "receive_loadedhub_invoice",
+    "method": "GET",  # read/consolidator dispatch; the write is the user's click
+    "description": (
+        "Open ONE outstanding supplier invoice as an editable Receive Invoice "
+        "card so the user can check the units, quantities, costs and linked "
+        "purchase order and then receive it into Loaded with a click. Pass the "
+        "invoice_id (from list_stock_invoices / the outstanding list). This "
+        "prepares a draft only — it never receives the invoice itself; the user "
+        "does that from the card."
+    ),
+    "required_fields": ["invoice_id"],
+    "field_descriptions": {
+        "invoice_id": "The Loaded invoice id to receive (from list_stock_invoices).",
+    },
+    "field_schema": {},
+    "consolidator_config": {
+        # function_code injected from PREPARE_FUNCTION_CODE_PATH at sync time
+        "max_api_calls": 10,
+    },
+    # Materialise a working document from the shaped result, then render the
+    # editor over it — the tool loop keys off this config (tool_loop.py:509).
+    "working_document": {
+        "doc_type": "received_invoice",
+        "sync_mode": "submit",
+        "ref_fields": ["invoice_id"],
+    },
+    "display_component": "receive_invoice_editor",
+    "display_props": {"title": "Receive Invoice"},
+}
+
+RECEIVE_ONE_PLAYBOOK = {
+    "slug": "receive_loadedhub_invoice",
+    "agent_slug": "procurement",
+    "display_name": "Receive a Supplier Invoice",
+    "description": (
+        "Open a specific outstanding supplier invoice as an editable Receive "
+        "Invoice card and receive it into Loaded."
+    ),
+    "instructions": """Goal: help the user receive ONE specific supplier invoice.
+
+1. Identify the invoice. If the user named it (a reference number, supplier, or "the latest from X"), call list_stock_invoices (status NotReceived) for the venue and find the matching invoice's id. If several match, show the candidates (reference, supplier, date, total) and ask which one — do not guess.
+2. Call receive_loadedhub_invoice with that invoice_id. This opens an editable **Receive Invoice** card: units, quantities, unit costs and the linked purchase order, pre-filled from Loaded.
+3. Tell the user the card is ready below and that they review it, adjust anything that needs it, then click **Accept & Receive** to receive the invoice into Loaded. NEVER say you have received it — only the user's click on the card does that.
+
+Do not link POs, edit lines, or receive invoices yourself in prose — everything happens on the card. If the user wants to review ALL outstanding invoices at once instead, that is the separate review-and-receive workflow.""",
+    "tool_filter": [
+        "receive_loadedhub_invoice",
+        "list_stock_invoices",
+        "get_invoice_detail",
+    ],
+    "enabled": True,
+}
+
 PLAYBOOK = {
     "slug": "receive_loadedhub_invoices",
     "agent_slug": "procurement",
@@ -356,9 +433,11 @@ If the user asks about a specific invoice, use get_invoice_detail plus the retur
 # router and prompt_builder index into them; a bare string breaks both.
 BINDING_CAPABILITY_ACTIONS = [
     "review_and_receive_invoices",
+    "receive_loadedhub_invoice",
     "list_stock_invoices",
     "get_invoice_detail",
     "get_stock_purchase_order",
+    "list_purchase_orders",
     "reconcile_received_invoices",
     "list_supplier_statements",
     "list_received_invoices",
@@ -383,6 +462,11 @@ def main() -> None:
         **RECONCILE_CONSOLIDATOR_TOOL["consolidator_config"],
         "function_code": RECONCILE_FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
     }
+    prepare_receive = dict(PREPARE_RECEIVE_TOOL)
+    prepare_receive["consolidator_config"] = {
+        **PREPARE_RECEIVE_TOOL["consolidator_config"],
+        "function_code": PREPARE_FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
+    }
     desired_tools = {
         t["action"]: t
         for t in [
@@ -390,6 +474,7 @@ def main() -> None:
             *RECONCILE_SPEC_TOOLS,
             consolidator,
             reconcile_consolidator,
+            prepare_receive,
         ]
     }
 
@@ -441,7 +526,7 @@ def main() -> None:
                 changes.append(f"binding capability added: {action}")
         binding.capabilities = caps
 
-        for playbook_def in (PLAYBOOK, RECONCILE_PLAYBOOK):
+        for playbook_def in (PLAYBOOK, RECONCILE_PLAYBOOK, RECEIVE_ONE_PLAYBOOK):
             playbook = (
                 db.query(Playbook).filter(Playbook.slug == playbook_def["slug"]).first()
             )

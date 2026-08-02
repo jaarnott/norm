@@ -239,6 +239,36 @@ def parse_unit(text):
     return (utype, magnitude)
 
 
+def _is_multipack(text):
+    """True for an 'NxM' compound unit like '5x3kg' / '6x700ml' (digit-x-digit).
+
+    parse_unit deliberately can't compare these, and a ratio-equal but
+    differently-named unit ('15 KG') is NOT the same pack, so a multipack
+    delivered unit is compared by name instead of magnitude.
+    """
+    s = str(text or "").lower()
+    i = s.find("x")
+    return i > 0 and s[i - 1].isdigit() and i + 1 < len(s) and s[i + 1].isdigit()
+
+
+def _delivered_unit(u):
+    """The copy's delivered unit ONLY when it's a real weight/volume/count unit (or
+    a multipack) — never a bare packaging word ('pkt', 'ea', 'box', 'ctn', …), which
+    ``parse_unit`` already rejects. Gates the 'use X' recommendation so a
+    mis-extracted packaging word is never suggested as a unit to switch to.
+    """
+    return u if u and (_is_multipack(u) or parse_unit(u)) else None
+
+
+def _words(text):
+    """Significant (length >= 4) lowercase words in a description — used to match a
+    charge-type invoice line ('FREIGHT - FOOD') to a copy charge ('Freight (ex
+    GST)') by a shared word like 'freight', which a substring test would miss.
+    """
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in str(text or "").lower())
+    return {w for w in cleaned.split() if len(w) >= 4}
+
+
 # Line-level detail is capped so a 200-line invoice can't blow out the report;
 # every line is still CHECKED — only the per-line display rows are capped.
 MAX_DETAIL_LINES = 25
@@ -287,37 +317,159 @@ def run(params, call_api, log, call_api_parallel=None):
     dry_run = approve_all
     to_date = params.get("to_date") or params.get("today")
     from_date = params.get("from_date")
-    if not from_date:
+    if not from_date and params.get("today"):
         from_date = (
             datetime.date.fromisoformat(params["today"]) - datetime.timedelta(days=60)
         ).isoformat()
 
     base = {"venue": venue} if venue else {}
 
-    invoices = call_api(
-        "loadedhub",
-        "list_stock_invoices",
-        dict(base, from_date=from_date, to_date=to_date, page=0, pageSize=100),
-    )
-    if isinstance(invoices, dict) and invoices.get("error"):
-        return {"error": "Could not list invoices: " + invoices["error"]}
-    if isinstance(invoices, dict):
-        invoices = invoices.get("data") or []
+    # PO resolution — owned here (previously the draft's _autolink_po). Loaded has
+    # no PO-by-number search and its open-PO list omits received POs, so a number
+    # is resolved in two passes. The received feed reaches already-received POs, so
+    # it needs a wide window regardless of the review window.
+    try:
+        _t = datetime.date.fromisoformat(params.get("today"))
+        _feed_from = (_t - datetime.timedelta(days=400)).isoformat()
+        _feed_to = (_t + datetime.timedelta(days=1)).isoformat()
+    except Exception:
+        _feed_from, _feed_to = from_date, to_date
 
-    drafts = [
-        inv
-        for inv in invoices
-        if isinstance(inv, dict)
-        and not inv.get("isReceived")
-        and not inv.get("deletedAt")
-    ]
-    log(
-        "Drafts to review: "
-        + str(len(drafts))
-        + " of "
-        + str(len(invoices))
-        + " listed"
-    )
+    def _po_norm(v):
+        # Match invoice_fixes._po_key: alphanumerics only, drop a leading "po"
+        # so "PO#1520987" == "1520987".
+        k = "".join(ch for ch in str(v or "").lower() if ch.isalnum())
+        return k[2:] if k.startswith("po") else k
+
+    def _copy_po_number(det):
+        # The BUYER PO printed on the copy (Loaded's own field can hold the
+        # supplier's own order number instead). Extraction is cached.
+        if not det.get("fileId"):
+            return None
+        hdr = extract_document(
+            "loadedhub",
+            "download_invoice_file",
+            dict(base, file_id=det["fileId"]),
+            schema=PO_EXTRACT_SCHEMA,
+            instructions=(
+                "Extract the buyer's purchase order number and the supplier's "
+                "own order number — they differ."
+            ),
+        )
+        return (
+            hdr.get("customer_purchase_order_number") if isinstance(hdr, dict) else None
+        )
+
+    def _resolve_po(number, supplier_id):
+        # Resolve a PO NUMBER to a Loaded PO id. Two passes: (1) the open-PO list;
+        # (2) the received feed — find an invoice carrying the same number and read
+        # its linkedPurchaseOrderId (the only route to a received PO's id). Returns
+        # {"id", "order_number", "linked_invoice_id"} or None (missing/ambiguous).
+        want = _po_norm(number)
+        if not want:
+            return None
+        pos = call_api("loadedhub", "list_purchase_orders", dict(base))
+        if isinstance(pos, dict):
+            pos = pos.get("data") or []
+        if isinstance(pos, list):
+            matches = [
+                p
+                for p in pos
+                if isinstance(p, dict) and _po_norm(p.get("orderNumber")) == want
+            ]
+            if supplier_id and any(
+                p.get("supplierId") == supplier_id for p in matches
+            ):
+                matches = [p for p in matches if p.get("supplierId") == supplier_id]
+            if len({p.get("id") for p in matches}) == 1:
+                p = matches[0]
+                return {
+                    "id": p.get("id"),
+                    "order_number": p.get("orderNumber"),
+                    "linked_invoice_id": p.get("linkedInvoiceId"),
+                }
+            if len(matches) > 1:
+                return None  # ambiguous in the open list
+        feed = call_api(
+            "loadedhub",
+            "list_received_invoices",
+            dict(base, from_date=_feed_from, to_date=_feed_to),
+        )
+        if isinstance(feed, dict):
+            feed = feed.get("data") or []
+        po_ids = set()
+        if isinstance(feed, list):
+            for r in feed:
+                if (
+                    not isinstance(r, dict)
+                    or _po_norm(r.get("purchaseOrderNumber")) != want
+                ):
+                    continue
+                det = call_api(
+                    "loadedhub", "get_invoice_detail", dict(base, invoice_id=r.get("id"))
+                )
+                if isinstance(det, dict) and det.get("linkedPurchaseOrderId"):
+                    po_ids.add(det["linkedPurchaseOrderId"])
+        if len(po_ids) == 1:
+            pid = list(po_ids)[0]  # sandbox has no next()/iter()
+            po = call_api(
+                "loadedhub", "get_stock_purchase_order", dict(base, purchase_order_id=pid)
+            )
+            return {
+                "id": pid,
+                "order_number": po.get("orderNumber") if isinstance(po, dict) else None,
+                "linked_invoice_id": (
+                    po.get("linkedInvoiceId") if isinstance(po, dict) else None
+                ),
+            }
+        return None
+
+    # Single-invoice review: the Invoices page opening ONE invoice to receive
+    # it. Reuse every gate below unchanged (so the checks never drift from the
+    # batch playbook), but present-only — never auto-write — and skip the
+    # window list entirely; the one draft is fetched by id in the loop.
+    only_invoice_id = params.get("invoice_id")
+    # A PO the Norm draft resolved but hasn't written back to Loaded. Single-
+    # invoice mode injects it into the fetched detail so the PO-dependent gates
+    # run against it (validate-without-writeback). Ignored in batch mode.
+    only_po_id = params.get("purchase_order_id")
+    # Single-invoice review always surfaces the editable card so the editor gets
+    # the checks that ran — even when the invoice fails a gate (e.g. a freight
+    # line with no stock item fails items_matched). The batch flow is unchanged
+    # (force_card is False there): a skipped invoice still gets no card.
+    force_card = bool(only_invoice_id)
+    if only_invoice_id:
+        approve_all = True
+        autopilot = False
+        dry_run = True
+        drafts = [{"id": only_invoice_id}]
+        invoices = drafts
+        log("Single-invoice review: " + str(only_invoice_id))
+    else:
+        invoices = call_api(
+            "loadedhub",
+            "list_stock_invoices",
+            dict(base, from_date=from_date, to_date=to_date, page=0, pageSize=100),
+        )
+        if isinstance(invoices, dict) and invoices.get("error"):
+            return {"error": "Could not list invoices: " + invoices["error"]}
+        if isinstance(invoices, dict):
+            invoices = invoices.get("data") or []
+
+        drafts = [
+            inv
+            for inv in invoices
+            if isinstance(inv, dict)
+            and not inv.get("isReceived")
+            and not inv.get("deletedAt")
+        ]
+        log(
+            "Drafts to review: "
+            + str(len(drafts))
+            + " of "
+            + str(len(invoices))
+            + " listed"
+        )
 
     received, skipped = [], []
     # Full editable "Receive Invoice" payloads — one per invoice that has a
@@ -336,6 +488,35 @@ def run(params, call_api, log, call_api_parallel=None):
             )
             continue
 
+        # Validate against a PO that isn't linked in Loaded yet (single-invoice /
+        # editor mode only; fills a gap, never overrides a real Loaded link) so
+        # every PO-dependent gate below runs. The PO id comes from the user's own
+        # pick in the editor (only_po_id) or, failing that, is RESOLVED here from
+        # the referenced number / buyer PO on the copy — the retrieval the draft
+        # used to do. Either way it reads as a SUGGESTED change (link the found
+        # PO), not a clean pass. po_unresolved: we tried and no Loaded PO matched,
+        # so a "Link PO X" suggestion would be noise (a supplier's own ref).
+        po_autolinked = False
+        po_unresolved = False
+        if only_invoice_id and not detail.get("linkedPurchaseOrderId"):
+            if only_po_id:
+                detail["linkedPurchaseOrderId"] = only_po_id
+                po_autolinked = True
+            elif detail.get("purchaseOrderNumber"):
+                supplier_id = detail.get("linkedSupplierId")
+                resolved = _resolve_po(detail.get("purchaseOrderNumber"), supplier_id)
+                if not resolved:
+                    copy_po = _copy_po_number(detail)
+                    if copy_po and _po_norm(copy_po) != _po_norm(
+                        detail.get("purchaseOrderNumber")
+                    ):
+                        resolved = _resolve_po(copy_po, supplier_id)
+                if resolved:
+                    detail["linkedPurchaseOrderId"] = resolved["id"]
+                    po_autolinked = True
+                else:
+                    po_unresolved = True
+
         reasons = []
         checks = {}
         # Proposed one-click fixes for the interactive card (applied later by
@@ -349,6 +530,44 @@ def run(params, call_api, log, call_api_parallel=None):
         ref = detail.get("referenceNumber") or "(no number)"
         total = dec(detail.get("total"))
         lines = [ln for ln in detail.get("lines") or [] if not ln.get("deletedAt")]
+        # A redundant $0 duplicate: another line on THIS invoice already carries
+        # the same code and a real amount, and this one contributes nothing ($0
+        # total). Loaded lets these slip in (a re-scan, a split that zeroed out).
+        # The copy has the item once, so the empty twin would otherwise be flagged
+        # "not found on the document". Detect it order-independently and suggest
+        # striking it (excluded from the receive) rather than flagging it missing.
+        strike_ids = set()
+        _by_code = {}
+        for _ln in lines:
+            _code = norm(_ln.get("code"))
+            if _code:
+                _by_code.setdefault(_code, []).append(_ln)
+        for _group in _by_code.values():
+            if len(_group) > 1 and any(
+                dec(x.get("totalCost")) not in (None, D(0)) for x in _group
+            ):
+                for x in _group:
+                    if dec(x.get("totalCost")) == D(0):
+                        strike_ids.add(x.get("id"))
+                        # Deterministic from the invoice's own lines (no copy
+                        # needed), so emit the strike suggestion here — the copy
+                        # comparison (Layer 6) may be short-circuited by an earlier
+                        # gate (e.g. no PO linked) and never reached.
+                        fixes.append(
+                            {
+                                "type": "strike",
+                                "invoice_id": inv_id,
+                                "reference": ref,
+                                "line_id": x.get("id"),
+                                "line_code": x.get("code"),
+                                "description": str(x.get("description")),
+                                "summary": str(x.get("code") or ref)
+                                + " · "
+                                + str(x.get("description"))
+                                + ": $0 duplicate line — strike it "
+                                + "(excluded from receive)",
+                            }
+                        )
         po = None
         pdf = None
         po_number_hint = detail.get("purchaseOrderNumber")
@@ -411,27 +630,79 @@ def run(params, call_api, log, call_api_parallel=None):
             raw_lines = []
             for ln in lines:
                 cp = copy_by_line_id.get(ln.get("id")) or {}
-                raw_lines.append(
-                    {
-                        "id": ln.get("id"),
-                        "code": ln.get("code"),
-                        "description": ln.get("description"),
-                        "brand": ln.get("brand"),
-                        "linked_item_id": ln.get("linkedItemId"),
-                        "linked_unit_id": ln.get("linkedUnitId"),
-                        "linked_brand_id": ln.get("linkedBrandId"),
-                        "unit": ln.get("unit"),
-                        "quantity_received": ln.get("quantityReceived"),
-                        "unit_cost": ln.get("unitCost"),
-                        "total_cost": ln.get("totalCost"),
-                        "copy_unit": cp.get("unit"),
-                        "copy_quantity": cp.get("quantity"),
-                        "copy_unit_price": cp.get("unit_price_ex_tax"),
-                        "copy_line_total": cp.get("line_total_ex_tax"),
-                        "recommended_unit": cp.get("unit_of_measure"),
-                    }
+                line = {
+                    "id": ln.get("id"),
+                    "code": ln.get("code"),
+                    "description": ln.get("description"),
+                    "brand": ln.get("brand"),
+                    "linked_item_id": ln.get("linkedItemId"),
+                    "linked_unit_id": ln.get("linkedUnitId"),
+                    "linked_brand_id": ln.get("linkedBrandId"),
+                    "unit": ln.get("unit"),
+                    "quantity_received": ln.get("quantityReceived"),
+                    "unit_cost": ln.get("unitCost"),
+                    "total_cost": ln.get("totalCost"),
+                    "copy_unit": cp.get("unit"),
+                    "copy_quantity": cp.get("quantity"),
+                    "copy_unit_price": cp.get("unit_price_ex_tax"),
+                    "copy_line_total": cp.get("line_total_ex_tax"),
+                    # Gated: only a real unit is surfaced as "use X" — never a
+                    # packaging word the extraction mis-read into unit_of_measure.
+                    "recommended_unit": _delivered_unit(cp.get("unit_of_measure")),
+                }
+                # Whether this line's unit disagreed with the copy (authoritative
+                # per-line result) — set ONLY on a mismatch so the editor can flag
+                # it even with no derivable unit to suggest, without bloating the
+                # common all-match card past the tool-result slim cap.
+                if (rec_by_id.get(ln.get("id")) or {}).get("unit", {}).get(
+                    "result"
+                ) == "✗":
+                    line["copy_unit_mismatch"] = True
+                # Whether Qty received disagreed with the copy — the playbook's
+                # decision that the copy's qty is a candidate edit; the component
+                # only renders the "use copy qty" action from it.
+                if (rec_by_id.get(ln.get("id")) or {}).get("quantity", {}).get(
+                    "result"
+                ) == "✗":
+                    line["copy_quantity_mismatch"] = True
+                # The review's decision that this is a redundant $0 duplicate; the
+                # component renders a "strike" affordance from it. Striking (drop
+                # from the receive) is the user's applied action, done via a
+                # working-doc line edit — mirrors copy_quantity_mismatch's "use".
+                if ln.get("id") in strike_ids:
+                    line["copy_duplicate"] = True
+                raw_lines.append(line)
+            # NEW-item lines: ask the item-match LLM function (norm.match_stock_
+            # items — the resolve_dates pattern) for a link-or-create suggestion
+            # per unlinked line, so the artifact is COMPLETE and every surface
+            # (web editor, embedded card, chat narration) renders the same
+            # suggestions. Input-hash cached in the handler; best-effort — a
+            # failure just leaves the fields absent (plain create).
+            new_lines = [
+                {
+                    "id": rl.get("id"),
+                    "description": rl.get("description") or "",
+                    "code": rl.get("code") or "",
+                    "brand": rl.get("brand") or "",
+                    "unit": rl.get("unit") or "",
+                }
+                for rl in raw_lines
+                if not rl.get("linked_item_id")
+            ]
+            if new_lines:
+                matched = call_api(
+                    "norm", "match_stock_items", dict(base, lines=new_lines)
                 )
-            return {
+                sug_by_id = (
+                    matched.get("suggestions") if isinstance(matched, dict) else None
+                ) or {}
+                for rl in raw_lines:
+                    s = sug_by_id.get(rl.get("id"))
+                    if isinstance(s, dict):
+                        rl["matched_item"] = s.get("matched_item")
+                        rl["suggested_name"] = s.get("suggested_name")
+                        rl["suggested_group_id"] = s.get("suggested_group_id")
+            card = {
                 "invoice_id": inv_id,
                 "reference_number": ref,
                 "supplier_name": detail.get("supplierName"),
@@ -456,12 +727,38 @@ def run(params, call_api, log, call_api_parallel=None):
                 # (`reasons`) is already carried once in the skipped/received
                 # verdicts, so it is not duplicated onto every card here.
                 "checks": "".join(
-                    {"pass": "p", "fail": "f"}.get(checks.get(key), "-")
+                    {"pass": "p", "fail": "f", "suggest": "s"}.get(
+                        checks.get(key), "-"
+                    )
                     for key, _label in CHECK_LABELS
                 ),
             }
+            # The specific failure reasons (e.g. "Line 'X': quantity 2.25 does
+            # not equal the document's quantity 2") so the single-invoice editor
+            # card can show WHAT didn't match, not just which check failed. ONLY
+            # on the single-invoice card: the batch verdict already carries the
+            # reasons once, and duplicating them onto every batch card would blow
+            # the tool-result slim cap.
+            if only_invoice_id and reasons:
+                card["check_reasons"] = list(reasons)[:12]
+            return card
+
+        # Append the editable card at most once for this invoice. The explicit
+        # card sites below route through here so forced carding (single-invoice
+        # review) never double-appends.
+        _carded = [False]
+
+        def card_once():
+            if not _carded[0]:
+                _carded[0] = True
+                fix_invoices.append(make_fix_invoice())
 
         def verdict_now():
+            # In single-invoice review, every terminal path computes a verdict,
+            # so carding here guarantees the editor always receives the checks
+            # that ran — including for invoices that fail a gate and are skipped.
+            if force_card:
+                card_once()
             symbol = {"pass": "✓", "fail": "✗"}
 
             # Compact each line record's nested comparison dicts into the
@@ -590,11 +887,15 @@ def run(params, call_api, log, call_api_parallel=None):
                 "details": details,
             }
 
-        # Gates are evaluated in LAYERS that short-circuit: once a layer fails,
-        # later layers are neither evaluated nor reported — "not linked to a
-        # PO" is the whole story, not a prelude to line-level noise. This also
-        # means the (expensive) PDF extraction only runs for invoices that
-        # pass every cheaper gate.
+        # Gates are evaluated in LAYERS. In BATCH mode they short-circuit: once a
+        # layer fails, later layers are neither evaluated nor reported (and the
+        # expensive PDF extraction is skipped) — the first failure is the whole
+        # story for the auto-receive decision. In SINGLE-INVOICE review
+        # (``only_invoice_id``, the editor) we instead run EVERY check we can, so
+        # the user sees the full picture — a later line-vs-copy mismatch isn't
+        # hidden behind an earlier totals failure. Data-dependent layers still
+        # guard on their inputs (``po`` fetched, ``fileId`` present).
+        run_all = bool(only_invoice_id)
 
         # Layer 1: credit notes are out of scope
         if total is not None and total < 0:
@@ -606,12 +907,14 @@ def run(params, call_api, log, call_api_parallel=None):
                 + money(total)
                 + ") — out of scope for auto-receiving",
             )
-            skipped.append(verdict_now())
-            continue
-        checks["credit_note"] = "pass"
+            if not run_all:
+                skipped.append(verdict_now())
+                continue
+        else:
+            checks["credit_note"] = "pass"
 
         # Layer 2: an invoice copy must be attached. Without the source
-        # document nothing can be verified, so stop reviewing immediately.
+        # document the copy checks cannot run (guarded below by fileId).
         if not detail.get("fileId"):
             _fail(
                 checks,
@@ -619,9 +922,11 @@ def run(params, call_api, log, call_api_parallel=None):
                 "pdf_present",
                 "No invoice copy attached — cannot verify; attach the supplier's invoice in Loaded",
             )
-            skipped.append(verdict_now())
-            continue
-        checks["pdf_present"] = "pass"
+            if not run_all:
+                skipped.append(verdict_now())
+                continue
+        else:
+            checks["pdf_present"] = "pass"
 
         # Layer 3: must be automatched to a purchase order
         po_id = detail.get("linkedPurchaseOrderId")
@@ -633,61 +938,89 @@ def run(params, call_api, log, call_api_parallel=None):
                     + str(po_number_hint)
                     + " — needs matching in Loaded)"
                 )
-                # Read the BUYER PO off the copy so the card can pre-select the
-                # right Loaded PO instantly (Loaded's field may hold the
-                # supplier's own order number). Best-effort — falls back to the
-                # referenced number if extraction fails.
-                copy_po = None
-                if detail.get("fileId"):
-                    hdr = extract_document(
-                        "loadedhub",
-                        "download_invoice_file",
-                        dict(base, file_id=detail["fileId"]),
-                        schema=PO_EXTRACT_SCHEMA,
-                        instructions=(
-                            "Extract the buyer's purchase order number and the "
-                            "supplier's own order number — they differ."
-                        ),
+                # Suggest linking the referenced PO — UNLESS the editor already
+                # tried to resolve it and no Loaded PO matched (po_unresolved), in
+                # which case the number is a supplier's own ref, not a Loaded PO,
+                # and the suggestion is just noise. The buyer PO on the copy gives
+                # a better label than Loaded's field (which may hold that ref).
+                if not po_unresolved:
+                    copy_po = _copy_po_number(detail)
+                    fixes.append(
+                        {
+                            "type": "link_po",
+                            "invoice_id": inv_id,
+                            "reference": ref,
+                            "po_number": str(copy_po or po_number_hint),
+                            "referenced_po": str(po_number_hint),
+                            "copy_po": copy_po,
+                            "summary": "Link purchase order "
+                            + str(copy_po or po_number_hint)
+                            + " to invoice "
+                            + ref,
+                        }
                     )
-                    if isinstance(hdr, dict):
-                        copy_po = hdr.get("customer_purchase_order_number")
-                # Fixable: link the referenced PO number to this invoice.
+            _fail(checks, reasons, "po_linked", msg)
+            # In batch, card here (this is the terminal for a skipped invoice). In
+            # run-all we keep going and card ONCE at the end, so the snapshot
+            # includes every later check — don't card early here.
+            if fixes and not run_all:
+                card_once()
+            if not run_all:
+                skipped.append(verdict_now())
+                continue
+        else:
+            checks["po_linked"] = "pass"
+            po = call_api(
+                "loadedhub",
+                "get_stock_purchase_order",
+                dict(base, purchase_order_id=po_id),
+            )
+            if isinstance(po, dict) and po.get("error"):
+                # An unfetchable PO reads as "not usably linked" — same key.
+                _fail(
+                    checks,
+                    reasons,
+                    "po_linked",
+                    "Could not fetch linked purchase order: " + po["error"],
+                )
+                po = None
+                if not run_all:
+                    skipped.append(verdict_now())
+                    continue
+            elif po_autolinked and isinstance(po, dict):
+                # PO found by Norm, not originally linked in Loaded: not validated
+                # as-is. Show po_linked as a SUGGESTED change rather than a clean
+                # pass, and add the link as a suggestion. Validation continues
+                # against this PO; the link is written to Loaded on receive
+                # (skipped if the PO is already invoiced on another invoice).
+                checks["po_linked"] = "suggest"
+                order_no = po.get("orderNumber") or po_number_hint
+                other_inv = po.get("linkedInvoiceId")
+                split = bool(other_inv and other_inv != inv_id)
                 fixes.append(
                     {
                         "type": "link_po",
                         "invoice_id": inv_id,
                         "reference": ref,
-                        "po_number": str(copy_po or po_number_hint),
-                        "referenced_po": str(po_number_hint),
-                        "copy_po": copy_po,
-                        "summary": "Link purchase order "
-                        + str(copy_po or po_number_hint)
-                        + " to invoice "
-                        + ref,
+                        "po_number": str(order_no),
+                        # The RESOLVED Loaded PO id, so the editor can show this
+                        # suggestion IN the Order Number picker (pre-filled,
+                        # marked suggested) — not just as a list row.
+                        "purchase_order_id": po.get("id")
+                        or detail.get("linkedPurchaseOrderId"),
+                        "already_linked_elsewhere": split,
+                        "summary": (
+                            "Matched purchase order "
+                            + str(order_no)
+                            + " (already invoiced on another order — used to "
+                            "validate, not re-linked in Loaded)"
+                            if split
+                            else "Link purchase order "
+                            + str(order_no)
+                            + " — found automatically, saved to Loaded on receive"
+                        ),
                     }
                 )
-            _fail(checks, reasons, "po_linked", msg)
-            if fixes:
-                fix_invoices.append(make_fix_invoice())
-            skipped.append(verdict_now())
-            continue
-        checks["po_linked"] = "pass"
-        po = call_api(
-            "loadedhub",
-            "get_stock_purchase_order",
-            dict(base, purchase_order_id=po_id),
-        )
-        if isinstance(po, dict) and po.get("error"):
-            # An unfetchable PO reads as "not usably linked" — same check key.
-            _fail(
-                checks,
-                reasons,
-                "po_linked",
-                "Could not fetch linked purchase order: " + po["error"],
-            )
-            po = None
-            skipped.append(verdict_now())
-            continue
 
         # Layer 4: the linked PO must belong to the same supplier
         if po:
@@ -746,7 +1079,7 @@ def run(params, call_api, log, call_api_parallel=None):
         # arithmetic (qty × cost = line total) is not checked either: Loaded
         # enforces it on entry.
 
-        if reasons:
+        if reasons and not run_all:
             skipped.append(verdict_now())
             continue
 
@@ -783,7 +1116,7 @@ def run(params, call_api, log, call_api_parallel=None):
         else:
             checks["totals"] = "pass"
 
-        if reasons:
+        if reasons and not run_all:
             skipped.append(verdict_now())
             continue
 
@@ -805,8 +1138,11 @@ def run(params, call_api, log, call_api_parallel=None):
                 "bare packaging word like pkt/box/carton/outer/unit).\n"
                 "- Check the unit/size columns first; if unhelpful, look for "
                 "a size in the description (e.g. '900ml', '500g', '4 Litre').\n"
-                "- Multipacks ('2x5L', '10x1kg', '500x100pc'): use the unit "
-                "of the INDIVIDUAL item (→ '5L', '1kg', '100pc').\n"
+                "- Multipacks ('2x5L', '5x3kg'): use the individual INNER item "
+                "('5L', '3kg') — UNLESS the line was delivered as a whole "
+                "OUTER/carton (its delivered quantity is in an OUTER/carton "
+                "column, not the INNER column). Then the unit is the WHOLE "
+                "pack, in the same 'NxM' form as the size ('5X3KG' → '5x3kg').\n"
                 "- Random weight billed at a per-kg price (e.g. 14.96 kg at "
                 "$20.56/kg — common for meat/seafood/produce): use 'Kilo', "
                 "never the total weight.\n"
@@ -819,8 +1155,10 @@ def run(params, call_api, log, call_api_parallel=None):
                 "(not 'KG'/'L') for those base units.\n"
                 "- If no confident unit can be derived, return null."
             ),
-        )
-        if not isinstance(pdf, dict) or pdf.get("error"):
+        ) if detail.get("fileId") else None
+        # The copy checks run only when a copy is attached; without a fileId pdf
+        # stays None and pdf_readable (and the checks below) stay "—" not checked.
+        if detail.get("fileId") and (not isinstance(pdf, dict) or pdf.get("error")):
             err = pdf.get("error") if isinstance(pdf, dict) else "unreadable"
             _fail(
                 checks,
@@ -829,7 +1167,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 "Could not read the attached invoice document: " + str(err),
             )
             pdf = None
-        else:
+        elif isinstance(pdf, dict):
             checks["pdf_readable"] = "pass"
 
         if pdf:
@@ -857,7 +1195,22 @@ def run(params, call_api, log, call_api_parallel=None):
             uom_ok, uom_compared = True, False
             pdf_lines = list(pdf.get("lines") or [])
             unclaimed = list(pdf_lines)
+            # The copy bills non-product amounts (freight, surcharges) in a
+            # separate charges[] array, not as product lines. A freight INVOICE
+            # line therefore has to be reconciled against these, not pdf_lines —
+            # otherwise the one freight amount is flagged twice (line "not found"
+            # AND charge "no matching line").
+            charges_unclaimed = [
+                c for c in (pdf.get("charges") or [])
+                if dec(c.get("amount_ex_tax")) not in (None, D(0))
+            ]
             for ln in lines:
+                if ln.get("id") in strike_ids:
+                    # Redundant $0 duplicate (strike suggestion already emitted) —
+                    # it isn't on the copy, so don't match it or flag it "not
+                    # found". A $0 line changes no total, so pdf_ok / the subtotal
+                    # check are untouched.
+                    continue
                 rec = rec_by_id.get(ln.get("id"))
                 match = None
                 for cand in unclaimed:
@@ -876,6 +1229,39 @@ def run(params, call_api, log, call_api_parallel=None):
                             match = cand
                             break
                 if match is None:
+                    # Not a product line on the copy — try the copy's CHARGES
+                    # (freight etc.). A match reconciles the amount instead of
+                    # double-flagging it as both a missing line and an orphan charge.
+                    charge = None
+                    ln_words = _words(ln.get("description"))
+                    for c in charges_unclaimed:
+                        if ln_words & _words(c.get("description")):
+                            charge = c
+                            break
+                    if charge is not None:
+                        charges_unclaimed.remove(charge)
+                        if rec:
+                            rec["on_copy"] = "✓"
+                        inv_amt, chg_amt = dec(ln.get("totalCost")), dec(
+                            charge.get("amount_ex_tax")
+                        )
+                        if (
+                            inv_amt is not None
+                            and chg_amt is not None
+                            and not close(inv_amt, chg_amt, line_tol)
+                        ):
+                            pdf_ok = False
+                            reasons.append(
+                                "Line '"
+                                + str(ln.get("description"))
+                                + "' "
+                                + money(inv_amt)
+                                + " does not equal the document's "
+                                + str(charge.get("description"))
+                                + " "
+                                + money(chg_amt)
+                            )
+                        continue
                     pdf_ok = False
                     if rec:
                         rec["on_copy"] = "✗"
@@ -901,27 +1287,12 @@ def run(params, call_api, log, call_api_parallel=None):
                     rec["line_total"]["copy"] = opt_money(
                         match.get("line_total_ex_tax")
                     )
-                # Unit: invoice vs copy. Only a confident mismatch fails —
-                # both sides must be recognised units (or textually equal);
-                # unrecognised strings stay "not checked".
-                inv_unit, copy_unit = ln.get("unit"), match.get("unit")
-                if inv_unit and copy_unit:
-                    ik, ck = unit_key(inv_unit), unit_key(copy_unit)
-                    if norm(inv_unit) == norm(copy_unit) or (ik and ck and ik == ck):
-                        if rec:
-                            rec["unit"]["result"] = "✓"
-                    elif ik and ck:
-                        pdf_ok = False
-                        if rec:
-                            rec["unit"]["result"] = "✗"
-                        reasons.append(
-                            "Line '"
-                            + str(ln.get("description"))
-                            + "': unit "
-                            + str(inv_unit)
-                            + " does not match the document's unit "
-                            + str(copy_unit)
-                        )
+                # Unit: the ONE meaningful comparison is Loaded's unit vs the
+                # guideline-derived DELIVERED unit from the copy (below). The
+                # literal printed unit column ('ea', 'CTN', 'pkt') is a packaging
+                # label, not the delivered unit, so it is NOT compared — comparing
+                # it produced a confusing second "copy says <packaging>" note
+                # alongside the real delivered-unit recommendation.
                 # Unit of measure: Loaded's unit vs the guideline-derived
                 # delivered unit from the copy. Both sides must parse to a
                 # (type, magnitude) before a mismatch counts — otherwise
@@ -929,10 +1300,23 @@ def run(params, call_api, log, call_api_parallel=None):
                 derived = match.get("unit_of_measure")
                 if rec:
                     rec["unit"]["derived"] = derived
-                pi, pd = parse_unit(ln.get("unit")), parse_unit(derived)
-                if pi and pd:
+                # A multipack delivered unit (e.g. an OUTER '5x3kg') compares by
+                # NAME — parse_unit can't compare 'NxM' and a ratio-equal but
+                # differently-named unit ('15 KG') is a different pack. Simple
+                # units compare by (type, magnitude) as before. uom_mismatch:
+                # None = not comparable, False = matches, True = mismatch.
+                uom_mismatch = None
+                if derived and _is_multipack(derived):
+                    uom_mismatch = norm(ln.get("unit")) != norm(derived)
+                else:
+                    pi, pd = parse_unit(ln.get("unit")), parse_unit(derived)
+                    if pi and pd:
+                        uom_mismatch = not (
+                            pi[0] == pd[0] and abs(pi[1] - pd[1]) < 0.001
+                        )
+                if uom_mismatch is not None:
                     uom_compared = True
-                    if pi[0] == pd[0] and abs(pi[1] - pd[1]) < 0.001:
+                    if not uom_mismatch:
                         if rec and rec["unit"]["result"] != "✗":
                             rec["unit"]["result"] = "✓"
                     else:
@@ -968,7 +1352,7 @@ def run(params, call_api, log, call_api_parallel=None):
                                     ),
                                     "current_unit": str(ln.get("unit")),
                                     "proposed_unit": str(derived),
-                                    "summary": ref
+                                    "summary": str(ln.get("code") or ref)
                                     + " · "
                                     + str(ln.get("description"))
                                     + ": unit "
@@ -1055,7 +1439,8 @@ def run(params, call_api, log, call_api_parallel=None):
                     + money(cand.get("line_total_ex_tax"))
                     + ") has no matching invoice line"
                 )
-            for charge in pdf.get("charges") or []:
+            # Only charges NOT reconciled to an invoice line above remain.
+            for charge in charges_unclaimed:
                 amt = dec(charge.get("amount_ex_tax"))
                 if amt and amt != D(0):
                     pdf_ok = False
@@ -1103,7 +1488,7 @@ def run(params, call_api, log, call_api_parallel=None):
 
         if reasons:
             if fixes:
-                fix_invoices.append(make_fix_invoice())
+                card_once()
             skipped.append(verdict)
             continue
 
@@ -1113,7 +1498,7 @@ def run(params, call_api, log, call_api_parallel=None):
             # approve_all: a perfect invoice still needs the user's OK, so it
             # gets an approval card (full receive view, no suggested changes).
             if approve_all:
-                fix_invoices.append(make_fix_invoice())
+                card_once()
             continue
 
         body = dict(detail)

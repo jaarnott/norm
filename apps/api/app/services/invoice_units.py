@@ -88,3 +88,15 @@ def parse_unit(text: object) -> tuple[str, float] | None:
         return (utype, float(num) * factor)
     except ValueError:
         return None
+
+
+def is_multipack(text: object) -> bool:
+    """True for an 'NxM' compound unit like '5x3kg' / '6x700ml' (digit-x-digit).
+
+    parse_unit can't compare these, so multipacks are matched by exact name and
+    a to-be-created multipack's ratio/type is resolved by the LLM, not parsed.
+    Mirror of _is_multipack in config/consolidators/review_and_receive_invoices.py.
+    """
+    s = str(text or "").lower()
+    i = s.find("x")
+    return i > 0 and s[i - 1].isdigit() and i + 1 < len(s) and s[i + 1].isdigit()

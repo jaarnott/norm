@@ -133,21 +133,25 @@ class TestProjection:
         """No embedded apps -> no callers -> no callback surface."""
         assert app_tool_defs(False) == []
 
-    def test_all_four_tools_defined(self):
+    def test_all_tools_defined(self):
         names = {d["name"] for d in app_tool_defs(True)}
         assert names == {
             "norm__get_working_document",
             "norm__update_working_document",
+            "norm__get_invoice_document",
+            "norm__update_invoice_document",
             "norm__component_api",
             "norm__place_stock_order",
+            "norm__receive_invoice",
         }
 
     def test_submit_requires_its_own_scope(self):
-        """Place Order must not ride along on the draft scope — its consent
-        text is the whole justification for the write."""
+        """A write must not ride along on a draft scope — its consent text is the
+        whole justification for the write. Each write has its own scope."""
         defs = {d["name"]: d for d in app_tool_defs(True)}
         assert defs["norm__place_stock_order"]["scopes"] == {"mcp:orders:submit"}
         assert defs["norm__update_working_document"]["scopes"] == {"mcp:orders:draft"}
+        assert defs["norm__receive_invoice"]["scopes"] == {"mcp:invoices:receive"}
 
     def test_project_tools_gates_on_scopes(self, db_session):
         # Locally and in CI the config tables share the test DB (see
@@ -602,3 +606,118 @@ class TestDispatch:
             execute_app_tool(
                 "norm__not_a_tool", {}, _principal(u, org, [v]), db_session, None
             )
+
+
+class TestReceiveInvoice:
+    """norm__receive_invoice — the one invoice write.
+
+    Reuses do_receive (one receive writer) and is stricter than place_stock_order:
+    it refuses unless the user has an open received_invoice draft for the invoice,
+    so a fabricated invoice id can't be received.
+    """
+
+    def _setup(self, db):
+        org = _org(db)
+        v = _venue(db, "La Zeppa", org)
+        u = _user(db)
+        _grant(db, u, v)
+        return org, v, u
+
+    def _draft_for(self, db, v, invoice_id):
+        from app.db.models import WorkingDocument
+
+        doc = WorkingDocument(
+            id=str(uuid.uuid4()),
+            thread_id=None,
+            doc_type="received_invoice",
+            connector_name="loadedhub",
+            venue_id=v.id,
+            sync_mode="submit",
+            data={"invoice_id": invoice_id, "is_received": False, "lines": []},
+            external_ref={"invoice_id": invoice_id, "venue_id": v.id},
+            sync_status="synced",
+            version=1,
+        )
+        db.add(doc)
+        db.flush()
+        return doc
+
+    def _patch(self, monkeypatch, fn=None):
+        monkeypatch.setattr(
+            "app.services.received_invoice.LoadedInvoiceClient",
+            lambda *a, **k: object(),
+        )
+        monkeypatch.setattr(
+            "app.services.received_invoice.do_receive",
+            fn or (lambda lh, req: {"ok": True, "received": True}),
+        )
+
+    def _call(self, db, principal, venue_id, invoice_id):
+        return execute_app_tool(
+            "norm__receive_invoice",
+            {
+                "venue_id": venue_id,
+                "invoice": {
+                    "invoice_id": invoice_id,
+                    "lines": [],
+                    "variant_updates": [],
+                },
+            },
+            principal,
+            db,
+            None,
+        )
+
+    def test_receives_an_owned_draft(self, db_session, monkeypatch):
+        org, v, u = self._setup(db_session)
+        self._draft_for(db_session, v, "inv-1")
+        self._patch(monkeypatch)
+        out = self._call(
+            db_session,
+            _principal(u, org, [v], scopes=("mcp:invoices:receive",)),
+            v.id,
+            "inv-1",
+        )
+        assert out["submitted"] is True
+
+    def test_refuses_when_no_draft_exists(self, db_session, monkeypatch):
+        org, v, u = self._setup(db_session)
+        self._patch(monkeypatch)
+        with pytest.raises(AppToolError):
+            self._call(
+                db_session,
+                _principal(u, org, [v], scopes=("mcp:invoices:receive",)),
+                v.id,
+                "ghost",
+            )
+
+    def test_refuses_a_venue_the_user_cannot_access(self, db_session, monkeypatch):
+        org, v, u = self._setup(db_session)
+        self._draft_for(db_session, v, "inv-1")
+        self._patch(monkeypatch)
+        with pytest.raises(AppToolError):
+            self._call(
+                db_session,
+                _principal(u, org, [v], scopes=("mcp:invoices:receive",)),
+                "not-my-venue",
+                "inv-1",
+            )
+
+    def test_upstream_refusal_is_data_not_error(self, db_session, monkeypatch):
+        from fastapi import HTTPException
+
+        org, v, u = self._setup(db_session)
+        self._draft_for(db_session, v, "inv-1")
+
+        def boom(lh, req):
+            raise HTTPException(400, "purchase order 9999 not found")
+
+        self._patch(monkeypatch, fn=boom)
+        out = self._call(
+            db_session,
+            _principal(u, org, [v], scopes=("mcp:invoices:receive",)),
+            v.id,
+            "inv-1",
+        )
+        assert out["submitted"] is False
+        assert "not found" in str(out["detail"])
