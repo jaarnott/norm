@@ -97,13 +97,16 @@ def _apply_auth(
 
     if auth_type == "bearer":
         token_field = auth_config.get("token_field", "api_key")
-        token = credentials.get(token_field, "")
+        # Stored credentials are user-entered: strip stray whitespace (a pasted
+        # trailing newline / leading space makes httpx reject the whole request
+        # as an illegal header value — seen live on x-loaded-company-id).
+        token = str(credentials.get(token_field, "") or "").strip()
         headers["Authorization"] = f"Bearer {token}"
 
     elif auth_type == "api_key_header":
         header_name = auth_config.get("header_name", "X-API-Key")
         key_field = auth_config.get("key_field", "api_key")
-        headers[header_name] = credentials.get(key_field, "")
+        headers[header_name] = str(credentials.get(key_field, "") or "").strip()
 
     elif auth_type == "basic":
         username_field = auth_config.get("username_field", "username")
@@ -143,7 +146,7 @@ def _apply_auth(
                     f"No {connector} access token available. "
                     f"Reconnect {connector} in Settings → Connectors."
                 )
-        headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = f"Bearer {str(token).strip()}"
 
     return headers, httpx_auth
 

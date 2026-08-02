@@ -111,7 +111,13 @@ class LoadedInvoiceClient:
             db=db,
             venue_id=venue_id,
         )
-        self._headers = headers
+        # Credential values are user-entered: strip stray whitespace from every
+        # header before it reaches the wire. A leading space on a stored
+        # x-loaded-company-id made httpx reject the request as an illegal
+        # header (500) — which the invoices dashboard renders as an empty list.
+        # (The spec executor already strips its templated headers; this client
+        # must match.)
+        self._headers = {k: str(v).strip() for k, v in headers.items()}
 
     def request(self, method: str, path: str, body: object = None) -> object:
         resp = httpx.request(

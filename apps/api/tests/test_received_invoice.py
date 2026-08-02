@@ -101,3 +101,29 @@ class TestBuildReceivedInvoiceData:
         d = build_received_invoice_data({"id": "x", "referenceNumber": "R"})
         assert d["lines"] == []
         assert d["invoice_id"] == "x"
+
+
+class TestCredentialHeaderSanitization:
+    """User-entered credential values must never reach the wire with stray
+    whitespace — a leading space on a stored x-loaded-company-id made httpx
+    reject the request as an illegal header value (prod 500, which the
+    invoices dashboard rendered as 'No outstanding invoices')."""
+
+    def test_bearer_token_is_stripped(self):
+        from app.connectors.spec_executor import _apply_auth
+
+        headers, _ = _apply_auth(
+            {}, "bearer", {"token_field": "api_key"}, {"api_key": " tok-123\n"}
+        )
+        assert headers["Authorization"] == "Bearer tok-123"
+
+    def test_api_key_header_is_stripped(self):
+        from app.connectors.spec_executor import _apply_auth
+
+        headers, _ = _apply_auth(
+            {},
+            "api_key_header",
+            {"header_name": "X-API-Key", "key_field": "api_key"},
+            {"api_key": "  key-9  "},
+        )
+        assert headers["X-API-Key"] == "key-9"
