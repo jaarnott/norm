@@ -4,10 +4,10 @@
  * What Norm has learned — review, edit and remove.
  *
  * This is the other half of the memory design, not a nice-to-have. Norm writes
- * user-scoped memories on its own, so there has to be somewhere to see every
- * one of them and undo it. And org-scoped memories are written as *candidates*
- * that never reach a prompt until someone confirms them here — without this
- * screen they would queue forever.
+ * memories on its own — a fact you state (personal or company-wide) applies
+ * straight away — so there has to be somewhere to see every one of them and
+ * undo it. The *candidate* queue is narrower now: only memories Norm *inferred*
+ * from your behaviour (a repeated edit, a rejection) wait here for a thumbs-up.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -185,7 +185,7 @@ export default function MemoryTab() {
             Waiting for you ({candidates.length})
           </h4>
           <p style={{ margin: '0 0 0.75rem', fontSize: '0.72rem', color: '#999' }}>
-            These affect everyone in your organisation, so Norm won&apos;t use them until approved.
+            Norm noticed these from how you work but isn&apos;t sure yet, so it won&apos;t use them until you approve.
           </p>
           {candidates.map((m) => card(m, true))}
           <div style={{ height: '1rem' }} />
