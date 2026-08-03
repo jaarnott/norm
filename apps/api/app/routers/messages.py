@@ -10,8 +10,23 @@ from app.db.engine import get_db, get_config_db, SessionLocal, _ConfigSessionLoc
 from app.db.models import User
 from app.auth.dependencies import get_current_user
 from app.services.supervisor import handle_message
+from app.services.venue_service import user_can_access_venue
 
 router = APIRouter()
+
+
+def _assert_venue_access(db: Session, user: User, venue_id: str | None) -> None:
+    """Reject a caller-supplied venue the user has no access to.
+
+    The venue picker is already scoped by get_user_venues, but the send path
+    trusted req.venue_id verbatim — so a stale or hand-supplied id could reach a
+    venue the user doesn't hold. No admin bypass: an admin is scoped to their
+    venues list too, same as the picker.
+    """
+    if not user_can_access_venue(db, user.id, venue_id):
+        raise HTTPException(
+            status_code=403, detail="You don't have access to that venue."
+        )
 
 
 class PageContext(BaseModel):
@@ -33,6 +48,7 @@ async def post_message(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
+    _assert_venue_access(db, user, req.venue_id)
     try:
         return handle_message(
             req.message,
@@ -64,9 +80,14 @@ async def post_message(
 @router.post("/messages/stream")
 async def post_message_stream(
     req: MessageRequest,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """SSE endpoint that streams thinking steps as they happen, then the final result."""
+    # Validate before the stream opens — a 403 here is a clean HTTP error, not
+    # an error event mid-stream. The worker below uses its own session.
+    _assert_venue_access(db, user, req.venue_id)
+
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_event_loop()
 

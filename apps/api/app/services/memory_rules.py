@@ -211,13 +211,16 @@ def admit(
 def needs_confirmation(scope: str, trigger: str | None) -> bool:
     """Rule 4 routing: may this be written without a human confirming?
 
-    Org-scoped writes always queue. Claude's own memory auto-writes because it
-    serves one person; an org memory changes *other people's* answers, so the
-    same latitude is not available here.
+    Confidence, not scope, decides. A fact the user *stated* — the ``explicit``
+    and ``correction`` triggers — is written live, for personal and org memory
+    alike. This is the ChatGPT/Claude behaviour extended to shared facts: an
+    owner saying "Mr Murdochs is closed" takes effect for the whole team at
+    once, rather than waiting in a review queue.
 
-    User-scoped writes auto-save only on the two high-signal triggers. An
-    inferred preference is a guess and waits for review.
+    A memory *inferred* from behaviour (a repeated draft edit, a rejection) is a
+    guess, not a stated fact, so it still lands as a candidate for review —
+    regardless of scope. ``scope`` is kept in the signature because that is the
+    axis this routing used to turn on, and callers pass it positionally.
     """
-    if scope != "user":
-        return True
+    del scope  # routing now turns on confidence (trigger), not scope
     return trigger not in ("explicit", "correction")

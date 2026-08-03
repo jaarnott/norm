@@ -36,6 +36,7 @@ from app.routers import (
     admin,
     threads,
     venues,
+    messages,
     organizations,
     connectors,
     billing,
@@ -59,6 +60,7 @@ _test_app.include_router(auth.router, prefix="/api")
 _test_app.include_router(admin.router, prefix="/api")
 _test_app.include_router(threads.router, prefix="/api")
 _test_app.include_router(venues.router, prefix="/api")
+_test_app.include_router(messages.router, prefix="/api")
 _test_app.include_router(organizations.router, prefix="/api")
 _test_app.include_router(connectors.router, prefix="/api")
 _test_app.include_router(billing.router, prefix="/api")

@@ -124,21 +124,24 @@ class TestRule3Scope:
 
 
 class TestRule4Routing:
-    def test_org_writes_always_need_confirmation(self):
-        """A shared write changes other people's answers — the one place Norm
-        needs more caution than Claude, which serves a single user."""
-        assert needs_confirmation("org", "explicit") is True
-        assert needs_confirmation("org", "correction") is True
-
-    def test_high_signal_user_writes_are_automatic(self):
+    def test_stated_facts_are_automatic_for_both_scopes(self):
+        """Confidence, not scope, decides. A fact the user states applies live
+        for personal and org memory alike — the ChatGPT/Claude behaviour
+        extended to shared facts, so an owner's "Murdochs is closed" takes
+        effect for the whole team without a review step."""
         assert needs_confirmation("user", "explicit") is False
         assert needs_confirmation("user", "correction") is False
+        assert needs_confirmation("org", "explicit") is False
+        assert needs_confirmation("org", "correction") is False
 
-    def test_inferred_user_writes_are_queued(self):
-        """An inferred preference is a guess; a guess waits for review."""
+    def test_inferred_writes_are_queued_for_both_scopes(self):
+        """A memory inferred from behaviour is a guess; a guess waits for
+        review, whether it is personal or shared."""
         assert needs_confirmation("user", "draft_edit") is True
         assert needs_confirmation("user", "repetition") is True
         assert needs_confirmation("user", None) is True
+        assert needs_confirmation("org", "draft_edit") is True
+        assert needs_confirmation("org", None) is True
 
 
 class TestAcceptance:
@@ -227,8 +230,9 @@ class TestRule5UpdateNeverAccumulate:
 
 
 class TestRule4Persistence:
-    def test_org_memories_are_stored_as_candidates(self, db_session):
-        """They must not shape anyone's answers before a human confirms."""
+    def test_stated_org_memories_are_active_immediately(self, db_session):
+        """A company fact the user states applies live for the whole org — the
+        ChatGPT/Claude behaviour extended to shared memory."""
         from tests.conftest import _make_organization, _make_user
         from app.services.memory_service import remember
 
@@ -239,6 +243,23 @@ class TestRule4Persistence:
             db_session, user_id=user.id, organization_id=org.id,
             memory_type="vocabulary", title="Annex",
             body="Staff call the back bar the annex", trigger="explicit",
+        )
+        assert r["scope"] == "org"
+        assert r["status"] == "active"
+
+    def test_inferred_org_memories_are_stored_as_candidates(self, db_session):
+        """A memory inferred from behaviour is a guess, so it still waits for a
+        human — the one gate kept after auto-apply."""
+        from tests.conftest import _make_organization, _make_user
+        from app.services.memory_service import remember
+
+        org = _make_organization(db_session)
+        user = _make_user(db_session)
+        db_session.flush()
+        r = remember(
+            db_session, user_id=user.id, organization_id=org.id,
+            memory_type="vocabulary", title="Annex",
+            body="Staff call the back bar the annex", trigger="draft_edit",
         )
         assert r["scope"] == "org"
         assert r["status"] == "candidate"
