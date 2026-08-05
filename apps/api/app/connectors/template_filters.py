@@ -46,6 +46,28 @@ def format_date(date_str: str, fmt: str = "%Y-%m-%d") -> str:
     return date_str  # return as-is if no format matched
 
 
+def shift_days(date_str: str, days) -> str:
+    """Shift a date by N days, returning YYYY-MM-DD (works on the date part only).
+
+    Accepts a bare date ("2026-07-27") or an ISO datetime
+    ("2026-07-27T07:00:00+12:00") and ignores any time/offset.
+
+    Motivating use: LoadedHub's budget endpoint (`/api/budgets?from=&to=`) parses
+    bare `from`/`to` as UTC, but budgets are stamped at the venue's local
+    midnight — so the requested `from` day sits just outside the window and is
+    dropped, understating every weekly budget by its first day (verified live,
+    Aug 2026). Templating `from={{ from_date | shift_days(-1) }}` requests one
+    day earlier; LoadedHub then drops *that* day and returns the intended window.
+    Returns "" for empty input.
+    """
+    from datetime import date, timedelta
+
+    if not date_str:
+        return ""
+    d = date.fromisoformat(str(date_str)[:10])
+    return (d + timedelta(days=int(days))).isoformat()
+
+
 def flatten_venue(venue: dict | str) -> str:
     """Extract venue name from a dict or return string as-is."""
     if isinstance(venue, dict):
@@ -64,6 +86,7 @@ def default_if_none(value, default=""):
 TEMPLATE_FILTERS = {
     "split_name": split_name,
     "format_date": format_date,
+    "shift_days": shift_days,
     "flatten_venue": flatten_venue,
     "default_if_none": default_if_none,
 }
