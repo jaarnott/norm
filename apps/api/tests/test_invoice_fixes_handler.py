@@ -211,6 +211,41 @@ class TestUnit:
         assert IF._resolve_unit(lh2, "5x3kg")["id"] == "u-5x3"
 
 
+def test_is_multipack_mirror_tolerates_spacing():
+    # Mirror of the consolidator's _is_multipack (kept in sync deliberately):
+    # spaced pack notation is the same pack — '6x 750ml' == '6x750ml'.
+    from app.services.invoice_units import is_multipack
+
+    for good in ("5x3kg", "6x750ml", "6x 750ml", "4 x 6 pack", "2X12"):
+        assert is_multipack(good), good
+    for bad in ("Case(s)", "750ml", "x2", "box", "", None):
+        assert not is_multipack(bad), bad
+
+
+def test_multipack_equal_mirror():
+    # Mirror of the consolidator's _multipack_equal: component-wise pack
+    # equality ('6x1L' == '6 X 1 Litre'), never across pack shapes.
+    from app.services.invoice_units import multipack_equal
+
+    assert multipack_equal("6x1L", "6 X 1 Litre")
+    assert multipack_equal("6x750ml", "6x 750ml")
+    assert not multipack_equal("6x750ml", "6x1L")
+    assert not multipack_equal("4x6 pack", "24 pack")
+    assert not multipack_equal("2x12 pack", "24 pack")
+
+
+def test_resolve_unit_component_equivalent_multipack():
+    # Accepting '6x1L' must RESOLVE to the existing '6 X 1 Litre' unit rather
+    # than creating a near-duplicate; a differently-shaped pack still creates.
+    units = UNITS + [
+        {"id": "u-6x1l", "name": "6 X 1 Litre", "ratio": 6.0, "stockUnitType": "Volume"}
+    ]
+    lh = FakeLoaded({"/1.0/stock/internal/units": units}, {})
+    assert IF._resolve_unit(lh, "6x1L")["id"] == "u-6x1l"
+    assert IF._resolve_unit(lh, "6x 1 litre")["id"] == "u-6x1l"
+    assert IF._resolve_unit(lh, "12x1L") is None  # different count → create
+
+
 class TestGetOrCreateUnit:
     """The shared resolve-or-create seam behind _apply_unit AND the explicit
     /invoice-fixes/create-unit endpoint (the editor's "use 49.5L (new unit)"
@@ -312,6 +347,46 @@ class TestReceive:
             },
             {"inv-1": self._inv()},
         )
+
+    def test_header_totals_written_through(self):
+        # Accepted copy totals (feed left the header $0) land on the PUT.
+        lh = self._lh()
+        IF._do_receive(
+            lh,
+            self._req(total=1189.27, subtotal=1034.15, tax_amount=155.12),
+        )
+        put = [w for w in lh.writes if w[0] == "PUT"][0]
+        assert put[2]["total"] == 1189.27
+        assert put[2]["subtotal"] == 1034.15
+        assert put[2]["taxAmount"] == 155.12
+
+    def test_receive_without_supplier_rejected(self):
+        # Loaded's server 500s (opaque internal-error — seen live on Sawmill
+        # 201458) when receiving an invoice with NO linked supplier. We must
+        # 400 with a clear message before anything is written.
+        from fastapi import HTTPException
+
+        inv = self._inv()
+        inv["linkedSupplierId"] = None
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
+        )
+        try:
+            IF._do_receive(lh, self._req())
+            raise AssertionError("expected 400")
+        except HTTPException as e:
+            assert e.status_code == 400
+            assert "supplier" in str(e.detail)
+        assert lh.writes == []
+
+        # A supplier picked in the editor (body.linked_supplier_id) satisfies
+        # the guard even though Loaded's own field is empty.
+        lh2 = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST},
+            {"inv-1": dict(self._inv(), linkedSupplierId=None)},
+        )
+        IF._do_receive(lh2, self._req(linked_supplier_id="sup-1"))
+        assert [w for w in lh2.writes if w[0] == "PUT"]
 
     def test_links_po_edits_line_receives_and_patches_variant(self):
         lh = self._lh()
@@ -1544,14 +1619,18 @@ class TestReceiveTimeLinking:
         )
         assert out["ok"]
         # variant registered on the item BEFORE the invoice PUT
-        item_put = [w for w in lh.writes if w[0] == "PUT" and "/items/item-2" in w[1]][0]
+        item_put = [w for w in lh.writes if w[0] == "PUT" and "/items/item-2" in w[1]][
+            0
+        ]
         variant = item_put[2]["suppliers"][0]
         assert variant["supplierId"] == "sup-1"
         assert variant["stockCode"] == "FEE94870"
         assert variant["unitId"] == "u-150"
         assert variant["unitCost"] == 22.61
         # invoice PUT carries the link + unit on the line
-        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][0]
+        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][
+            0
+        ]
         ln = inv_put[2]["lines"][0]
         assert ln["linkedItemId"] == "item-2"
         assert ln["linkedUnitId"] == "u-150"
@@ -1561,17 +1640,25 @@ class TestReceiveTimeLinking:
         inv = self._inv()
         inv["lines"][0]["linkedItemId"] = "item-2"
         inv["lines"][0]["linkedUnitId"] = "u-150"
-        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv})
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
+        )
         IF._do_receive(
             lh,
-            self._req(lines=[{"id": "ln-1", "linked_item_id": "item-2", "quantity_received": 1}]),
+            self._req(
+                lines=[
+                    {"id": "ln-1", "linked_item_id": "item-2", "quantity_received": 1}
+                ]
+            ),
         )
         assert not [w for w in lh.writes if "/items/" in w[1]]
 
     def test_registration_failure_never_blocks_receive(self):
         # No canned item route -> FakeLoaded raises inside registration; the
         # receive itself must still succeed (link still lands via the PUT).
-        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": self._inv()})
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": self._inv()}
+        )
         out = IF._do_receive(
             lh,
             self._req(
@@ -1586,5 +1673,7 @@ class TestReceiveTimeLinking:
             ),
         )
         assert out["ok"]
-        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][0]
+        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][
+            0
+        ]
         assert inv_put[2]["lines"][0]["linkedItemId"] == "item-2"

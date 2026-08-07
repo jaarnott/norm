@@ -265,13 +265,51 @@ def parse_unit(text):
 def _is_multipack(text):
     """True for an 'NxM' compound unit like '5x3kg' / '6x700ml' (digit-x-digit).
 
-    parse_unit deliberately can't compare these, and a ratio-equal but
-    differently-named unit ('15 KG') is NOT the same pack, so a multipack
-    delivered unit is compared by name instead of magnitude.
+    Whitespace-tolerant: extraction keeps units AS PRINTED, and suppliers print
+    '6x 750ml' / '4 x 6 pack' — the spaced forms are the same pack (norm-based
+    name comparison ignores the spaces too). parse_unit deliberately can't
+    compare these, and a ratio-equal but differently-named unit ('15 KG') is
+    NOT the same pack, so a multipack delivered unit is compared by name
+    instead of magnitude.
     """
-    s = str(text or "").lower()
+    s = "".join(str(text or "").lower().split())
     i = s.find("x")
     return i > 0 and s[i - 1].isdigit() and i + 1 < len(s) and s[i + 1].isdigit()
+
+
+def _unit_norm(text):
+    # Alphanumeric-lowered unit name — '6x 750ml' == '6X750ML'.
+    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+
+
+def _multipack_equal(a, b):
+    """True when two unit NAMES denote the same pack.
+
+    Multipacks compare component-wise: the counts must match and the inner
+    sizes compare by parse_unit magnitude — '6x1L' == '6 X 1 Litre' (Allied
+    Liquor prints the former, Loaded holds the latter). Unparseable inners
+    fall back to name equality. A multipack never equals a differently-shaped
+    name: '4x6 pack' vs '24 pack' is a mismatch even though the totals agree —
+    units stay as printed, the ratio carries the arithmetic.
+    """
+    if _unit_norm(a) == _unit_norm(b):
+        return True
+    if not (_is_multipack(a) and _is_multipack(b)):
+        return False
+
+    def _split(u):
+        s = "".join(str(u or "").lower().split())
+        i = s.find("x")
+        return s[:i], s[i + 1 :]
+
+    ca, ia = _split(a)
+    cb, ib = _split(b)
+    if not ca or ca != cb:
+        return False
+    pa, pb = parse_unit(ia), parse_unit(ib)
+    if pa and pb:
+        return pa[0] == pb[0] and abs(pa[1] - pb[1]) < 0.001
+    return _unit_norm(ia) == _unit_norm(ib)
 
 
 def _ln_cost(ln):
@@ -925,6 +963,11 @@ def run(params, call_api, log, call_api_parallel=None):
         po = None
         pdf = None
         po_number_hint = detail.get("purchaseOrderNumber")
+        # The copy's printed totals when they DISAGREE with the Loaded header
+        # (e.g. a feed that left the invoice total $0) — carried on the card so
+        # the editor can offer "Invoice total X → Y (per the invoice copy)" as
+        # a local edit, written to Loaded on receive.
+        copy_totals = None
 
         def opt_money(value):
             return money(value) if dec(value) is not None else None
@@ -1182,6 +1225,10 @@ def run(params, call_api, log, call_api_parallel=None):
                 # is visible even when there is nothing to link.
                 "copy_po": copy_po_seen,
                 "po_unresolved": po_unresolved,
+                # Copy-printed totals when they disagree with the Loaded header
+                # (see Gate 11) — the editor's "Invoice total X → Y" suggestion.
+                "copy_total_mismatch": bool(copy_totals),
+                **(copy_totals or {}),
                 # Loaded's REAL link only (strict mirror): a PO the engine
                 # resolved for validation was INJECTED into detail — it must
                 # ride as the link_po SUGGESTION (picker shows it amber), never
@@ -1613,20 +1660,45 @@ def run(params, call_api, log, call_api_parallel=None):
         elif isinstance(pdf, dict):
             checks["pdf_readable"] = "pass"
 
-        # A supplier STATEMENT uploaded as a draft invoice: it lists prior
-        # invoices, payments and balances instead of billing products, so it
-        # is not receivable — fail the document-type check, suggest deleting
-        # the draft, and skip the line-vs-copy comparison entirely (statement
-        # rows are not product lines; comparing them only produces noise).
-        if pdf and pdf.get("document_type") == "statement":
-            _fail(
-                checks,
-                reasons,
-                "credit_note",
-                "The attached copy is a supplier STATEMENT (it lists "
-                "invoices, payments and balances), not an invoice — this "
-                "draft should be deleted from Loaded",
-            )
+        # A non-invoice uploaded as a draft: a supplier STATEMENT (lists prior
+        # invoices, payments, balances) or a LETTER/NOTICE (document_type
+        # 'other' with NO product lines — e.g. a delivery-surcharge notice).
+        # Neither is receivable — fail the document-type check, suggest
+        # deleting the draft, and skip the line-vs-copy comparison entirely.
+        # 'other' WITH extracted lines is deliberately NOT treated as
+        # deletable: a misclassified real invoice must never be offered a
+        # delete — the normal line comparison handles it.
+        _pdf_type = pdf.get("document_type") if isinstance(pdf, dict) else None
+        _is_letter = _pdf_type == "other" and not (
+            isinstance(pdf, dict) and pdf.get("lines")
+        )
+        if pdf and (_pdf_type == "statement" or _is_letter):
+            if _pdf_type == "statement":
+                _fail(
+                    checks,
+                    reasons,
+                    "credit_note",
+                    "The attached copy is a supplier STATEMENT (it lists "
+                    "invoices, payments and balances), not an invoice — this "
+                    "draft should be deleted from Loaded",
+                )
+                _del_summary = (
+                    "This document is a supplier statement, not "
+                    "an invoice — delete this draft in Loaded"
+                )
+            else:
+                _fail(
+                    checks,
+                    reasons,
+                    "credit_note",
+                    "The attached copy is not an invoice (a supplier letter "
+                    "or notice with no product lines) — this draft should be "
+                    "deleted from Loaded",
+                )
+                _del_summary = (
+                    "This document is a supplier letter/notice, not "
+                    "an invoice — delete this draft in Loaded"
+                )
             if not any(f.get("type") == "delete_invoice" for f in fixes):
                 # (the duplicate check may already have proposed the delete —
                 # one delete suggestion per draft is enough)
@@ -1635,8 +1707,7 @@ def run(params, call_api, log, call_api_parallel=None):
                         "type": "delete_invoice",
                         "invoice_id": inv_id,
                         "reference": ref,
-                        "summary": "This document is a supplier statement, not "
-                        "an invoice — delete this draft in Loaded",
+                        "summary": _del_summary,
                     }
                 )
             pdf = None
@@ -1854,13 +1925,21 @@ def run(params, call_api, log, call_api_parallel=None):
                 # None = not comparable, False = matches, True = mismatch.
                 uom_mismatch = None
                 if derived and _is_multipack(derived):
-                    uom_mismatch = norm(ln.get("unit")) != norm(derived)
+                    # Component-wise: '6x1L' == Loaded's '6 X 1 Litre'.
+                    uom_mismatch = not _multipack_equal(ln.get("unit"), derived)
                 else:
                     pi, pd = parse_unit(ln.get("unit")), parse_unit(derived)
                     if pi and pd:
                         uom_mismatch = not (
                             pi[0] == pd[0] and abs(pi[1] - pd[1]) < 0.001
                         )
+                    elif pd and not pi:
+                        # The copy derived a REAL unit but the line's unit is
+                        # unreadable — a bare packaging word ('Case(s)',
+                        # 'Carton') or an unknown pack name. That IS a
+                        # mismatch: the silent "not comparable" skip hid the
+                        # Eurovintage Case(s)-vs-'6x 750ml' case entirely.
+                        uom_mismatch = norm(ln.get("unit")) != norm(derived)
                 if uom_mismatch is not None:
                     uom_compared = True
                     if not uom_mismatch:
@@ -2142,6 +2221,15 @@ def run(params, call_api, log, call_api_parallel=None):
 
             # Gate 11 (PDF side): document total vs invoice total
             if not close(dec(pdf.get("total_incl_tax")), total, totals_tol):
+                # A readable printed total that Loaded's header disagrees with
+                # (e.g. the feed left the total $0): carry the copy's totals to
+                # the card so the editor can offer them as a one-click edit.
+                if dec(pdf.get("total_incl_tax")) is not None:
+                    copy_totals = {
+                        "copy_total": pdf.get("total_incl_tax"),
+                        "copy_subtotal": pdf.get("subtotal_ex_tax"),
+                        "copy_tax_amount": pdf.get("tax_amount"),
+                    }
                 _fail(
                     checks,
                     reasons,

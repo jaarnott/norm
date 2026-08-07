@@ -39,7 +39,11 @@ def _engine_source(config_db: Session) -> str:
     config DB (what production actually runs), else the repo copy."""
     spec = (
         config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == "norm")
+        # The review consolidator rides on the LOADEDHUB connector spec (same
+        # row run_review_and_merge reads) — querying the wrong connector here
+        # silently falls back to the repo copy, defeating "test what is
+        # deployed".
+        .filter(ConnectorSpec.connector_name == "loadedhub")
         .first()
     )
     for tool in (spec.tools if spec else None) or []:

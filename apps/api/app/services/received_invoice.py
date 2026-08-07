@@ -68,6 +68,10 @@ class ReceiveRequest(BaseModel):
     due_at: str | None = None
     received_at: str | None = None
     total: float | None = None
+    # Accepted from the copy's printed totals when Loaded's header was wrong
+    # (e.g. a feed that left them $0) — written together with total.
+    subtotal: float | None = None
+    tax_amount: float | None = None
     linked_supplier_id: str | None = None
     unit_cost_includes_tax: bool | None = None
     notes: str | None = None
@@ -379,6 +383,8 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         "due_at": ("dueAt",),
         "received_at": ("receivedAt",),
         "total": ("total",),
+        "subtotal": ("subtotal",),
+        "tax_amount": ("taxAmount",),
         "linked_supplier_id": ("linkedSupplierId",),
         "unit_cost_includes_tax": (
             "unitCostIncludesTax",
@@ -454,6 +460,27 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         inv.setdefault("lines", []).append(new_line)
 
     if body.receive:
+        # Guard: Loaded's server 500s (opaque internal-error, seen live on
+        # Sawmill 201458) when receiving an invoice with NO linked supplier —
+        # their feed doesn't always match the printed name to a supplier
+        # record. Fail clearly here instead.
+        if not (body.linked_supplier_id or inv.get("linkedSupplierId")):
+            raise HTTPException(
+                400,
+                "link a supplier before receiving — this invoice has no Loaded "
+                "supplier (pick one in the Supplier dropdown)",
+            )
+        # Guard: an empty draft (a statement/letter uploaded as an invoice, or
+        # every line struck) has nothing to receive — deleting the draft is
+        # the right action, never an empty receive.
+        if not any(
+            not ln.get("deletedAt") for ln in inv.get("lines") or []
+        ):
+            raise HTTPException(
+                400,
+                "nothing to receive — this draft has no line items (if it "
+                "isn't an invoice, delete the draft instead)",
+            )
         # Guard: every line must be resolved to a real Loaded catalogue entry
         # before receiving — a NEW stock item / unit / brand is created only by
         # an explicit, controlled action (never silently on receive).

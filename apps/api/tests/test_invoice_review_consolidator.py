@@ -994,6 +994,44 @@ class TestUnitParser:
         assert self.parse("150x200mm piece") is None  # compound — LLM's job
         assert self.parse("2x5L") is None
 
+    def multipack(self, text):
+        namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
+        exec(FUNCTION_CODE, namespace)
+        return namespace["_is_multipack"](text)
+
+    def test_multipack_detection_tolerates_spacing(self):
+        # Extraction keeps units AS PRINTED, and suppliers print spaced pack
+        # notation — '6x 750ml' (Eurovintage) is the same pack as '6x750ml'.
+        for good in ("5x3kg", "6x750ml", "6x 750ml", "4 x 6 pack", "2X12"):
+            assert self.multipack(good), good
+        for bad in ("Case(s)", "750ml", "x2", "box", "", None):
+            assert not self.multipack(bad), bad
+
+    def multipack_equal(self, a, b):
+        namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
+        exec(FUNCTION_CODE, namespace)
+        return namespace["_multipack_equal"](a, b)
+
+    def test_multipack_component_equivalence(self):
+        # Same pack, different printing: count-wise equal + inner sizes by
+        # magnitude (the Allied Liquor Kahlua case: '6x1L' vs '6 X 1 Litre').
+        for a, b in (
+            ("6x1L", "6 X 1 Litre"),
+            ("6x750ml", "6x 750ml"),
+            ("12x1L", "12 x 1 litre"),
+            ("2x12*330ml", "2 x 12*330ML"),  # unparseable inner → name equal
+        ):
+            assert self.multipack_equal(a, b), (a, b)
+        # Different packs never equal — even when the totals agree.
+        for a, b in (
+            ("6x750ml", "6x1L"),
+            ("4x6 pack", "24 pack"),
+            ("2x12 pack", "24 pack"),
+            ("6x1L", "12x1L"),
+            ("6x1L", "Case(s)"),
+        ):
+            assert not self.multipack_equal(a, b), (a, b)
+
 
 class TestUnitOfMeasureGate:
     """Loaded's unit vs the guideline-derived delivered unit from the copy."""
@@ -1036,6 +1074,66 @@ class TestUnitOfMeasureGate:
         by_label = {c["check"]: c["result"] for c in result["received"][0]["checklist"]}
         assert by_label["Unit of measure matches the copy"] == "—"
         assert by_label["Lines match the invoice copy"] == "✓"
+
+    def test_spaced_multipack_vs_packaging_word_flags(self):
+        # Eurovintage 1229702: line unit 'Case(s)' (bare packaging word), copy
+        # prints '6x 750ml' — spaced pack notation kept AS PRINTED. Both used
+        # to fall through the comparator: the check silently read "—" and the
+        # card carried no recommended_unit, so NO suggestion existed anywhere.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="Case(s)")]),
+            pdf=self.pdf_with_uom("6x 750ml"),
+        )
+        verdict = sole_skip(run_consolidator(api))
+        reason = next(r for r in verdict["reasons"] if "delivered unit" in r)
+        assert "'6x 750ml'" in reason and "Case(s)" in reason
+
+    def test_spaced_mismatch_card_carries_editor_fields(self):
+        api = api_for(
+            make_invoice(lines=[make_line(unit="Case(s)")]),
+            pdf=self.pdf_with_uom("6x 750ml"),
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        ln = fi["lines"][0]
+        assert ln["recommended_unit"] == "6x 750ml"
+        assert ln["copy_unit_mismatch"] is True
+        assert any(
+            s["type"] == "unit" and s["proposed_unit"] == "6x 750ml"
+            for s in fi.get("suggestions") or []
+        )
+
+    def test_packaging_word_vs_simple_derived_flags(self):
+        # The general silent-skip gap: line unit 'Carton' (unparseable), copy
+        # derives a SIMPLE unit ('500g') — previously "not comparable" → "—".
+        api = api_for(
+            make_invoice(lines=[make_line(unit="Carton")]),
+            pdf=self.pdf_with_uom("500g"),
+        )
+        verdict = sole_skip(run_consolidator(api))
+        assert any("delivered unit" in r for r in verdict["reasons"])
+
+    def test_spaced_vs_compact_multipack_name_equal_passes(self):
+        # False-positive control: spacing alone never flags — 'x6750ml' names
+        # normalize identically, so '6x750ml' on the line matches the copy's
+        # '6x 750ml'.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="6x750ml")]),
+            pdf=self.pdf_with_uom("6x 750ml"),
+        )
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+
+    def test_component_equivalent_multipack_passes(self):
+        # The Allied Liquor Kahlua false-positive, pinned: Loaded unit
+        # '6 X 1 Litre' vs copy-derived '6x1L' is the SAME pack — no fix.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="6 X 1 Litre")]),
+            pdf=self.pdf_with_uom("6x1L"),
+        )
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert not any(s["type"] == "unit" for s in fi.get("suggestions") or [])
 
 
 class TestFixDerivation:
@@ -1331,6 +1429,40 @@ class TestSingleInvoiceMode:
         assert ln["copy_unit"] == "Kg"
         assert ln["recommended_unit"] == "100 piece"
         assert [s["type"] for s in fi["suggestions"]] == ["unit"]
+
+
+class TestCopyTotals:
+    """When Loaded's header totals disagree with the copy (e.g. a feed that
+    left the invoice total $0 — Allied Liquor TLC-686719, 07 Aug 2026), the
+    card carries the copy's printed totals so the editor can offer
+    "Invoice total X → Y (per the invoice copy)" as a local edit."""
+
+    def test_mismatched_total_carries_copy_totals(self):
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(total=0, subtotal=0, taxAmount=0)},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["copy_total_mismatch"] is True
+        assert fi["copy_total"] == 252.75
+        assert fi["copy_subtotal"] == 219.78
+        assert fi["copy_tax_amount"] == 32.97
+        assert any(
+            "does not match the document total" in r for r in fi["check_reasons"]
+        )
+
+    def test_matching_totals_carry_nothing(self):
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["copy_total_mismatch"] is False
+        assert fi.get("copy_total") is None
 
 
 class TestUnresolvedCopyPo:

@@ -149,6 +149,13 @@ interface DocData {
   // "copy says X — no matching purchase order" note under the picker.
   copy_po?: string | null;
   po_unresolved?: boolean | null;
+  // The copy's printed totals when Loaded's header disagrees (e.g. a feed
+  // that left the invoice total $0) — drives the "Invoice total X → Y"
+  // suggestion; accepted values are written to Loaded on receive.
+  copy_total?: number | null;
+  copy_subtotal?: number | null;
+  copy_tax_amount?: number | null;
+  copy_total_mismatch?: boolean | null;
   // Changes the review made/proposes (e.g. an auto-matched PO, a unit fix).
   suggestions?: Suggestion[];
   // Persisted record of suggestions the user APPLIED or DISMISSED (dismissed:
@@ -768,6 +775,32 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       { op: 'update_header', fields: { actioned_suggestions: log } },
     ]);
   };
+  // Header totals from the invoice copy (Gate 11): Loaded's feed sometimes
+  // leaves the invoice total/subtotal $0. A LOCAL edit like the line
+  // suggestions — written to Loaded on receive, undoable via undo_header.
+  const applyTotalSuggestion = () => {
+    if (doc.copy_total == null) return;
+    const key = `total:${doc.invoice_id}`;
+    const fields: Partial<DocData> = { total: doc.copy_total };
+    if (doc.copy_subtotal != null) fields.subtotal = doc.copy_subtotal;
+    if (doc.copy_tax_amount != null) fields.tax_amount = doc.copy_tax_amount;
+    const log = [
+      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
+      {
+        key,
+        summary: `Invoice total ${cur(doc.total)} → ${cur(doc.copy_total)} (per the invoice copy)`,
+        undo_header: {
+          total: doc.total ?? null,
+          subtotal: doc.subtotal ?? null,
+          tax_amount: doc.tax_amount ?? null,
+        },
+      },
+    ];
+    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
+    if (workingDocId) patchDoc([
+      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
+    ]);
+  };
   const applyStrikeSuggestion = (idx: number) => {
     const l = doc.lines[idx];
     if (!l) return;
@@ -908,6 +941,44 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const s = suppliers.find((x) => x.id === id);
     patchHeader({ linked_supplier_id: id || null, supplier_name: s?.name ?? null });
   };
+  // Loaded supplier whose name matches the invoice's printed supplier name
+  // (normalized substring either way) — offered when the feed left the
+  // invoice UNLINKED ("The Sawmill Brewing Company Limited" vs the Loaded
+  // record "Sawmill"). Picking it is a local header edit, written on receive.
+  const suggestedSupplier = useMemo(() => {
+    if (doc.linked_supplier_id || !doc.supplier_name) return undefined;
+    const nrm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const target = nrm(doc.supplier_name);
+    if (target.length < 3) return undefined;
+    return suppliers.find((s) => {
+      const c = nrm(s.name || '');
+      return c.length >= 3 && (c === target || target.includes(c) || c.includes(target));
+    });
+  }, [doc.linked_supplier_id, doc.supplier_name, suppliers]);
+  // ONE accept path for the supplier link — used by BOTH the inline note and
+  // its Suggested Changes row (logged ✓, undoable via undo_header).
+  const applySupplierSuggestion = (s: { id: string; name?: string | null }) => {
+    const log = [
+      ...(doc.actioned_suggestions || []).filter((a) => a.key !== `supplier:${s.id}`),
+      {
+        key: `supplier:${s.id}`,
+        summary: `Supplier linked to '${s.name ?? ''}' — saved to Loaded on receive`,
+        undo_header: {
+          linked_supplier_id: doc.linked_supplier_id ?? null,
+          supplier_name: doc.supplier_name ?? null,
+        },
+      },
+    ];
+    setDoc((prev) => ({
+      ...prev,
+      actioned_suggestions: log,
+      linked_supplier_id: s.id,
+      supplier_name: s.name ?? prev.supplier_name,
+    }));
+    if (workingDocId) patchDoc([
+      { op: 'update_header', fields: { linked_supplier_id: s.id, supplier_name: s.name ?? null, actioned_suggestions: log } },
+    ]);
+  };
 
   // Notes persist on a debounce so a keystroke isn't a PATCH each.
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1046,12 +1117,31 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // never mutated, and full revalidation stays reserved for reset / a changed
   // invoice in Loaded / server-applied fixes. Dismissing counts as resolved —
   // the user made the decision.
+  // The copy's printed total disagrees with the header and hasn't been taken
+  // yet — drives the suggestion row and the amber Invoice Total input.
+  const totalSuggestPending = !!doc.copy_total_mismatch && doc.copy_total != null
+    && Math.abs((doc.total ?? 0) - doc.copy_total) > 0.02;
   const resolvedLocally = useMemo(() => {
     const out = new Set<string>();
     if (done || !doc.checks) return out;
     const logged = new Set((doc.actioned_suggestions || []).map((a) => a.key));
     const near = (a: number | null | undefined, b: number | null | undefined, tol: number) =>
       a != null && b != null && Math.abs(a - b) <= tol;
+    // Totals accepted from the copy: the pdf_total check resolves when the
+    // header total now matches the copy, and the internal-consistency check
+    // resolves when the edited header arithmetic adds up again.
+    if (checkByKey.pdf_total?.state === 'fail'
+      && doc.copy_total != null && near(doc.total, doc.copy_total, 0.02)) {
+      out.add('pdf_total');
+    }
+    if (checkByKey.totals?.state === 'fail') {
+      const lineSum = doc.lines.filter((l) => !l.struck)
+        .reduce((s, l) => s + (l.quantity_received ?? 0) * (l.unit_cost ?? 0), 0);
+      if (near(lineSum, doc.subtotal, 0.02)
+        && near((doc.subtotal ?? 0) + (doc.tax_amount ?? 0), doc.total, 0.02)) {
+        out.add('totals');
+      }
+    }
     if (checkByKey.unit_of_measure?.state === 'fail') {
       const pending = doc.lines.some((l) => {
         if (l.struck) return false;
@@ -1092,7 +1182,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [done, doc.checks, doc.lines, doc.suggestions, doc.actioned_suggestions, doc.linked_purchase_order_id, checkByKey, recommendedFor]);
+  }, [done, doc.checks, doc.lines, doc.suggestions, doc.actioned_suggestions, doc.linked_purchase_order_id, doc.total, doc.subtotal, doc.tax_amount, doc.copy_total, checkByKey, recommendedFor]);
   const checkSummary = useMemo(() => {
     if (checks.length === 0) return reviewing ? 'checking against the copy…' : 'not yet reviewed';
     let fail = checks.filter((c) => c.state === 'fail').length;
@@ -1209,6 +1299,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         dismiss: () => dismissSuggestion(key, summary),
       });
     };
+    // Header-level: the invoice has NO linked supplier and a Loaded record
+    // matches the printed name — same accept path as the inline note under
+    // the Supplier dropdown. Receiving stays blocked (supplierBlocking) even
+    // if dismissed: Loaded cannot receive a supplier-less invoice.
+    if (doc.invoice_id && !doc.linked_supplier_id && suggestedSupplier) {
+      pushLineRow(
+        `supplier:${suggestedSupplier.id}`,
+        `Supplier '${doc.supplier_name ?? ''}' is not linked in Loaded — link to '${suggestedSupplier.name}' (saved to Loaded on receive)`,
+        () => applySupplierSuggestion(suggestedSupplier),
+      );
+    }
+    // Header totals from the copy (Gate 11): one row, accepted as a local
+    // header edit — written to Loaded on receive.
+    if (totalSuggestPending && doc.copy_total != null) {
+      pushLineRow(
+        `total:${doc.invoice_id}`,
+        `Invoice total ${cur(doc.total)} → ${cur(doc.copy_total)} (per the invoice copy)`,
+        applyTotalSuggestion,
+      );
+    }
     doc.lines.forEach((l, idx) => {
       // A struck line is inert: no pending rows of any kind (its own strike /
       // remove action shows as an applied ✓ row from the log, with Undo).
@@ -1321,7 +1431,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               const li = doc.lines.findIndex((l) => `${struckPrefix}:${l.id}` === a.key);
               if (li >= 0) undoStrikeSuggestion(li, struckPrefix);
             }
-          : a.undo_fields
+          : a.undo_fields || a.undo_header
             ? () => undoActionedFields(a)
             : undefined,
       });
@@ -1336,7 +1446,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     (r) => r.state === 'pending' && (r.accept || r.engineFix || r.dismiss),
   );
   const suggestionsBlocking = !embedded && blockingSuggestions.length > 0;
-  const receiveBlocked = status === 'saving' || unresolved.length > 0 || suggestionsBlocking;
+  // No linked supplier: Loaded rejects the receive outright (500), so block
+  // it here with a visible reason. Web only, once the draft has loaded.
+  const supplierBlocking = !embedded && !done && !!doc.invoice_id && !doc.linked_supplier_id;
+  // Nothing to receive: an empty draft (a statement/letter uploaded as an
+  // invoice — e.g. a surcharge notice — or every line struck). Deleting the
+  // draft is the action, never an empty receive; the server rejects it too.
+  const noLines = !embedded && !done && !!doc.invoice_id && !doc.lines.some((l) => !l.struck);
+  const receiveBlocked = status === 'saving' || unresolved.length > 0 || suggestionsBlocking || supplierBlocking || noLines;
   const sortedGroups = useMemo(
     () => [...stockGroups].sort((a, b) => (a.name || '').localeCompare(b.name || '')),
     [stockGroups],
@@ -1632,6 +1749,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           due_at: doc.due_at ?? null,
           received_at: doc.received_at ?? null,
           total: doc.total,
+          subtotal: doc.subtotal,
+          tax_amount: doc.tax_amount,
           linked_supplier_id: doc.linked_supplier_id,
           unit_cost_includes_tax: !!doc.unit_cost_includes_tax,
           notes: doc.notes ?? '',
@@ -1662,6 +1781,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         patchDoc([{ op: 'set_status', value: 'received' }]);
       }
       (props?.onReceived as ((id: string) => void) | undefined)?.(doc.invoice_id);
+      // Received from the chat overlay: the job is done — close the modal and
+      // let the in-flow card show the received state.
+      setExpandedFull(false);
       // Tell sibling cards: their duplicate/PO checks may have just flipped
       // (the server cleared conflicting cached reviews) and twin docs of this
       // invoice are now received.
@@ -1734,12 +1856,33 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             <label style={fieldCol}>
               <span style={microLabel}>Supplier</span>
-              <select value={doc.linked_supplier_id || ''} disabled={done} onChange={(e) => onSupplier(e.target.value)} style={{ ...inputStyle, width: '100%' }}>
+              {/* An unlinked supplier (Loaded's feed didn't match the printed
+                  name to a supplier record) renders AMBER — the fallback
+                  option showing the printed name used to mask it, and Loaded's
+                  server 500s on receiving a supplier-less invoice. */}
+              <select value={doc.linked_supplier_id || ''} disabled={done} onChange={(e) => onSupplier(e.target.value)}
+                style={{ ...inputStyle, width: '100%', ...(!done && !doc.linked_supplier_id && doc.invoice_id ? { border: '1px solid #f0c88a', background: '#fff4e5' } : {}) }}>
                 {!suppliers.some((s) => s.id === doc.linked_supplier_id) && (
                   <option value={doc.linked_supplier_id || ''}>{doc.supplier_name || 'Select supplier'}</option>
                 )}
                 {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
+              {!done && !embedded && doc.invoice_id && !doc.linked_supplier_id && (
+                <span style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 2 }}>
+                  {suggestedSupplier ? (
+                    <>
+                      not linked to a Loaded supplier —{' '}
+                      <button type="button" onClick={() => applySupplierSuggestion(suggestedSupplier)}
+                        style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                        use {suggestedSupplier.name}
+                      </button>
+                      {' '}(saved to Loaded on receive)
+                    </>
+                  ) : (
+                    'not linked to a Loaded supplier — pick one before receiving'
+                  )}
+                </span>
+              )}
             </label>
             <label style={fieldCol}>
               <span style={microLabel}>Order Number</span>
@@ -1814,7 +1957,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               <span style={microLabel}>Invoice Total</span>
               <input type="number" step="any" value={doc.total ?? 0} disabled={done}
                 onChange={(e) => patchHeader({ total: parseFloat(e.target.value) || 0 })}
-                style={{ ...inputStyle, width: '100%', fontWeight: 600 }} />
+                style={{ ...inputStyle, width: '100%', fontWeight: 600, ...(!done && totalSuggestPending ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+              {!done && totalSuggestPending && (
+                <span style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
+                  copy says {cur(doc.copy_total)} —{' '}
+                  <button type="button" onClick={applyTotalSuggestion}
+                    style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                    use
+                  </button>
+                </span>
+              )}
             </label>
           </div>
         </div>
@@ -2015,11 +2167,13 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       unit unreadable on copy — confirm below
                     </div>
                   )}
-                  {/* The copy's DELIVERED unit differs from Loaded's but doesn't
-                      resolve to ANY Loaded unit (e.g. "49.5L", a multipack like
-                      "5x3kg") — offer to CREATE it in Loaded and use it on the
-                      line (local until receive), exactly like create-item. */}
-                  {!recommended && !struck && l.linked_unit_id && l.copy_unit_mismatch && l.recommended_unit && (
+                  {/* The copy's DELIVERED unit doesn't resolve to ANY Loaded
+                      unit (e.g. "49.5L", a multipack like "4x6 pack") — offer
+                      to CREATE it in Loaded and use it on the line (local
+                      until receive), exactly like create-item. Also covers a
+                      line with NO unit set at all (linked_unit_id null): the
+                      copy's unit is then a straight suggestion. */}
+                  {!recommended && !struck && l.copy_unit_mismatch && l.recommended_unit && (
                     <div style={{ fontSize: '0.58rem', color: '#c0392b', marginTop: 2 }} title="the copy's delivered unit doesn't exist in Loaded — accepting creates it, then it's applied to the line on receive">
                       copy delivered unit “{l.recommended_unit}” —{' '}
                       {!done && !embedded && l.linked_unit_id === l.original_unit_id ? (
@@ -2044,8 +2198,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                             use {l.recommended_unit} (new unit)
                           </button>
                         )
-                      ) : (
+                      ) : l.linked_unit_id ? (
                         'differs from Loaded'
+                      ) : (
+                        'no unit set in Loaded'
                       )}
                     </div>
                   )}
@@ -2254,21 +2410,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           so the user sees non-validations and any fix we made at a glance.
           Rows come from suggestionRows — ONE derivation shared with the inline
           affordances — pending (●, Accept) first, then applied (✓, persisted). */}
-      {!dojo && (suggestionRows.length > 0 || (checks.length > 0 && failChecks.length > 0)) && (
+      {!dojo && (suggestionRows.length > 0 || (!done && checks.length > 0 && failChecks.length > 0)) && (
         <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
           {suggestionRows.length > 0 && (
-            <div style={{ marginBottom: failChecks.length ? 8 : 0 }}>
+            <div style={{ marginBottom: !done && failChecks.length ? 8 : 0 }}>
               <div style={{ ...microLabel, color: '#8a6d3b', marginBottom: 3 }}>Suggested changes</div>
               {suggestionRows.map((row) => {
                 const applied = row.state === 'applied';
                 const dismissed = row.state === 'dismissed';
+                // Received/deleted: a still-pending row was NOT actioned — the
+                // user received past it. Label it so the record reads as
+                // actioned-vs-not, never as still awaiting a decision.
+                const notActioned = row.state === 'pending' && done;
                 const accept = row.engineFix ? () => acceptFix(row.key, row.engineFix!) : row.accept;
                 return (
-                  <div key={row.key} style={{ fontSize: '0.68rem', color: applied ? '#2e7d4f' : dismissed ? '#9ca3af' : '#8a6d3b', display: 'flex', gap: 8, padding: '2px 0', alignItems: 'center' }}>
-                    <span>{applied ? '✓' : dismissed ? '⊘' : '●'}</span>
-                    <span style={{ flex: 1, ...(applied ? { textDecoration: 'line-through', color: '#9ca3af' } : {}), ...(dismissed ? { color: '#9ca3af' } : {}) }}>
+                  <div key={row.key} style={{ fontSize: '0.68rem', color: applied ? '#2e7d4f' : dismissed || notActioned ? '#9ca3af' : '#8a6d3b', display: 'flex', gap: 8, padding: '2px 0', alignItems: 'center' }}>
+                    <span>{applied ? '✓' : dismissed ? '⊘' : notActioned ? '○' : '●'}</span>
+                    <span style={{ flex: 1, ...(applied ? { textDecoration: 'line-through', color: '#9ca3af' } : {}), ...(dismissed || notActioned ? { color: '#9ca3af' } : {}) }}>
                       {row.summary}
                       {dismissed && !row.key.includes('confirm-unit:') && <span style={{ fontStyle: 'italic' }}> — dismissed</span>}
+                      {notActioned && <span style={{ fontStyle: 'italic' }}> — not actioned</span>}
                     </span>
                     {(applied || dismissed) && row.undo && !done && !embedded && (
                       <button type="button" onClick={row.undo}
@@ -2299,7 +2460,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               })}
             </div>
           )}
-          {failChecks.length > 0 && (
+          {/* Hidden once received/deleted: the failures were either fixed by
+              the actioned changes or knowingly accepted at Receive — after
+              that, the actioned-vs-not record above is the story. */}
+          {!done && failChecks.length > 0 && (
             <div>
               <div style={{ ...microLabel, color: '#c0392b', marginBottom: 3 }}>Needs attention</div>
               {failChecks.map((c) => (
@@ -2387,11 +2551,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {/* Footer */}
       {!dojo && (
       <div style={{ padding: '0.6rem 0.9rem', borderTop: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
-        <span style={{ fontSize: '0.72rem', color: status === 'error' ? '#c0392b' : done ? '#2e7d4f' : (!done && unresolved.length > 0) ? '#b45309' : '#888' }}>
+        <span style={{ flex: 1, fontSize: '0.72rem', color: status === 'error' ? '#c0392b' : done ? '#2e7d4f' : (!done && (unresolved.length > 0 || supplierBlocking)) ? '#b45309' : '#888' }}>
           {status === 'error' ? `✗ ${message}`
             : draftDeleted ? `✓ Draft deleted from Loaded${doc.deleted_reason ? ` — ${doc.deleted_reason}` : ' — this document was a supplier statement or duplicate.'}`
             : done ? '✓ Received in Loaded.'
             : status === 'saving' ? 'Receiving…'
+            : noLines
+              ? 'Nothing to receive — this draft has no line items. If it isn’t an invoice, accept the delete suggestion instead.'
+            : supplierBlocking
+              ? 'No Loaded supplier linked — pick the supplier before receiving.'
             : unresolved.length > 0
               ? `${unresolved.length} line${unresolved.length > 1 ? 's have' : ' has'} a NEW item or unit — link or pick an existing one on the line before receiving.`
               : suggestionsBlocking
@@ -2402,14 +2570,24 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     ? 'All checks passed — ready to receive.'
                     : 'Review the changes, then accept to update Loaded and receive.'}
         </span>
+        {overlay && (
+          <button type="button" onClick={() => setExpandedFull(false)}
+            style={{ padding: '0.4rem 1rem', fontSize: '0.78rem', border: '1px solid #d8d4cc', borderRadius: 6, background: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+            Close
+          </button>
+        )}
         {!done && (
           <button onClick={accept} disabled={receiveBlocked}
             title={
-              unresolved.length > 0
-                ? 'Create the NEW items/units in Loaded first'
-                : suggestionsBlocking
-                  ? 'Resolve the suggested changes first — Accept or Dismiss each'
-                  : undefined
+              noLines
+                ? 'This draft has no line items — nothing to receive'
+                : supplierBlocking
+                ? 'Pick the supplier first — Loaded can’t receive a supplier-less invoice'
+                : unresolved.length > 0
+                  ? 'Create the NEW items/units in Loaded first'
+                  : suggestionsBlocking
+                    ? 'Resolve the suggested changes first — Accept or Dismiss each'
+                    : undefined
             }
             style={{ padding: '0.4rem 1.1rem', fontSize: '0.78rem', fontWeight: 500, border: 'none', borderRadius: 6, cursor: receiveBlocked ? 'not-allowed' : 'pointer', background: '#2e7d4f', color: '#fff', fontFamily: 'inherit', opacity: receiveBlocked ? 0.5 : 1, whiteSpace: 'nowrap' }}>
             {status === 'saving' ? 'Receiving…' : 'Accept & Receive'}
@@ -2431,7 +2609,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       <div
         onClick={() => setExpandedFull(false)}
         style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(30,28,24,0.4)', overflowY: 'auto', padding: '2rem 1rem' }}>
-        <div onClick={(e) => e.stopPropagation()}>{card}</div>
+        {/* Constrained to the card's width so clicks BESIDE the card hit the
+            backdrop (a full-width block here used to swallow them — closing
+            only worked below the card). */}
+        <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: 1100, margin: '0 auto' }}>{card}</div>
       </div>
     </>
   );

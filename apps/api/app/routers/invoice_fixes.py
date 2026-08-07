@@ -123,7 +123,7 @@ def _resolve_unit(lh: _Loaded, proposed: str) -> dict | None:
     ('5x3kg') matches by exact name ONLY — a ratio-equal but differently-named
     unit ('15 KG') is a different pack, so an unmatched multipack is created.
     """
-    from app.services.invoice_units import is_multipack, parse_unit
+    from app.services.invoice_units import is_multipack, multipack_equal, parse_unit
 
     units = lh.get("/1.0/stock/internal/units")
     units = [u for u in (units or []) if not u.get("datestampDeleted")]
@@ -131,6 +131,13 @@ def _resolve_unit(lh: _Loaded, proposed: str) -> dict | None:
         if _norm(u.get("name")) == _norm(proposed):
             return u
     if is_multipack(proposed):
+        # Component-equivalence, not fuzzier: '6x1L' resolves to an existing
+        # '6 X 1 Litre' (same count, same inner size) instead of creating a
+        # near-duplicate unit. A ratio-equal but differently-SHAPED pack
+        # ('24 pack' vs '4x6 pack') still does NOT match.
+        for u in units:
+            if multipack_equal(u.get("name"), proposed):
+                return u
         return None
     target = parse_unit(proposed)
     if target:
@@ -1415,6 +1422,10 @@ def _copy_review_state(src: dict, dst: dict) -> None:
         "suggestions",
         "copy_po",
         "po_unresolved",
+        "copy_total_mismatch",
+        "copy_total",
+        "copy_subtotal",
+        "copy_tax_amount",
         "reviewed_invoice_fingerprint",
         "loaded_invoice_fingerprint",
     ):
@@ -1504,6 +1515,11 @@ def run_review_and_merge(
         # matching purchase order found in Loaded").
         data["copy_po"] = fx.get("copy_po")
         data["po_unresolved"] = bool(fx.get("po_unresolved"))
+        # Copy-printed totals when Loaded's header disagrees (e.g. total $0
+        # from the feed) — drives the "Invoice total X → Y" suggestion.
+        data["copy_total_mismatch"] = bool(fx.get("copy_total_mismatch"))
+        for k in ("copy_total", "copy_subtotal", "copy_tax_amount"):
+            data[k] = fx.get(k)
     else:
         # The invoice never reached the copy comparison (e.g. a credit note, or
         # no PDF attached). Record that the review ran so it isn't retried every
