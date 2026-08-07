@@ -351,15 +351,12 @@ async def patch_standalone_document(
 # ---------------------------------------------------------------------------
 
 
-def _find_doc(db: Session, thread_id: str, doc_id: str) -> WorkingDocument:
-    doc = (
-        db.query(WorkingDocument)
-        .filter(
-            WorkingDocument.id == doc_id,
-            WorkingDocument.thread_id == thread_id,
-        )
-        .first()
-    )
+def _find_doc(db: Session, thread_id: str, doc_id: str) -> WorkingDocument:  # noqa: ARG001 — thread_id kept for the route shape
+    # By id alone: ref-keyed documents (one doc per invoice) are shared across
+    # threads, so the URL's thread is just the card's context — a card in
+    # thread B legitimately holds a doc whose home thread is A. The id is an
+    # unguessable UUID and auth (get_current_user) is unchanged.
+    doc = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Working document not found")
     return doc
@@ -438,8 +435,24 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
         if op_type == "update_line":
             idx = op.get("index")
             fields = op.get("fields", {})
-            if idx is not None and 0 <= idx < len(lines):
-                lines[idx].update(fields)
+            line_id = op.get("line_id")
+            target = None
+            # Prefer id-addressing: server-side rebuilds (reshape, review
+            # merges) can reorder or append lines, so a client index taken
+            # from an older snapshot may point at the wrong line.
+            if line_id is not None:
+                target = next(
+                    (
+                        line
+                        for line in lines
+                        if isinstance(line, dict) and line.get("id") == line_id
+                    ),
+                    None,
+                )
+            if target is None and idx is not None and 0 <= idx < len(lines):
+                target = lines[idx]
+            if target is not None:
+                target.update(fields)
             # Also support updating by matching product name
             elif fields.get("quantity") is not None:
                 for line in lines:

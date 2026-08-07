@@ -110,10 +110,6 @@ const COMPONENT_META: Record<string, { label?: string; description?: string; int
     label: 'Receive Invoice Editor',
     description: 'Mirrors LoadedHub’s Receive Invoice screen from a working document, then renders the review engine’s checks and suggestions on top (copy comparisons, PO link, unit fixes, $0-duplicate strike, NEW-item link/create matches). Renders only — all suggestions come from the review_and_receive_invoices consolidator via /invoice-fixes/review; receiving is one PUT via /invoice-fixes/receive.',
   },
-  invoice_fixes: {
-    label: 'Invoice Review Card (batch)',
-    description: 'Batch results card for the review_and_receive_invoices consolidator in chat: per-invoice checklist with accept-able fixes.',
-  },
   venue_picker: {
     label: 'Venue Picker',
     description: 'Inline venue selection card shown when a conversation needs a venue.',

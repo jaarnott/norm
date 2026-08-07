@@ -92,6 +92,34 @@ if [[ "${CONFIG_DATABASE_URL:-}" == *"127.0.0.1:5433"* ]]; then
   fi
 fi
 
+# ── 7b. Cloud SQL Auth Proxy for the PRODUCTION main DB (read/write) ──
+# Opt-in developer/agent access to the prod app DB for investigating live
+# conversations and data. Uses IAM database auth (--auto-iam-authn): no
+# password — the proxy authenticates as the github-deploy service account,
+# which is a Cloud SQL IAM DB user. Only starts when PROD_DATABASE_URL points
+# at the local proxy port, so a normal dev run is unaffected.
+PROD_PROXY_PID=""
+if [[ "${PROD_DATABASE_URL:-}" == *"127.0.0.1:5434"* ]]; then
+  PROD_SA_KEY="${PROD_SA_KEY:-$ROOT/norm-config-sa.json}"
+  PROD_INSTANCE="${PROD_INSTANCE:-norm-production-491101:australia-southeast1:norm-production}"
+  PROXY_BIN="$(command -v cloud-sql-proxy || echo "$HOME/.local/bin/cloud-sql-proxy")"
+
+  if (exec 3<>/dev/tcp/127.0.0.1/5434) 2>/dev/null; then
+    exec 3>&- 3<&-
+    echo "Prod DB proxy already running on 127.0.0.1:5434 — reusing."
+  elif [ -x "$PROXY_BIN" ] && [ -f "$PROD_SA_KEY" ]; then
+    echo "Starting Cloud SQL Auth Proxy (IAM auth) for $PROD_INSTANCE …"
+    "$PROXY_BIN" --address 127.0.0.1 --port 5434 --auto-iam-authn \
+      --credentials-file "$PROD_SA_KEY" "$PROD_INSTANCE" &
+    PROD_PROXY_PID=$!
+    for _ in $(seq 1 30); do
+      if (exec 3<>/dev/tcp/127.0.0.1/5434) 2>/dev/null; then exec 3>&- 3<&-; break; fi
+      sleep 0.5
+    done
+    echo "Prod DB proxy ready on 127.0.0.1:5434 (IAM auth)."
+  fi
+fi
+
 (cd "$API_DIR" && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000) &
 API_PID=$!
 

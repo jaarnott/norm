@@ -507,7 +507,81 @@ def _execute_loop(
                 # Build display block if tool has a display_component
                 if tool_def:
                     wd_config = tool_def.get("working_document")
-                    if wd_config and tc.result_payload:
+                    items_path = (wd_config or {}).get("items_path")
+                    if wd_config and items_path and isinstance(tc.result_payload, dict):
+                        # FAN-OUT: one working document + one block PER ITEM of
+                        # result_payload[items_path] (e.g. the review engine's
+                        # fix_invoices — each item is a complete doc payload).
+                        # Docs are keyed per item ref so a re-run updates the
+                        # same drafts instead of duplicating them.
+                        items = tc.result_payload.get(items_path) or []
+                        component = tool_def.get("display_component")
+                        # Mirror enrichment (same helpers the Invoices page
+                        # runs on /draft open): the linked PO's ordered qty /
+                        # substitutes and the linked items' display names.
+                        # Best-effort — a failure leaves the bare doc.
+                        _enrich_lh = None
+                        if items and tc.venue_id:
+                            try:
+                                from app.services.received_invoice import (
+                                    LoadedInvoiceClient,
+                                )
+                                from app.db.engine import _ConfigSessionLocal
+
+                                _enrich_cfg_db = _ConfigSessionLocal()
+                                _enrich_lh = LoadedInvoiceClient(
+                                    db, _enrich_cfg_db, tc.venue_id
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.info("fan-out enrichment unavailable: %s", exc)
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            doc = _upsert_working_document(
+                                db,
+                                task.id,
+                                connector,
+                                wd_config,
+                                item,
+                                item,  # ref_fields read from the ITEM, not the call params
+                                venue_id=tc.venue_id,
+                            )
+                            if _enrich_lh is not None:
+                                try:
+                                    from sqlalchemy.orm.attributes import (
+                                        flag_modified,
+                                    )
+                                    from app.routers.invoice_fixes import (
+                                        _attach_po_reference,
+                                    )
+                                    from app.services.received_invoice import (
+                                        attach_item_names,
+                                    )
+
+                                    _attach_po_reference(doc.data, _enrich_lh)
+                                    attach_item_names(doc.data, _enrich_lh)
+                                    flag_modified(doc, "data")
+                                    db.flush()
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.info(
+                                        "fan-out doc enrichment failed: %s", exc
+                                    )
+                            if component:
+                                props = dict(tool_def.get("display_props") or {})
+                                if tc.venue_id:
+                                    props["activeVenueId"] = tc.venue_id
+                                display_blocks.append(
+                                    {
+                                        "component": component,
+                                        "data": {"working_document_id": doc.id},
+                                        "props": props,
+                                    }
+                                )
+                        # The cards accompany the LLM's written summary — never
+                        # end the turn on the pre-tool preamble.
+                        if items and tool_def.get("suppress_display_early_exit"):
+                            needs_narration_block = True
+                    elif wd_config and tc.result_payload:
                         doc = _upsert_working_document(
                             db,
                             task.id,
@@ -515,6 +589,7 @@ def _execute_loop(
                             wd_config,
                             tc.result_payload,
                             tc.input_params,
+                            venue_id=tc.venue_id,
                         )
                         component = tool_def.get("display_component")
                         if component:
@@ -528,6 +603,8 @@ def _execute_loop(
                                     "props": props,
                                 }
                             )
+                        if tool_def.get("suppress_display_early_exit"):
+                            needs_narration_block = True
                     else:
                         block_data = _build_display_block(tool_def, tc.result_payload)
                         if block_data:
@@ -1674,34 +1751,84 @@ def _upsert_working_document(
     wd_config: dict,
     result_payload: dict | list,
     input_params: dict | None,
+    venue_id: str | None = None,
 ) -> "WorkingDocument":  # noqa: F821
-    """Create or update a working document from a tool response."""
+    """Create or update a working document from a tool response.
+
+    Dedup key: (thread, doc_type) — plus the ``ref_fields`` values when present,
+    so a fan-out tool (``working_document.items_path``) keeps ONE doc per item
+    (e.g. per invoice) and a re-run updates rather than duplicates. ``venue_id``
+    is stamped on so venue-scoped endpoints (e.g. /invoice-fixes/review, /draft)
+    can find the doc — chat and the Invoices page then share the same draft.
+    """
     from app.db.models import WorkingDocument
 
     doc_type = wd_config.get("doc_type", "unknown")
     sync_mode = wd_config.get("sync_mode", "auto")
 
-    # Build external_ref from input params and ref_fields config
+    # Build external_ref from ref_fields config (values from the call's input
+    # params, or from the item itself on the fan-out path).
     ref_fields = wd_config.get("ref_fields", [])
     external_ref = {}
     if input_params:
         for f in ref_fields:
             if f in input_params:
                 external_ref[f] = input_params[f]
+    if external_ref and venue_id:
+        # Match the Invoices-page draft shape (routers/invoice_fixes.py) so the
+        # two surfaces resolve to the same document.
+        external_ref.setdefault("venue_id", venue_id)
 
-    # Look for existing doc with same thread + doc_type
-    doc = (
-        db.query(WorkingDocument)
-        .filter(
-            WorkingDocument.thread_id == thread_id,
-            WorkingDocument.doc_type == doc_type,
+    # Look for an existing doc. Ref-keyed docs (invoice_id + venue) are
+    # identity-keyed ACROSS threads — one document per real-world entity, so
+    # every thread's card and the Invoices page bind to the same doc (per-
+    # thread twins were how a card could show a review its own doc never had).
+    # Docs without a ref keep the per-thread scope (rosters etc.).
+    if external_ref:
+        candidates = (
+            db.query(WorkingDocument).filter(WorkingDocument.doc_type == doc_type).all()
         )
-        .first()
-    )
+        if venue_id:
+            candidates = [c for c in candidates if c.venue_id in (venue_id, None)]
+    else:
+        candidates = (
+            db.query(WorkingDocument)
+            .filter(
+                WorkingDocument.thread_id == thread_id,
+                WorkingDocument.doc_type == doc_type,
+            )
+            .all()
+        )
+    doc = None
+    same_thread_match = None
+    for c in candidates:
+        if external_ref:
+            c_data = c.data or {}
+            if c_data.get("is_received") or c_data.get("is_deleted"):
+                continue
+            c_ref = c.external_ref or {}
+            if all(c_ref.get(f) == external_ref.get(f) for f in ref_fields):
+                if c.thread_id == thread_id:
+                    same_thread_match = c
+                    break
+                doc = doc or c
+        else:
+            doc = c
+            break
+    doc = same_thread_match or doc
 
     if doc:
+        # Preserve LOCAL editor state (action log, struck flags, local item
+        # links, locally-added lines) across the wholesale data replace — a
+        # batch re-run must never wipe the user's accepted edits.
+        if doc_type == "received_invoice":
+            from app.services.received_invoice import carry_local_state
+
+            carry_local_state(result_payload, doc.data or {})
         doc.data = result_payload
         doc.external_ref = external_ref or doc.external_ref
+        if venue_id and not doc.venue_id:
+            doc.venue_id = venue_id
         doc.sync_status = "synced"
         doc.sync_error = None
         doc.pending_ops = []
@@ -1712,6 +1839,7 @@ def _upsert_working_document(
             doc_type=doc_type,
             connector_name=connector_name,
             sync_mode=sync_mode,
+            venue_id=venue_id,
             data=result_payload,
             external_ref=external_ref or None,
             sync_status="synced",

@@ -1921,6 +1921,46 @@ def _user_for_thread(thread_id: str | None, db: Session):
     return db.query(User).filter(User.id == thread.user_id).first()
 
 
+@register("norm", "get_supplier_invoice_specs")
+def _get_supplier_invoice_specs(
+    params: dict, db: Session, thread_id: str | None
+) -> dict:  # noqa: ARG001
+    """Enabled supplier invoice specs (name, aliases, instructions) for the
+    review engine's per-supplier extraction notes. Engine-only; degrades to an
+    empty list on any failure — a broken spec store must never break a review.
+    """
+    try:
+        from app.db.config_models import SupplierInvoiceSpec
+        from app.db.engine import _ConfigSessionLocal
+
+        cdb = _ConfigSessionLocal()
+        try:
+            specs = (
+                cdb.query(SupplierInvoiceSpec)
+                .filter(SupplierInvoiceSpec.enabled.is_(True))
+                .order_by(SupplierInvoiceSpec.name)
+                .all()
+            )
+            return {
+                "success": True,
+                "data": {
+                    "specs": [
+                        {
+                            "name": sp.name,
+                            "aliases": sp.aliases or [],
+                            "instructions": sp.instructions or "",
+                        }
+                        for sp in specs
+                    ]
+                },
+            }
+        finally:
+            cdb.close()
+    except Exception as exc:  # noqa: BLE001 — fail open, never break the review
+        logger.warning("get_supplier_invoice_specs failed: %s", exc)
+        return {"success": True, "data": {"specs": []}}
+
+
 @register("norm", "get_workflow_mode")
 def _get_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict:
     """Return the caller's run mode for a workflow (or 'unset')."""

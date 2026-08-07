@@ -142,7 +142,12 @@ class BaseDomainAgent(ABC):
         )
         ctx = self.build_context(db, user_id)
 
-        # Load or create thread
+        # Load or create thread. COMMIT the thread and user message before any
+        # LLM work: a turn can run for minutes and used to hold both as
+        # uncommitted transaction state the whole time, so the conversation was
+        # invisible to every other request until the turn ended, and any error
+        # (or instance death) rolled the user's message — and a new thread —
+        # out of existence. Durability first, then think.
         if thread_id:
             thread = db.query(Thread).filter(Thread.id == thread_id).first()
             if not thread:
@@ -152,7 +157,7 @@ class BaseDomainAgent(ABC):
                 venue_id = thread.venue_id
             # Add the user message
             db.add(Message(thread_id=thread.id, role="user", content=message))
-            db.flush()
+            db.commit()
         else:
             thread = Thread(
                 user_id=user_id,
@@ -167,7 +172,7 @@ class BaseDomainAgent(ABC):
             db.add(thread)
             db.flush()
             db.add(Message(thread_id=thread.id, role="user", content=message))
-            db.flush()
+            db.commit()
 
         # Emit the real thread ID immediately so the frontend can recover if
         # the SSE connection drops during a long LLM call.

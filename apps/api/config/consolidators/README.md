@@ -22,16 +22,18 @@ sync overwrites it.
 | `calculate_template_stock_requirements.py` | `loadedhub` spec → tool `calculate_template_stock_requirements` | `scripts/sync_stock_requirements_config.py` |
 | `for_period.py` | `loadedhub` spec → the 13 `*_for_period` tools (one function_code, per-tool `wraps`/`start_param`/`end_param`) | `scripts/sync_for_period_config.py` |
 
-## Interactive "Fix & Receive" card
+## Interactive Receive Invoice cards (chat fan-out)
 
-`review_and_receive_invoices` also returns a `fixes` list (link a PO; correct a
-line's unit + supplier variant). The tool declares `display_component:
-invoice_fixes` + `suppress_display_early_exit` so the card renders **beneath**
-the narrated report (the flag opts out of the tool loop's display-only
-early-exit). Apply is NOT a config write — the `InvoiceFixesCard` POSTs to
-`/api/invoice-fixes/apply` (`app/routers/invoice_fixes.py`), which orchestrates
-the multi-step LoadedHub writes with the venue connector token. Contracts
-(verified live in the test env, 18 Jul 2026):
+`review_and_receive_invoices` returns one complete `fix_invoices` payload per
+invoice needing the user. The tool declares `working_document.items_path:
+"fix_invoices"`, so the tool loop materialises ONE `received_invoice` working
+document per invoice (keyed per invoice_id + venue — the Invoices page opens
+the SAME drafts) and renders one COMPACT `receive_invoice_editor` block each,
+beneath the LLM's short summary (`suppress_display_early_exit` keeps the
+summary). Accepting a suggested change POSTs it to `/api/invoice-fixes/accept`
+(`app/routers/invoice_fixes.py`), which orchestrates the LoadedHub writes with
+the venue connector token. Contracts (verified live in the test env, 18 Jul
+2026):
 
 - **link_po**: `GET /1.0/stock/internal/purchase-orders` (filter client-side on
   `orderNumber`, drop a leading `PO`), then `PUT /1.0/stock/internal/invoices/{id}`

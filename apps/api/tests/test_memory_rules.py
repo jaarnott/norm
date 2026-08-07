@@ -216,14 +216,22 @@ class TestRule5UpdateNeverAccumulate:
         db_session.flush()
 
         a = remember(
-            db_session, user_id=user.id, organization_id=org.id,
-            memory_type="vocabulary", title="First Table",
-            body="First Table is a discount type", trigger="explicit",
+            db_session,
+            user_id=user.id,
+            organization_id=org.id,
+            memory_type="vocabulary",
+            title="First Table",
+            body="First Table is a discount type",
+            trigger="explicit",
         )
         b = remember(
-            db_session, user_id=user.id, organization_id=org.id,
-            memory_type="vocabulary", title="The annex",
-            body="Staff call the back bar the annex", trigger="explicit",
+            db_session,
+            user_id=user.id,
+            organization_id=org.id,
+            memory_type="vocabulary",
+            title="The annex",
+            body="Staff call the back bar the annex",
+            trigger="explicit",
         )
         assert b["updated"] is False
         assert b["id"] != a["id"]
@@ -240,9 +248,13 @@ class TestRule4Persistence:
         user = _make_user(db_session)
         db_session.flush()
         r = remember(
-            db_session, user_id=user.id, organization_id=org.id,
-            memory_type="vocabulary", title="Annex",
-            body="Staff call the back bar the annex", trigger="explicit",
+            db_session,
+            user_id=user.id,
+            organization_id=org.id,
+            memory_type="vocabulary",
+            title="Annex",
+            body="Staff call the back bar the annex",
+            trigger="explicit",
         )
         assert r["scope"] == "org"
         assert r["status"] == "active"
@@ -257,9 +269,13 @@ class TestRule4Persistence:
         user = _make_user(db_session)
         db_session.flush()
         r = remember(
-            db_session, user_id=user.id, organization_id=org.id,
-            memory_type="vocabulary", title="Annex",
-            body="Staff call the back bar the annex", trigger="draft_edit",
+            db_session,
+            user_id=user.id,
+            organization_id=org.id,
+            memory_type="vocabulary",
+            title="Annex",
+            body="Staff call the back bar the annex",
+            trigger="draft_edit",
         )
         assert r["scope"] == "org"
         assert r["status"] == "candidate"
@@ -273,8 +289,11 @@ class TestRule4Persistence:
         user = _make_user(db_session)
         db_session.flush()
         r = remember(
-            db_session, user_id=user.id, organization_id=org.id,
-            memory_type="preference", title="Show the window",
+            db_session,
+            user_id=user.id,
+            organization_id=org.id,
+            memory_type="preference",
+            title="Show the window",
             body="Always state the trading window alongside figures",
             trigger="explicit",
         )
@@ -290,9 +309,13 @@ class TestRule4Persistence:
         user = _make_user(db_session)
         db_session.flush()
         r = remember(
-            db_session, user_id=user.id, organization_id=org.id,
-            memory_type="preference", title="Trading day",
-            body="The trading day starts at 7am", trigger="explicit",
+            db_session,
+            user_id=user.id,
+            organization_id=org.id,
+            memory_type="preference",
+            title="Trading day",
+            body="The trading day starts at 7am",
+            trigger="explicit",
         )
         assert r["stored"] is False
         assert db_session.query(Memory).count() == 0
@@ -308,9 +331,12 @@ class TestRule6AdvisoryRecall:
         db_session.flush()
         db_session.add(
             Memory(
-                scope=scope, user_id=user.id if scope == "user" else None,
-                organization_id=org.id, type="context",
-                title="Murdochs closed", body="Mr Murdochs is closed",
+                scope=scope,
+                user_id=user.id if scope == "user" else None,
+                organization_id=org.id,
+                type="context",
+                title="Murdochs closed",
+                body="Mr Murdochs is closed",
                 status=status,
             )
         )
@@ -363,7 +389,9 @@ class TestGovernanceApi:
         user = _make_user(db_session)
         db_session.flush()
         db_session.add(
-            OrganizationMembership(user_id=user.id, organization_id=org.id, role="owner")
+            OrganizationMembership(
+                user_id=user.id, organization_id=org.id, role="owner"
+            )
         )
         m = Memory(
             scope=scope,
@@ -409,8 +437,10 @@ class TestGovernanceApi:
 
         user, m = self._seed(db_session, status="active")
         out = update_memory(
-            m.id, MemoryUpdate(body="Staff call the back bar 'the annex'"),
-            db=db_session, user=user,
+            m.id,
+            MemoryUpdate(body="Staff call the back bar 'the annex'"),
+            db=db_session,
+            user=user,
         )
         assert "annex" in out.body
 
@@ -421,7 +451,10 @@ class TestGovernanceApi:
 
         user, m = self._seed(db_session, status="active")
         delete_memory(m.id, db=db_session, user=user)
-        assert db_session.query(Memory).filter(Memory.id == m.id).first().status == "archived"
+        assert (
+            db_session.query(Memory).filter(Memory.id == m.id).first().status
+            == "archived"
+        )
 
     def test_another_users_personal_preferences_are_not_listed(self, db_session):
         from tests.conftest import _make_user
@@ -433,9 +466,13 @@ class TestGovernanceApi:
         db_session.flush()
         db_session.add(
             Memory(
-                scope="user", user_id=other.id,
-                organization_id=_m.organization_id, type="preference",
-                title="Private", body="Someone else's preference", status="active",
+                scope="user",
+                user_id=other.id,
+                organization_id=_m.organization_id,
+                type="preference",
+                title="Private",
+                body="Someone else's preference",
+                status="active",
             )
         )
         db_session.flush()

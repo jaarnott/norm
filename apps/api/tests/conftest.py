@@ -49,6 +49,9 @@ from app.routers import (
     component_apis,
     connector_specs,
     oauth,
+    supplier_specs,
+    supplier_spec_dojo,
+    invoice_fixes,
 )
 
 
@@ -73,6 +76,9 @@ _test_app.include_router(roles.router, prefix="/api")
 _test_app.include_router(component_apis.router, prefix="/api")
 _test_app.include_router(connector_specs.router, prefix="/api")
 _test_app.include_router(oauth.router, prefix="/api")
+_test_app.include_router(supplier_specs.router, prefix="/api")
+_test_app.include_router(supplier_spec_dojo.router, prefix="/api")
+_test_app.include_router(invoice_fixes.router, prefix="/api")
 
 from app.routers import internal as _internal  # noqa: E402
 from app.routers import mcp as _mcp  # noqa: E402

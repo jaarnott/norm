@@ -333,9 +333,7 @@ class TestInternalHandlerDispatch:
             internal, "get_handler", lambda c, a: handler if a == "read_thing" else None
         )
 
-    def test_internal_tool_runs_in_process_not_over_http(
-        self, monkeypatch, db_session
-    ):
+    def test_internal_tool_runs_in_process_not_over_http(self, monkeypatch, db_session):
         http_calls = _wire_fake_connector(monkeypatch, {})
         self._wire_handler(monkeypatch, {"success": True, "data": {"window": {"k": 1}}})
         code = (
@@ -398,3 +396,61 @@ class TestInternalHandlerDispatch:
         result = execute_function(code, {}, db_session, None, options={})
         assert "allowed_write_actions" in result["data"]["error"]
         assert called == []
+
+
+# ---------------------------------------------------------------------------
+# extract_documents_parallel sandbox helper
+# ---------------------------------------------------------------------------
+
+
+class TestExtractDocumentsParallel:
+    """Wiring + cache-first behavior. Worker fan-out (own sessions, commits)
+    is exercised live; here we prove the helper exists in the sandbox, serves
+    cache hits in request order without spending API budget, and returns []
+    for an empty batch."""
+
+    def _seed(self, db_session, connector, action, params, schema, instructions, data):
+        from app.connectors.function_executor import _extraction_cache_key
+        from app.db.models import DocumentExtraction
+
+        key = _extraction_cache_key(connector, action, params, schema, instructions)
+        db_session.add(
+            DocumentExtraction(
+                cache_key=key, connector=connector, action=action, data=data
+            )
+        )
+        db_session.flush()
+
+    def test_cache_hits_in_request_order(self, db_session):
+        for fid, val in (("f-1", {"n": 1}), ("f-2", {"n": 2})):
+            self._seed(
+                db_session,
+                "loadedhub",
+                "download_invoice_file",
+                {"file_id": fid},
+                {"n": "int"},
+                "extract n",
+                val,
+            )
+        code = """
+def run(params, call_api, log):
+    reqs = [
+        {"connector": "loadedhub", "action": "download_invoice_file",
+         "params": {"file_id": f}, "schema": {"n": "int"},
+         "instructions": "extract n"}
+        for f in ["f-1", "f-2"]
+    ]
+    return extract_documents_parallel(reqs)
+"""
+        result = execute_function(code, {}, db_session, None)
+        assert result["success"], result.get("error")
+        assert result["data"] == [{"n": 1}, {"n": 2}]
+
+    def test_empty_batch_returns_empty(self, db_session):
+        code = """
+def run(params, call_api, log):
+    return extract_documents_parallel([])
+"""
+        result = execute_function(code, {}, db_session, None)
+        assert result["success"], result.get("error")
+        assert result["data"] == []

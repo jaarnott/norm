@@ -282,7 +282,7 @@ class TestRunOutcomeReachesTheConversation:
         self, db_session, admin_user
     ):
         # Cards/tables the run produced must render in the conversation too.
-        blocks = [{"component": "invoice_fixes", "data": {"fix_invoices": []}}]
+        blocks = [{"component": "generic_table", "data": {"rows": []}}]
         posted = self._run(
             db_session,
             admin_user,

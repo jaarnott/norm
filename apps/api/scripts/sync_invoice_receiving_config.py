@@ -256,8 +256,8 @@ CONSOLIDATOR_TOOL = {
         "delivered unit of measure must agree with Loaded's unit — a mismatch "
         "reports the recommended unit to fix in Loaded). What is written is "
         "governed by the caller's run mode (approve_all receives nothing). "
-        "Invoices failing a check are never modified — they are reported with "
-        "the first blocking problem only (later checks are not run)."
+        "Invoices failing a check are never modified — every check that can "
+        "run is reported, with the specific reasons."
     ),
     "required_fields": [],
     "optional_fields": ["from_date", "to_date"],
@@ -266,20 +266,34 @@ CONSOLIDATOR_TOOL = {
         "to_date": "End date YYYY-MM-DD (default: today)",
     },
     "field_schema": {},
-    # Audit report the LLM must relay in full — raise the tool-result slim
-    # threshold (clamped by HARD_MAX_TOOL_RESULT_CHARS in tool_loop.py).
-    "max_result_chars": 100_000,
+    # The LLM writes a SHORT summary (not the retired audit tables), but the
+    # result still carries every fix_invoice payload for the doc fan-out below —
+    # keep headroom above the 30k default slim threshold (clamped by
+    # HARD_MAX_TOOL_RESULT_CHARS in tool_loop.py).
+    "max_result_chars": 60_000,
     "consolidator_config": {
-        # function_code injected from FUNCTION_CODE_PATH at sync time
-        "max_api_calls": 80,
+        # function_code injected from FUNCTION_CODE_PATH at sync time.
+        # 120: an 18-invoice run measured 72 calls BEFORE variant-lookup
+        # matching; the engine's own fetch budget adds up to 20 get_stock_item
+        # calls, and overflowing the executor cap raises and kills the whole
+        # run — so keep real headroom (hard cap 200).
+        "max_api_calls": 120,
         "allowed_write_actions": ["receive_invoice"],
     },
-    # The interactive "Fix & Receive" card renders from result.fixes. Unlike
-    # the summary generic_table (removed earlier), this component MUST coexist
-    # with the narrated markdown report, so it opts out of the tool loop's
-    # display-only early-exit rather than suppressing narration.
-    "display_component": "invoice_fixes",
-    "display_props": {"title": "Receive invoices with suggested fixes"},
+    # FAN-OUT: one received_invoice working document + one COMPACT editable
+    # Receive Invoice card per fix_invoice (each card payload IS a complete doc
+    # — see make_fix_invoice). Keyed per invoice_id (+ venue) so a re-run
+    # updates the same drafts and the Invoices page opens the SAME documents.
+    # suppress_display_early_exit keeps the LLM's summary: without it the turn
+    # would end on the pre-tool status line.
+    "working_document": {
+        "doc_type": "received_invoice",
+        "sync_mode": "submit",
+        "items_path": "fix_invoices",
+        "ref_fields": ["invoice_id"],
+    },
+    "display_component": "receive_invoice_editor",
+    "display_props": {"compact": True},
     "suppress_display_early_exit": True,
 }
 
@@ -363,19 +377,8 @@ RUN MODE — DO THIS FIRST, before running the review. This workflow honours a p
    - If it returns a set mode: go straight to step 1 (the review runs in that mode automatically). The user can change it any time by asking — call set_workflow_mode.
 
 1. Call review_and_receive_invoices for the venue (default range: last 60 days) — do NOT pass any dry_run or mode param; the run mode alone governs what is written. Before calling it, write at most ONE short status line (e.g. "Reviewing the outstanding invoices…") — the full report comes after the tool returns.
-2. Write the report. Copy every value and ✓/✗/— exactly as returned — never invent, reformat, or fill in a "—" ("—" means that check was not run because an earlier one failed).
-   - Start with a compact markdown summary table built from the tool's results rows — | Invoice | Supplier | PO | Total | Checks | Outcome | — one row per invoice (leave the reasons out of this table; they appear in the sections below).
-   - Then the per-invoice audit view in two sections: "Received" (invoices the tool received; in approve-all mode these read "awaiting your approval") then "Needs attention".
-   - EVERY invoice that HAS details.lines (received, awaiting approval, or failed during line/copy comparison) MUST get its own subsection — do not summarise or skip any:
-     a. Heading: ### {reference_number} — {supplier_name} — {total}
-     b. details.header as a markdown table — | Field | Invoice (Loaded) | PO | Invoice copy | Result | — one row per header field.
-     c. details.lines as a markdown table — | Line | In Loaded | On copy | Unit | Quantity | Unit cost | Line total | — one row per line (the stock_item field is the "In Loaded" column: ✗ means the stock item, brand or unit would be created as NEW). The unit/quantity/cost/total cells arrive as ready-made comparison strings (e.g. "inv 4.95 / copy 4.95 ✓"); copy each cell verbatim. Include the "on copy only" rows and any "…more lines omitted" marker verbatim.
-     d. Its checklist: when it is a string ("All 11 checks passed ✓"), print exactly that line; otherwise a compact | Check | Result | table.
-     e. Unit cells may carry a "rec …" value — the delivered unit derived from the copy per the venue's unit guidelines. When a unit-of-measure reason appears, relay its fix advice verbatim (correct the unit in Loaded on the stock item, or on the invoice line).
-     f. Its reasons, if any, as a markdown bulleted list.
-   - Invoices WITHOUT details.lines were skipped before any comparison ran (no PO linked, credit note, fetch failure) — list each as one bold line "**{reference_number}** — {supplier_name} — {total}" followed by the tool's reasons as bullets. No tables for these; the tool reports only the first blocking problem, so present the bullets as-is without speculating.
-3. Close with the summary counts and what manual work remains in Loaded (linking POs, adding freight lines, credit notes). Mention that the header comparison for any skipped invoice is available on request (it is in details.header of the same result).
-4. If the tool returns a non-empty `fix_invoices` list, a full editable **Receive Invoice** card is shown beneath your report for each invoice with a recommended change — the user can adjust units (pre-filled with the recommendation), the linked PO, quantities and costs, then click **Accept & Receive** to update Loaded and receive the invoice in one step. In **approve all** mode the perfect invoices also appear as cards to approve. If the result's `auto_submit` is true (**autopilot**), the cards apply automatically for the fixes Norm can resolve confidently and the rest wait for the user — say so. Add one sentence pointing the user to the cards. Never claim you have applied anything or received anything — the user (or autopilot) does that from the cards.
+2. Write a SHORT summary — a few sentences, no audit tables. From the tool's results: how many invoices were reviewed; how many were received automatically (in approve-all mode say "ready to approve" instead — nothing was written); how many await the user on the cards below and why in one line each (e.g. "109738996 — $0 duplicate line to strike", "CN-19980 — duplicate of an already-received invoice"), using the returned reasons — never invent or soften them. Skipped invoices with no card (fetch failures, credit notes) get one bold line each with the tool's reason.
+3. Below your summary there is one compact **Receive Invoice** card per invoice that needs the user. Each card shows its suggested changes (Accept per change), what needs attention, and **Accept & Receive**; it expands to the full invoice. Close with one sentence pointing the user at the cards. If the result's `auto_submit` is true (**autopilot**), say the confident fixes apply automatically and the rest wait on the cards. NEVER claim you have applied or received anything — the user (or autopilot) does that from the cards.
 
 If the user asks why a specific invoice was skipped, use get_invoice_detail together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
     "tool_filter": [

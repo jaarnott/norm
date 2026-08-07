@@ -43,7 +43,14 @@ class TestDraftEdits:
             ops=[{"op": "set_line_quantity", "field": "quantity", "value": 8}],
         )
         assert signal is not None
-        assert db_session.query(MemorySignal).count() == 1
+        # Scoped to the fixture org: tests run against the shared dev DB,
+        # which accumulates real MemorySignal rows from local usage.
+        assert (
+            db_session.query(MemorySignal)
+            .filter(MemorySignal.organization_id == org.id)
+            .count()
+            == 1
+        )
         assert "quantity" in signal.summary
 
     def test_a_single_edit_does_not_become_a_memory(self, db_session, principal):
@@ -51,7 +58,10 @@ class TestDraftEdits:
         fill the review queue with noise and teach people to approve blindly."""
         org, user = principal
         record_draft_edit(
-            db_session, organization_id=org.id, user_id=user.id, thread_id=None,
+            db_session,
+            organization_id=org.id,
+            user_id=user.id,
+            thread_id=None,
             document_kind="purchase_order",
             ops=[{"op": "set_line_quantity", "field": "quantity", "value": 8}],
         )
@@ -62,21 +72,30 @@ class TestDraftEdits:
         org, user = principal
         for _ in range(REPEAT_THRESHOLD):
             record_draft_edit(
-                db_session, organization_id=org.id, user_id=user.id, thread_id=None,
+                db_session,
+                organization_id=org.id,
+                user_id=user.id,
+                thread_id=None,
                 document_kind="purchase_order",
                 ops=[{"op": "set_line_quantity", "field": "quantity", "value": 8}],
             )
         proposed = promote_repeated_edits(db_session, organization_id=org.id)
         assert any(p.get("stored") for p in proposed)
 
-    def test_a_proposal_is_a_candidate_not_an_active_memory(self, db_session, principal):
+    def test_a_proposal_is_a_candidate_not_an_active_memory(
+        self, db_session, principal
+    ):
         """Rule 4: auto-write is only for explicit and correction triggers. An
         inference from behaviour waits for review."""
         org, user = principal
         for _ in range(REPEAT_THRESHOLD):
             record_draft_edit(
-                db_session, organization_id=org.id, user_id=user.id, thread_id=None,
-                document_kind="roster", ops=[{"op": "move_shift", "field": "start"}],
+                db_session,
+                organization_id=org.id,
+                user_id=user.id,
+                thread_id=None,
+                document_kind="roster",
+                ops=[{"op": "move_shift", "field": "start"}],
             )
         promote_repeated_edits(db_session, organization_id=org.id)
         stored = db_session.query(Memory).first()
@@ -88,8 +107,12 @@ class TestDraftEdits:
         org, user = principal
         for _ in range(REPEAT_THRESHOLD):
             record_draft_edit(
-                db_session, organization_id=org.id, user_id=user.id, thread_id=None,
-                document_kind="roster", ops=[{"op": "move_shift", "field": "start"}],
+                db_session,
+                organization_id=org.id,
+                user_id=user.id,
+                thread_id=None,
+                document_kind="roster",
+                ops=[{"op": "move_shift", "field": "start"}],
             )
         promote_repeated_edits(db_session, organization_id=org.id)
         again = promote_repeated_edits(db_session, organization_id=org.id)
@@ -97,17 +120,27 @@ class TestDraftEdits:
 
     def test_capture_never_breaks_the_edit_itself(self, db_session):
         """Observation must never fail the action the user actually asked for."""
-        assert record_draft_edit(
-            db_session, organization_id=None, user_id=None, thread_id=None,
-            document_kind="x", ops=[{"op": "y"}],
-        ) is None
+        assert (
+            record_draft_edit(
+                db_session,
+                organization_id=None,
+                user_id=None,
+                thread_id=None,
+                document_kind="x",
+                ops=[{"op": "y"}],
+            )
+            is None
+        )
 
 
 class TestRejections:
     def test_a_reason_is_banked(self, db_session, principal):
         org, user = principal
         signal = record_rejection(
-            db_session, organization_id=org.id, user_id=user.id, thread_id=None,
+            db_session,
+            organization_id=org.id,
+            user_id=user.id,
+            thread_id=None,
             notes="We never order kegs from this supplier",
         )
         assert signal is not None
@@ -116,27 +149,47 @@ class TestRejections:
     def test_a_rejection_with_no_reason_is_not_recorded(self, db_session, principal):
         """'No' on its own carries nothing to learn from."""
         org, user = principal
-        assert record_rejection(
-            db_session, organization_id=org.id, user_id=user.id,
-            thread_id=None, notes="   ",
-        ) is None
-        assert db_session.query(MemorySignal).count() == 0
+        assert (
+            record_rejection(
+                db_session,
+                organization_id=org.id,
+                user_id=user.id,
+                thread_id=None,
+                notes="   ",
+            )
+            is None
+        )
+        # Scoped to the fixture org — the shared dev DB holds real signals.
+        assert (
+            db_session.query(MemorySignal)
+            .filter(MemorySignal.organization_id == org.id)
+            .count()
+            == 0
+        )
 
     def test_a_reason_can_become_a_candidate_memory(self, db_session, principal):
         org, user = principal
         signal = record_rejection(
-            db_session, organization_id=org.id, user_id=user.id, thread_id=None,
+            db_session,
+            organization_id=org.id,
+            user_id=user.id,
+            thread_id=None,
             notes="We never order kegs from this supplier",
         )
         result = propose_from_rejection(db_session, signal)
         assert result and result.get("stored")
         assert signal.promoted_to_memory_id
 
-    def test_a_reason_that_breaks_the_rules_is_still_refused(self, db_session, principal):
+    def test_a_reason_that_breaks_the_rules_is_still_refused(
+        self, db_session, principal
+    ):
         """The signal path is not a way around admission control."""
         org, user = principal
         signal = record_rejection(
-            db_session, organization_id=org.id, user_id=user.id, thread_id=None,
+            db_session,
+            organization_id=org.id,
+            user_id=user.id,
+            thread_id=None,
             notes="Orders over $5000 need approval first",
         )
         result = propose_from_rejection(db_session, signal)

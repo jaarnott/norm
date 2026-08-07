@@ -178,7 +178,9 @@ class TestUnit:
                     }
                 return {}
 
-        item = {"suppliers": [{"id": "var-1", "supplierId": "sup-1", "stockCode": "NAP"}]}
+        item = {
+            "suppliers": [{"id": "var-1", "supplierId": "sup-1", "stockCode": "NAP"}]
+        }
         lh = CreatingLoaded(
             {"/1.0/stock/internal/units": UNITS, "/1.0/stock/internal/items/": item},
             {"inv-1": _invoice()},
@@ -197,14 +199,70 @@ class TestUnit:
         # A multipack proposed name resolves by EXACT name; it is NOT fuzzily
         # reused for a same-ratio simple unit — an unmatched multipack → None
         # (so _apply_unit creates it).
-        units = UNITS + [{"id": "u-15kg", "name": "15 KG", "ratio": 15.0,
-                          "stockUnitType": "Weight"}]
+        units = UNITS + [
+            {"id": "u-15kg", "name": "15 KG", "ratio": 15.0, "stockUnitType": "Weight"}
+        ]
         lh = FakeLoaded({"/1.0/stock/internal/units": units}, {})
         assert IF._resolve_unit(lh, "5x3kg") is None
-        units2 = units + [{"id": "u-5x3", "name": "5x3kg", "ratio": 15.0,
-                           "stockUnitType": "Weight"}]
+        units2 = units + [
+            {"id": "u-5x3", "name": "5x3kg", "ratio": 15.0, "stockUnitType": "Weight"}
+        ]
         lh2 = FakeLoaded({"/1.0/stock/internal/units": units2}, {})
         assert IF._resolve_unit(lh2, "5x3kg")["id"] == "u-5x3"
+
+
+class TestGetOrCreateUnit:
+    """The shared resolve-or-create seam behind _apply_unit AND the explicit
+    /invoice-fixes/create-unit endpoint (the editor's "use 49.5L (new unit)"
+    accept for a copy-delivered unit the catalogue lacks)."""
+
+    def test_existing_unit_short_circuits_without_writes(self):
+        lh = FakeLoaded({"/1.0/stock/internal/units": UNITS}, {})
+        unit, created = IF._get_or_create_unit(lh, "100 piece", None)
+        assert unit["id"] == "u-100pc"
+        assert created is False
+        assert lh.writes == []
+
+    def test_missing_unit_created_with_llm_spec(self, monkeypatch):
+        monkeypatch.setattr(
+            IF,
+            "_resolve_unit_spec",
+            lambda name, db: {"ratio": 49.5, "stock_unit_type": "Volume"},
+        )
+
+        class CreatingLoaded(FakeLoaded):
+            def request(self, method, path, body=None):
+                self.writes.append((method, path, body))
+                if method == "POST" and path.endswith("/units"):
+                    return {
+                        "id": "u-49-5l",
+                        "name": body["name"],
+                        "ratio": body["ratio"],
+                        "stockUnitType": body["stockUnitType"],
+                    }
+                return {}
+
+        lh = CreatingLoaded({"/1.0/stock/internal/units": UNITS}, {})
+        unit, created = IF._get_or_create_unit(lh, "49.5L", None)
+        assert created is True
+        assert unit["id"] == "u-49-5l"
+        assert lh.writes == [
+            (
+                "POST",
+                "/1.0/stock/internal/units",
+                {"name": "49.5L", "ratio": 49.5, "stockUnitType": "Volume"},
+            )
+        ]
+
+    def test_unresolvable_spec_raises_and_writes_nothing(self, monkeypatch):
+        monkeypatch.setattr(IF, "_resolve_unit_spec", lambda name, db: None)
+        lh = FakeLoaded({"/1.0/stock/internal/units": UNITS}, {})
+        try:
+            IF._get_or_create_unit(lh, "carton", None)
+            assert False, "expected RuntimeError"
+        except RuntimeError as e:
+            assert "could not resolve a unit definition" in str(e)
+        assert lh.writes == []
 
 
 class TestReceive:
@@ -380,7 +438,9 @@ class TestReceive:
         # can't be created silently — nothing is PUT.
         inv = self._inv()
         inv["lines"][0].pop("linkedItemId")
-        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv})
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
+        )
         try:
             IF._do_receive(lh, self._req())
             assert False, "expected the receive guard to block"
@@ -391,7 +451,9 @@ class TestReceive:
     def test_receive_blocked_by_a_new_unit(self):
         inv = self._inv()
         inv["lines"][0].pop("linkedUnitId")
-        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv})
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
+        )
         try:
             IF._do_receive(lh, self._req())
             assert False, "expected the receive guard to block"
@@ -404,7 +466,9 @@ class TestReceive:
         # still PUTs (the editor persists work-in-progress before resolving).
         inv = self._inv()
         inv["lines"][0].pop("linkedItemId")
-        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv})
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
+        )
         IF._do_receive(lh, self._req(receive=False))
         assert [w for w in lh.writes if w[0] == "PUT"]
 
@@ -625,18 +689,43 @@ class TestAttachPoReference:
         po = {
             "createdAt": "x",
             "lines": [
-                {"itemCode": "VEGS251", "itemName": "GARLIC", "unitName": "1kg", "quantityOrdered": 3, "unitCost": 8.0, "itemId": "item-garlic"},
-                {"itemCode": "PARS1", "itemName": "PARSLEY", "unitName": "bunch", "quantityOrdered": 2, "unitCost": 1.5, "itemId": "item-parsley"},
+                {
+                    "itemCode": "VEGS251",
+                    "itemName": "GARLIC",
+                    "unitName": "1kg",
+                    "quantityOrdered": 3,
+                    "unitCost": 8.0,
+                    "itemId": "item-garlic",
+                },
+                {
+                    "itemCode": "PARS1",
+                    "itemName": "PARSLEY",
+                    "unitName": "bunch",
+                    "quantityOrdered": 2,
+                    "unitCost": 1.5,
+                    "itemId": "item-parsley",
+                },
             ],
         }
         lh = FakeLoaded({"/1.0/stock/internal/purchase-orders/po-1": po}, {})
         data = {
             "linked_purchase_order_id": "po-1",
-            "lines": [{"id": "ln-g", "code": "VEGF251", "linked_item_id": "item-garlic", "unit_cost": 9.0}],
+            "lines": [
+                {
+                    "id": "ln-g",
+                    "code": "VEGF251",
+                    "linked_item_id": "item-garlic",
+                    "unit_cost": 9.0,
+                }
+            ],
         }
         IF._attach_po_reference(data, lh)
-        assert data["lines"][0]["substitute_for"]["code"] == "VEGS251"  # substitute shown
-        assert [o["code"] for o in data["ordered_not_received"]] == ["PARS1"]  # not-delivered survives
+        assert (
+            data["lines"][0]["substitute_for"]["code"] == "VEGS251"
+        )  # substitute shown
+        assert [o["code"] for o in data["ordered_not_received"]] == [
+            "PARS1"
+        ]  # not-delivered survives
 
     def test_substitute_without_item_match_stays_blank_and_ordered_line_shows(self):
         # A genuinely different product (no PO line shares its itemId): nothing to
@@ -942,7 +1031,12 @@ class TestItemMatch:
             raise RuntimeError("breaker open")
 
         monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", boom)
-        assert IF._classify_item_lines([{"id": "L1", "description": "x", "brand": ""}], None) == {}
+        assert (
+            IF._classify_item_lines(
+                [{"id": "L1", "description": "x", "brand": ""}], None
+            )
+            == {}
+        )
 
     def test_match_subset_maps_index_and_suggestion(self, monkeypatch):
         cands = [
@@ -952,7 +1046,12 @@ class TestItemMatch:
                 "groupName": "Meats",
                 "orderingUnitId": "u-kilo",
                 "suppliers": [
-                    {"supplierId": "s", "unitId": "u-kilo", "unitCost": 10, "defaultForSupplier": True}
+                    {
+                        "supplierId": "s",
+                        "unitId": "u-kilo",
+                        "unitCost": 10,
+                        "defaultForSupplier": True,
+                    }
                 ],
             },
             {"id": "i1", "name": "OIL CANOLA", "groupName": "Oils"},
@@ -962,16 +1061,38 @@ class TestItemMatch:
             {"id": "g-oil", "name": "Oils", "category": "Food"},
         ]
         lines = [
-            {"id": "L1", "description": "Spianata Piccante 2kg C6", "code": "CHS.009", "brand": "", "unit": "KGM"},
-            {"id": "L2", "description": "Mystery Product", "code": "X", "brand": "", "unit": "Each"},
+            {
+                "id": "L1",
+                "description": "Spianata Piccante 2kg C6",
+                "code": "CHS.009",
+                "brand": "",
+                "unit": "KGM",
+            },
+            {
+                "id": "L2",
+                "description": "Mystery Product",
+                "code": "X",
+                "brand": "",
+                "unit": "Each",
+            },
         ]
 
         def fake(**kw):
             return (
                 {
                     "matches": [
-                        {"line_id": "L1", "match_index": 0, "suggested_name": None, "suggested_group_index": None},
-                        {"line_id": "L2", "match_index": None, "suggested_name": "Mystery Product", "suggested_group_index": 1},
+                        {
+                            "line_id": "L1",
+                            "match_index": 0,
+                            "suggested_name": None,
+                            "suggested_group_index": None,
+                        },
+                        {
+                            "line_id": "L2",
+                            "match_index": None,
+                            "suggested_name": "Mystery Product",
+                            "suggested_group_index": 1,
+                        },
                     ]
                 },
                 None,
@@ -992,7 +1113,19 @@ class TestItemMatch:
         lines = [{"id": "L1", "description": "A", "code": "", "brand": "", "unit": ""}]
 
         def fake(**kw):
-            return ({"matches": [{"line_id": "L1", "match_index": 9, "suggested_name": "A", "suggested_group_index": 9}]}, None)
+            return (
+                {
+                    "matches": [
+                        {
+                            "line_id": "L1",
+                            "match_index": 9,
+                            "suggested_name": "A",
+                            "suggested_group_index": 9,
+                        }
+                    ]
+                },
+                None,
+            )
 
         monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", fake)
         out = IF._match_subset(lines, groups, cands, db=None)
@@ -1003,7 +1136,12 @@ class TestItemMatch:
         # food0 is a food item, bev0 a beverage item. A food-classified line must
         # only ever see the food slice, so its index-0 match resolves to food0.
         cands = [
-            {"id": "food0", "name": "CHICKEN", "groupId": "g-meat", "groupName": "Meats"},
+            {
+                "id": "food0",
+                "name": "CHICKEN",
+                "groupId": "g-meat",
+                "groupName": "Meats",
+            },
             {"id": "bev0", "name": "COKE", "groupId": "g-bot", "groupName": "Bottled"},
         ]
         groups = [
@@ -1011,17 +1149,45 @@ class TestItemMatch:
             {"id": "g-bot", "name": "Bottled", "category": "Beverage"},
         ]
         lines = [
-            {"id": "L1", "description": "Chicken Breast", "code": "", "brand": "", "unit": ""},
-            {"id": "L2", "description": "Coca Cola", "code": "", "brand": "", "unit": ""},
+            {
+                "id": "L1",
+                "description": "Chicken Breast",
+                "code": "",
+                "brand": "",
+                "unit": "",
+            },
+            {
+                "id": "L2",
+                "description": "Coca Cola",
+                "code": "",
+                "brand": "",
+                "unit": "",
+            },
         ]
 
         def fake(**kw):
             ids = _ids_in(kw["user_prompt"])
             if "Classify each supplier invoice line" in kw["system_prompt"]:
                 cls = {"L1": "food", "L2": "beverage"}
-                return ({"classes": [{"line_id": i, "class": cls[i]} for i in ids]}, None)
+                return (
+                    {"classes": [{"line_id": i, "class": cls[i]} for i in ids]},
+                    None,
+                )
             # each subset call sees exactly one line; index 0 of its own slice
-            return ({"matches": [{"line_id": i, "match_index": 0, "suggested_name": None, "suggested_group_index": None} for i in ids]}, None)
+            return (
+                {
+                    "matches": [
+                        {
+                            "line_id": i,
+                            "match_index": 0,
+                            "suggested_name": None,
+                            "suggested_group_index": None,
+                        }
+                        for i in ids
+                    ]
+                },
+                None,
+            )
 
         monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", fake)
         out = IF._match_stock_items(lines, groups, cands, db=None)
@@ -1064,23 +1230,37 @@ class TestLinkItem:
     def _run(self, lh, monkeypatch):
         monkeypatch.setattr(IF, "_Loaded", lambda db, cfg, vid: lh)
         monkeypatch.setattr(IF, "_reshape_draft_after_write", lambda *a, **k: None)
-        body = IF.LinkItemRequest(venue_id="v1", invoice_id="inv-1", line_id="ln-1", item_id="item-9")
+        body = IF.LinkItemRequest(
+            venue_id="v1", invoice_id="inv-1", line_id="ln-1", item_id="item-9"
+        )
         return asyncio.run(IF.link_stock_item(body, db=None, config_db=None, user=None))
 
     def test_registers_missing_variant_and_links_line(self, monkeypatch):
-        item = {"id": "item-9", "name": "NAPKINS", "orderingUnitId": "u-kilo", "suppliers": []}
+        item = {
+            "id": "item-9",
+            "name": "NAPKINS",
+            "orderingUnitId": "u-kilo",
+            "suppliers": [],
+        }
         lh = FakeLoaded(
-            {"/1.0/stock/internal/items/item-9": item, "/1.0/stock/internal/units": UNITS},
+            {
+                "/1.0/stock/internal/items/item-9": item,
+                "/1.0/stock/internal/units": UNITS,
+            },
             {"inv-1": self._inv()},
         )
         out = self._run(lh, monkeypatch)
         # the item is PUT with a new supplier variant for (sup-1, NAP)
-        item_put = [w for w in lh.writes if w[0] == "PUT" and "/items/item-9" in w[1]][0]
+        item_put = [w for w in lh.writes if w[0] == "PUT" and "/items/item-9" in w[1]][
+            0
+        ]
         variant = item_put[2]["suppliers"][0]
         assert variant["supplierId"] == "sup-1" and variant["stockCode"] == "NAP"
         assert variant["unitId"] == "u-kilo" and variant["unitCost"] == 3.99
         # the invoice is PUT linking the line to the item + the item's unit
-        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][0]
+        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][
+            0
+        ]
         ln = inv_put[2]["lines"][0]
         assert ln["linkedItemId"] == "item-9"
         assert ln["linkedUnitId"] == "u-kilo" and ln["unit"] == "Kilo"
@@ -1091,17 +1271,320 @@ class TestLinkItem:
             "id": "item-9",
             "name": "NAPKINS",
             "orderingUnitId": "u-kilo",
-            "suppliers": [{"id": "v1", "supplierId": "sup-1", "stockCode": "NAP", "unitId": "u-each"}],
+            "suppliers": [
+                {
+                    "id": "v1",
+                    "supplierId": "sup-1",
+                    "stockCode": "NAP",
+                    "unitId": "u-each",
+                }
+            ],
         }
         lh = FakeLoaded(
-            {"/1.0/stock/internal/items/item-9": item, "/1.0/stock/internal/units": UNITS},
+            {
+                "/1.0/stock/internal/items/item-9": item,
+                "/1.0/stock/internal/units": UNITS,
+            },
             {"inv-1": self._inv()},
         )
         out = self._run(lh, monkeypatch)
         # no item PUT — the variant already exists
         assert not [w for w in lh.writes if w[0] == "PUT" and "/items/item-9" in w[1]]
         # still links the line; unit comes from the existing variant (u-each)
-        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][0]
+        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][
+            0
+        ]
         ln = inv_put[2]["lines"][0]
         assert ln["linkedItemId"] == "item-9" and ln["linkedUnitId"] == "u-each"
         assert "registered supplier variant" not in out["message"]
+
+
+class TestListSuppliersEndpoint:
+    """GET /invoice-fixes/suppliers filters deleted suppliers.
+
+    Loaded renamed the supplier delete marker datestampDeleted -> removedAt
+    (Aug 2026); the old filter silently passed deleted suppliers through.
+    Both vintages must be honoured.
+    """
+
+    def _call(self, client, headers, monkeypatch, rows):
+        def fake_execute(component, action, fields, venue_id, db, config_db):
+            assert (component, action) == ("purchase_order_editor", "get_suppliers")
+            return {"data": rows}
+
+        monkeypatch.setattr(
+            "app.services.component_api.execute_component_action", fake_execute
+        )
+        r = client.get("/api/invoice-fixes/suppliers?venue_id=v-1", headers=headers)
+        assert r.status_code == 200
+        return r.json()["suppliers"]
+
+    def test_filters_both_delete_marker_vintages(
+        self, client, admin_headers, monkeypatch
+    ):
+        rows = [
+            {"id": "s-1", "name": "Active"},
+            {"id": "s-2", "name": "New-style deleted", "removedAt": "2026-08-01"},
+            {
+                "id": "s-3",
+                "name": "Old-style deleted",
+                "datestampDeleted": "2025-01-01",
+            },
+            {"id": "s-4", "name": "Alive", "removedAt": None, "datestampDeleted": None},
+        ]
+        out = self._call(client, admin_headers, monkeypatch, rows)
+        assert [s["name"] for s in out] == ["Active", "Alive"]
+
+
+class TestStruckAndAddedLines:
+    """Accepted remove/add suggestions ride the receive: a struck line is
+    soft-deleted in Loaded (deletedAt) and an added line carries the tax rate
+    the engine stamped on the suggestion."""
+
+    def _lh(self):
+        return FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST},
+            {
+                "inv-1": {
+                    "id": "inv-1",
+                    "linkedSupplierId": "sup-1",
+                    "linkedPurchaseOrderId": None,
+                    "purchaseOrderNumber": None,
+                    "lines": [
+                        {
+                            "id": "ln-1",
+                            "code": "NAP",
+                            "unit": "Each",
+                            "linkedUnitId": "u-each",
+                            "linkedItemId": "item-1",
+                            "quantityReceived": 1,
+                            "unitCost": 3.99,
+                        },
+                    ],
+                }
+            },
+        )
+
+    def _req(self, **over):
+        import app.routers.invoice_fixes as IF2
+
+        base = dict(
+            venue_id="v1",
+            invoice_id="inv-1",
+            linked_purchase_order_id=None,
+            po_number=None,
+            lines=[],
+            variant_updates=[],
+            receive=True,
+        )
+        base.update(over)
+        return IF2.ReceiveRequest(**base)
+
+    def test_struck_line_is_soft_deleted(self):
+        lh = self._lh()
+        out = IF._do_receive(
+            lh, self._req(lines=[{"id": "ln-1", "struck": True}], receive=False)
+        )
+        assert out["ok"]
+        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
+        assert body["lines"][0]["deletedAt"]
+
+    def test_added_line_carries_sale_tax_rate(self):
+        lh = self._lh()
+        IF._do_receive(
+            lh,
+            self._req(
+                lines=[
+                    {
+                        "id": "new-1754424000000",
+                        "code": None,
+                        "description": "Atlanta Bright IPA 4.6% 50L Keg",
+                        "linked_item_id": "item-2",
+                        "linked_unit_id": "u-each",
+                        "unit": "Each",
+                        "unit_ratio": 1,
+                        "quantity_received": 1,
+                        "unit_cost": 340.0,
+                        "total_cost": 340.0,
+                        "sale_tax_rate": 0.15,
+                    }
+                ]
+            ),
+        )
+        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
+        added = body["lines"][1]
+        assert "id" not in added  # Loaded assigns the real id
+        assert added["saleTaxRate"] == 0.15
+        assert added["linkedItemId"] == "item-2"
+        assert added["unitCostExclTax"] == 340.0
+
+
+class TestReshapeCarryOver:
+    """_reshape_draft_after_write must preserve local line state: struck flags
+    (accepted remove/strike suggestions) and locally-added 'new-' lines."""
+
+    def test_struck_and_added_lines_survive_reshape(self, db_session, admin_user):
+        import uuid
+
+        from app.db.models import Venue, WorkingDocument
+
+        venue = Venue(id=str(uuid.uuid4()), name=f"Venue {uuid.uuid4().hex[:6]}")
+        db_session.add(venue)
+        db_session.flush()
+        doc = WorkingDocument(
+            doc_type="received_invoice",
+            connector_name="loadedhub",
+            venue_id=venue.id,
+            external_ref={"invoice_id": "inv-1"},
+            data={
+                "lines": [
+                    {"id": "ln-1", "description": "OLD", "struck": True},
+                    {
+                        "id": "new-1754424000000",
+                        "description": "LOCAL ADD",
+                        "sale_tax_rate": 0.15,
+                    },
+                ],
+                "actioned_suggestions": [{"key": "remove:ln-1", "summary": "removed"}],
+            },
+        )
+        db_session.add(doc)
+        db_session.flush()
+
+        lh = FakeLoaded(
+            {},
+            {
+                "inv-1": {
+                    "id": "inv-1",
+                    "referenceNumber": "R-1",
+                    "linkedSupplierId": "sup-1",
+                    "lines": [
+                        {"id": "ln-1", "description": "FRESH", "linkedItemId": None}
+                    ],
+                }
+            },
+        )
+        out = IF._reshape_draft_after_write(db_session, lh, venue.id, "inv-1")
+        lines = out["data"]["lines"]
+        by_id = {ln.get("id"): ln for ln in lines}
+        assert by_id["ln-1"].get("struck") is True
+        assert "new-1754424000000" in by_id
+        assert by_id["new-1754424000000"]["description"] == "LOCAL ADD"
+        assert out["data"]["actioned_suggestions"] == [
+            {"key": "remove:ln-1", "summary": "removed"}
+        ]
+
+
+class TestReceiveTimeLinking:
+    """Item links are LOCAL draft edits: the receive PUT carries linkedItemId
+    and do_receive registers the missing supplier variant at receive time —
+    nothing touches Loaded when the user merely accepts a match suggestion."""
+
+    def _inv(self):
+        return {
+            "id": "inv-1",
+            "linkedSupplierId": "sup-1",
+            "linkedPurchaseOrderId": None,
+            "purchaseOrderNumber": None,
+            "lines": [
+                {
+                    "id": "ln-1",
+                    "code": "FEE94870",
+                    "description": "FEE BROTHERS CHERRY BITTERS",
+                    "unit": "EA",
+                    "linkedItemId": None,
+                    "linkedUnitId": None,
+                    "unitCostExclTax": 22.61,
+                }
+            ],
+        }
+
+    def _req(self, **over):
+        base = dict(
+            venue_id="v1",
+            invoice_id="inv-1",
+            linked_purchase_order_id=None,
+            po_number=None,
+            lines=[],
+            variant_updates=[],
+            receive=True,
+        )
+        base.update(over)
+        return IF.ReceiveRequest(**base)
+
+    def test_newly_linked_line_registers_variant_and_links(self):
+        item = {
+            "id": "item-2",
+            "name": "FEE BROTHERS CHERRY BITTERS",
+            "orderingUnitId": "u-150",
+            "suppliers": [],
+        }
+        lh = FakeLoaded(
+            {
+                "/1.0/stock/internal/purchase-orders": PO_LIST,
+                "/1.0/stock/internal/items/item-2": item,
+            },
+            {"inv-1": self._inv()},
+        )
+        out = IF._do_receive(
+            lh,
+            self._req(
+                lines=[
+                    {
+                        "id": "ln-1",
+                        "linked_item_id": "item-2",
+                        "linked_unit_id": "u-150",
+                        "unit": "150 mL",
+                        "unit_ratio": 0.15,
+                        "quantity_received": 1,
+                        "unit_cost": 22.61,
+                    }
+                ]
+            ),
+        )
+        assert out["ok"]
+        # variant registered on the item BEFORE the invoice PUT
+        item_put = [w for w in lh.writes if w[0] == "PUT" and "/items/item-2" in w[1]][0]
+        variant = item_put[2]["suppliers"][0]
+        assert variant["supplierId"] == "sup-1"
+        assert variant["stockCode"] == "FEE94870"
+        assert variant["unitId"] == "u-150"
+        assert variant["unitCost"] == 22.61
+        # invoice PUT carries the link + unit on the line
+        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][0]
+        ln = inv_put[2]["lines"][0]
+        assert ln["linkedItemId"] == "item-2"
+        assert ln["linkedUnitId"] == "u-150"
+        assert lh.writes.index(item_put) < lh.writes.index(inv_put)
+
+    def test_already_linked_line_registers_nothing(self):
+        inv = self._inv()
+        inv["lines"][0]["linkedItemId"] = "item-2"
+        inv["lines"][0]["linkedUnitId"] = "u-150"
+        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv})
+        IF._do_receive(
+            lh,
+            self._req(lines=[{"id": "ln-1", "linked_item_id": "item-2", "quantity_received": 1}]),
+        )
+        assert not [w for w in lh.writes if "/items/" in w[1]]
+
+    def test_registration_failure_never_blocks_receive(self):
+        # No canned item route -> FakeLoaded raises inside registration; the
+        # receive itself must still succeed (link still lands via the PUT).
+        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": self._inv()})
+        out = IF._do_receive(
+            lh,
+            self._req(
+                lines=[
+                    {
+                        "id": "ln-1",
+                        "linked_item_id": "item-2",
+                        "linked_unit_id": "u-150",
+                        "quantity_received": 1,
+                    }
+                ]
+            ),
+        )
+        assert out["ok"]
+        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][0]
+        assert inv_put[2]["lines"][0]["linkedItemId"] == "item-2"

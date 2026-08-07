@@ -157,9 +157,11 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
                 )}
               </div>
             </div>
-            {/* Inline display blocks render below the message text */}
+            {/* Inline display blocks render below the message text. Flex gap:
+                a batch review emits many sibling cards on one message — they
+                need breathing room between them. */}
             {displayBlocks.length > 0 && (
-              <div style={{ marginTop: '0.5rem' }}>
+              <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: 15 }}>
                 {displayBlocks.map((block: DisplayBlock, bi: number) => (
                   <DisplayBlockRenderer key={bi} block={block} onAction={onWidgetAction} threadId={threadId} />
                 ))}

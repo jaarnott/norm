@@ -423,6 +423,74 @@ def execute_function(
         log(f"Parallel batch: {len(calls)} calls in {total_ms}ms")
         return results
 
+    def _extract_uncached(
+        connector: str,
+        action: str,
+        api_params: dict,
+        schema: dict | None,
+        instructions: str | None,
+        cache_key: str,
+        session: Session,
+    ) -> Any:
+        """Download + LLM-extract + cache-put on the given session.
+
+        Shared core of extract_document (turn session) and
+        extract_documents_parallel (per-worker sessions). No cache read and no
+        budget accounting here — callers own both. Raises on failure.
+        """
+        payload, call_ms = _do_api_call(connector, action, api_params, session)
+        if not isinstance(payload, dict) or "content_base64" not in payload:
+            raise ValueError(
+                f"{connector}.{action} did not return binary content — "
+                'the tool needs response_format: "binary"'
+            )
+
+        from app.interpreter.llm_interpreter import call_llm
+
+        schema_text = json.dumps(schema or {}, indent=1)
+        system_prompt = (
+            "You extract structured data from a document exactly as printed. "
+            "Return ONLY a JSON object matching this schema (no markdown, no "
+            f"commentary):\n{schema_text}\n"
+            "Rules: copy amounts, quantities and identifiers exactly as they "
+            "appear in the document; use null for any field that is not "
+            "present or not legible; never guess or compute values."
+        )
+        user_prompt = instructions or "Extract the fields from the attached document."
+        documents = [
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": payload.get("content_type", "application/pdf"),
+                    "data": payload["content_base64"],
+                },
+            }
+        ]
+        extract_t0 = time.time()
+        parsed, _ = call_llm(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            db=session,
+            thread_id=thread_id,
+            call_type="extraction",
+            max_tokens=4096,
+            documents=documents,
+        )
+        total_ms = call_ms + int((time.time() - extract_t0) * 1000)
+        log(
+            f"extract_document: {connector}.{action} → {_describe_data(parsed)} ({total_ms}ms)"
+        )
+        # Cache only clean extractions — never an error dict, and never a
+        # result with no usable fields (a transient read failure).
+        if (
+            isinstance(parsed, dict)
+            and "error" not in parsed
+            and any(v is not None for v in parsed.values())
+        ):
+            _extraction_cache_put(session, cache_key, connector, action, parsed)
+        return parsed
+
     def extract_document(
         connector: str,
         action: str,
@@ -456,65 +524,99 @@ def execute_function(
             raise RuntimeError(f"Too many API calls (max {max_api_calls})")
 
         try:
-            payload, call_ms = _do_api_call(
-                connector, action, dict(api_params or {}), db
+            return _extract_uncached(
+                connector,
+                action,
+                dict(api_params or {}),
+                schema,
+                instructions,
+                cache_key,
+                db,
             )
-            if not isinstance(payload, dict) or "content_base64" not in payload:
-                raise ValueError(
-                    f"{connector}.{action} did not return binary content — "
-                    'the tool needs response_format: "binary"'
-                )
-
-            from app.interpreter.llm_interpreter import call_llm
-
-            schema_text = json.dumps(schema or {}, indent=1)
-            system_prompt = (
-                "You extract structured data from a document exactly as printed. "
-                "Return ONLY a JSON object matching this schema (no markdown, no "
-                f"commentary):\n{schema_text}\n"
-                "Rules: copy amounts, quantities and identifiers exactly as they "
-                "appear in the document; use null for any field that is not "
-                "present or not legible; never guess or compute values."
-            )
-            user_prompt = (
-                instructions or "Extract the fields from the attached document."
-            )
-            documents = [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": payload.get("content_type", "application/pdf"),
-                        "data": payload["content_base64"],
-                    },
-                }
-            ]
-            extract_t0 = time.time()
-            parsed, _ = call_llm(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                db=db,
-                thread_id=thread_id,
-                call_type="extraction",
-                max_tokens=4096,
-                documents=documents,
-            )
-            total_ms = call_ms + int((time.time() - extract_t0) * 1000)
-            log(
-                f"extract_document: {connector}.{action} → {_describe_data(parsed)} ({total_ms}ms)"
-            )
-            # Cache only clean extractions — never an error dict, and never a
-            # result with no usable fields (a transient read failure).
-            if (
-                isinstance(parsed, dict)
-                and "error" not in parsed
-                and any(v is not None for v in parsed.values())
-            ):
-                _extraction_cache_put(db, cache_key, connector, action, parsed)
-            return parsed
         except Exception as exc:
             log(f"extract_document {connector}.{action} failed: {exc}")
             return {"error": str(exc)}
+
+    def extract_documents_parallel(requests: list) -> list:
+        """Extract many documents concurrently (rolling window of 10).
+
+        Each request is a dict: {"connector", "action", "params", "schema",
+        "instructions"} — the same arguments extract_document takes. Returns
+        one result per request, in request order: the parsed dict, or
+        {"error": ...} for that document alone.
+
+        Cache hits are answered first from the turn's session and spend no
+        API-call budget; only the misses fan out. Each worker runs on its OWN
+        session and COMMITS it, so a finished extraction (its cache row and
+        LLM-call record) is durable immediately and one bad document never
+        poisons the batch. Requires the turn's thread to be committed — which
+        the message flow now guarantees — or the workers' rows would violate
+        the thread foreign key.
+        """
+        requests = requests or []
+        results: list[Any] = [None] * len(requests)
+        pending: list[tuple[int, dict, str]] = []
+        for i, r in enumerate(requests):
+            r = r if isinstance(r, dict) else {}
+            key = _extraction_cache_key(
+                r.get("connector") or "",
+                r.get("action") or "",
+                r.get("params") or {},
+                r.get("schema") or {},
+                r.get("instructions") or "",
+            )
+            cached = _extraction_cache_get(db, key)
+            if cached is not None:
+                results[i] = cached
+            else:
+                pending.append((i, r, key))
+
+        if not pending:
+            if requests:
+                log(f"Parallel extraction: all {len(requests)} cached")
+            return results
+
+        nonlocal api_call_count
+        api_call_count += len(pending)
+        if api_call_count > max_api_calls:
+            raise RuntimeError(f"Too many API calls (max {max_api_calls})")
+
+        from app.db.engine import SessionLocal
+
+        def _worker(item):
+            i, r, key = item
+            worker_db = SessionLocal()
+            try:
+                parsed = _extract_uncached(
+                    r.get("connector") or "",
+                    r.get("action") or "",
+                    dict(r.get("params") or {}),
+                    r.get("schema"),
+                    r.get("instructions"),
+                    key,
+                    worker_db,
+                )
+                worker_db.commit()
+                return i, parsed
+            except Exception as exc:
+                worker_db.rollback()
+                log(
+                    f"extract_document {r.get('connector')}.{r.get('action')} failed: {exc}"
+                )
+                return i, {"error": str(exc)}
+            finally:
+                worker_db.close()
+
+        t0_batch = time.time()
+        with ThreadPoolExecutor(max_workers=min(len(pending), 10)) as pool:
+            for i, parsed in pool.map(_worker, pending):
+                results[i] = parsed
+        log(
+            f"Parallel extraction: {len(pending)} documents in "
+            f"{int((time.time() - t0_batch) * 1000)}ms "
+            f"({len(requests) - len(pending)} cache hits)"
+        )
+        return results
 
     # Build enriched params with template variables
     try:
@@ -548,6 +650,7 @@ def execute_function(
             "__builtins__": _SAFE_BUILTINS,
             **_SAFE_MODULES,
             "extract_document": extract_document,
+            "extract_documents_parallel": extract_documents_parallel,
         }
         exec(function_code, namespace)
 

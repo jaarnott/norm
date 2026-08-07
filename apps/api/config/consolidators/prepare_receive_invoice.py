@@ -64,8 +64,19 @@ def run(params, call_api, log):
             "unit_ratio": ln.get("linkedUnitRatio"),
             "quantity_ordered": ln.get("quantityOrdered"),
             "quantity_received": ln.get("quantityReceived"),
-            "unit_cost": ln.get("unitCost"),
-            "total_cost": ln.get("totalCost"),
+            # Loaded renamed the cost fields (unitCost → unitCostExclTax,
+            # 05 Aug 2026): new name first, old as fallback. KEEP IN SYNC with
+            # received_invoice._ln_unit_cost/_ln_total_cost.
+            "unit_cost": (
+                ln.get("unitCostExclTax")
+                if ln.get("unitCostExclTax") is not None
+                else ln.get("unitCost")
+            ),
+            "total_cost": (
+                ln.get("totalCostExclTax")
+                if ln.get("totalCostExclTax") is not None
+                else ln.get("totalCost")
+            ),
             "tax_amount": ln.get("taxAmount"),
             "sale_tax_rate": ln.get("saleTaxRate"),
             "linked_item_id": ln.get("linkedItemId"),
@@ -86,8 +97,12 @@ def run(params, call_api, log):
                 [
                     ln.get("id"),
                     ln.get("quantityReceived"),
-                    ln.get("unitCost"),
-                    ln.get("totalCost"),
+                    ln.get("unitCostExclTax")
+                    if ln.get("unitCostExclTax") is not None
+                    else ln.get("unitCost"),
+                    ln.get("totalCostExclTax")
+                    if ln.get("totalCostExclTax") is not None
+                    else ln.get("totalCost"),
                     ln.get("linkedItemId"),
                     ln.get("linkedUnitId"),
                     ln.get("unit"),
@@ -122,7 +137,11 @@ def run(params, call_api, log):
         "tax_amount": detail.get("taxAmount"),
         "discount_amount": detail.get("discountAmount"),
         "total": detail.get("total"),
-        "unit_cost_includes_tax": bool(detail.get("unitCostIncludesTax")),
+        "unit_cost_includes_tax": bool(
+            detail.get("displayUnitCostInclusiveOfTax")
+            if detail.get("displayUnitCostInclusiveOfTax") is not None
+            else detail.get("unitCostIncludesTax")
+        ),
         "file_id": detail.get("fileId"),
         "is_received": bool(detail.get("isReceived")),
         "status": "draft",

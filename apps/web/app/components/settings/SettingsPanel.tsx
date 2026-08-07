@@ -12,6 +12,7 @@ import RolesPanel from './RolesPanel';
 import SecretsPanel from './SecretsPanel';
 import ComponentsPanel from './ComponentsPanel';
 import PlaybooksPanel from './PlaybooksPanel';
+import SupplierSpecsPanel from './SupplierSpecsPanel';
 import TemplatesPanel from './TemplatesPanel';
 import AgentsPanel from './AgentsPanel';
 import McpPanel from './McpPanel';
@@ -1063,7 +1064,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
+type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -1085,6 +1086,7 @@ export default function SettingsPanel() {
   const showRoles = hasSettingsPermission(storedUser, 'org:roles', 'org:members');
   const showComponents = isAdmin;
   const showPlaybooks = isAdmin;
+  const showSupplierSpecs = isAdmin;
   const [specEditing, setSpecEditing] = useState(false);
   const showSecrets = isAdmin;
   const showMcp = isAdmin;
@@ -1392,6 +1394,7 @@ export default function SettingsPanel() {
         {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
         {showComponents && <button data-testid="settings-tab-components" onClick={() => setActiveTab('components')} style={tabStyle('components')}>Components</button>}
         {showPlaybooks && <button data-testid="settings-tab-playbooks" onClick={() => setActiveTab('playbooks')} style={tabStyle('playbooks')}>Playbooks</button>}
+        {showSupplierSpecs && <button data-testid="settings-tab-supplier-specs" onClick={() => setActiveTab('supplier-specs')} style={tabStyle('supplier-specs')}>Supplier Specs</button>}
         {showPlaybooks && <button data-testid="settings-tab-templates" onClick={() => setActiveTab('templates')} style={tabStyle('templates')}>Templates</button>}
         {(showDeployments || showTests || showSecrets) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
         {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
@@ -1826,6 +1829,7 @@ export default function SettingsPanel() {
         {/* ============ SECRETS TAB ============ */}
         {activeTab === 'components' && <ComponentsPanel />}
         {activeTab === 'playbooks' && <PlaybooksPanel />}
+      {activeTab === 'supplier-specs' && <SupplierSpecsPanel />}
         {activeTab === 'templates' && <TemplatesPanel />}
         {activeTab === 'secrets' && <SecretsPanel />}
       </div>

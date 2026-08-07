@@ -385,6 +385,24 @@ export default function Home() {
         },
       );
 
+      // The backend persists the user message and a failure note before it
+      // emits an error event, so a re-fetched thread normally carries both.
+      // Belt-and-braces: if the server copy somehow lacks the message we just
+      // sent, graft it (plus an error note) back on — a recovery re-fetch must
+      // never make the user's own words disappear from the screen.
+      const withUserMessage = (fresh: Thread): Thread => {
+        const conv = fresh.conversation || [];
+        if (conv.some(m => m.role === 'user' && m.text === messageText)) return fresh;
+        return {
+          ...fresh,
+          conversation: [
+            ...conv,
+            { role: 'user' as const, text: messageText },
+            { role: 'assistant' as const, text: 'Something went wrong. Please try again.' },
+          ],
+        };
+      };
+
       // If the stream errored, try to recover by re-fetching the real thread.
       // realThreadId is set from the thread_created event, so this works for both
       // new conversations and follow-ups.
@@ -392,7 +410,7 @@ export default function Home() {
         try {
           const res = await apiFetch(`/api/threads/${realThreadId}`);
           if (res.ok) {
-            applyFreshThread(await res.json());
+            applyFreshThread(withUserMessage(await res.json()));
             streamErrored = false;
           }
         } catch (e) { console.error(e); }
@@ -415,13 +433,42 @@ export default function Home() {
       }
     } catch (err) {
       console.error('Failed to send message:', err);
+      let recovered = false;
       if (realThreadId) {
         try {
           const res = await apiFetch(`/api/threads/${realThreadId}`);
           if (res.ok) {
-            applyFreshThread(await res.json());
+            const fresh: Thread = await res.json();
+            const conv = fresh.conversation || [];
+            if (!conv.some(m => m.role === 'user' && m.text === messageText)) {
+              fresh.conversation = [
+                ...conv,
+                { role: 'user' as const, text: messageText },
+                { role: 'assistant' as const, text: 'Something went wrong. Please try again.' },
+              ];
+            }
+            applyFreshThread(fresh);
+            recovered = true;
           }
         } catch (e) { console.error(e); }
+      }
+      if (!recovered) {
+        // No server thread to fall back on (the connection died before
+        // thread_created). Keep the optimistic bubble and settle the thread
+        // so it doesn't spin forever.
+        setThreads(prev => prev.map(t =>
+          t.id === currentId
+            ? {
+                ...t,
+                thinking_steps: [],
+                status: t.status === 'in_progress' ? 'completed' : t.status,
+                conversation: [
+                  ...(t.conversation || []).filter(m => m.role !== 'streaming'),
+                  { role: 'assistant' as const, text: 'The connection dropped while I was working on this. Please try again.' },
+                ],
+              }
+            : t
+        ));
       }
     } finally {
       setLoading(false);

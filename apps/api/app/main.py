@@ -41,6 +41,8 @@ from app.routers import (  # noqa: E402
     memories,
     workflow_modes,
     playbooks,
+    supplier_specs,
+    supplier_spec_dojo,
     templates,
     internal,
     mcp,
@@ -98,6 +100,8 @@ app.include_router(invoice_fixes.router, prefix="/api")
 app.include_router(workflow_modes.router, prefix="/api")
 app.include_router(memories.router, prefix="/api")
 app.include_router(playbooks.router, prefix="/api")
+app.include_router(supplier_specs.router, prefix="/api")
+app.include_router(supplier_spec_dojo.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
 app.include_router(internal.router)
 # No /api prefix: the MCP endpoint is a separate protocol with its own auth

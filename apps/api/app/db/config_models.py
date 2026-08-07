@@ -21,6 +21,7 @@ from sqlalchemy import (
     DateTime,
     JSON,
     Boolean,
+    LargeBinary,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase
@@ -137,6 +138,61 @@ class Playbook(ConfigBase):
     instructions = Column(Text, nullable=False)
     tool_filter = Column(JSON, nullable=True)
     enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class SupplierInvoiceSpec(ConfigBase):
+    """Per-supplier invoice-extraction instructions, admin-maintained.
+
+    A supplier's printed invoices can have quirks the generic extraction rules
+    can't express (split quantity columns, odd unit notation). The review
+    engine matches the invoice's supplierName against ``name``/``aliases``
+    (normalized, substring) and appends ``instructions`` to the PDF-extraction
+    prompt — deterministic, no extra LLM turns, and the extraction cache keys
+    on instructions so an edited spec re-extracts automatically. Aliases exist
+    because suppliers appear under variant names ("Service Foods" vs
+    "Service Foods Auckland"). Extraction-scope ONLY: review checks and gates
+    stay identical for every supplier.
+    """
+
+    __tablename__ = "supplier_invoice_specs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    name = Column(String, unique=True, nullable=False)
+    aliases = Column(JSON, nullable=False, default=list)
+    instructions = Column(Text, nullable=False, default="")
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class SupplierSpecSample(ConfigBase):
+    """A sample invoice PDF + expected extraction for a supplier spec (Dojo).
+
+    Admin-uploaded regression fixtures: each sample stores the PDF bytes and,
+    once an admin has reviewed a run and accepted it, the expected extraction.
+    Every subsequent run re-extracts with the CURRENT prompts and diffs
+    against ``expected`` — so a prompt edit can be regression-tested from the
+    Supplier Specs screen before it misreads a real invoice. Site-wide like
+    the specs themselves (shared config DB); the PDFs are small (~30–200KB)
+    and few, so bytes live inline rather than in object storage.
+    """
+
+    __tablename__ = "supplier_spec_samples"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    spec_id = Column(String, nullable=False, index=True)
+    label = Column(String, nullable=False, default="")
+    content_type = Column(String, nullable=False, default="application/pdf")
+    pdf_bytes = Column(LargeBinary, nullable=False)
+    # The admin-accepted baseline extraction; null until first accepted.
+    expected = Column(JSON, nullable=True)
+    # Latest run: {"extraction": {...}, "diffs": [...]} — viewable without
+    # re-running (each run costs an LLM extraction).
+    last_run = Column(JSON, nullable=True)
+    last_status = Column(String, nullable=False, default="new")
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 

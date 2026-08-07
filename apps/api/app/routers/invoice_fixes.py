@@ -1,10 +1,10 @@
 """Apply user-approved fixes to unreceivable LoadedHub invoices.
 
-The review_and_receive_invoices consolidator proposes structured `fixes`
-(link a purchase order; correct a line's unit of measure). The InvoiceFixesCard
-renders them and POSTs the selected ones here. Each fix is applied
-independently against the venue's LoadedHub connector — a failure isolates to
-its own row.
+The review_and_receive_invoices engine proposes structured `fixes` (link a
+purchase order; correct a line's unit of measure; delete a statement/duplicate
+draft). The Receive Invoice editor renders them and POSTs ONE accepted fix at a
+time to /invoice-fixes/accept; each is applied against the venue's LoadedHub
+connector.
 
 Fix contracts (verified live in the LoadedHub test env, 18 Jul 2026):
 
@@ -28,6 +28,7 @@ Fix contracts (verified live in the LoadedHub test env, 18 Jul 2026):
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 
@@ -69,16 +70,6 @@ from app.services.item_match import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-class ApplyFixesRequest(BaseModel):
-    venue_id: str
-    fixes: list[dict]
-
-
-class InvoiceStatusRequest(BaseModel):
-    venue_id: str
-    invoice_ids: list[str] = []
 
 
 class DraftRequest(BaseModel):
@@ -166,8 +157,8 @@ def _resolve_unit_spec(name: str, db: Session) -> dict | None:
             "number — the unit's size as a multiple of the BASE unit of its "
             "type: Weight is in KILOGRAMS, Volume in LITRES, Count in items. A "
             "multipack 'NxM' means N of M (multiply): '5x3kg' → 15 (5 x 3kg), "
-            "'6x700ml' → 4.2, '12x1L' → 12, '2kg' → 2, '500g' → 0.5, "
-            "'12 pack' → 12, 'Each' → 1."
+            "'6x700ml' → 4.2, '12x1L' → 12, '4x6 pack' → 24 (4 packs of 6), "
+            "'2kg' → 2, '500g' → 0.5, '12 pack' → 12, 'Each' → 1."
         ),
         "stock_unit_type": "one of 'Weight', 'Volume', 'Count'",
     }
@@ -176,8 +167,12 @@ def _resolve_unit_spec(name: str, db: Session) -> dict | None:
         "stock system (Weight→kilograms, Volume→litres, Count→items). Return "
         "ONLY a JSON object matching this schema:\n"
         + json.dumps(schema, indent=1)
-        + "\nNever guess — if the name is not a real unit of weight, volume or "
-        "count, return null for both fields."
+        + "\nDimensions that are NOT weight, volume or count — length/metres, "
+        "sheets, ply, micron — are DESCRIPTIVE, not the stock dimension: the "
+        "unit counts ITEMS. '8x300m' (8 rolls of 300 metres) → "
+        '{"ratio": 8, "stock_unit_type": "Count"}; \'2x50m\' → 2.'
+        "\nNever guess — if the name carries no size at all (a bare packaging "
+        'word like \'carton\'), return {"ratio": null, "stock_unit_type": null}.'
     )
     try:
         parsed, _ = call_llm(
@@ -201,35 +196,43 @@ def _resolve_unit_spec(name: str, db: Session) -> dict | None:
     return {"ratio": ratio, "stock_unit_type": utype}
 
 
+def _get_or_create_unit(lh: _Loaded, name: str, db: Session) -> tuple[dict, bool]:
+    """The Loaded unit for ``name`` — resolved from the catalogue, else CREATED.
+    The LLM supplies the base-unit ratio + type (robust to '5x3kg' /
+    '6x1 Litre' conventions); only fires on a create. Returns (unit, created).
+    Raises RuntimeError when no confident definition exists — a junk unit is
+    never created.
+    """
+    unit = _resolve_unit(lh, name)
+    if unit:
+        return unit, False
+    spec = _resolve_unit_spec(name, db)
+    if not spec:
+        raise RuntimeError(
+            f"could not resolve a unit definition for '{name}' — "
+            "create it in Loaded manually"
+        )
+    unit = lh.request(
+        "POST",
+        "/1.0/stock/internal/units",
+        {
+            "name": name,
+            "ratio": spec["ratio"],
+            "stockUnitType": spec["stock_unit_type"],
+        },
+    )
+    # Loaded returns the created unit; re-fetch by name if the POST response
+    # isn't the object itself.
+    if not isinstance(unit, dict) or not unit.get("id"):
+        unit = _resolve_unit(lh, name)
+    if not isinstance(unit, dict) or not unit.get("id"):
+        raise RuntimeError(f"created unit '{name}' but could not read it back")
+    return unit, True
+
+
 def _apply_unit(lh: _Loaded, fix: dict, db: Session) -> str:
     proposed = fix.get("proposed_unit", "")
-    unit = _resolve_unit(lh, proposed)
-    created = False
-    if not unit:
-        # Not in Loaded — create it. The LLM supplies the base-unit ratio + type
-        # (robust to '5x3kg' / '6x1 Litre' conventions); only fires on a create.
-        spec = _resolve_unit_spec(proposed, db)
-        if not spec:
-            raise RuntimeError(
-                f"could not resolve a unit definition for '{proposed}' — "
-                "create it in Loaded manually"
-            )
-        unit = lh.request(
-            "POST",
-            "/1.0/stock/internal/units",
-            {
-                "name": proposed,
-                "ratio": spec["ratio"],
-                "stockUnitType": spec["stock_unit_type"],
-            },
-        )
-        # Loaded returns the created unit; re-fetch by name if the POST response
-        # isn't the object itself.
-        if not isinstance(unit, dict) or not unit.get("id"):
-            unit = _resolve_unit(lh, proposed)
-        if not isinstance(unit, dict) or not unit.get("id"):
-            raise RuntimeError(f"created unit '{proposed}' but could not read it back")
-        created = True
+    unit, created = _get_or_create_unit(lh, proposed, db)
     inv = lh.invoice(fix["invoice_id"])
     line = next(
         (ln for ln in inv.get("lines") or [] if ln.get("id") == fix.get("line_id")),
@@ -274,32 +277,6 @@ _APPLIERS = {
 }
 
 
-@router.post("/invoice-fixes/apply")
-async def apply_invoice_fixes(
-    body: ApplyFixesRequest,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """Apply the selected invoice fixes; per-fix results, failures isolated."""
-    lh = _Loaded(db, config_db, body.venue_id)
-    results = []
-    for fix in body.fixes:
-        fid = fix.get("id")
-        applier = _APPLIERS.get(fix.get("type"))
-        if not applier:
-            results.append({"id": fid, "ok": False, "message": "unknown fix type"})
-            continue
-        try:
-            message = applier(lh, fix, db)
-            results.append({"id": fid, "ok": True, "message": message})
-        except Exception as exc:  # noqa: BLE001 — isolate each fix
-            logger.warning("invoice fix %s failed: %s", fid, exc)
-            results.append({"id": fid, "ok": False, "message": str(exc)})
-    applied = sum(1 for r in results if r["ok"])
-    return {"results": results, "applied": applied, "total": len(results)}
-
-
 class AcceptFixRequest(BaseModel):
     venue_id: str
     invoice_id: str
@@ -330,10 +307,16 @@ async def accept_invoice_fix(
     message = applier(lh, fix, db)
 
     if fix.get("type") == "delete_invoice":
-        # The invoice no longer exists in Loaded — remove the draft too (there
-        # is nothing to reshape) and tell the editor it's gone.
-        from app.db.models import WorkingDocument
+        # The invoice no longer exists in Loaded. The draft docs stay as
+        # TOMBSTONES (is_deleted) rather than being removed — old chat threads
+        # still hold cards pointing at them, and a card must be able to say
+        # "deleted" instead of hanging on a 404 forever.
+        from sqlalchemy.orm.attributes import flag_modified
 
+        from app.db.models import WorkingDocument
+        from app.services.received_invoice import invalidate_conflicting_drafts
+
+        ref_number = supplier = None
         for doc in (
             db.query(WorkingDocument)
             .filter(
@@ -343,75 +326,104 @@ async def accept_invoice_fix(
             .all()
         ):
             if (doc.external_ref or {}).get("invoice_id") == body.invoice_id:
-                db.delete(doc)
+                data = doc.data or {}
+                ref_number = ref_number or data.get("reference_number")
+                supplier = supplier or data.get("supplier_name")
+                data["is_deleted"] = True
+                data["status"] = "deleted"
+                data["deleted_reason"] = fix.get("summary") or message
+                doc.data = data
+                flag_modified(doc, "data")
         db.commit()
+        invalidate_conflicting_drafts(
+            db,
+            body.venue_id,
+            body.invoice_id,
+            reference_number=ref_number,
+            supplier_name=supplier,
+            received=False,
+        )
         return {"message": message, "document": None, "deleted": True}
 
     document = _reshape_draft_after_write(db, lh, body.venue_id, body.invoice_id)
     return {"message": message, "document": document}
 
 
-def _reshape_draft_after_write(
-    db: Session, lh, venue_id: str, invoice_id: str
-) -> dict | None:
-    """Re-pull + re-SHAPE the venue's open draft for an invoice from the fresh
-    Loaded invoice, clearing the cached review so it re-runs. Used after any
-    non-receiving write (accept a fix, create/link a stock item) — a write can
-    change the invoice server-side (e.g. linking a PO re-matches lines; creating
-    an item links the line), so the draft's lines/flags must come from Loaded.
-    Best-effort; returns the refreshed doc dict or None if there's no draft.
+def _open_docs_for(db: Session, venue_id: str, invoice_id: str):
+    """Every OPEN received_invoice doc for this invoice, canonical first.
+
+    Twin docs exist historically (the fan-out used to key per thread); state
+    changes must land on ALL of them so any bound card reads the same truth.
+    Canonical = a doc that already carries a review, else the newest.
     """
-    from sqlalchemy.orm.attributes import flag_modified
-
     from app.db.models import WorkingDocument
-    from app.routers.working_documents import _doc_to_dict
 
-    docs = (
-        db.query(WorkingDocument)
+    docs = [
+        d
+        for d in db.query(WorkingDocument)
         .filter(
             WorkingDocument.doc_type == "received_invoice",
             WorkingDocument.venue_id == venue_id,
         )
         .all()
-    )
-    doc = next(
-        (
-            d
-            for d in docs
-            if (d.external_ref or {}).get("invoice_id") == invoice_id
-            and not (d.data or {}).get("is_received")
+        if (d.external_ref or {}).get("invoice_id") == invoice_id
+        and not (d.data or {}).get("is_received")
+        and not (d.data or {}).get("is_deleted")
+    ]
+    docs.sort(
+        key=lambda d: (
+            (d.data or {}).get("checks") is not None,
+            d.created_at or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc),
         ),
-        None,
+        reverse=True,
     )
-    if doc is None:
+    return docs
+
+
+def _reshape_draft_after_write(
+    db: Session, lh, venue_id: str, invoice_id: str
+) -> dict | None:
+    """Re-pull + re-SHAPE the venue's open drafts for an invoice from the fresh
+    Loaded invoice, clearing the cached review so it re-runs. Used after any
+    non-receiving write (accept a fix, create/link a stock item) — a write can
+    change the invoice server-side (e.g. linking a PO re-matches lines), so the
+    draft's lines/flags must come from Loaded. Applies to ALL open twin docs so
+    every bound card converges. Best-effort; returns the canonical doc dict or
+    None if there's no draft.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.routers.working_documents import _doc_to_dict
+    from app.services.received_invoice import carry_local_state
+
+    docs = _open_docs_for(db, venue_id, invoice_id)
+    if not docs:
         return None
     try:
         detail = lh.invoice(invoice_id)
-        fresh = build_received_invoice_data(detail)
-        # actioned_suggestions rides along: the ✓ rows in Suggested Changes must
-        # survive the rebuild so the user can still see what was applied.
-        for k in (
-            "working_document_id",
-            "thread_id",
-            "venue_id",
-            "actioned_suggestions",
-        ):
-            if k in (doc.data or {}):
-                fresh[k] = doc.data[k]
-        # PO resolution from the copy is the consolidator's job (runs in /review);
-        # the draft only mirrors Loaded's own linked PO deterministically.
-        _attach_po_reference(fresh, lh)
-        attach_item_names(fresh, lh)
-        fresh["checks"] = None
-        fresh["suggestions"] = []
-        fresh["check_reasons"] = []
-        doc.data = fresh
-        flag_modified(doc, "data")
+        for doc in docs:
+            fresh = build_received_invoice_data(detail)
+            for k in ("working_document_id", "thread_id", "venue_id"):
+                if k in (doc.data or {}):
+                    fresh[k] = doc.data[k]
+            # Local editor state (action log, struck flags, local item links,
+            # locally-added lines) survives the rebuild.
+            carry_local_state(fresh, doc.data or {})
+            # PO resolution from the copy is the consolidator's job (runs in
+            # /review); the draft only mirrors Loaded's own linked PO.
+            _attach_po_reference(fresh, lh)
+            attach_item_names(fresh, lh)
+            fresh["checks"] = None
+            fresh["suggestions"] = []
+            fresh["check_reasons"] = []
+            doc.data = fresh
+            doc.version += 1
+            flag_modified(doc, "data")
         db.commit()
-        db.refresh(doc)
+        db.refresh(docs[0])
     except Exception as exc:  # noqa: BLE001 — refresh is best-effort
         logger.info("reshape draft failed: %s", exc)
-    return _doc_to_dict(doc)
+    return _doc_to_dict(docs[0])
 
 
 class CreateItemRequest(BaseModel):
@@ -492,7 +504,12 @@ async def create_stock_item(
                 "supplierId": supplier_id,
                 "stockCode": line.get("code"),
                 "unitId": unit_id,
-                "unitCost": line.get("unitCost"),
+                # invoice-line cost: Loaded renamed unitCost → unitCostExclTax
+                "unitCost": (
+                    line.get("unitCostExclTax")
+                    if line.get("unitCostExclTax") is not None
+                    else line.get("unitCost")
+                ),
                 "brandId": body.brand_id,
                 "defaultForSupplier": True,
                 "description": line.get("description"),
@@ -504,15 +521,51 @@ async def create_stock_item(
     if not item_id:
         raise HTTPException(502, "Loaded did not return the created stock item")
 
-    # Link the line to the new item (+ its unit) — a PUT that never receives.
-    line["linkedItemId"] = item_id
-    line["linkedUnitId"] = unit_id
-    line["unit"] = unit.get("name")
-    line["linkedUnitRatio"] = unit.get("ratio")
-    lh.request("PUT", f"/1.0/stock/internal/invoices/{body.invoice_id}", inv)
+    # Creating the item (+ its supplier variant) is the only Loaded write
+    # here. The LINE links locally in the editor and lands in Loaded at
+    # receive time — nothing touches the invoice until Accept & Receive.
+    return {
+        "message": f"Created stock item '{name}'",
+        "item_id": item_id,
+        "item_name": name,
+        "unit_id": unit_id,
+        "unit_name": unit.get("name"),
+        "unit_ratio": unit.get("ratio"),
+    }
 
-    document = _reshape_draft_after_write(db, lh, body.venue_id, body.invoice_id)
-    return {"message": f"Created stock item '{name}'", "document": document}
+
+class CreateUnitRequest(BaseModel):
+    venue_id: str
+    name: str
+
+
+@router.post("/invoice-fixes/create-unit")
+async def create_stock_unit(
+    body: CreateUnitRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """The Loaded unit for a copy-delivered unit name the catalogue lacks —
+    resolved if an equivalent exists, else explicitly created (same contract as
+    create-item: the CREATE is the one Loaded write; the line takes the unit as
+    a LOCAL edit in the editor and lands on the line + variant at receive).
+    """
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "a unit name is required")
+    lh = _Loaded(db, config_db, body.venue_id)
+    try:
+        unit, created = _get_or_create_unit(lh, name, db)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {
+        "message": f"{'Created' if created else 'Found'} unit '{unit.get('name')}'",
+        "created": created,
+        "unit_id": unit.get("id"),
+        "unit_name": unit.get("name"),
+        "unit_ratio": unit.get("ratio"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -614,7 +667,10 @@ async def list_suppliers(
         "suppliers": [
             {"id": s.get("id"), "name": s.get("name") or s.get("supplierName")}
             for s in rows
-            if isinstance(s, dict) and not s.get("datestampDeleted")
+            # Loaded renamed the supplier delete marker datestampDeleted -> removedAt
+            # (Aug 2026); read both so either payload vintage filters correctly.
+            if isinstance(s, dict)
+            and not (s.get("removedAt") or s.get("datestampDeleted"))
         ]
     }
 
@@ -755,7 +811,11 @@ async def link_stock_item(
                 "supplierId": supplier_id,
                 "stockCode": code,
                 "unitId": unit_id,
-                "unitCost": line.get("unitCost"),
+                "unitCost": (
+                    line.get("unitCostExclTax")
+                    if line.get("unitCostExclTax") is not None
+                    else line.get("unitCost")
+                ),
                 "brandId": line.get("linkedBrandId"),
                 "defaultForSupplier": False,
                 "description": line.get("description"),
@@ -897,52 +957,6 @@ async def invoice_file(
     )
 
 
-@router.post("/invoice-fixes/status")
-async def invoice_status(
-    body: InvoiceStatusRequest,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """Current state of each card's invoice, read from Loaded.
-
-    The card's "received" state is not stored in the thread — the display block
-    is a snapshot from when the consolidator ran. On reload the card asks the
-    system of record instead, so an invoice received earlier (here, or directly
-    in Loaded) still renders as received.
-    """
-    lh = _Loaded(db, config_db, body.venue_id)
-    statuses: dict[str, dict] = {}
-    for inv_id in body.invoice_ids[:50]:
-        try:
-            inv = lh.invoice(inv_id)
-        except Exception as exc:  # noqa: BLE001 — one bad id must not fail the rest
-            logger.warning("status lookup failed for %s: %s", inv_id, exc)
-            continue
-        # Resolve the linked PO's own order number. Loaded's bulk PO list only
-        # returns *open* orders, so once a PO is received it disappears from
-        # there — the card can only name it by fetching it directly. (The
-        # invoice's own purchaseOrderNumber is often the supplier's order
-        # number, not the buyer PO, so it can't stand in for this.)
-        linked_po_id = inv.get("linkedPurchaseOrderId")
-        linked_po_number = None
-        if linked_po_id:
-            try:
-                po = lh.get(f"/1.0/stock/internal/purchase-orders/{linked_po_id}")
-                linked_po_number = (po or {}).get("orderNumber")
-            except Exception as exc:  # noqa: BLE001 — naming it is best-effort
-                logger.warning("linked PO lookup failed for %s: %s", linked_po_id, exc)
-        statuses[inv_id] = {
-            "is_received": bool(inv.get("isReceived")),
-            "received_at": inv.get("receivedAt"),
-            "reference_number": inv.get("referenceNumber"),
-            "linked_purchase_order_id": linked_po_id,
-            "linked_purchase_order_number": linked_po_number,
-            "purchase_order_number": inv.get("purchaseOrderNumber"),
-        }
-    return {"statuses": statuses}
-
-
 @router.get("/invoice-fixes/purchase-orders")
 async def list_purchase_orders(
     venue_id: str,
@@ -989,8 +1003,22 @@ async def receive_invoice(
     user: User = Depends(get_current_user),
 ):
     """Apply the card's edits to a draft invoice and (optionally) receive it."""
+    from app.services.received_invoice import invalidate_conflicting_drafts
+
     lh = _Loaded(db, config_db, body.venue_id)
-    return _do_receive(lh, body)
+    out = _do_receive(lh, body)
+    if body.receive and isinstance(out, dict) and out.get("received"):
+        # Sibling drafts may now be duplicates (same number, just received) or
+        # reference a PO that just got invoiced — mark twins received and clear
+        # conflicting cached reviews so their cards re-review, not re-receive.
+        invalidate_conflicting_drafts(
+            db,
+            body.venue_id,
+            body.invoice_id,
+            reference_number=body.reference_number,
+            po_ids=(body.linked_purchase_order_id, body.po_number),
+        )
+    return out
 
 
 # Read-only Loaded metadata refreshed on every open of an existing draft, so a
@@ -1138,6 +1166,10 @@ def _attach_po_reference(data: dict, lh) -> None:
                 "unit": pl.get("unitName"),
                 "quantity_ordered": pl.get("quantityOrdered"),
                 "unit_cost": pl.get("unitCost"),
+                # The PO line's stock item: lets the editor reconcile a LOCAL
+                # item link immediately (delivered as a substitute → drop from
+                # this list, badge the line) without waiting for a reopen.
+                "item_id": pl.get("itemId"),
             }
         )
     data["ordered_not_received"] = ordered_not_received
@@ -1169,51 +1201,43 @@ async def create_receive_draft(
     from app.db.models import WorkingDocument
     from app.routers.working_documents import _doc_to_dict
 
-    existing = (
-        db.query(WorkingDocument)
-        .filter(
-            WorkingDocument.doc_type == "received_invoice",
-            WorkingDocument.venue_id == body.venue_id,
-        )
-        .all()
-    )
-    for doc in existing:
-        ref = doc.external_ref or {}
-        if ref.get("invoice_id") == body.invoice_id and not (doc.data or {}).get(
-            "is_received"
-        ):
-            # Heal read-only metadata (tax rate, etc.) and re-attach the PO
-            # reference (ordered qty / substitution flags / un-received lines)
-            # from the live invoice + PO, keeping the user's edits and the
-            # review. Best-effort.
-            try:
-                from sqlalchemy.orm.attributes import flag_modified
+    # Canonical pick: the twin that carries a review (else newest) — every
+    # surface must resolve the same doc or the review appears to "move".
+    docs = _open_docs_for(db, body.venue_id, body.invoice_id)
+    if docs:
+        doc = docs[0]
+        # Heal read-only metadata (tax rate, etc.) and re-attach the PO
+        # reference (ordered qty / substitution flags / un-received lines)
+        # from the live invoice + PO, keeping the user's edits and the
+        # review. Best-effort.
+        try:
+            from sqlalchemy.orm.attributes import flag_modified
 
-                lh = _Loaded(db, config_db, body.venue_id)
-                detail = lh.invoice(body.invoice_id)
-                _refresh_metadata(doc, detail)
-                _attach_po_reference(doc.data, lh)
-                attach_item_names(doc.data, lh)
-                # Fingerprint gate: the review is cached per invoice STATE. If
-                # the invoice changed in Loaded since the review ran (its content
-                # fingerprint moved — Loaded has no revision field), clear the
-                # cached review so the editor's /review call re-runs it;
-                # unchanged → the cache stands and no LLM/consolidator runs.
-                # _refresh_metadata already updated loaded_invoice_fingerprint
-                # from the live detail via _META_HEADER_FIELDS.
-                d = doc.data
-                if d.get("checks") and d.get("reviewed_invoice_fingerprint") != d.get(
-                    "loaded_invoice_fingerprint"
-                ):
-                    d["checks"] = None
-                    d["check_reasons"] = []
-                    d["suggestions"] = []
-                flag_modified(doc, "data")
-                db.commit()
-                db.refresh(doc)
-            except Exception as exc:  # noqa: BLE001 — refresh is enhancement
-                logger.info("draft metadata refresh failed: %s", exc)
-            return _doc_to_dict(doc)
+            lh = _Loaded(db, config_db, body.venue_id)
+            detail = lh.invoice(body.invoice_id)
+            _refresh_metadata(doc, detail)
+            _attach_po_reference(doc.data, lh)
+            attach_item_names(doc.data, lh)
+            # Fingerprint gate: the review is cached per invoice STATE. If
+            # the invoice changed in Loaded since the review ran (its content
+            # fingerprint moved — Loaded has no revision field), clear the
+            # cached review so the editor's /review call re-runs it;
+            # unchanged → the cache stands and no LLM/consolidator runs.
+            # _refresh_metadata already updated loaded_invoice_fingerprint
+            # from the live detail via _META_HEADER_FIELDS.
+            d = doc.data
+            if d.get("checks") and d.get("reviewed_invoice_fingerprint") != d.get(
+                "loaded_invoice_fingerprint"
+            ):
+                d["checks"] = None
+                d["check_reasons"] = []
+                d["suggestions"] = []
+            flag_modified(doc, "data")
+            db.commit()
+            db.refresh(doc)
+        except Exception as exc:  # noqa: BLE001 — refresh is enhancement
+            logger.info("draft metadata refresh failed: %s", exc)
+        return _doc_to_dict(doc)
 
     lh = _Loaded(db, config_db, body.venue_id)
     detail = lh.invoice(body.invoice_id)
@@ -1252,13 +1276,84 @@ _REVIEW_LINE_FIELDS = (
     "recommended_unit",
     "copy_unit_mismatch",
     "copy_quantity_mismatch",
+    "copy_unit_cost_mismatch",
     "copy_duplicate",
+    # The line is on the draft but NOT on the attached copy — drives the
+    # editor's "remove line" suggestion (strike-style).
+    "copy_missing",
+    # The copy carries unit/size info that can't be read — the editor asks
+    # the user to CONFIRM the unit (no proposed value).
+    "unit_needs_confirmation",
     # Item-match suggestions for NEW lines (the engine's norm.match_stock_items
     # LLM function): link an existing item, or a normalized create name + group.
     "matched_item",
     "suggested_name",
     "suggested_group_id",
 )
+
+
+@router.post("/invoice-fixes/reset-validation")
+async def reset_validation(
+    body: DraftRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Wipe every cached validation artifact for one invoice — retest support.
+
+    Deletes the invoice's PDF-extraction cache rows (matched by the extracted
+    invoice_number, since the cache stores no file id) and rebuilds every open
+    draft for the invoice fresh from Loaded — no cached review, no suggestion
+    action log, no local line state. The editor's next /review then runs the
+    whole validation from scratch, including the LLM extraction. The small
+    PO-number extraction and the item-match cache are content-keyed and not
+    identifiable per invoice; they remain cached.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.db.models import DocumentExtraction
+    from app.routers.working_documents import _doc_to_dict
+    from app.services.received_invoice import _norm
+
+    lh = _Loaded(db, config_db, body.venue_id)
+    detail = lh.invoice(body.invoice_id)
+    ref = _norm(detail.get("referenceNumber"))
+
+    extractions_deleted = 0
+    if ref:
+        rows = (
+            db.query(DocumentExtraction)
+            .filter(DocumentExtraction.action == "download_invoice_file")
+            .all()
+        )
+        for row in rows:
+            data = row.data if isinstance(row.data, dict) else {}
+            if _norm(data.get("invoice_number")) == ref:
+                db.delete(row)
+                extractions_deleted += 1
+
+    refreshed = None
+    docs_reset = 0
+    for doc in _open_docs_for(db, body.venue_id, body.invoice_id):
+        fresh = build_received_invoice_data(detail)
+        for k in ("working_document_id", "thread_id", "venue_id"):
+            if k in (doc.data or {}):
+                fresh[k] = doc.data[k]
+        _attach_po_reference(fresh, lh)
+        attach_item_names(fresh, lh)
+        doc.data = fresh
+        doc.version += 1
+        flag_modified(doc, "data")
+        docs_reset += 1
+        refreshed = refreshed or doc
+    db.commit()
+    if refreshed is not None:
+        db.refresh(refreshed)
+    return {
+        "extractions_deleted": extractions_deleted,
+        "documents_reset": docs_reset,
+        "document": _doc_to_dict(refreshed) if refreshed is not None else None,
+    }
 
 
 @router.post("/invoice-fixes/review")
@@ -1278,42 +1373,58 @@ async def review_receive_draft(
     ``checks`` is returned untouched — the (LLM) PDF extraction runs once per
     invoice, not once per open.
     """
-    from app.db.models import WorkingDocument
     from app.routers.working_documents import _doc_to_dict
     from sqlalchemy.orm.attributes import flag_modified
 
-    doc = (
-        db.query(WorkingDocument)
-        .filter(
-            WorkingDocument.doc_type == "received_invoice",
-            WorkingDocument.venue_id == body.venue_id,
-        )
-        .all()
-    )
-    doc = next(
-        (
-            d
-            for d in doc
-            if (d.external_ref or {}).get("invoice_id") == body.invoice_id
-            and not (d.data or {}).get("is_received")
-        ),
-        None,
-    )
-    if doc is None:
+    docs = _open_docs_for(db, body.venue_id, body.invoice_id)
+    if not docs:
         raise HTTPException(404, "no open draft for this invoice — open it first")
 
+    doc = docs[0]  # canonical: carries a review if any twin does
     data = doc.data or {}
-    if data.get("checks"):
-        # Cached: the review already ran for this draft.
+    if data.get("checks") is not None:
+        # Cached: the review already ran. "" is a real result too (credit note /
+        # no PDF — the review ran and produced no artifact); treating it as
+        # uncached used to re-run the engine on every open.
         return _doc_to_dict(doc)
 
     run_review_and_merge(data, body.venue_id, body.invoice_id, db, config_db)
 
     doc.data = data
+    doc.version += 1
     flag_modified(doc, "data")
+    # Twin docs (historic per-thread duplicates) receive the same review state
+    # so every bound card reads one truth — a card PATCHing its own twin used
+    # to get a bare doc back and visibly lose the validation.
+    for twin in docs[1:]:
+        _copy_review_state(data, twin.data or {})
+        twin.version += 1
+        flag_modified(twin, "data")
     db.commit()
     db.refresh(doc)
     return _doc_to_dict(doc)
+
+
+def _copy_review_state(src: dict, dst: dict) -> None:
+    """Copy the review-owned state from one doc payload onto a twin (in place):
+    header review keys + per-line ``_REVIEW_LINE_FIELDS`` matched by line id.
+    Local editor state on the twin (struck, links, log) is untouched."""
+    for k in (
+        "checks",
+        "check_reasons",
+        "suggestions",
+        "copy_po",
+        "po_unresolved",
+        "reviewed_invoice_fingerprint",
+        "loaded_invoice_fingerprint",
+    ):
+        dst[k] = src.get(k)
+    src_by_id = {ln.get("id"): ln for ln in src.get("lines") or [] if ln.get("id")}
+    for ln in dst.get("lines") or []:
+        src_ln = src_by_id.get(ln.get("id"))
+        if src_ln:
+            for f in _REVIEW_LINE_FIELDS:
+                ln[f] = src_ln.get(f)
 
 
 def run_review_and_merge(
@@ -1388,6 +1499,11 @@ def run_review_and_merge(
         data["suggestions"] = fx.get("suggestions") or []
         data["check_reasons"] = fx.get("check_reasons") or []
         data["checks"] = fx.get("checks")
+        # The buyer PO read off the copy when it resolved to NO Loaded
+        # purchase order — the editor's picker note ("copy says X — no
+        # matching purchase order found in Loaded").
+        data["copy_po"] = fx.get("copy_po")
+        data["po_unresolved"] = bool(fx.get("po_unresolved"))
     else:
         # The invoice never reached the copy comparison (e.g. a credit note, or
         # no PDF attached). Record that the review ran so it isn't retried every

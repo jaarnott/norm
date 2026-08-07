@@ -675,7 +675,11 @@ def _receive_invoice(
         )
         .all()
     )
-    if not any((d.external_ref or {}).get("invoice_id") == invoice_id for d in owns):
+    if not any(
+        (d.external_ref or {}).get("invoice_id") == invoice_id
+        and not (d.data or {}).get("is_deleted")
+        for d in owns
+    ):
         # Indistinguishable from any other refusal — never confirm an id exists.
         raise AppToolError("No open invoice draft to receive.")
 
@@ -707,4 +711,13 @@ def _receive_invoice(
     except Exception as e:  # noqa: BLE001 — surface the reason next to the button
         logger.warning("receive_invoice failed: %s", e)
         return {"submitted": False, "detail": str(e)}
+    if req.receive and isinstance(result, dict) and result.get("received"):
+        from app.services.received_invoice import invalidate_conflicting_drafts
+
+        invalidate_conflicting_drafts(
+            db,
+            venue_id,
+            invoice_id,
+            po_ids=(req.linked_purchase_order_id, req.po_number),
+        )
     return {"submitted": True, "detail": result}

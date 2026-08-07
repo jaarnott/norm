@@ -49,9 +49,7 @@ class TestRunReviewAndMerge:
     def _run(self, monkeypatch, data, fx):
         monkeypatch.setattr(
             "app.agents.internal_tools.execute_consolidator",
-            lambda cfg, params, db, tid: {
-                "data": {"fix_invoices": [fx] if fx else []}
-            },
+            lambda cfg, params, db, tid: {"data": {"fix_invoices": [fx] if fx else []}},
         )
         db = _FakeSession(SimpleNamespace(id="v-1", name="La Zeppa", timezone=None))
         config_db = _FakeSession(_spec_with_review_tool())
@@ -149,4 +147,47 @@ class TestSuggestionSummary:
         assert "'BARE': must be linked or created" in s
 
     def test_nothing_to_say_returns_none(self):
-        assert _suggestion_summary({"lines": [{"id": "a", "linked_item_id": "x"}]}) is None
+        assert (
+            _suggestion_summary({"lines": [{"id": "a", "linked_item_id": "x"}]}) is None
+        )
+
+
+class TestNewSuggestionTypesSurviveMerge:
+    """copy_missing (per-line remove affordance) and add_line suggestions must
+    reach the editor through run_review_and_merge."""
+
+    def _run(self, monkeypatch, data, fx):
+        monkeypatch.setattr(
+            "app.agents.internal_tools.execute_consolidator",
+            lambda cfg, params, db, tid: {"data": {"fix_invoices": [fx] if fx else []}},
+        )
+        db = _FakeSession(SimpleNamespace(id="v-1", name="La Zeppa", timezone=None))
+        config_db = _FakeSession(_spec_with_review_tool())
+        IF.run_review_and_merge(data, "v-1", "inv-1", db, config_db)
+        return data
+
+    def test_copy_missing_and_add_line_merge(self, monkeypatch):
+        data = {"loaded_invoice_fingerprint": 7, "lines": [{"id": "l-1"}]}
+        fx = {
+            "checks": "ppf",
+            "check_reasons": ["Line 'X' not found on the attached invoice document"],
+            "suggestions": [
+                {
+                    "type": "add_line",
+                    "description": "Atlanta Bright IPA 4.6% 50L Keg",
+                    "quantity": 1,
+                    "unit_price_ex_tax": 340.0,
+                    "line_total_ex_tax": 340.0,
+                    "sale_tax_rate": 0.15,
+                    "summary": "Add 'Atlanta Bright IPA 4.6% 50L Keg' ($340.00) from the invoice copy",
+                }
+            ],
+            "lines": [
+                {"id": "l-1", "copy_missing": True, "unit_needs_confirmation": True}
+            ],
+        }
+        self._run(monkeypatch, data, fx)
+        assert data["lines"][0]["copy_missing"] is True
+        assert data["lines"][0]["unit_needs_confirmation"] is True
+        adds = [s for s in data["suggestions"] if s["type"] == "add_line"]
+        assert len(adds) == 1 and adds[0]["sale_tax_rate"] == 0.15

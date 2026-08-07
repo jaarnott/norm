@@ -253,6 +253,67 @@ def resolve_po_id(
     return None
 
 
+def _register_missing_variants(
+    lh: LoadedInvoiceClient, inv: dict, body: ReceiveRequest
+) -> None:
+    """Ensure each newly-linked line's supplier variant exists on its stock item.
+
+    Linking an item in the editor is a LOCAL draft edit; the link (and this
+    registration, which is what makes the supplier's future invoices
+    auto-match) lands in Loaded only here, at receive/save time — mirroring
+    what the old /link-item endpoint wrote immediately. Best-effort: a failed
+    registration never blocks the receive (the line still links via the PUT).
+    """
+    supplier_id = body.linked_supplier_id or inv.get("linkedSupplierId")
+    if not supplier_id:
+        return
+    pre_by_id = {ln.get("id"): ln for ln in inv.get("lines") or []}
+    for e in body.lines:
+        item_id = e.get("linked_item_id")
+        if not item_id or e.get("struck"):
+            continue
+        pre = pre_by_id.get(e.get("id"))
+        if pre is not None and pre.get("linkedItemId"):
+            continue  # already linked in Loaded — nothing new to register
+        code = (pre or {}).get("code") or e.get("code")
+        try:
+            item = lh.get(f"/1.0/stock/internal/items/{item_id}")
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            variants = [v for v in (item.get("suppliers") or []) if isinstance(v, dict)]
+            if any(
+                v.get("supplierId") == supplier_id
+                and _norm(v.get("stockCode")) == _norm(code)
+                for v in variants
+            ):
+                continue
+            unit_id = (
+                e.get("linked_unit_id")
+                or (pre or {}).get("linkedUnitId")
+                or item.get("orderingUnitId")
+            )
+            variants.append(
+                {
+                    "supplierId": supplier_id,
+                    "stockCode": code,
+                    "unitId": unit_id,
+                    "unitCost": (
+                        e.get("unit_cost")
+                        if e.get("unit_cost") is not None
+                        else _ln_unit_cost(pre or {})
+                    ),
+                    "brandId": (pre or {}).get("linkedBrandId"),
+                    "defaultForSupplier": False,
+                    "description": e.get("description")
+                    or (pre or {}).get("description"),
+                }
+            )
+            item["suppliers"] = variants
+            lh.request("PUT", f"/1.0/stock/internal/items/{item_id}", item)
+        except Exception as exc:  # noqa: BLE001 — registration is best-effort
+            logger.warning("variant registration failed for item %s: %s", item_id, exc)
+
+
 def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
     """Apply the card's edits to a draft invoice and (optionally) receive it.
 
@@ -309,31 +370,49 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
     # Editable header fields — apply each only when the caller supplied it, so a
     # receive that changes nothing in the header leaves it exactly as Loaded has
     # it. snake_case request field -> camelCase Loaded field.
+    # Loaded renamed the tax-mode header (unitCostIncludesTax →
+    # displayUnitCostInclusiveOfTax, observed live 05 Aug 2026) — write BOTH
+    # names so the edit lands regardless of which schema the API honours.
     _HEADER_FIELDS = {
-        "reference_number": "referenceNumber",
-        "issued_at": "issuedAt",
-        "due_at": "dueAt",
-        "received_at": "receivedAt",
-        "total": "total",
-        "linked_supplier_id": "linkedSupplierId",
-        "unit_cost_includes_tax": "unitCostIncludesTax",
-        "notes": "notes",
+        "reference_number": ("referenceNumber",),
+        "issued_at": ("issuedAt",),
+        "due_at": ("dueAt",),
+        "received_at": ("receivedAt",),
+        "total": ("total",),
+        "linked_supplier_id": ("linkedSupplierId",),
+        "unit_cost_includes_tax": (
+            "unitCostIncludesTax",
+            "displayUnitCostInclusiveOfTax",
+        ),
+        "notes": ("notes",),
     }
-    for src, dst in _HEADER_FIELDS.items():
+    for src, dsts in _HEADER_FIELDS.items():
         val = getattr(body, src)
         if val is not None:
-            inv[dst] = val
+            for dst in dsts:
+                inv[dst] = val
 
     # Per-line edits by id — only apply the fields the card sent.
     edits = {e.get("id"): e for e in body.lines if e.get("id")}
+    # Cost fields renamed by Loaded (unitCost → unitCostExclTax) — write both.
     _LINE_FIELDS = {
-        "unit": "unit",
-        "linked_unit_id": "linkedUnitId",
-        "unit_ratio": "linkedUnitRatio",
-        "quantity_received": "quantityReceived",
-        "unit_cost": "unitCost",
-        "total_cost": "totalCost",
+        "unit": ("unit",),
+        "linked_unit_id": ("linkedUnitId",),
+        "unit_ratio": ("linkedUnitRatio",),
+        "quantity_received": ("quantityReceived",),
+        "unit_cost": ("unitCost", "unitCostExclTax"),
+        "total_cost": ("totalCost", "totalCostExclTax"),
+        # Lines ADDED in the editor (e.g. an accepted add_line suggestion)
+        # carry the invoice's prevailing tax rate; without it Loaded computes
+        # zero tax for the new line.
+        "sale_tax_rate": ("saleTaxRate",),
+        # Item links are LOCAL draft edits (accepting a match suggestion never
+        # writes to Loaded on its own) — the link lands here, on receive.
+        "linked_item_id": ("linkedItemId",),
     }
+    # Register missing supplier variants for newly-linked lines BEFORE any
+    # edits mutate the invoice dict (the pre-link state decides "newly").
+    _register_missing_variants(lh, inv, body)
     existing_ids = {ln.get("id") for ln in inv.get("lines") or []}
     for ln in inv.get("lines") or []:
         e = edits.get(ln.get("id"))
@@ -346,9 +425,10 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
             # below already skips deletedAt lines. No other edits matter once struck.
             ln["deletedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
             continue
-        for src, dst in _LINE_FIELDS.items():
+        for src, dsts in _LINE_FIELDS.items():
             if src in e and e[src] is not None:
-                ln[dst] = e[src]
+                for dst in dsts:
+                    ln[dst] = e[src]
 
     # New lines the editor added (Add Item): a request line whose id matches no
     # existing invoice line is appended as a NEW Loaded line. The client's temp
@@ -360,9 +440,10 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         if not (e.get("code") or e.get("linked_item_id")):
             continue
         new_line = {}
-        for src, dst in _LINE_FIELDS.items():
+        for src, dsts in _LINE_FIELDS.items():
             if e.get(src) is not None:
-                new_line[dst] = e[src]
+                for dst in dsts:
+                    new_line[dst] = e[src]
         for src, dst in (
             ("code", "code"),
             ("description", "description"),
@@ -448,6 +529,26 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
 # ── Draft shaping ────────────────────────────────────────────────────────
 
 
+def _ln_unit_cost(ln: dict):
+    """Invoice-line unit cost — Loaded renamed unitCost → unitCostExclTax
+    (observed live 05 Aug 2026); read the new name, fall back to the old.
+    PO lines still use unitCost — these helpers are for INVOICE lines only."""
+    v = ln.get("unitCostExclTax")
+    return v if v is not None else ln.get("unitCost")
+
+
+def _ln_total_cost(ln: dict):
+    v = ln.get("totalCostExclTax")
+    return v if v is not None else ln.get("totalCost")
+
+
+def _inv_includes_tax(detail: dict) -> bool:
+    v = detail.get("displayUnitCostInclusiveOfTax")
+    if v is None:
+        v = detail.get("unitCostIncludesTax")
+    return bool(v)
+
+
 def invoice_fingerprint(detail: dict) -> str:
     """Stable hash of an invoice's REVIEW-RELEVANT content.
 
@@ -469,8 +570,8 @@ def invoice_fingerprint(detail: dict) -> str:
             [
                 ln.get("id"),
                 ln.get("quantityReceived"),
-                ln.get("unitCost"),
-                ln.get("totalCost"),
+                _ln_unit_cost(ln),
+                _ln_total_cost(ln),
                 ln.get("linkedItemId"),
                 ln.get("linkedUnitId"),
                 ln.get("unit"),
@@ -511,8 +612,8 @@ def _line_from_detail(ln: dict) -> dict:
         "unit_ratio": ln.get("linkedUnitRatio"),
         "quantity_ordered": ln.get("quantityOrdered"),
         "quantity_received": ln.get("quantityReceived"),
-        "unit_cost": ln.get("unitCost"),
-        "total_cost": ln.get("totalCost"),
+        "unit_cost": _ln_unit_cost(ln),
+        "total_cost": _ln_total_cost(ln),
         "tax_amount": ln.get("taxAmount"),
         "sale_tax_rate": ln.get("saleTaxRate"),
         "linked_item_id": ln.get("linkedItemId"),
@@ -602,7 +703,7 @@ def build_received_invoice_data(detail: dict) -> dict:
         "tax_amount": detail.get("taxAmount"),
         "discount_amount": detail.get("discountAmount"),
         "total": detail.get("total"),
-        "unit_cost_includes_tax": bool(detail.get("unitCostIncludesTax")),
+        "unit_cost_includes_tax": _inv_includes_tax(detail),
         "file_id": detail.get("fileId"),
         "is_received": bool(detail.get("isReceived")),
         "status": "draft",
@@ -615,3 +716,149 @@ def build_received_invoice_data(detail: dict) -> dict:
         "loaded_invoice_fingerprint": invoice_fingerprint(detail),
         "lines": lines,
     }
+
+
+def carry_local_state(fresh: dict, old: dict) -> None:
+    """Copy LOCAL editor state from an old received_invoice doc payload onto a
+    freshly-rebuilt one (in place).
+
+    Local state = things that exist only in the working document until receive:
+    the suggestion action log, struck flags, item links (local until the
+    receive PUT), and lines the editor added (id prefix "new-"). Used by
+    _reshape_draft_after_write AND the batch fan-out's doc reuse — replacing
+    doc.data wholesale without this silently discards the user's accepted
+    edits. reset-validation deliberately does NOT call it (from-scratch).
+    """
+    for k in ("actioned_suggestions",):
+        if k in old:
+            fresh[k] = old[k]
+    old_lines = old.get("lines") or []
+    fresh_by_id = {ln.get("id"): ln for ln in fresh.get("lines") or [] if ln.get("id")}
+    for old_ln in old_lines:
+        fresh_ln = fresh_by_id.get(old_ln.get("id"))
+        if fresh_ln is None:
+            if str(old_ln.get("id") or "").startswith("new-"):
+                fresh.setdefault("lines", []).append(old_ln)
+            continue
+        if old_ln.get("struck"):
+            fresh_ln["struck"] = True
+        if old_ln.get("linked_item_id") and not fresh_ln.get("linked_item_id"):
+            fresh_ln["linked_item_id"] = old_ln["linked_item_id"]
+            if old_ln.get("item_name") is not None:
+                fresh_ln["item_name"] = old_ln["item_name"]
+            if not fresh_ln.get("linked_unit_id") and old_ln.get("linked_unit_id"):
+                for k in ("linked_unit_id", "unit", "unit_ratio"):
+                    if old_ln.get(k) is not None:
+                        fresh_ln[k] = old_ln[k]
+
+
+def invalidate_conflicting_drafts(
+    db,
+    venue_id: str,
+    invoice_id: str,
+    reference_number: str | None = None,
+    supplier_name: str | None = None,
+    po_ids: tuple | list = (),
+    received: bool = True,
+) -> None:
+    """After an invoice is received (or its draft deleted), refresh the venue's
+    OTHER open drafts that the action affects.
+
+    Two effects, so a conversation full of Receive Invoice cards can never
+    receive the same thing twice:
+    - Twin docs of the ACTED invoice (repeated review runs create several docs
+      for one invoice) are marked received, so their cards render as done.
+    - Sibling drafts that would now conflict — same invoice number + supplier
+      (a duplicate pair), or any overlap with the purchase orders the action
+      touched — have their cached review cleared, so the card's next /review
+      re-runs the engine against the fresh received feed and flips the
+      duplicate / PO-already-invoiced state.
+
+    Best-effort bookkeeping: never raises, commits only when it changed
+    something.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.db.models import WorkingDocument
+
+    try:
+        docs = (
+            db.query(WorkingDocument)
+            .filter(
+                WorkingDocument.doc_type == "received_invoice",
+                WorkingDocument.venue_id == venue_id,
+            )
+            .all()
+        )
+        # Identity of the acted invoice: prefer caller-supplied values, fill
+        # gaps from its own docs (the delete path passes them explicitly since
+        # its docs are already gone).
+        own = [
+            d for d in docs if (d.external_ref or {}).get("invoice_id") == invoice_id
+        ]
+        po_set = {str(p) for p in po_ids if p}
+        for d in own:
+            data = d.data or {}
+            reference_number = reference_number or data.get("reference_number")
+            supplier_name = supplier_name or data.get("supplier_name")
+            for key in ("linked_purchase_order_id", "purchase_order_number"):
+                if data.get(key):
+                    po_set.add(str(data[key]))
+            for s in data.get("suggestions") or []:
+                if isinstance(s, dict):
+                    for k in ("purchase_order_id", "po_number"):
+                        if s.get(k):
+                            po_set.add(str(s[k]))
+        want_ref = _norm(reference_number)
+        want_sup = _norm(supplier_name)
+
+        changed = False
+        for d in docs:
+            data = d.data or {}
+            if data.get("is_received") or data.get("is_deleted"):
+                continue
+            if (d.external_ref or {}).get("invoice_id") == invoice_id:
+                if received:
+                    data["is_received"] = True
+                    data["status"] = "received"
+                    d.data = data
+                    d.version += 1
+                    flag_modified(d, "data")
+                    changed = True
+                continue
+            sib_ref = _norm(data.get("reference_number"))
+            sib_sup = _norm(data.get("supplier_name"))
+            duplicate = (
+                bool(want_ref)
+                and sib_ref == want_ref
+                and (not want_sup or not sib_sup or sib_sup == want_sup)
+            )
+            sib_pos = {
+                str(v)
+                for v in (
+                    data.get("linked_purchase_order_id"),
+                    data.get("purchase_order_number"),
+                )
+                if v
+            }
+            for s in data.get("suggestions") or []:
+                if isinstance(s, dict):
+                    for k in ("purchase_order_id", "po_number"):
+                        if s.get(k):
+                            sib_pos.add(str(s[k]))
+            if duplicate or (po_set and po_set & sib_pos):
+                data["checks"] = None
+                data["check_reasons"] = []
+                data["suggestions"] = []
+                d.data = data
+                d.version += 1
+                flag_modified(d, "data")
+                changed = True
+        if changed:
+            db.commit()
+    except Exception:
+        logger.warning("invalidate_conflicting_drafts failed", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
