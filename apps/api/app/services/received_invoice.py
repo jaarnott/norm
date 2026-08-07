@@ -473,9 +473,7 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         # Guard: an empty draft (a statement/letter uploaded as an invoice, or
         # every line struck) has nothing to receive — deleting the draft is
         # the right action, never an empty receive.
-        if not any(
-            not ln.get("deletedAt") for ln in inv.get("lines") or []
-        ):
+        if not any(not ln.get("deletedAt") for ln in inv.get("lines") or []):
             raise HTTPException(
                 400,
                 "nothing to receive — this draft has no line items (if it "
