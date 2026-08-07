@@ -360,6 +360,25 @@ class TestReceive:
         assert put[2]["subtotal"] == 1034.15
         assert put[2]["taxAmount"] == 155.12
 
+    def test_receive_with_no_lines_rejected(self):
+        # An empty draft (a letter/statement uploaded as an invoice — live:
+        # the Air Liquide surcharge notice) must never be received; deleting
+        # the draft is the action. Also covers an all-lines-struck receive.
+        from fastapi import HTTPException
+
+        inv = self._inv()
+        inv["lines"] = []
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
+        )
+        try:
+            IF._do_receive(lh, self._req())
+            raise AssertionError("expected 400")
+        except HTTPException as e:
+            assert e.status_code == 400
+            assert "nothing to receive" in str(e.detail)
+        assert lh.writes == []
+
     def test_receive_without_supplier_rejected(self):
         # Loaded's server 500s (opaque internal-error — seen live on Sawmill
         # 201458) when receiving an invoice with NO linked supplier. We must
@@ -566,7 +585,16 @@ class TestLinkedPoNumberIsWrittenForDisplay:
             "linkedPurchaseOrderId": None,
             # what the supplier feed put there: Bidfood's own order number
             "purchaseOrderNumber": "12195941-1",
-            "lines": [],
+            # one resolved line — an EMPTY draft is (correctly) unreceivable
+            "lines": [
+                {
+                    "id": "ln-1",
+                    "code": "NAP",
+                    "unit": "Each",
+                    "linkedUnitId": "u-each",
+                    "linkedItemId": "item-1",
+                }
+            ],
         }
 
     def _lh(self):
@@ -974,7 +1002,16 @@ class TestConditionalPoWriteback:
             "linkedSupplierId": "sup-1",
             "linkedPurchaseOrderId": None,
             "purchaseOrderNumber": None,
-            "lines": [],
+            # one resolved line — an EMPTY draft is (correctly) unreceivable
+            "lines": [
+                {
+                    "id": "ln-1",
+                    "code": "NAP",
+                    "unit": "Each",
+                    "linkedUnitId": "u-each",
+                    "linkedItemId": "item-1",
+                }
+            ],
         }
         return FakeLoaded(
             gets={

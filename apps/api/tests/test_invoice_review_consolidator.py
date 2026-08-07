@@ -1782,6 +1782,41 @@ class TestSingleInvoiceRunsAllChecks:
         ln = fi["lines"][0]
         assert ln.get("copy_quantity") is None  # line comparison skipped
 
+    def test_letter_document_suggests_deleting_the_draft(self):
+        # A supplier LETTER/NOTICE uploaded as a draft (live: an Air Liquide
+        # delivery-surcharge notice — document_type 'other', no product
+        # lines). Same treatment as a statement: flag, suggest delete, skip
+        # the line comparison.
+        pdf = make_pdf(document_type="other")
+        pdf["lines"] = []
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(linkedPurchaseOrderId=None)},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][0] == "f"
+        assert any("not an invoice" in r and "deleted" in r for r in fi["check_reasons"])
+        assert any(
+            s.get("type") == "delete_invoice" and "letter/notice" in s.get("summary", "")
+            for s in fi["suggestions"]
+        )
+
+    def test_other_with_lines_is_not_offered_a_delete(self):
+        # Safety: 'other' WITH extracted product lines could be a
+        # misclassified real invoice — never suggest deleting it; the normal
+        # line comparison handles it.
+        pdf = make_pdf(document_type="other")
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert not any(s.get("type") == "delete_invoice" for s in fi["suggestions"])
+
     def test_duplicate_of_received_invoice_suggests_deleting_the_draft(self):
         # The received feed holds a sibling with the SAME invoice number and
         # supplier (live: CN-19980, already received as a −$20 credit). Loaded's
