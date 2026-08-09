@@ -42,7 +42,9 @@ def _emit(capsys, fmt, event, fields):
 def test_json_output_carries_every_extra_field(capsys):
     """This is the one that matters — JSON is what production ships."""
     out = _emit(
-        capsys, "json", "mcp_tool_call",
+        capsys,
+        "json",
+        "mcp_tool_call",
         {"mcp_tool": "loadedhub__get_sales_for_period", "duration_ms": 412},
     )
     payload = json.loads(out.strip().splitlines()[-1])
@@ -55,7 +57,9 @@ def test_context_budget_fields_survive(capsys):
     """The prompt-size breakdown is the acceptance criterion for the context
     work. If it does not reach the logs, none of it can be measured."""
     out = _emit(
-        capsys, "json", "prompt_size",
+        capsys,
+        "json",
+        "prompt_size",
         {"ctx_total": 14122, "ctx_tools": 7354, "ctx_cache_read": 10242},
     )
     payload = json.loads(out.strip().splitlines()[-1])

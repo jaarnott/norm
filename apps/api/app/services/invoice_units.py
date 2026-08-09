@@ -105,7 +105,10 @@ def is_multipack(text: object) -> bool:
 
 
 def _unit_norm(text: object) -> str:
-    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+    """Unit-name key: lowercase, whitespace ignored — case and spacing never
+    distinguish units ('Each'/'each', '1kg'/'1 kg'), but digits and DOTS do
+    ('1.9 KG' vs '19 KG' are different sizes), so punctuation is kept."""
+    return "".join(str(text or "").lower().split())
 
 
 def multipack_equal(a: object, b: object) -> bool:
@@ -136,3 +139,45 @@ def multipack_equal(a: object, b: object) -> bool:
     if pa and pb:
         return pa[0] == pb[0] and abs(pa[1] - pb[1]) < 0.001
     return _unit_norm(ia) == _unit_norm(ib)
+
+
+def _outer_count(u: object) -> float | None:
+    """The leading count of an 'NxM' multipack name ('6x750mL' → 6.0), else None."""
+    if not is_multipack(u):
+        return None
+    s = "".join(str(u or "").lower().split())
+    try:
+        return float(s[: s.find("x")])
+    except ValueError:
+        return None
+
+
+def units_equivalent(a: object, b: object) -> bool:
+    """True when two unit names denote the same DELIVERED pack.
+
+    Beyond multipack_equal and magnitude equality ('0.7 L' == '700 mL'), a
+    copy that prints only a pack COUNT still names the same pack: '6 pack' ==
+    '6x750mL', and 'each'/'EA' == a single sized-bottle unit ('750 mL' —
+    volume only; 'each' vs a WEIGHT unit stays a mismatch, weight-priced
+    quantities mean kilos, not items). Count-vs-count still compares counts,
+    so 'each' vs '12 pack' and '24 pack' vs '4x6 pack' remain mismatches.
+    Mirror of _units_equivalent in
+    config/consolidators/review_and_receive_invoices.py.
+    """
+    if multipack_equal(a, b):
+        return True
+    pa, pb = parse_unit(a), parse_unit(b)
+    if pa and pb and pa[0] == pb[0] and abs(pa[1] - pb[1]) < 0.001:
+        return True
+    for p, other in ((pa, b), (pb, a)):
+        if not p or p[0] != "count":
+            continue
+        oc = _outer_count(other)
+        if oc is not None:
+            if abs(oc - p[1]) < 0.001:
+                return True
+        else:
+            po = parse_unit(other)
+            if po and po[0] == "volume" and abs(p[1] - 1) < 0.001:
+                return True
+    return False

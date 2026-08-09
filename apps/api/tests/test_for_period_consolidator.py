@@ -394,8 +394,13 @@ class TestWrappedArgumentsAreReachable:
             "path_template": "/staff?pos={{ posIdentifier }}",
         }
         tool = m.tool_for(
-            "get_staff_item_orders_for_period", "get_staff_item_orders",
-            "start", "end", "Orders", "", wrapped=wrapped,
+            "get_staff_item_orders_for_period",
+            "get_staff_item_orders",
+            "start",
+            "end",
+            "Orders",
+            "",
+            wrapped=wrapped,
         )
         assert "posIdentifier" in tool["required_fields"]
         assert tool["consolidator_config"]["defaults"] == {}
@@ -465,8 +470,12 @@ class TestSummaryFieldsAreInherited:
     def test_summary_fields_carry_over_from_the_wrapped_action(self):
         m = self._module()
         tool = m.tool_for(
-            "get_received_invoices_for_period", "get_received_invoices",
-            "from", "to", "Invoices", "",
+            "get_received_invoices_for_period",
+            "get_received_invoices",
+            "from",
+            "to",
+            "Invoices",
+            "",
             wrapped={
                 "required_fields": ["from", "to"],
                 "summary_fields": ["invoiceNumber", "supplierName", "total"],
@@ -477,7 +486,12 @@ class TestSummaryFieldsAreInherited:
     def test_max_result_chars_carries_over_too(self):
         m = self._module()
         tool = m.tool_for(
-            "x_for_period", "x", "a", "b", "R", "",
+            "x_for_period",
+            "x",
+            "a",
+            "b",
+            "R",
+            "",
             wrapped={"required_fields": [], "max_result_chars": 100_000},
         )
         assert tool["max_result_chars"] == 100_000

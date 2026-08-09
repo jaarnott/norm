@@ -278,9 +278,7 @@ class TestRunOutcomeReachesTheConversation:
         after = posted[0].split("</details>")[1]
         assert long_result.strip() in after
 
-    def test_display_blocks_from_the_run_are_carried_over(
-        self, db_session, admin_user
-    ):
+    def test_display_blocks_from_the_run_are_carried_over(self, db_session, admin_user):
         # Cards/tables the run produced must render in the conversation too.
         blocks = [{"component": "generic_table", "data": {"rows": []}}]
         posted = self._run(

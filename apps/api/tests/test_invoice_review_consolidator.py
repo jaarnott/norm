@@ -39,6 +39,8 @@ class Api:
         received_feed=None,
         item_matches=None,
         supplier_specs=None,
+        supplier_match=None,
+        supplier_aliases=None,
         stock_items=None,
     ):
         self.invoices = invoices
@@ -63,6 +65,12 @@ class Api:
         self.match_calls = []
         # Admin-maintained supplier specs (norm.get_supplier_invoice_specs).
         self.supplier_specs = supplier_specs or []
+        # Scripted norm.match_supplier result ({supplier_id, supplier_name}).
+        self.supplier_match = supplier_match
+        self.supplier_match_calls = []
+        # Scripted get_supplier_aliases rows ([{id, name}]).
+        self.supplier_aliases = supplier_aliases or []
+        self.supplier_alias_calls = []
         self.supplier_spec_calls = 0
         self.received_bodies = []
 
@@ -71,7 +79,10 @@ class Api:
         if action == "list_stock_invoices":
             return self.invoices
         if action == "get_invoice_detail":
-            return self.details[params["invoice_id"]]
+            # Missing id → error dict, mirroring the real executor's catch
+            # (the split classifier probes sibling invoices best-effort).
+            d = self.details.get(params["invoice_id"])
+            return d if d is not None else {"error": "not found"}
         if action == "get_stock_purchase_order":
             return self.pos[params["purchase_order_id"]]
         if action == "list_purchase_orders":
@@ -81,6 +92,12 @@ class Api:
         if action == "match_stock_items":
             self.match_calls.append(params.get("lines") or [])
             return {"suggestions": self.item_matches}
+        if action == "get_supplier_aliases":
+            self.supplier_alias_calls.append(params.get("supplier_id"))
+            return self.supplier_aliases
+        if action == "match_supplier":
+            self.supplier_match_calls.append(params.get("supplier_name"))
+            return {"match": self.supplier_match}
         if action == "get_supplier_invoice_specs":
             self.supplier_spec_calls += 1
             return {"specs": self.supplier_specs}
@@ -98,6 +115,9 @@ class Api:
         self, connector, action, params=None, schema=None, instructions=None
     ):
         assert action == "download_invoice_file"
+        if not hasattr(self, "extract_instructions"):
+            self.extract_instructions = []
+        self.extract_instructions.append(instructions or "")
         return self.pdfs[(params or {})["file_id"]]
 
     # Parallel executor helpers (the real ones fan out on threads; the fakes
@@ -368,10 +388,13 @@ class TestSkips:
         api = api_for(make_invoice(linkedPurchaseOrderId=None))
         verdict = sole_skip(run_consolidator(api))
         reason = " ".join(verdict["reasons"])
-        assert "Not linked to a purchase order" in reason
+        assert "No valid purchase order" in reason
         assert "PO#1520987" in reason
 
     def _freight_case(self, charge_amt=6.50):
+        # Freight is a STOCK ITEM (user decision, 08 Aug 2026): the copy's
+        # freight is an ordinary LINE — no charges[] concept — paired through
+        # the freight item's supplier variant description like any product.
         freight = make_line(
             id="line-2",
             code="FGT001",
@@ -386,30 +409,56 @@ class TestSkips:
             lines=[make_line(), freight], subtotal=226.28, taxAmount=33.94, total=260.22
         )
         pdf = make_pdf(
-            charges=[{"description": "Freight (ex GST)", "amount_ex_tax": charge_amt}],
             subtotal_ex_tax=226.28,
             tax_amount=33.95,
             total_incl_tax=260.23,
         )
-        return api_for(inv, pdf=pdf)
+        pdf["lines"] = pdf["lines"] + [
+            {
+                "code": None,
+                "description": "Freight (ex GST)",
+                "quantity": 1,
+                "unit": None,
+                "unit_of_measure": None,
+                "unit_price_ex_tax": charge_amt,
+                "line_total_ex_tax": charge_amt,
+            }
+        ]
+        return api_for(
+            inv,
+            pdf=pdf,
+            stock_items={
+                "item-freight": {
+                    "id": "item-freight",
+                    "name": "FREIGHT - FOOD",
+                    "suppliers": [
+                        {
+                            "supplierId": "supplier-akaroa",
+                            "stockCode": "FGT001",
+                            "description": "Freight (ex GST)",
+                        }
+                    ],
+                }
+            },
+        )
 
-    def test_freight_line_reconciles_with_the_copy_charge(self):
-        # A freight line on the Loaded invoice is billed as a separate CHARGE on
-        # the copy ("Freight (ex GST)") — they reconcile by the shared word
-        # "freight", so the one amount is NOT double-flagged (neither "line not
-        # found" nor "charge with no matching invoice line") and it receives.
+    def test_freight_line_reconciles_via_the_variant(self):
+        # The copy prints "Freight (ex GST)"; the draft line says "FREIGHT -
+        # FOOD" — they pair through the freight stock item's supplier variant
+        # description (the standard passes; no charge concept), and receive.
         result = run_consolidator(self._freight_case())
         assert result["summary"] == {"received": 1, "skipped": 0}
 
     def test_freight_amount_discrepancy_flags_once(self):
-        # If the freight line's amount differs from the copy's charge, that's a
-        # real discrepancy — flagged ONCE (not as two separate problems).
+        # A freight amount mismatch is an ordinary line-vs-copy cost mismatch:
+        # flagged once, with the standard actionable fields.
         verdict = sole_skip(run_consolidator(self._freight_case(charge_amt=9.00)))
         freight_reasons = [
             r for r in verdict["reasons"] if "FREIGHT" in r.upper() or "Freight" in r
         ]
-        assert len(freight_reasons) == 1
-        assert "does not equal" in freight_reasons[0]
+        # Standard line semantics: cost AND line-total reasons both fire —
+        # exactly as for any product line (charge-era 'once' no longer applies).
+        assert any("unit cost" in r for r in freight_reasons)
 
     def test_po_price_difference_does_not_block(self):
         # User decision: PO prices move between ordering and invoicing — the
@@ -460,6 +509,37 @@ class TestSkips:
         verdict = sole_skip(run_consolidator(api))
         assert any("does not match invoice supplier" in r for r in verdict["reasons"])
 
+    def test_po_supplier_mismatch_carries_card_fields(self):
+        # The editor's "unlink this order" suggestion needs the PO's supplier
+        # name on the card (reason text alone renders nothing actionable).
+        api = api_for(
+            make_invoice(),
+            po=make_po(supplierId="someone-else", supplierName="Wrong Supplier Ltd"),
+        )
+        fx = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fx["po_supplier_mismatch"] is True
+        assert fx["po_supplier_name"] == "Wrong Supplier Ltd"
+
+    def test_po_supplier_match_leaves_card_fields_clean(self):
+        # Card forced by an unrelated failure (NEW item); the PO matches.
+        api = api_for(make_invoice(lines=[make_line(linkedItemId=None)]))
+        fx = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fx["po_supplier_mismatch"] is False
+        assert fx["po_supplier_name"] is None
+
+    def test_po_supplier_alias_passes(self):
+        # The PO sits on a DUPLICATE supplier record whose name is a stored
+        # alias of the invoice's supplier (PO 'Ellesmere Butchery', invoice
+        # 'Tamar Farming Company' with alias 'Ellesmere Butchery Ltd' —
+        # INV-2888, 08 Aug 2026): same business, no false mismatch.
+        api = api_for(
+            make_invoice(),
+            po=make_po(supplierId="someone-else", supplierName="Ellesmere Butchery"),
+        )
+        api.supplier_aliases = [{"id": "al-1", "name": "Ellesmere Butchery Ltd"}]
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+
     def test_new_stock_item_blocks(self):
         api = api_for(make_invoice(lines=[make_line(linkedItemId=None)]))
         verdict = sole_skip(run_consolidator(api))
@@ -506,24 +586,32 @@ class TestSkips:
             for r in verdict["reasons"]
         )
 
-    def test_three_cent_difference_fails(self):
+    def test_three_cent_difference_is_absorbed_as_rounding(self):
+        # Supersedes the old 2c rule (user decision 2026-08-08: copy Loaded).
+        # Loaded's receive flow absorbs ≤10c of drift between the
+        # line-computed total and the stated total as a rounding amount, so
+        # a 3c difference no longer blocks — the invoice receives with the
+        # stated total kept.
         api = api_for(
             make_invoice(total=252.78),
             pdf=make_pdf(total_incl_tax=252.78),
         )
-        verdict = sole_skip(run_consolidator(api))
-        assert any("$252.75" in r and "$252.78" in r for r in verdict["reasons"])
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
 
     def test_missing_copy_still_runs_the_other_checks(self):
         # No copy attached: the copy checks stay unchecked, but the OTHER
         # problems (PO, totals) are still found and reported (unified process).
         api = api_for(
-            make_invoice(fileId=None, linkedPurchaseOrderId=None, subtotal=999.0)
+            # totals broken far beyond the 10c rounding band
+            make_invoice(
+                fileId=None, linkedPurchaseOrderId=None, subtotal=999.0, total=1031.97
+            )
         )
         verdict = sole_skip(run_consolidator(api))
         text = " | ".join(verdict["reasons"])
         assert "No invoice copy attached" in text
-        assert "Not linked to a purchase order" in text
+        assert "No valid purchase order" in text
         assert "Line items sum to" in text
 
     def test_unreadable_pdf_blocks(self):
@@ -565,15 +653,27 @@ class TestSkips:
             for r in verdict["reasons"]
         )
 
-    def test_pdf_charge_blocks(self):
-        api = api_for(
-            make_invoice(),
-            pdf=make_pdf(
-                charges=[{"description": "Freight (ex GST)", "amount_ex_tax": 6.50}]
-            ),
-        )
+    def test_pdf_extra_freight_line_blocks(self):
+        # A copy freight line with NO draft line is an ordinary unmatched copy
+        # line: the standard add-line flow flags it (no charge concept).
+        pdf = make_pdf()
+        pdf["lines"] = pdf["lines"] + [
+            {
+                "code": None,
+                "description": "Freight (ex GST)",
+                "quantity": 1,
+                "unit": None,
+                "unit_of_measure": None,
+                "unit_price_ex_tax": 6.50,
+                "line_total_ex_tax": 6.50,
+            }
+        ]
+        api = api_for(make_invoice(), pdf=pdf)
         verdict = sole_skip(run_consolidator(api))
-        assert any("charge 'Freight (ex GST)' $6.50" in r for r in verdict["reasons"])
+        assert any(
+            "Freight (ex GST)" in r and "no matching invoice line" in r
+            for r in verdict["reasons"]
+        )
 
     def test_pdf_total_mismatch_blocks(self):
         api = api_for(make_invoice(), pdf=make_pdf(total_incl_tax=260.23))
@@ -600,11 +700,12 @@ class TestUnifiedReporting:
             make_invoice(
                 linkedPurchaseOrderId=None,
                 subtotal=999.0,  # a second, independent problem
+                total=1031.97,  # beyond the 10c rounding band
             )
         )
         verdict = sole_skip(run_consolidator(api))
         text = " | ".join(verdict["reasons"])
-        assert "Not linked to a purchase order" in text
+        assert "No valid purchase order" in text
         assert "Line items sum to" in text  # not hidden behind the PO failure
 
     def test_credit_note_still_runs_the_other_checks(self):
@@ -619,7 +720,7 @@ class TestUnifiedReporting:
         verdict = sole_skip(run_consolidator(api))
         text = " | ".join(verdict["reasons"])
         assert "Credit note" in text
-        assert "Not linked to a purchase order" in text
+        assert "No valid purchase order" in text
 
     def test_batch_runs_the_full_extraction_for_every_invoice(self):
         # Unified with the editor: the copy comparison runs in batch too (the
@@ -655,6 +756,27 @@ class TestUnifiedReporting:
         assert "document's quantity" in text
         assert "document's unit price" in text
 
+    def test_cents_drift_within_loaded_rounding_band_passes(self):
+        # Loaded's receive flow absorbs ≤10c between the line-computed total
+        # and the stated total as a "rounding amount" (their app bundle:
+        # ±0.10) — mirrored: a 7c drift passes the totals check untouched.
+        api = api_for(make_invoice(total=252.82))  # lines+tax say 252.75
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][5] == "p"
+        assert not any("invoice total is" in r for r in fi.get("check_reasons") or [])
+
+    def test_drift_beyond_rounding_band_still_fails(self):
+        api = api_for(make_invoice(total=252.86))  # 11c off — beyond the band
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][5] == "f"
+
+    def test_subtotal_drift_with_consistent_total_passes_like_loaded(self):
+        # Loaded validates lines vs the STATED TOTAL only — a subtotal that
+        # drifts a few cents while the total stays consistent is accepted.
+        api = api_for(make_invoice(subtotal=219.85))  # 7c off the line sum
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][5] == "p"
+
     def test_totals_failure_does_not_hide_the_copy_checks_in_batch(self):
         # subtotal off AND the stated total disagrees with the copy — both
         # reported (previously the totals gate blocked Layer 6 in batch).
@@ -679,7 +801,7 @@ class TestChecklist:
         verdict = run_consolidator(api)["received"][0]
         # All-pass checklists collapse to a single string — keeps the report
         # payload under the tool-result slim threshold on large runs.
-        assert verdict["checklist"] == "All 12 checks passed ✓"
+        assert verdict["checklist"] == "All 13 checks passed ✓"
 
     def test_unlinked_invoice_still_runs_the_copy_checks(self):
         # Unified process: the PO failure no longer hides the copy comparison —
@@ -714,11 +836,11 @@ class TestChecklist:
             pdfs={FILE_ID: make_pdf()},
         )
         rows = {r["reference"]: r for r in run_consolidator(api)["results"]}
-        assert rows["F55755100"]["checks"] == "12✓"
+        assert rows["F55755100"]["checks"] == "13✓"
         # unified process: the copy checks run too — the copy's invoice number
         # (F55755100) doesn't match X-1, so TWO crosses; only po_supplier stays
         # unchecked (no PO was fetched).
-        assert rows["X-1"]["checks"] == "9✓ 2✗ 1 not checked"
+        assert rows["X-1"]["checks"] == "10✓ 2✗ 1 not checked"
 
 
 class TestSupplierSpecs:
@@ -760,7 +882,7 @@ class TestSupplierSpecs:
         # "Service Foods" matches by substring.
         api = self._api("Service Foods Auckland", [self.SPEC])
         run_consolidator(api, invoice_id=INV_ID)
-        full = next(i for i in api.instructions_seen if "product line" in i)
+        full = next(i for i in api.instructions_seen if "billed LINE" in i)
         assert "Supplier-specific notes for Service Foods Auckland" in full
         assert "CTN and UNIT columns" in full
 
@@ -869,7 +991,7 @@ class TestCardIsDocComplete:
             assert f in ln, f
         assert ln["original_unit_id"] == ln["linked_unit_id"]
         # reasons ride on every card now (the chat doc renders Needs Attention)
-        assert any("Not linked to a purchase order" in r for r in fi["check_reasons"])
+        assert any("No valid purchase order" in r for r in fi["check_reasons"])
 
 
 class TestVerdictShape:
@@ -889,7 +1011,7 @@ class TestVerdictShape:
         )
         verdict = sole_skip(run_consolidator(api))
         assert "details" not in verdict
-        assert any("Not linked to a purchase order" in r for r in verdict["reasons"])
+        assert any("No valid purchase order" in r for r in verdict["reasons"])
 
 
 class TestReport:
@@ -912,7 +1034,7 @@ class TestReport:
         assert outcomes["F55755100"] == "received"
         assert outcomes["X-1"] == "skipped"
         skipped_row = next(r for r in rows if r["reference"] == "X-1")
-        assert "Not linked to a purchase order" in skipped_row["reasons"]
+        assert "No valid purchase order" in skipped_row["reasons"]
 
 
 class TestPayloadSize:
@@ -1020,6 +1142,7 @@ class TestUnitParser:
             ("6x750ml", "6x 750ml"),
             ("12x1L", "12 x 1 litre"),
             ("2x12*330ml", "2 x 12*330ML"),  # unparseable inner → name equal
+            ("Each", " EACH"),  # case/whitespace-insensitive plain names
         ):
             assert self.multipack_equal(a, b), (a, b)
         # Different packs never equal — even when the totals agree.
@@ -1029,6 +1152,9 @@ class TestUnitParser:
             ("2x12 pack", "24 pack"),
             ("6x1L", "12x1L"),
             ("6x1L", "Case(s)"),
+            # dots distinguish sizes — whitespace/case never do
+            ("6x1.5L", "6x15L"),
+            ("1.9 KG", "19 KG"),
         ):
             assert not self.multipack_equal(a, b), (a, b)
 
@@ -1045,7 +1171,7 @@ class TestUnitOfMeasureGate:
         api = api_for(make_invoice(), pdf=self.pdf_with_uom("Kilo"))
         result = run_consolidator(api)
         assert result["summary"] == {"received": 1, "skipped": 0}
-        assert result["received"][0]["checklist"] == "All 12 checks passed ✓"
+        assert result["received"][0]["checklist"] == "All 13 checks passed ✓"
 
     def test_count_mismatch_blocks_with_fix_advice(self):
         # The real napkins case: Loaded says Each, copy is a 100-pack.
@@ -1134,6 +1260,49 @@ class TestUnitOfMeasureGate:
         assert result["summary"] == {"received": 1, "skipped": 0}
         fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
         assert not any(s["type"] == "unit" for s in fi.get("suggestions") or [])
+
+    def test_count_only_pack_vs_sized_multipack_passes(self):
+        # Hancocks 4358010 Grant Burge, pinned: the copy's Pack column prints
+        # '6 PK' (no bottle size — the description is width-truncated), Loaded
+        # holds the sized multipack '6x750mL'. Same pack — no churn.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="6x750mL")]),
+            pdf=self.pdf_with_uom("6 pack"),
+        )
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert not any(s["type"] == "unit" for s in fi.get("suggestions") or [])
+
+    def test_each_vs_single_bottle_unit_passes(self):
+        # Hancocks Piper Heidsieck / Taylor's Port: Pack 'EA' derives 'each',
+        # Loaded's unit is the bottle size ('375 mL'). One bottle each — the
+        # same delivered unit; 'use Each' was pure churn.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="375 mL")]),
+            pdf=self.pdf_with_uom("each"),
+        )
+        result = run_consolidator(api)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+
+    def test_each_vs_weight_unit_still_flags(self):
+        # Guard on the equivalence: weight-priced quantities mean kilos, not
+        # items — 'each' never absorbs a weight unit.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="1.9 KG")]),
+            pdf=self.pdf_with_uom("each"),
+        )
+        verdict = sole_skip(run_consolidator(api))
+        assert any("delivered unit" in r for r in verdict["reasons"])
+
+    def test_each_vs_multipack_still_flags(self):
+        # 'each' is ONE item; a sized 6-pack is not it.
+        api = api_for(
+            make_invoice(lines=[make_line(unit="6x750mL")]),
+            pdf=self.pdf_with_uom("each"),
+        )
+        verdict = sole_skip(run_consolidator(api))
+        assert any("delivered unit" in r for r in verdict["reasons"])
 
 
 class TestFixDerivation:
@@ -1347,6 +1516,7 @@ class TestCardChecks:
         "unit_of_measure",
         "pdf_total",
         "duplicate",
+        "supplier",
     ]
 
     def decode(self, packed):
@@ -1412,7 +1582,7 @@ class TestSingleInvoiceMode:
         fi = result["fix_invoices"][0]
         assert fi["invoice_id"] == INV_ID
         # a perfect invoice: all 11 checks pass, packed one char per check
-        assert len(fi["checks"]) == 12
+        assert len(fi["checks"]) == 13
         assert set(fi["checks"]) == {"p"}
 
     def test_carries_copy_comparison_for_the_one_invoice(self):
@@ -1429,6 +1599,132 @@ class TestSingleInvoiceMode:
         assert ln["copy_unit"] == "Kg"
         assert ln["recommended_unit"] == "100 piece"
         assert [s["type"] for s in fi["suggestions"]] == ["unit"]
+
+
+class TestCopySupplier:
+    """Gate 12: the supplier printed on the copy. Fires only for a MISSING
+    supplier link or a genuinely different business (the model judges
+    same-business naming variations — 'Hancocks' vs 'Hancock Ltd' — as the
+    same, so they never churn). Match results ride on the card for the
+    editor's supplier suggestion."""
+
+    def test_missing_supplier_matches_and_fails(self):
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(linkedSupplierId=None, supplierName=None)},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+            supplier_match={"supplier_id": "sup-9", "supplier_name": "Ahi Mokopuna"},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert api.supplier_match_calls == ["Ahi Mokopuna Limited Partnership"]
+        assert fi["copy_supplier"] == "Ahi Mokopuna Limited Partnership"
+        assert fi["matched_supplier_id"] == "sup-9"
+        assert fi["matched_supplier_name"] == "Ahi Mokopuna"
+        assert any(
+            "No supplier linked in Loaded" in r
+            and "matches Loaded supplier 'Ahi Mokopuna'" in r
+            for r in fi["check_reasons"]
+        )
+
+    def test_missing_supplier_no_match_still_fails(self):
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(linkedSupplierId=None, supplierName=None)},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["matched_supplier_id"] is None
+        assert any(
+            "no matching Loaded supplier found" in r for r in fi["check_reasons"]
+        )
+
+    def test_same_business_naming_variation_passes(self):
+        # Linked supplier + supplier_differs NOT set by the model → pass, no
+        # match call — 'Hancocks' vs 'Hancock Ltd' never churns.
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert api.supplier_match_calls == []
+        assert fi["supplier_differs"] is False
+        assert not any("copy names" in r for r in fi.get("check_reasons") or [])
+
+    def test_stage1_clause_names_the_aliases(self):
+        # The extraction instructions carry the linked supplier's stored
+        # aliases, so the MODEL's same-business judgment covers alias
+        # VARIANTS too (user fix, 08 Aug 2026) — and the fetch is cached
+        # per supplier per run.
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+            supplier_aliases=[{"id": "al-1", "name": "Ellesmere Butchery Ltd"}],
+        )
+        run_consolidator(api, invoice_id=INV_ID)
+        assert api.supplier_alias_calls == ["supplier-akaroa"]
+        assert any(
+            "also known as: 'Ellesmere Butchery Ltd'" in t
+            for t in getattr(api, "extract_instructions", [])
+        )
+
+    def test_known_alias_of_linked_supplier_passes(self):
+        # 'Ellesmere Butchery Ltd' is a stored ALIAS of the linked 'Tamar
+        # Farming Company' (INV-2888, 08 Aug 2026): stage 1½ resolves it
+        # deterministically — pass, no LLM match call, no churn.
+        pdf = make_pdf(supplier_differs=True, supplier_name="Ellesmere Butchery Ltd")
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+            supplier_aliases=[{"id": "al-1", "name": "Ellesmere Butchery Ltd"}],
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert api.supplier_alias_calls == ["supplier-akaroa"]
+        assert api.supplier_match_calls == []
+        assert fi["supplier_differs"] is False
+        assert not any("copy names" in r for r in fi.get("check_reasons") or [])
+
+    def test_match_resolving_to_linked_supplier_passes(self):
+        # No alias hit, but the LLM match lands on the ALREADY-linked supplier
+        # — same business after all; pass instead of a relink suggestion.
+        pdf = make_pdf(supplier_differs=True, supplier_name="Ahi Mokopuna LP")
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+            supplier_match={
+                "supplier_id": "supplier-akaroa",
+                "supplier_name": "Akaroa Salmon",
+            },
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["supplier_differs"] is False
+        assert fi["matched_supplier_id"] is None
+        assert not any("copy names" in r for r in fi.get("check_reasons") or [])
+
+    def test_different_business_fails_with_match(self):
+        pdf = make_pdf(supplier_differs=True, supplier_name="Totally Other Co")
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: pdf},
+            supplier_match={"supplier_id": "sup-7", "supplier_name": "Other Co"},
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["supplier_differs"] is True
+        assert fi["matched_supplier_id"] == "sup-7"
+        assert any(
+            "but the copy names 'Totally Other Co'" in r for r in fi["check_reasons"]
+        )
 
 
 class TestCopyTotals:
@@ -1463,6 +1759,27 @@ class TestCopyTotals:
         fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
         assert fi["copy_total_mismatch"] is False
         assert fi.get("copy_total") is None
+
+
+class TestCopyInvoiceNumber:
+    """When the copy prints a DIFFERENT invoice number, the card carries it so
+    the editor can offer "Invoice number X → Y (per the invoice copy)" as a
+    local edit (referenceNumber already rides the receive write-through);
+    dismiss stays the wrong-attachment escape hatch."""
+
+    def test_mismatched_number_blocks_and_carries_card_field(self):
+        api = api_for(make_invoice(), pdf=make_pdf(invoice_number="INV-9999"))
+        verdict = sole_skip(run_consolidator(api))
+        assert any("Attached copy is for invoice" in r for r in verdict["reasons"])
+        api2 = api_for(make_invoice(), pdf=make_pdf(invoice_number="INV-9999"))
+        fi = run_consolidator(api2, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["copy_invoice_number"] == "INV-9999"
+
+    def test_matching_number_carries_nothing(self):
+        # Card forced by an unrelated failure (NEW item); the number matches.
+        api = api_for(make_invoice(lines=[make_line(linkedItemId=None)]))
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["copy_invoice_number"] is None
 
 
 class TestUnresolvedCopyPo:
@@ -1582,7 +1899,7 @@ class TestSingleInvoicePoOverride:
         fi = run_consolidator(api, invoice_id=INV_ID, purchase_order_id=PO_ID)[
             "fix_invoices"
         ][0]
-        assert len(fi["checks"]) == 12
+        assert len(fi["checks"]) == 13
         # po_linked is a SUGGESTED change (auto-matched, not originally linked),
         # not a clean pass; every OTHER gate runs and passes.
         assert fi["checks"][2] == "s"
@@ -1667,10 +1984,11 @@ class TestSingleInvoiceRunsAllChecks:
     """
 
     def test_totals_failure_does_not_hide_the_copy_checks(self):
-        # Inflate the subtotal so line-sum != subtotal → the totals check fails.
+        # Inflate subtotal AND total so line-sum != subtotal and the drift is
+        # far beyond Loaded's 10c rounding band → the totals check fails.
         api = Api(
             invoices=[],
-            details={INV_ID: make_invoice(subtotal=999.0)},
+            details={INV_ID: make_invoice(subtotal=999.0, total=1031.97)},
             pos={PO_ID: make_po()},
             pdfs={FILE_ID: make_pdf()},
         )
@@ -1689,7 +2007,8 @@ class TestSingleInvoiceRunsAllChecks:
         pdf["lines"][0] = dict(pdf["lines"][0], quantity=99.0)  # copy says 99
         api = Api(
             invoices=[],
-            details={INV_ID: make_invoice(subtotal=999.0)},  # totals also off
+            # totals also off — beyond the 10c rounding band
+            details={INV_ID: make_invoice(subtotal=999.0, total=1031.97)},
             pos={PO_ID: make_po()},
             pdfs={FILE_ID: pdf},
         )
@@ -1797,9 +2116,12 @@ class TestSingleInvoiceRunsAllChecks:
         )
         fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
         assert fi["checks"][0] == "f"
-        assert any("not an invoice" in r and "deleted" in r for r in fi["check_reasons"])
         assert any(
-            s.get("type") == "delete_invoice" and "letter/notice" in s.get("summary", "")
+            "not an invoice" in r and "deleted" in r for r in fi["check_reasons"]
+        )
+        assert any(
+            s.get("type") == "delete_invoice"
+            and "letter/notice" in s.get("summary", "")
             for s in fi["suggestions"]
         )
 
@@ -1833,13 +2155,105 @@ class TestSingleInvoiceRunsAllChecks:
                     "supplierName": "Akaroa Salmon",
                     "receivedAt": "2026-06-29T22:26:47Z",
                     "total": -20.0,
+                    "fileId": "sib-file-1",
                 }
             ],
         )
         fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
         assert fi["checks"][11] == "f"  # the duplicate check (appended last)
         assert any("already received on 2026-06-29" in r for r in fi["check_reasons"])
+        dele = next(s for s in fi["suggestions"] if s.get("type") == "delete_invoice")
+        # The received sibling's id + file id ride on the suggestion AND the
+        # card: the editor deep-links it in Loaded and serves its copy for
+        # comparison — by FILE id, so no detail round-trip is needed.
+        assert dele["duplicate_of_invoice_id"] == "other-received-id"
+        assert dele["duplicate_of_file_id"] == "sib-file-1"
+        assert dele["duplicate_of_purchase_order_id"] is None
+        assert fi["duplicate_of_invoice_id"] == "other-received-id"
+        assert fi["duplicate_of_file_id"] == "sib-file-1"
+
+    def test_duplicate_draft_lines_still_get_item_matches(self):
+        # A DUPLICATE draft's lines are real products (SF IN9757146,
+        # 08 Aug 2026): the statement guard silently withheld every stock-item
+        # match, so the card offered create-as-NEW for items the venue plainly
+        # had. Only a STATEMENT's delete fix suppresses matching.
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(lines=[make_line(linkedItemId=None)])},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+            received_feed=[
+                {
+                    "id": "other-received-id",
+                    "invoiceNumber": "F55755100",
+                    "supplierName": "Akaroa Salmon",
+                    "receivedAt": "2026-06-29T22:26:47Z",
+                    "total": -20.0,
+                }
+            ],
+            item_matches={
+                "line-1": {
+                    "matched_item": {"id": "item-9", "name": "SALMON FILLETS"},
+                    "suggested_name": "Salmon Fillet",
+                    "suggested_group_id": None,
+                }
+            },
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
         assert any(s.get("type") == "delete_invoice" for s in fi["suggestions"])
+        assert api.match_calls, "duplicate draft must still run the item matcher"
+        assert fi["lines"][0]["matched_item"]["name"] == "SALMON FILLETS"
+
+    def test_statement_rows_are_never_item_matched(self):
+        # The original point of the guard, pinned: statement rows ("Balance
+        # Brought Forward", invoice numbers) are not products.
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice(lines=[make_line(linkedItemId=None)])},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf(document_type="statement")},
+        )
+        run_consolidator(api, invoice_id=INV_ID)
+        assert api.match_calls == []
+
+    def test_duplicate_receipted_against_po_links_the_order_not_an_invoice(self):
+        # Feed rows with type "PurchaseOrder" are goods receipted straight
+        # against the ORDER (live: IN9757146 → PO 341521200): no invoice
+        # document exists in Loaded and the row id is the PO's id — linking it
+        # as an invoice 404s in Loaded's UI. The card must carry the PO id
+        # (never an invoice id) and the reason must say where the goods went.
+        api = Api(
+            invoices=[],
+            details={INV_ID: make_invoice()},
+            pos={PO_ID: make_po()},
+            pdfs={FILE_ID: make_pdf()},
+            received_feed=[
+                {
+                    "id": "received-po-id",
+                    "invoiceNumber": "F55755100",
+                    "supplierName": "Akaroa Salmon",
+                    "receivedAt": "2025-07-15T10:52:56+12:00",
+                    "total": 290.68,
+                    "type": "PurchaseOrder",
+                    "purchaseOrderNumber": "341521200",
+                    "fileId": None,
+                }
+            ],
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["checks"][11] == "f"
+        assert any(
+            "receipted on 2025-07-15 against purchase order 341521200" in r
+            and "no separate invoice document exists" in r
+            for r in fi["check_reasons"]
+        )
+        dele = next(s for s in fi["suggestions"] if s.get("type") == "delete_invoice")
+        assert dele["duplicate_of_purchase_order_id"] == "received-po-id"
+        assert dele["duplicate_of_invoice_id"] is None
+        assert dele["duplicate_of_file_id"] is None
+        assert "against order 341521200" in dele["summary"]
+        assert fi["duplicate_of_purchase_order_id"] == "received-po-id"
+        assert fi["duplicate_of_invoice_id"] is None
 
     def test_duplicate_batch_mode_skips_and_never_receives(self):
         api = api_for(
@@ -2066,13 +2480,33 @@ class TestSingleInvoiceRunsAllChecks:
         assert "matched_item" not in by_id["l-new"]
 
     def test_split_po_suggestion_notes_it_is_not_relinked(self):
-        # The matched PO is already invoiced on another invoice (a split order):
-        # the suggestion says it was used to validate, not re-linked.
+        # The matched PO is already invoiced on another invoice (a split
+        # order — the sibling carries DIFFERENT goods): the suggestion says
+        # the order link stays with the sibling, and carries its reference +
+        # copy for the editor's compare links.
         po = make_po()
         po["linkedInvoiceId"] = "some-other-invoice"
         api = Api(
             invoices=[],
-            details={INV_ID: make_invoice(linkedPurchaseOrderId=None)},
+            details={
+                INV_ID: make_invoice(linkedPurchaseOrderId=None),
+                "some-other-invoice": {
+                    "id": "some-other-invoice",
+                    "referenceNumber": "F55755099",
+                    "fileId": "sib-file-9",
+                    "total": 80.0,
+                    "receivedAt": "2026-08-01T00:00:00Z",
+                    "lines": [
+                        {
+                            "id": "sib-ln-1",
+                            "code": "OTHER-1",
+                            "description": "GREENSHELL MUSSELS",
+                            "quantityReceived": 2.0,
+                            "unitCostExclTax": 40.0,
+                        }
+                    ],
+                },
+            },
             pos={PO_ID: po},
             pdfs={FILE_ID: make_pdf()},
         )
@@ -2081,7 +2515,13 @@ class TestSingleInvoiceRunsAllChecks:
         ][0]
         sug = next(s for s in fi["suggestions"] if s["type"] == "link_po")
         assert sug["already_linked_elsewhere"] is True
-        assert "not re-linked" in sug["summary"]
+        assert "without re-linking" in sug["summary"]
+        # The other invoice's id rides along so the editor can link to it (and
+        # its copy) — "the PO was already received" needs a where.
+        assert sug["linked_invoice_id"] == "some-other-invoice"
+        assert sug["linked_invoice_reference"] == "F55755099"
+        assert sug["linked_invoice_file_id"] == "sib-file-9"
+        assert sug["purchase_order_id"] == PO_ID
 
     def test_failure_reasons_ride_on_the_card(self):
         # A line-vs-copy mismatch: the specific reason must reach the card so the
@@ -2466,3 +2906,530 @@ class TestUnrecognisableUnit:
         card = result["fix_invoices"] if result.get("fix_invoices") else []
         if card:
             assert not card[0]["lines"][0].get("unit_needs_confirmation")
+
+
+class TestFreightLineIsActionable:
+    """A freight line (freight is a STOCK ITEM — no charges concept) that
+    mismatches the copy carries the SAME actionable copy fields as any
+    product line — the Southern Hospitality INV2001905 case: 'FREIGHT -
+    BEVERAGE' $0 vs the copy's 'Courier Freight' 1 × $30."""
+
+    def _api(self, freight_qty=0.0, freight_cost=0.0):
+        freight = make_line(
+            id="line-freight",
+            code="CUSFRE",
+            description="FREIGHT - BEVERAGE",
+            unit="Each",
+            linkedItemId="item-freight",
+            quantityOrdered=None,
+            quantityReceived=freight_qty,
+            unitCost=freight_cost,
+            totalCost=freight_qty * freight_cost,
+            taxAmount=0.0,
+        )
+        pdf = make_pdf()
+        pdf["lines"] = pdf["lines"] + [
+            {
+                "code": None,
+                "description": "Courier Freight",
+                "quantity": 1,
+                "unit": None,
+                "unit_of_measure": None,
+                "unit_price_ex_tax": 30.0,
+                "line_total_ex_tax": 30.0,
+            }
+        ]
+        return api_for(
+            make_invoice(lines=[make_line(), freight]),
+            pdf=pdf,
+            stock_items={
+                "item-freight": {
+                    "id": "item-freight",
+                    "name": "FREIGHT - BEVERAGE",
+                    "suppliers": [
+                        {
+                            "supplierId": "supplier-akaroa",
+                            "stockCode": "CUSFRE",
+                            "description": "Courier Freight",
+                        }
+                    ],
+                }
+            },
+        )
+
+    def test_zero_freight_line_gets_qty_and_cost_suggestions(self):
+        fi = run_consolidator(self._api(), invoice_id=INV_ID)["fix_invoices"][0]
+        ln = next(x for x in fi["lines"] if x["code"] == "CUSFRE")
+        assert ln["copy_quantity"] == 1
+        assert ln["copy_unit_price"] == 30.0
+        assert ln["copy_line_total"] == 30.0
+        assert ln["copy_quantity_mismatch"] is True
+        assert ln["copy_unit_cost_mismatch"] is True
+        # the reason still narrates it (blocks autopilot)
+        assert any("FREIGHT" in r.upper() for r in fi["check_reasons"])
+
+    def test_matching_freight_amount_stays_clean(self):
+        fi = run_consolidator(
+            self._api(freight_qty=1.0, freight_cost=30.0), invoice_id=INV_ID
+        )["fix_invoices"][0]
+        ln = next(x for x in fi["lines"] if x["code"] == "CUSFRE")
+        assert "copy_quantity_mismatch" not in ln
+        assert "copy_unit_cost_mismatch" not in ln
+        assert not any("Courier Freight" in r for r in fi["check_reasons"])
+
+
+class TestMismatchActionContract:
+    """The net that turns 'the user notices' into 'CI notices': every class of
+    copy-mismatch the review can raise must put an ACTIONABLE artifact on the
+    card (a copy_* flag, a suggestion, or a card field) — never only a
+    narrated reason. Add a mismatch class without wiring its action and this
+    matrix fails."""
+
+    def _card(self, invoice, pdf, **api_kwargs):
+        api = api_for(invoice, pdf=pdf, **api_kwargs)
+        return run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+
+    def test_quantity_mismatch_carries_flag(self):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], quantity=6.0, line_total_ex_tax=266.40)
+        ln = self._card(make_invoice(), pdf)["lines"][0]
+        assert ln["copy_quantity_mismatch"] is True and ln["copy_quantity"] == 6.0
+
+    def test_cost_mismatch_carries_flag(self):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(
+            pdf["lines"][0], unit_price_ex_tax=50.0, line_total_ex_tax=247.50
+        )
+        ln = self._card(make_invoice(), pdf)["lines"][0]
+        assert ln["copy_unit_cost_mismatch"] is True and ln["copy_unit_price"] == 50.0
+
+    def test_unit_mismatch_carries_flag_and_recommendation(self):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(pdf["lines"][0], unit_of_measure="500g")
+        ln = self._card(make_invoice(), pdf)["lines"][0]
+        assert ln["copy_unit_mismatch"] is True
+        assert ln["recommended_unit"] == "500g"
+
+    def test_line_missing_on_copy_carries_flag(self):
+        pdf = make_pdf(lines=[])
+        ln = self._card(make_invoice(), pdf)["lines"][0]
+        assert ln["copy_missing"] is True
+
+    def test_freight_line_mismatch_carries_flags(self):
+        # Freight is an ordinary LINE (no charges concept) — paired via the
+        # freight stock item's supplier variant, mismatches actionably.
+        freight = make_line(
+            id="line-freight",
+            code="CUSFRE",
+            description="FREIGHT - BEVERAGE",
+            linkedItemId="item-freight",
+            quantityReceived=0.0,
+            unitCost=0.0,
+            totalCost=0.0,
+            taxAmount=0.0,
+        )
+        pdf = make_pdf()
+        pdf["lines"] = pdf["lines"] + [
+            {
+                "code": None,
+                "description": "Courier Freight",
+                "quantity": 1,
+                "unit": None,
+                "unit_of_measure": None,
+                "unit_price_ex_tax": 30.0,
+                "line_total_ex_tax": 30.0,
+            }
+        ]
+        card = self._card(
+            make_invoice(lines=[make_line(), freight]),
+            pdf,
+            stock_items={
+                "item-freight": {
+                    "id": "item-freight",
+                    "name": "FREIGHT - BEVERAGE",
+                    "suppliers": [
+                        {
+                            "supplierId": "supplier-akaroa",
+                            "stockCode": "CUSFRE",
+                            "description": "Courier Freight",
+                        }
+                    ],
+                }
+            },
+        )
+        ln = next(x for x in card["lines"] if x["code"] == "CUSFRE")
+        assert ln["copy_quantity_mismatch"] is True
+        assert ln["copy_unit_cost_mismatch"] is True
+
+    def test_unresolved_copy_po_carries_card_fields(self):
+        pdf = make_pdf()
+        pdf["customer_purchase_order_number"] = "1520518"
+        card = self._card(
+            make_invoice(purchaseOrderNumber="4041451-1", linkedPurchaseOrderId=None),
+            pdf,
+            po_list=[],
+            received_feed=[],
+        )
+        assert card["copy_po"] == "1520518"
+        assert card["po_unresolved"] is True
+
+    def test_unreadable_unit_carries_confirm_flag(self):
+        pdf = make_pdf()
+        pdf["lines"][0] = dict(
+            pdf["lines"][0], unit_of_measure=None, unit_unrecognisable=True
+        )
+        ln = self._card(make_invoice(), pdf)["lines"][0]
+        assert ln["unit_needs_confirmation"] is True
+
+
+class TestCardHeaderRegistry:
+    """Every header field the engine card emits must be registered in
+    invoice_fixes._REVIEW_HEADER_FIELDS (survives both merge paths) or be a
+    known draft-shape static — an unregistered field is a silently dropped
+    feature. New engine fields fail here until deliberately registered."""
+
+    # Draft-shape fields the card carries that are NOT review state (they are
+    # rebuilt on every /draft open, not merged from the review artifact).
+    CARD_STATIC = {
+        "invoice_id",
+        "reference_number",
+        "supplier_name",
+        "linked_supplier_id",
+        "purchase_order_number",
+        "linked_purchase_order_id",
+        "issued_at",
+        "due_at",
+        "order_date",
+        "subtotal",
+        "tax_amount",
+        "discount_amount",
+        "total",
+        "received_at",
+        "unit_cost_includes_tax",
+        "is_received",
+        "status",
+        "notes",
+        "loaded_invoice_fingerprint",
+        "file_id",
+        "lines",
+    }
+
+    def test_every_card_header_field_is_registered(self):
+        from app.routers.invoice_fixes import _REVIEW_HEADER_FIELDS
+
+        # A run that exercises the optional machinery too (unresolved copy PO).
+        pdf = make_pdf()
+        pdf["customer_purchase_order_number"] = "1520518"
+        api = api_for(
+            make_invoice(purchaseOrderNumber="4041451-1", linkedPurchaseOrderId=None),
+            pdf=pdf,
+            po_list=[],
+            received_feed=[],
+        )
+        fx = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        unregistered = set(fx.keys()) - set(_REVIEW_HEADER_FIELDS) - self.CARD_STATIC
+        assert not unregistered, (
+            f"card emits unregistered header fields: {sorted(unregistered)} — "
+            "add each to invoice_fixes._REVIEW_HEADER_FIELDS (review state that "
+            "must survive the merges) or CARD_STATIC here (draft-shape)"
+        )
+
+
+class TestEngineNormToolsPublished:
+    """Every norm.* function the engine calls must be PUBLISHED, not just coded.
+
+    The sandbox's call_api resolves a tool from the `norm` ConnectorSpec row
+    before routing to the Python handler — a handler with no spec entry dies
+    with "Tool not found" at runtime and the engine degrades silently.
+    match_supplier shipped exactly that way: the supplier gate reported
+    "no matching Loaded supplier found" on every invoice (8 Aug 2026) because
+    only the handler existed. The spec rows live in the shared config DB and
+    are written by scripts/sync_*_tool.py, so this asserts each engine call
+    site has BOTH a registered handler and a sync script publishing the action.
+    """
+
+    ENGINE_CALL_RE = r'call_api\(\s*"norm",\s*"(\w+)"'
+
+    def _engine_actions(self):
+        import re
+
+        return set(re.findall(self.ENGINE_CALL_RE, FUNCTION_CODE))
+
+    def test_call_sites_found(self):
+        # The regex must keep matching the engine's call style — an empty set
+        # would vacuously pass the real assertions below.
+        assert self._engine_actions() >= {"match_stock_items", "match_supplier"}
+
+    def test_every_engine_norm_call_has_a_handler(self):
+        from app.agents.internal_tools import get_handler
+
+        missing = [a for a in self._engine_actions() if get_handler("norm", a) is None]
+        assert not missing, f"engine calls norm.{missing} with no internal handler"
+
+    def test_every_engine_norm_call_has_a_sync_script(self):
+        scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts"
+        published = ""
+        for script in scripts_dir.glob("sync_*.py"):
+            published += script.read_text(encoding="utf-8")
+        missing = [
+            a
+            for a in self._engine_actions()
+            if f'"action": "{a}"' not in published
+            and f"'action': '{a}'" not in published
+        ]
+        assert not missing, (
+            f"engine calls norm.{missing} but no scripts/sync_*.py publishes it "
+            "into the norm ConnectorSpec — call_api will raise 'Tool not found' "
+            "in production; add a sync script (see sync_supplier_match_tool.py)"
+        )
+
+
+class TestSplitOrderClassification:
+    """The referenced PO is already linked to a SIBLING invoice (Loaded is
+    1:1). Genuine split delivery (different goods/quantities) → informational
+    split state, received without re-linking. Doubled-up (sibling already
+    holds the same lines and total) → remove-the-reference suggestion via
+    the duplicate check. Any classifier doubt → split, never removal."""
+
+    SIB = {
+        "id": "sib-1",
+        "referenceNumber": "F55755050",
+        "fileId": "sib-file-1",
+        "total": 80.0,
+        "receivedAt": "2026-08-01T00:00:00Z",
+        "lines": [
+            {
+                "id": "sib-ln-1",
+                "code": "OTHER-1",
+                "description": "GREENSHELL MUSSELS",
+                "quantityReceived": 2.0,
+                "unitCostExclTax": 40.0,
+            }
+        ],
+    }
+
+    def _api(self, sibling, *, po_list=True, pdf=None):
+        po = make_po()
+        po["linkedInvoiceId"] = "sib-1"
+        inv = make_invoice(linkedPurchaseOrderId=None)
+        details = {INV_ID: inv}
+        if sibling is not None:
+            details["sib-1"] = sibling
+        return Api(
+            invoices=[inv],
+            details=details,
+            pos={PO_ID: po},
+            pdfs={FILE_ID: pdf or make_pdf()},
+            po_list=(
+                [
+                    {
+                        "id": PO_ID,
+                        "orderNumber": "1520987",
+                        "supplierId": "supplier-akaroa",
+                        "linkedInvoiceId": "sib-1",
+                    }
+                ]
+                if po_list
+                else []
+            ),
+        )
+
+    def test_loaded_sourced_split_adopts_the_state(self):
+        # Scenario 1: Loaded's own purchaseOrderNumber resolved — the card
+        # adopts the split state automatically; no reason blocks.
+        fi = run_consolidator(self._api(dict(self.SIB)), invoice_id=INV_ID)[
+            "fix_invoices"
+        ][0]
+        assert fi["split_order"] is True
+        assert fi["split_po_suggested"] is False
+        assert fi["split_remove_po"] is False
+        assert fi["split_po_id"] == PO_ID
+        assert fi["split_po_number"] == "1520987"
+        assert fi["split_sibling_invoice_id"] == "sib-1"
+        assert fi["split_sibling_reference"] == "F55755050"
+        assert fi["split_sibling_file_id"] == "sib-file-1"
+        assert not fi.get("check_reasons")
+        assert set(fi["checks"]) == {"p", "s"}
+        sug = next(s for s in fi["suggestions"] if s["type"] == "link_po")
+        assert "split across deliveries" in sug["summary"]
+        assert "F55755050" in sug["summary"]
+
+    def test_copy_sourced_split_is_suggested_not_adopted(self):
+        # Scenario 3: Loaded's field holds a supplier ref that resolves to
+        # nothing; the number came off the COPY — the user must accept
+        # setting the reference before the card adopts the split state.
+        po = make_po()
+        po["linkedInvoiceId"] = "sib-1"
+        pdf = make_pdf()
+        pdf["customer_purchase_order_number"] = "1520987"
+        api = Api(
+            invoices=[],
+            details={
+                INV_ID: make_invoice(
+                    linkedPurchaseOrderId=None, purchaseOrderNumber="O/N 9099"
+                ),
+                "sib-1": dict(self.SIB),
+            },
+            pos={PO_ID: po},
+            pdfs={FILE_ID: pdf},
+            po_list=[
+                {
+                    "id": PO_ID,
+                    "orderNumber": "1520987",
+                    "supplierId": "supplier-akaroa",
+                    "linkedInvoiceId": "sib-1",
+                }
+            ],
+        )
+        fi = run_consolidator(api, invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["split_order"] is True
+        assert fi["split_po_suggested"] is True
+        assert fi["split_remove_po"] is False
+
+    def test_doubled_up_suggests_removing_the_reference(self):
+        # Scenario 2: the sibling already contains the SAME line (qty + cost)
+        # and the same total — not a split; remove the bogus reference.
+        sib = {
+            "id": "sib-1",
+            "referenceNumber": "F55755050",
+            "fileId": "sib-file-1",
+            "total": 252.75,
+            "receivedAt": "2026-08-01T00:00:00Z",
+            "lines": [
+                {
+                    "id": "sib-ln-1",
+                    "code": "PBO0.7-0.99",
+                    "description": "SALMON FILLET",
+                    "quantityReceived": 4.95,
+                    "unitCostExclTax": 44.40,
+                }
+            ],
+        }
+        fi = run_consolidator(self._api(sib), invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["split_remove_po"] is True
+        assert fi["split_order"] is False
+        assert any("remove the order reference" in r for r in fi["check_reasons"])
+        assert any("already fully invoiced" in r for r in fi["check_reasons"])
+        # Compare links ride the existing duplicate card fields.
+        assert fi["duplicate_of_invoice_id"] == "sib-1"
+        assert fi["duplicate_of_file_id"] == "sib-file-1"
+        # Removal, not deletion — the draft itself is a real delivery record.
+        assert not any(s["type"] == "delete_invoice" for s in fi["suggestions"])
+
+    def test_same_item_split_quantities_is_a_split_not_a_double(self):
+        # 10 ordered, 4.95 on this invoice, 5.05 on the sibling: same code,
+        # different quantities — a split delivery, never flagged for removal.
+        sib = {
+            "id": "sib-1",
+            "referenceNumber": "F55755050",
+            "fileId": "sib-file-1",
+            "total": 224.22,
+            "receivedAt": "2026-08-01T00:00:00Z",
+            "lines": [
+                {
+                    "id": "sib-ln-1",
+                    "code": "PBO0.7-0.99",
+                    "description": "SALMON FILLET",
+                    "quantityReceived": 5.05,
+                    "unitCostExclTax": 44.40,
+                }
+            ],
+        }
+        fi = run_consolidator(self._api(sib), invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["split_order"] is True
+        assert fi["split_remove_po"] is False
+
+    def test_sibling_fetch_failure_fails_open_to_split(self):
+        # The sibling detail can't be fetched: classify as split (never
+        # removal on missing evidence); fields carry what's known.
+        fi = run_consolidator(self._api(None), invoice_id=INV_ID)["fix_invoices"][0]
+        assert fi["split_order"] is True
+        assert fi["split_remove_po"] is False
+        assert fi["split_sibling_invoice_id"] == "sib-1"
+        assert fi["split_sibling_reference"] is None
+
+    def test_autopilot_receives_split_without_stealing_the_link(self):
+        # The resolved PO id is INJECTED for validation only — the receive
+        # body must NOT carry it (writing it would steal the sibling's 1:1
+        # link; do_receive's guard is on a different code path).
+        api = self._api(dict(self.SIB))
+        result = run_consolidator(api, mode="autopilot")
+        assert result["summary"]["received"] == 1
+        assert api.received_bodies, "autopilot should receive the clean split"
+        assert "linkedPurchaseOrderId" not in api.received_bodies[0]
+
+
+class TestRequireValidPo:
+    """ "No valid purchase order" blocks autopilot by default;
+    require_valid_po=false lets autopilot receive anyway (the check still
+    reads ✗ on any card). Doubled-up goods are never covered by the toggle."""
+
+    def _api(self):
+        # Unresolvable reference: no open PO, no feed sibling.
+        return api_for(make_invoice(linkedPurchaseOrderId=None))
+
+    def test_blocks_autopilot_by_default(self):
+        api = self._api()
+        result = run_consolidator(api, mode="autopilot")
+        assert result["summary"] == {"received": 0, "skipped": 1}
+        assert any(
+            "No valid purchase order" in r for r in result["skipped"][0]["reasons"]
+        )
+        assert api.received_bodies == []
+
+    def test_toggle_lets_autopilot_receive(self):
+        api = self._api()
+        result = run_consolidator(api, mode="autopilot", require_valid_po=False)
+        assert result["summary"] == {"received": 1, "skipped": 0}
+        assert api.received_bodies
+
+    def test_card_still_shows_the_failed_check(self):
+        # Single-invoice review always reports the ✗ — the toggle only stops
+        # the autopilot block, never hides the state from the card.
+        api = self._api()
+        fi = run_consolidator(api, invoice_id=INV_ID, require_valid_po=False)[
+            "fix_invoices"
+        ][0]
+        assert fi["checks"][2] == "f"
+
+    def test_toggle_never_covers_doubled_up_goods(self):
+        # Doubled-up invoice (duplicate check): still blocked even when the
+        # venue doesn't care about PO validity.
+        po = make_po()
+        po["linkedInvoiceId"] = "sib-1"
+        inv = make_invoice(linkedPurchaseOrderId=None)
+        api = Api(
+            invoices=[inv],
+            details={
+                INV_ID: inv,
+                "sib-1": {
+                    "id": "sib-1",
+                    "referenceNumber": "F55755050",
+                    "fileId": "sib-file-1",
+                    "total": 252.75,
+                    "receivedAt": "2026-08-01T00:00:00Z",
+                    "lines": [
+                        {
+                            "id": "sib-ln-1",
+                            "code": "PBO0.7-0.99",
+                            "description": "SALMON FILLET",
+                            "quantityReceived": 4.95,
+                            "unitCostExclTax": 44.40,
+                        }
+                    ],
+                },
+            },
+            pos={PO_ID: po},
+            pdfs={FILE_ID: make_pdf()},
+            po_list=[
+                {
+                    "id": PO_ID,
+                    "orderNumber": "1520987",
+                    "supplierId": "supplier-akaroa",
+                    "linkedInvoiceId": "sib-1",
+                }
+            ],
+        )
+        result = run_consolidator(api, mode="autopilot", require_valid_po=False)
+        assert result["summary"] == {"received": 0, "skipped": 1}
+        assert api.received_bodies == []

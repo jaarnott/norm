@@ -330,7 +330,9 @@ class TestPlaybookDisplayBlock:
         block = playbook_display_block(
             {
                 "status": "needs_input",
-                "clarify": [{"requested": "corona", "options": ["Corona 0%", "Corona Extra"]}],
+                "clarify": [
+                    {"requested": "corona", "options": ["Corona 0%", "Corona Extra"]}
+                ],
                 "summary": "Which Corona did you mean?",
             },
             None,

@@ -106,6 +106,20 @@ def _setup_tables():
     """Ensure all tables exist before the test suite runs."""
     Base.metadata.create_all(bind=_engine)
     ConfigBase.metadata.create_all(bind=_engine)
+    # create_all only ADDS TABLES — mirror main._ensure_config_tables' guarded
+    # ALTERs so a persistent local test DB gains columns added to existing
+    # config tables (fresh CI databases get them from create_all).
+    from sqlalchemy import text as _sqltext
+
+    with _engine.begin() as conn:
+        for ddl in (
+            "ALTER TABLE supplier_spec_samples "
+            "ADD COLUMN IF NOT EXISTS source_venue_id VARCHAR",
+            "ALTER TABLE supplier_spec_samples "
+            "ADD COLUMN IF NOT EXISTS source_invoice_id VARCHAR",
+            "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS analysis JSON",
+        ):
+            conn.execute(_sqltext(ddl))
     yield
 
 

@@ -280,6 +280,59 @@ class TestResetValidation:
         # local line state gone too — rebuilt fresh from Loaded
         assert doc.data.get("lines") == []
 
+    def test_wipes_this_invoices_item_match_cache_only(
+        self, client, db_session, admin_user, admin_headers, monkeypatch, venue
+    ):
+        # A cached wrong/declined stock-item match (the Sailor Jerry case,
+        # 08 Aug 2026) used to survive every reset — the rows ARE identifiable
+        # per invoice: their data dict is keyed by the invoice's line ids.
+        import app.routers.invoice_fixes as IF
+        from app.db.models import DocumentExtraction
+
+        detail = {
+            "id": "inv-1",
+            "referenceNumber": f"R-{uuid.uuid4().hex[:10]}",
+            "supplierName": "S",
+            "lines": [{"id": "line-abc", "description": "RUM"}],
+        }
+
+        class FakeLh:
+            def invoice(self, iid):
+                return detail
+
+        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: FakeLh())
+        mine = f"m1-{uuid.uuid4().hex[:8]}"
+        other = f"m2-{uuid.uuid4().hex[:8]}"
+        db_session.add(
+            DocumentExtraction(
+                cache_key=mine,
+                connector="norm",
+                action="match_stock_items",
+                data={"line-abc": {"matched_item": None, "suggested_name": "Rum"}},
+            )
+        )
+        db_session.add(
+            DocumentExtraction(
+                cache_key=other,
+                connector="norm",
+                action="match_stock_items",
+                data={"line-of-another-invoice": {"matched_item": None}},
+            )
+        )
+        db_session.flush()
+
+        resp = client.post(
+            "/api/invoice-fixes/reset-validation",
+            json={"venue_id": venue.id, "invoice_id": "inv-1"},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["extractions_deleted"] == 1
+
+        de = db_session.query(DocumentExtraction)
+        assert de.filter(DocumentExtraction.cache_key == mine).count() == 0
+        assert de.filter(DocumentExtraction.cache_key == other).count() == 1
+
     def test_received_drafts_left_alone(
         self, client, db_session, admin_user, admin_headers, monkeypatch, venue
     ):

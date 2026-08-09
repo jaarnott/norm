@@ -56,6 +56,19 @@ class ReceiveRequest(BaseModel):
     # Optional PO to link before receiving (id preferred; number resolved).
     linked_purchase_order_id: str | None = None
     po_number: str | None = None
+    # Explicitly clear an existing PO link (None above means "don't touch",
+    # so unlinking needs its own flag — the "PO belongs to another supplier"
+    # suggestion). A po_id supplied alongside still wins: unlink, then link.
+    unlink_purchase_order: bool = False
+    # Split order (the referenced PO is linked to a SIBLING invoice): the PO
+    # id + sibling id let the receive stamp best-effort cross-reference notes
+    # on the PO and the sibling. Never links the PO (Loaded is 1:1).
+    split_po_id: str | None = None
+    split_sibling_invoice_id: str | None = None
+    # The order-number REFERENCE field alone (scenario: the copy names a
+    # split order Loaded didn't match) — written without any link. Distinct
+    # from po_number above, which resolves-and-LINKS.
+    purchase_order_number: str | None = None
     # Per-line edits, keyed by line id. Only supplied fields are applied.
     lines: list[dict] = []
     # Variant unit updates: {linked_item_id, line_code, unit_id}.
@@ -327,6 +340,14 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
     """
     inv = lh.invoice(body.invoice_id)
 
+    # Explicit unlink first (the "PO belongs to another supplier" suggestion):
+    # the fetched invoice carries any existing link, so clearing must be an
+    # explicit act — a None po_id below only means "don't touch". A po_id
+    # supplied alongside still wins: unlink, then link the right order.
+    if body.unlink_purchase_order:
+        inv["linkedPurchaseOrderId"] = None
+        inv["purchaseOrderNumber"] = None
+
     # Header: link a PO if requested (id wins; else resolve the number).
     po_id = body.linked_purchase_order_id
     po_number = body.po_number if po_id else None
@@ -370,6 +391,9 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
             inv["linkedPurchaseOrderId"] = po_id
             if po_number:
                 inv["purchaseOrderNumber"] = po_number
+            # The link path owns the number when it links — never let a stale
+            # reference field from the card overwrite the resolved orderNumber.
+            body.purchase_order_number = None
 
     # Editable header fields — apply each only when the caller supplied it, so a
     # receive that changes nothing in the header leaves it exactly as Loaded has
@@ -379,6 +403,10 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
     # names so the edit lands regardless of which schema the API honours.
     _HEADER_FIELDS = {
         "reference_number": ("referenceNumber",),
+        # Reference field only — the LINK path above owns linking (and wins:
+        # this loop runs later but the editor only sends purchase_order_number
+        # when no PO is linked, i.e. the split-order accepted state).
+        "purchase_order_number": ("purchaseOrderNumber",),
         "issued_at": ("issuedAt",),
         "due_at": ("dueAt",),
         "received_at": ("receivedAt",),
@@ -507,7 +535,66 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         if not inv.get("receivedAt"):
             inv["receivedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    lh.request("PUT", f"/1.0/stock/internal/invoices/{body.invoice_id}", inv)
+    # Loaded's validations (e.g. invoice-totals-mismatch) come back as clean
+    # 4xx bodies — surface them as a 502 with the detail instead of letting
+    # the RuntimeError become an opaque 500 the card renders as "Error 500".
+    try:
+        lh.request("PUT", f"/1.0/stock/internal/invoices/{body.invoice_id}", inv)
+    except RuntimeError as exc:
+        raise HTTPException(502, f"Loaded rejected the invoice: {exc}") from exc
+
+    # Split-order cross-reference notes (best-effort, isolated — a note
+    # failure never fails the receive): Loaded's 1:1 link can't record the
+    # second delivery, so stamp the PO and the sibling invoice instead.
+    # Notes PUT verified live on the test env 08 Aug 2026 (works on received
+    # invoices too, and doesn't disturb their state).
+    split_notes = []
+    if body.receive and body.split_po_id:
+        ref_label = str(
+            body.reference_number or inv.get("referenceNumber") or body.invoice_id
+        )
+        order_label = None
+        try:
+            po_obj = lh.get(f"/1.0/stock/internal/purchase-orders/{body.split_po_id}")
+            if isinstance(po_obj, dict) and po_obj.get("id"):
+                order_label = po_obj.get("orderNumber")
+                marker = f"Split order: also invoiced on {ref_label}"
+                notes = str(po_obj.get("notes") or "")
+                if marker not in notes:
+                    po_obj["notes"] = (notes + "\n" if notes else "") + marker
+                    lh.request(
+                        "PUT",
+                        f"/1.0/stock/internal/purchase-orders/{body.split_po_id}",
+                        po_obj,
+                    )
+                split_notes.append({"target": "purchase_order", "ok": True})
+        except Exception as exc:  # noqa: BLE001 — isolate the note write
+            logger.warning("split PO note failed: %s", exc)
+            split_notes.append(
+                {"target": "purchase_order", "ok": False, "message": str(exc)}
+            )
+        if body.split_sibling_invoice_id:
+            try:
+                sib = lh.invoice(body.split_sibling_invoice_id)
+                if isinstance(sib, dict) and sib.get("id"):
+                    marker = (
+                        f"Split order: order {order_label or body.purchase_order_number or ''} "
+                        f"also covers {ref_label}"
+                    ).replace("  ", " ")
+                    notes = str(sib.get("notes") or "")
+                    if marker not in notes:
+                        sib["notes"] = (notes + "\n" if notes else "") + marker
+                        lh.request(
+                            "PUT",
+                            f"/1.0/stock/internal/invoices/{body.split_sibling_invoice_id}",
+                            sib,
+                        )
+                    split_notes.append({"target": "sibling_invoice", "ok": True})
+            except Exception as exc:  # noqa: BLE001 — isolate the note write
+                logger.warning("split sibling note failed: %s", exc)
+                split_notes.append(
+                    {"target": "sibling_invoice", "ok": False, "message": str(exc)}
+                )
 
     # Variant unit updates (Loaded's "update variant?" step), isolated.
     variant_results = []
@@ -547,6 +634,7 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         "received": bool(body.receive),
         "linked_purchase_order": None if po_link_skipped else po_number,
         "po_link_skipped": po_link_skipped,
+        "split_notes": split_notes,
         "variant_updates": variant_results,
     }
 

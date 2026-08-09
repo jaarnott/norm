@@ -560,9 +560,7 @@ class TestConnectionHealthIsPersisted:
         from app.services.oauth_service import refresh_access_token
 
         venue, row = self._venue_row(db_session)
-        resp = MagicMock(
-            status_code=400, text='"Refresh token is invalid or expired."'
-        )
+        resp = MagicMock(status_code=400, text='"Refresh token is invalid or expired."')
         with patch("app.services.oauth_service.httpx.post", return_value=resp):
             with pytest.raises(ValueError):
                 refresh_access_token(_oauth_spec(), db_session, venue_id=venue.id)

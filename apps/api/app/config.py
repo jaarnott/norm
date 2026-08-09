@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     LLM_INTERPRETER_MODEL: str = "claude-opus-4-8"
     ROUTER_MODEL: str = "claude-haiku-4-5-20251001"
     DATE_RESOLVER_MODEL: str = "claude-haiku-4-5-20251001"
+    # The Dojo's analysis agent: studies a misread invoice with full context
+    # (PDF + Loaded draft + current prompts) and drafts the supplier-spec
+    # update. The strongest available model — the analysis runs rarely and its
+    # output edits prompts that steer every future extraction.
+    DOJO_ANALYSIS_MODEL: str = "claude-opus-5"
 
     # ── Stripe / Billing ────────────────────────────────────────────────
     STRIPE_SECRET_KEY: str = ""

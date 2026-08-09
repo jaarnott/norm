@@ -193,6 +193,16 @@ class SupplierSpecSample(ConfigBase):
     last_run = Column(JSON, nullable=True)
     last_status = Column(String, nullable=False, default="new")
     last_run_at = Column(DateTime(timezone=True), nullable=True)
+    # Where the sample came from (Add-to-Dojo on an invoice card) — lets the
+    # analysis agent fetch the Loaded draft's structured lines as an
+    # independent reference reading of the same paper. Null for hand uploads.
+    # NOTE: added after first ship — created via guarded ALTERs in
+    # main._ensure_config_tables (the config DB has no Alembic).
+    source_venue_id = Column(String, nullable=True)
+    source_invoice_id = Column(String, nullable=True)
+    # The analysis agent's latest output: {status, rationale,
+    # proposed_instructions, ground_truth, candidate_results, green, model, at}.
+    analysis = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 

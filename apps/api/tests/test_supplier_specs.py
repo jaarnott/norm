@@ -46,12 +46,18 @@ class TestSupplierSpecCrud:
 
     def test_duplicate_name_conflicts(self, client, admin_headers):
         body = {"name": "Bidfood", "aliases": [], "instructions": ""}
-        assert client.post(
-            "/api/supplier-invoice-specs", headers=admin_headers, json=body
-        ).status_code == 201
-        assert client.post(
-            "/api/supplier-invoice-specs", headers=admin_headers, json=body
-        ).status_code == 409
+        assert (
+            client.post(
+                "/api/supplier-invoice-specs", headers=admin_headers, json=body
+            ).status_code
+            == 201
+        )
+        assert (
+            client.post(
+                "/api/supplier-invoice-specs", headers=admin_headers, json=body
+            ).status_code
+            == 409
+        )
 
     def test_short_alias_rejected(self, client, admin_headers):
         res = client.post(
@@ -105,13 +111,17 @@ class TestSupplierSpecCrud:
 
 
 class TestGetSupplierInvoiceSpecsHandler:
-    def test_returns_enabled_specs_only(self, client, db_session, admin_headers, monkeypatch):
+    def test_returns_enabled_specs_only(
+        self, client, db_session, admin_headers, monkeypatch
+    ):
         # Seed via the same test DB the handler's config session points at
         # (locally main and config DB share the engine — see conftest).
         from app.db import engine as engine_mod
 
         db_session.add(
-            SupplierInvoiceSpec(name="On", aliases=["On Foods"], instructions="i", enabled=True)
+            SupplierInvoiceSpec(
+                name="On", aliases=["On Foods"], instructions="i", enabled=True
+            )
         )
         db_session.add(
             SupplierInvoiceSpec(name="Off", aliases=[], instructions="x", enabled=False)

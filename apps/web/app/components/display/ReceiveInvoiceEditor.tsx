@@ -21,7 +21,7 @@
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, getStoredUser } from '../../lib/api';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 
 interface Line {
@@ -127,6 +127,13 @@ interface DocData {
   notes?: string | null;
   file_id: string | null;
   is_received?: boolean;
+  // Duplicate: the already-received sibling's Loaded invoice id — rendered as
+  // "Open in Loaded" + "View received copy" links so both copies can be compared.
+  // The PO variant means the goods were receipted straight against the order
+  // (no invoice document exists in Loaded) — link the order instead.
+  duplicate_of_invoice_id?: string | null;
+  duplicate_of_file_id?: string | null;
+  duplicate_of_purchase_order_id?: string | null;
   // Tombstone: the draft was deleted from Loaded (statement/duplicate accept).
   // The doc row is kept so old chat cards can render "deleted" instead of
   // hanging on a missing document.
@@ -137,6 +144,9 @@ interface DocData {
   // PO lines whose stock code never appeared on the invoice — ordered, not
   // received. Read-only reference, never part of the receive payload.
   ordered_not_received?: OrderedNotReceived[];
+  // Split order: PO items that arrived on the SIBLING delivery — shown under
+  // "Ordered, received on <sibling ref>" instead of "not delivered".
+  ordered_received_elsewhere?: OrderedNotReceived[];
   checks?: string;
   // Specific reasons the failed checks failed (e.g. a line-vs-copy mismatch).
   check_reasons?: string[];
@@ -156,6 +166,38 @@ interface DocData {
   copy_subtotal?: number | null;
   copy_tax_amount?: number | null;
   copy_total_mismatch?: boolean | null;
+  // The copy's printed invoice number when it disagrees with the draft's
+  // reference — drives the "Invoice number X → Y" suggestion (a local header
+  // edit; reference_number already rides the receive write-through).
+  copy_invoice_number?: string | null;
+  // The supplier printed on the copy + the review's LLM-matched Loaded record
+  // (Gate 12: missing link, or a genuinely different business — naming
+  // variations never flag) — drives the supplier link suggestion.
+  copy_supplier?: string | null;
+  supplier_differs?: boolean | null;
+  matched_supplier_id?: string | null;
+  matched_supplier_name?: string | null;
+  // The linked PO's supplier when it isn't this invoice's supplier — drives
+  // the "unlink this order" suggestion (hidden while a supplier-switch
+  // suggestion covers the same conflict).
+  po_supplier_mismatch?: boolean | null;
+  po_supplier_name?: string | null;
+  // Split-order state: the referenced PO is already linked to a SIBLING
+  // invoice (Loaded is 1:1). split_order = genuine second delivery (shown
+  // automatically); split_po_suggested = the number came off the copy only —
+  // accept sets the reference first; split_remove_po = NOT a split (sibling
+  // has the same goods) — accept removes the bogus reference.
+  split_order?: boolean | null;
+  split_po_suggested?: boolean | null;
+  split_remove_po?: boolean | null;
+  split_po_id?: string | null;
+  split_po_number?: string | null;
+  split_sibling_invoice_id?: string | null;
+  split_sibling_reference?: string | null;
+  split_sibling_file_id?: string | null;
+  // Local flag: the user accepted the unlink — sent as unlink_purchase_order
+  // on receive (a null PO id alone means "don't touch" server-side).
+  po_unlinked?: boolean | null;
   // Changes the review made/proposes (e.g. an auto-matched PO, a unit fix).
   suggestions?: Suggestion[];
   // Persisted record of suggestions the user APPLIED or DISMISSED (dismissed:
@@ -177,6 +219,8 @@ interface OrderedNotReceived {
   unit: string | null;
   quantity_ordered: number | null;
   unit_cost: number | null;
+  // Split order: the qty the SIBLING invoice received (ordered_received_elsewhere).
+  quantity_received?: number | null;
   // The PO line's stock item — lets a LOCAL item link reconcile immediately
   // (substitute detection) instead of waiting for the next server reopen.
   item_id?: string | null;
@@ -196,6 +240,17 @@ interface Suggestion {
   current_quantity?: number | null;
   proposed_unit?: string;
   already_linked_elsewhere?: boolean;
+  // split-PO: the invoice the PO is already linked to in Loaded (+ its
+  // reference and attachment file id for the compare links)
+  linked_invoice_id?: string | null;
+  linked_invoice_reference?: string | null;
+  linked_invoice_file_id?: string | null;
+  // duplicate delete: the already-received sibling invoice in Loaded (+ its
+  // attachment's file id), or the PO the goods were receipted against when
+  // no invoice document exists in Loaded
+  duplicate_of_invoice_id?: string | null;
+  duplicate_of_file_id?: string | null;
+  duplicate_of_purchase_order_id?: string | null;
   line_id?: string;
   invoice_id?: string;
   linked_item_id?: string | null;
@@ -237,7 +292,7 @@ interface PO {
 const CHECK_ORDER = [
   'credit_note', 'pdf_present', 'po_linked', 'po_supplier', 'items_matched',
   'totals', 'pdf_readable', 'pdf_invoice_number', 'pdf_lines', 'unit_of_measure',
-  'pdf_total', 'duplicate',
+  'pdf_total', 'duplicate', 'supplier',
 ];
 const CHECK_LABEL: Record<string, string> = {
   credit_note: 'Document is an invoice (not a credit note or statement)',
@@ -252,16 +307,18 @@ const CHECK_LABEL: Record<string, string> = {
   unit_of_measure: 'Unit of measure matches the copy',
   pdf_total: 'Total matches the invoice copy',
   duplicate: 'Not a duplicate of an already-received invoice',
+  supplier: 'Supplier matches the copy',
 };
 // How the checks are grouped and ordered for display (independent of the packed
 // string order above). Each check reads its state from the packed string by key.
 const CHECK_SECTIONS: { title: string; keys: string[] }[] = [
   { title: 'Loaded Invoice', keys: ['credit_note', 'duplicate', 'items_matched', 'totals'] },
   { title: 'Purchase Order', keys: ['po_linked', 'po_supplier'] },
-  { title: 'Invoice Copy', keys: ['pdf_present', 'pdf_readable', 'pdf_invoice_number', 'pdf_lines', 'unit_of_measure', 'pdf_total'] },
+  { title: 'Invoice Copy', keys: ['pdf_present', 'pdf_readable', 'pdf_invoice_number', 'pdf_lines', 'unit_of_measure', 'pdf_total', 'supplier'] },
 ];
 
 const cur = (n: number | null | undefined) => `$${(n ?? 0).toFixed(2)}`;
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 // Per-line tax, honouring the "line item costs include tax" toggle: costs
 // exclude tax → tax is added on top; costs include tax → tax is the portion
@@ -289,6 +346,15 @@ const _referenceCache = new Map<string, Promise<ReferenceData>>();
 // invalidated their cached reviews, and the shared PO list is stale. Follows
 // the norm:connector-auth CustomEvent idiom in lib/api.ts.
 export const INVOICE_ACTIONED_EVENT = 'norm:invoice-actioned';
+
+// Loaded's web app — deep links open in the user's own Loaded session (no
+// token involved). The LIVE app is the legacy hash-routed one under /App/#
+// (routes confirmed in its bundle: '/invoices/:invoiceId' and
+// '/ordering/purchase-orders/:purchaseOrderId' under /stock); the newer /ui
+// bundle's routes do not resolve for real users.
+const LOADED_APP_URL = 'https://loadedhub.com/App/#';
+const loadedInvoiceUrl = (id: string) => `${LOADED_APP_URL}/stock/invoices/${id}`;
+const loadedPoUrl = (id: string) => `${LOADED_APP_URL}/stock/ordering/purchase-orders/${id}`;
 function fetchReferenceData(venueId: string): Promise<ReferenceData> {
   const hit = _referenceCache.get(venueId);
   if (hit) return hit;
@@ -367,10 +433,14 @@ function parseUnit(text: string | null | undefined): [string, number] | null {
 
 /** The Loaded unit best matching `name` — exact name first, then guideline
  *  magnitude equivalence. undefined if none is confident. */
+// Unit-name key: case and whitespace never distinguish units ('Each'/'each',
+// '1kg'/'1 kg') — but digits and dots do ('1.9 KG' vs '19 KG'), so keep them.
+const unitNameKey = (v: string | null | undefined) => (v ?? '').toLowerCase().replace(/\s+/g, '');
+
 function resolveUnit(name: string | null | undefined, units: Unit[]): Unit | undefined {
   if (!name) return undefined;
-  const lc = name.trim().toLowerCase();
-  const exact = units.find((u) => (u.name || '').toLowerCase() === lc);
+  const lc = unitNameKey(name);
+  const exact = units.find((u) => unitNameKey(u.name) === lc);
   if (exact) return exact;
   const target = parseUnit(name);
   if (!target) return undefined;
@@ -436,9 +506,37 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const [linkingLine, setLinkingLine] = useState<string | null>(null);
   // Line whose copy-delivered unit is being CREATED in Loaded (create-unit).
   const [creatingUnitLine, setCreatingUnitLine] = useState<string | null>(null);
+  // Add-to-Dojo (admin): files this invoice's PDF as a training sample and
+  // kicks the analysis agent server-side. Admin-only; the mcp-ui sandbox's
+  // getStoredUser() returns null, so embedded cards hide it automatically.
+  const isPlatformAdmin = getStoredUser()?.role === 'admin';
+  const [dojoAdd, setDojoAdd] = useState<'idle' | 'adding' | 'added' | 'error'>('idle');
+  const addToDojo = async () => {
+    if (embedded || !venueId || !doc.invoice_id || dojoAdd === 'adding') return;
+    setDojoAdd('adding');
+    try {
+      const res = await apiFetch('/api/invoice-fixes/add-to-dojo', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+      }
+      await res.json().catch(() => ({}));
+      setDojoAdd('added');
+    } catch (e) {
+      setDojoAdd('error');
+      setStatus('error');
+      setMessage(e instanceof Error ? e.message : 'Could not add to the dojo');
+    }
+  };
   // Second confirmation before creating a unit (like create-item's form): the
   // first Accept/click ARMS this line; only the explicit confirm click writes.
   const [confirmUnitLine, setConfirmUnitLine] = useState<string | null>(null);
+  // Same two-step for creating the copy's supplier in Loaded (create-supplier).
+  const [confirmSupplier, setConfirmSupplier] = useState(false);
+  const [creatingSupplier, setCreatingSupplier] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
   // Substitute lines whose original ordered row is expanded.
   const [openSub, setOpenSub] = useState<Set<string>>(new Set());
@@ -801,6 +899,108 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
     ]);
   };
+  // Invoice number from the copy (pdf_invoice_number): the attached copy
+  // prints a different number than the draft. A LOCAL header edit like the
+  // totals — reference_number already rides the receive write-through.
+  // Dismiss is the "wrong attachment" escape hatch.
+  const applyInvoiceNumberSuggestion = () => {
+    if (!doc.copy_invoice_number) return;
+    const key = `invnum:${doc.invoice_id}`;
+    const log = [
+      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
+      {
+        key,
+        summary: `Invoice number '${doc.reference_number ?? ''}' → '${doc.copy_invoice_number}' (per the invoice copy)`,
+        undo_header: { reference_number: doc.reference_number ?? null },
+      },
+    ];
+    const fields: Partial<DocData> = { reference_number: doc.copy_invoice_number };
+    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
+    if (workingDocId) patchDoc([
+      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
+    ]);
+  };
+  // Unlink a PO that belongs to another supplier (po_supplier): a LOCAL edit —
+  // the receive sends unlink_purchase_order so Loaded's link is cleared (a
+  // null id alone means "don't touch" server-side). Picking another order
+  // afterwards still wins: unlink, then link.
+  const applyPoUnlinkSuggestion = () => {
+    if (!doc.linked_purchase_order_id) return;
+    const key = `unlinkpo:${doc.linked_purchase_order_id}`;
+    const log = [
+      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
+      {
+        key,
+        summary: `Unlinked order ${doc.purchase_order_number ?? ''} (belongs to '${doc.po_supplier_name ?? ''}', not this supplier)`,
+        undo_header: {
+          linked_purchase_order_id: doc.linked_purchase_order_id,
+          purchase_order_number: doc.purchase_order_number ?? null,
+          po_unlinked: null,
+        },
+      },
+    ];
+    const fields: Partial<DocData> = {
+      linked_purchase_order_id: null,
+      purchase_order_number: null,
+      po_unlinked: true,
+    };
+    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
+    if (workingDocId) patchDoc([
+      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
+    ]);
+  };
+  // Split order, scenario 3: the copy names an order Loaded didn't match —
+  // accepting SETS the order-number reference (never the 1:1 link) and the
+  // card adopts the split state; the reference is written on receive.
+  const applySplitPoSuggestion = () => {
+    if (!doc.split_po_id || !doc.split_po_number) return;
+    const key = `splitpo:${doc.split_po_id}`;
+    const log = [
+      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
+      {
+        key,
+        summary: `Order reference set to ${doc.split_po_number} — part of a split order (also invoiced on '${doc.split_sibling_reference ?? ''}')`,
+        undo_header: {
+          purchase_order_number: doc.purchase_order_number ?? null,
+          split_po_suggested: true,
+        },
+      },
+    ];
+    const fields: Partial<DocData> = {
+      purchase_order_number: doc.split_po_number,
+      split_po_suggested: false,
+    };
+    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
+    if (workingDocId) patchDoc([
+      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
+    ]);
+  };
+  // Split order, scenario 2 (NOT actually a split — the sibling invoice
+  // already contains the same goods): accepting REMOVES the bogus order
+  // reference; the receive clears it in Loaded via unlink_purchase_order.
+  const applyRemovePoSuggestion = () => {
+    if (!doc.split_po_id) return;
+    const key = `removepo:${doc.split_po_id}`;
+    const log = [
+      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
+      {
+        key,
+        summary: `Removed order reference ${doc.split_po_number ?? doc.purchase_order_number ?? ''} — order already fully invoiced on '${doc.split_sibling_reference ?? ''}'`,
+        undo_header: {
+          purchase_order_number: doc.purchase_order_number ?? null,
+          po_unlinked: null,
+        },
+      },
+    ];
+    const fields: Partial<DocData> = {
+      purchase_order_number: null,
+      po_unlinked: true,
+    };
+    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
+    if (workingDocId) patchDoc([
+      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
+    ]);
+  };
   const applyStrikeSuggestion = (idx: number) => {
     const l = doc.lines[idx];
     if (!l) return;
@@ -946,6 +1146,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // invoice UNLINKED ("The Sawmill Brewing Company Limited" vs the Loaded
   // record "Sawmill"). Picking it is a local header edit, written on receive.
   const suggestedSupplier = useMemo(() => {
+    // The review's LLM match (from the copy's printed supplier — Gate 12)
+    // wins: it fires for a MISSING link and for a genuinely different
+    // business, and never churns on naming variations.
+    if (doc.matched_supplier_id
+      && (!doc.linked_supplier_id
+        || (doc.supplier_differs && doc.matched_supplier_id !== doc.linked_supplier_id))) {
+      return { id: doc.matched_supplier_id, name: doc.matched_supplier_name ?? '' };
+    }
     if (doc.linked_supplier_id || !doc.supplier_name) return undefined;
     const nrm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '');
     const target = nrm(doc.supplier_name);
@@ -954,7 +1162,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const c = nrm(s.name || '');
       return c.length >= 3 && (c === target || target.includes(c) || c.includes(target));
     });
-  }, [doc.linked_supplier_id, doc.supplier_name, suppliers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.linked_supplier_id, doc.supplier_name, doc.matched_supplier_id, doc.matched_supplier_name, doc.supplier_differs, suppliers]);
   // ONE accept path for the supplier link — used by BOTH the inline note and
   // its Suggested Changes row (logged ✓, undoable via undo_header).
   const applySupplierSuggestion = (s: { id: string; name?: string | null }) => {
@@ -978,6 +1187,43 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     if (workingDocId) patchDoc([
       { op: 'update_header', fields: { linked_supplier_id: s.id, supplier_name: s.name ?? null, actioned_suggestions: log } },
     ]);
+  };
+  // The copy names a supplier no Loaded record covers (the engine's match
+  // found nothing): create it and link — resolve-first server-side (an
+  // existing record is returned, never duplicated), two-step confirm like
+  // create-unit. The CREATE is the one Loaded write; the invoice takes the
+  // supplier locally via applySupplierSuggestion (written at receive).
+  const createSupplierAndApply = async () => {
+    const name = doc.copy_supplier?.trim();
+    if (!name || !venueId || embedded || creatingSupplier) return;
+    if (!confirmSupplier) {
+      setConfirmSupplier(true);
+      return;
+    }
+    setConfirmSupplier(false);
+    setCreatingSupplier(true);
+    setMessage('');
+    try {
+      const res = await apiFetch('/api/invoice-fixes/create-supplier', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, name }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+      }
+      const out = await res.json();
+      if (!out?.supplier_id) throw new Error('Loaded did not return the created supplier');
+      const rec = { id: out.supplier_id as string, name: (out.supplier_name as string) ?? name };
+      // Into the dropdown before the header takes it.
+      setSuppliers((prev) => (prev.some((s) => s.id === rec.id) ? prev : [...prev, rec]));
+      applySupplierSuggestion(rec);
+    } catch (e) {
+      setStatus('error');
+      setMessage(e instanceof Error ? e.message : 'Could not create the supplier in Loaded');
+    } finally {
+      setCreatingSupplier(false);
+    }
   };
 
   // Notes persist on a debounce so a keystroke isn't a PATCH each.
@@ -1034,7 +1280,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const m: Record<string, Unit | undefined> = {};
     for (const l of doc.lines) {
       const rec = l.recommended_unit ? resolveUnit(l.recommended_unit, units) : undefined;
-      m[l.id] = rec && rec.id !== l.linked_unit_id ? rec : undefined;
+      // No suggestion when the resolved unit IS the line's unit — by id, or
+      // by case/whitespace-insensitive NAME: venues carry duplicate unit
+      // records ('each' AND 'Each'), and resolving to the twin record must
+      // not churn a "unit Each → each" row.
+      m[l.id] = rec
+        && rec.id !== l.linked_unit_id
+        && unitNameKey(rec.name) !== unitNameKey(l.unit)
+        ? rec : undefined;
     }
     return m;
   }, [doc.lines, units]);
@@ -1051,11 +1304,46 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       excl += includesTax ? lt - t : lt;
     }
     const discount = doc.discount_amount ?? 0;
-    return { excl, tax, discount, incl: excl + tax - discount };
-  }, [doc.lines, includesTax, doc.discount_amount]);
-  // The header's stated Invoice Total vs what the lines add up to.
-  const totalMismatch =
-    doc.total != null && Math.abs((doc.total ?? 0) - totals.incl) > 0.01;
+    // Loaded's own totals arithmetic (from their app bundle): 2dp-round the
+    // sub-sums, then absorb up to ±10c of drift vs the STATED total as a
+    // "rounding amount" — shown as a Rounding row, stated total kept.
+    const excl2 = round2(excl);
+    const tax2 = round2(tax);
+    const incl = round2(excl2 + tax2 - discount);
+    const diff = doc.total != null ? round2(doc.total - incl) : 0;
+    const rounding = diff >= -0.1 && diff <= 0.1 && Math.abs(diff) > Number.EPSILON ? diff : null;
+    return { excl: excl2, tax: tax2, discount, incl, diff, rounding };
+  }, [doc.lines, includesTax, doc.discount_amount, doc.total]);
+  // The header's stated Invoice Total vs what the lines add up to — only a
+  // mismatch when BEYOND Loaded's 10c rounding band.
+  const totalMismatch = doc.total != null && totals.diff !== 0 && totals.rounding == null;
+  // Loaded's own header doesn't add up (totals check) and no other money
+  // suggestion explains it: set the header from the line items — a LOCAL
+  // header edit like the copy-totals accept, written to Loaded on receive.
+  const applyTotalsRecompute = () => {
+    const key = `totals-recompute:${doc.invoice_id}`;
+    const fields: Partial<DocData> = {
+      subtotal: round2(totals.excl),
+      tax_amount: round2(totals.tax),
+      total: round2(totals.incl),
+    };
+    const log = [
+      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
+      {
+        key,
+        summary: `Invoice totals set from the line items (subtotal ${cur(totals.excl)}, total ${cur(totals.incl)})`,
+        undo_header: {
+          total: doc.total ?? null,
+          subtotal: doc.subtotal ?? null,
+          tax_amount: doc.tax_amount ?? null,
+        },
+      },
+    ];
+    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
+    if (workingDocId) patchDoc([
+      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
+    ]);
+  };
 
   const filteredStock = useMemo(() => {
     const q = addQuery.trim().toLowerCase();
@@ -1121,6 +1409,13 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // yet — drives the suggestion row and the amber Invoice Total input.
   const totalSuggestPending = !!doc.copy_total_mismatch && doc.copy_total != null
     && Math.abs((doc.total ?? 0) - doc.copy_total) > 0.02;
+  // The copy's printed invoice number disagrees with the draft's reference
+  // and hasn't been taken (or hand-fixed) yet — drives the suggestion row
+  // and the amber note under the Invoice Number input.
+  const refNorm = (v: string | null | undefined) =>
+    (v ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const invNumSuggestPending = !!doc.copy_invoice_number
+    && refNorm(doc.copy_invoice_number) !== refNorm(doc.reference_number);
   const resolvedLocally = useMemo(() => {
     const out = new Set<string>();
     if (done || !doc.checks) return out;
@@ -1180,24 +1475,80 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     if (checkByKey.po_linked?.state === 'fail' && doc.linked_purchase_order_id) {
       out.add('po_linked');
     }
+    // Supplier from the copy (Gate 12): resolved once a supplier link was
+    // accepted (logged), or — for the missing-link case — once any supplier
+    // is picked.
+    if (checkByKey.supplier?.state === 'fail') {
+      const supplierActioned = (doc.actioned_suggestions || []).some(
+        (a) => a.key.startsWith('supplier:') && !a.dismissed,
+      );
+      if (supplierActioned || (!doc.supplier_differs && doc.linked_supplier_id)) {
+        out.add('supplier');
+      }
+    }
+    // Invoice number from the copy: resolved once the reference matches the
+    // printed number (accepted or hand-fixed).
+    if (checkByKey.pdf_invoice_number?.state === 'fail'
+      && doc.copy_invoice_number
+      && refNorm(doc.reference_number) === refNorm(doc.copy_invoice_number)) {
+      out.add('pdf_invoice_number');
+    }
+    // Split order accepted (the order reference was set): the po_linked
+    // SUGGESTED change is actioned — show it resolved, not still pending.
+    if (checkByKey.po_linked?.state === 'suggest') {
+      const splitAccepted = (doc.actioned_suggestions || []).some(
+        (a) => a.key.startsWith('splitpo:') && !a.dismissed,
+      );
+      if (splitAccepted) out.add('po_linked');
+    }
+    // Doubled-up invoice (order already fully invoiced by the sibling):
+    // resolved once the bogus order reference was removed.
+    if (checkByKey.duplicate?.state === 'fail' && doc.split_remove_po) {
+      const removed = (doc.actioned_suggestions || []).some(
+        (a) => a.key.startsWith('removepo:') && !a.dismissed,
+      );
+      if (removed) out.add('duplicate');
+    }
+    // PO belongs to another supplier: resolved by unlinking it, or by a
+    // supplier switch (the invoice's supplier was the wrong half).
+    if (checkByKey.po_supplier?.state === 'fail') {
+      const unlinked = (doc.actioned_suggestions || []).some(
+        (a) => a.key.startsWith('unlinkpo:') && !a.dismissed,
+      );
+      const supplierSwitched = (doc.actioned_suggestions || []).some(
+        (a) => a.key.startsWith('supplier:') && !a.dismissed,
+      );
+      if ((unlinked && !doc.linked_purchase_order_id) || supplierSwitched) {
+        out.add('po_supplier');
+      }
+    }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [done, doc.checks, doc.lines, doc.suggestions, doc.actioned_suggestions, doc.linked_purchase_order_id, doc.total, doc.subtotal, doc.tax_amount, doc.copy_total, checkByKey, recommendedFor]);
+  }, [done, doc.checks, doc.lines, doc.suggestions, doc.actioned_suggestions, doc.linked_purchase_order_id, doc.total, doc.subtotal, doc.tax_amount, doc.copy_total, doc.copy_invoice_number, doc.reference_number, checkByKey, recommendedFor]);
   const checkSummary = useMemo(() => {
     if (checks.length === 0) return reviewing ? 'checking against the copy…' : 'not yet reviewed';
     let fail = checks.filter((c) => c.state === 'fail').length;
-    const suggest = checks.filter((c) => c.state === 'suggest').length;
+    let suggest = checks.filter((c) => c.state === 'suggest').length;
     const skip = checks.filter((c) => c.state === 'skip').length;
-    const resolved = (newValuesResolvedByEdits ? 1 : 0) + resolvedLocally.size;
-    fail -= resolved;
+    // resolvedLocally covers FAIL and SUGGEST states (e.g. the accepted
+    // split-order reference resolves a suggested po_linked) — decrement the
+    // bucket each resolved key actually came from.
+    let resolved = newValuesResolvedByEdits ? 1 : 0;
+    for (const key of resolvedLocally) {
+      const st = checkByKey[key]?.state;
+      if (st === 'suggest') suggest -= 1;
+      else fail -= 1;
+      resolved += 1;
+    }
     if (fail < 0) fail = 0;
+    if (suggest < 0) suggest = 0;
     if (!fail && !skip && !suggest && !resolved) return 'all checks pass';
     return `${checks.filter((c) => c.state === 'pass').length} passed`
       + `${fail ? ` · ${fail} failed` : ''}`
       + `${suggest ? ` · ${suggest} suggested` : ''}`
       + `${resolved ? ` · ${resolved} resolved by your edits` : ''}`
       + `${skip ? ` · ${skip} not reached` : ''}`;
-  }, [checks, reviewing, newValuesResolvedByEdits, resolvedLocally]);
+  }, [checks, reviewing, newValuesResolvedByEdits, resolvedLocally, checkByKey]);
   const failChecks = useMemo(
     () => checks.filter(
       (c) => c.state === 'fail'
@@ -1236,6 +1587,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     dismissLabel?: string; // e.g. "Confirm" for confirm-unit rows
     undo?: () => void;
     engineFix?: Suggestion; // link_po rows accept via the server
+    // "Open in Loaded" / "View received copy" affordances: href renders as a
+    // plain new-tab anchor (the user's own Loaded session authenticates);
+    // onClick uses the pre-opened-tab copy viewer. Shown in every row state —
+    // comparing the two copies matters most while deciding.
+    links?: { label: string; href?: string; onClick?: () => void }[];
   };
   const suggestionRows: SuggestionRow[] = (() => {
     const rows: SuggestionRow[] = [];
@@ -1244,14 +1600,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     (doc.suggestions || []).forEach((s, si) => {
       if (s.type === 'link_po' && !doc.linked_purchase_order_id) {
         const key = `po:${s.purchase_order_id || s.po_number || ''}:${si}`;
+        const split = s.already_linked_elsewhere === true;
+        // The dedicated split rows below own the actionable states — the
+        // engine's informational row would duplicate them.
+        if (split && (doc.split_po_suggested || doc.split_remove_po)) return;
         if (!logged.has(key)) {
           const summary = s.summary || `Link purchase order ${s.po_number ?? ''}`;
+          // Split-order case: the PO is already invoiced elsewhere — link the
+          // PO, the other invoice, and its copy so the user sees where the
+          // rest of the order went.
+          const links: SuggestionRow['links'] = [];
+          if (split && s.purchase_order_id) links.push({ label: 'PO in Loaded', href: loadedPoUrl(s.purchase_order_id) });
+          if (split && s.linked_invoice_id) links.push({ label: 'Its invoice', href: loadedInvoiceUrl(s.linked_invoice_id) });
+          if (split && s.linked_invoice_file_id) links.push({ label: 'View its copy', onClick: () => openCopy({ fileId: s.linked_invoice_file_id!, nameHint: `${s.linked_invoice_reference || 'split-sibling'}` }) });
           rows.push({
             key,
             summary,
             state: 'pending',
-            engineFix: s.already_linked_elsewhere === true ? undefined : s,
-            dismiss: s.already_linked_elsewhere === true ? undefined : () => dismissSuggestion(key, summary),
+            engineFix: split ? undefined : s,
+            dismiss: split ? undefined : () => dismissSuggestion(key, summary),
+            links: links.length ? links : undefined,
           });
         }
       } else if (s.type === 'delete_invoice') {
@@ -1261,12 +1629,29 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         const key = `delete_invoice:${si}`;
         if (!logged.has(key)) {
           const summary = s.summary || 'This document is a supplier statement, not an invoice — delete this draft in Loaded';
+          // Duplicate case: link the already-received sibling + serve its copy
+          // so the user can compare both invoices before deleting this draft.
+          // The copy link only appears when the sibling actually has one
+          // (older invoices were often received without an attachment).
+          const dupId = s.duplicate_of_invoice_id || doc.duplicate_of_invoice_id || null;
+          const dupFileId = s.duplicate_of_file_id || doc.duplicate_of_file_id || null;
+          const dupPoId = s.duplicate_of_purchase_order_id || doc.duplicate_of_purchase_order_id || null;
+          const links: SuggestionRow['links'] = [];
+          if (dupId) links.push({ label: 'Received invoice in Loaded', href: loadedInvoiceUrl(dupId) });
+          // Goods receipted straight against the ORDER: there is no invoice
+          // document in Loaded to link or fetch a copy from — link the PO.
+          if (!dupId && dupPoId) links.push({ label: 'Received order in Loaded', href: loadedPoUrl(dupPoId) });
+          if (dupFileId) links.push({ label: 'View received copy', onClick: () => openCopy({ fileId: dupFileId, nameHint: `${doc.reference_number || dupId}-received` }) });
+          // Say WHY there's no copy to compare — a silently missing link
+          // reads as a bug, not as "it was received without an attachment".
+          if (dupId && !dupFileId) links.push({ label: '(received without a copy attached)' });
           rows.push({
             key,
             summary,
             state: 'pending',
             engineFix: s,
             dismiss: () => dismissSuggestion(key, summary),
+            links: links.length ? links : undefined,
           });
         }
       } else if (s.type === 'add_line') {
@@ -1299,16 +1684,45 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         dismiss: () => dismissSuggestion(key, summary),
       });
     };
-    // Header-level: the invoice has NO linked supplier and a Loaded record
-    // matches the printed name — same accept path as the inline note under
-    // the Supplier dropdown. Receiving stays blocked (supplierBlocking) even
-    // if dismissed: Loaded cannot receive a supplier-less invoice.
-    if (doc.invoice_id && !doc.linked_supplier_id && suggestedSupplier) {
+    // Header-level: the invoice has NO linked supplier (or the copy names a
+    // DIFFERENT business — Gate 12) and a Loaded record matches — same accept
+    // path as the inline note under the Supplier dropdown. Receiving stays
+    // blocked (supplierBlocking) even if dismissed when supplier-less: Loaded
+    // cannot receive a supplier-less invoice.
+    if (doc.invoice_id && suggestedSupplier
+      && (!doc.linked_supplier_id || doc.supplier_differs)) {
       pushLineRow(
         `supplier:${suggestedSupplier.id}`,
-        `Supplier '${doc.supplier_name ?? ''}' is not linked in Loaded — link to '${suggestedSupplier.name}' (saved to Loaded on receive)`,
+        !doc.linked_supplier_id
+          ? `Supplier '${doc.copy_supplier ?? doc.supplier_name ?? ''}' is not linked in Loaded — link to '${suggestedSupplier.name}' (saved to Loaded on receive)`
+          : `Supplier '${doc.supplier_name ?? ''}' → '${suggestedSupplier.name}' (the copy names '${doc.copy_supplier ?? ''}' — saved to Loaded on receive)`,
         () => applySupplierSuggestion(suggestedSupplier),
       );
+    }
+    // Header-level: the copy names a supplier NO Loaded record covers (the
+    // engine's match found nothing and no name-hit fallback) — offer to
+    // create it, two-step confirm like create-unit. Accepting creates the
+    // record (the one Loaded write) and links it locally.
+    if (doc.invoice_id && !suggestedSupplier && doc.copy_supplier
+      && (!doc.linked_supplier_id || doc.supplier_differs)
+      && !embedded
+      && !(doc.actioned_suggestions || []).some((a) => a.key.startsWith('supplier:') && !a.dismissed)) {
+      const csKey = `create-supplier:${doc.invoice_id}`;
+      if (!logged.has(csKey)) {
+        const summary = `Supplier '${doc.copy_supplier}' is not in Loaded — create it and link (created in Loaded on accept)`;
+        rows.push({
+          key: csKey,
+          summary,
+          state: 'pending',
+          accept: () => { void createSupplierAndApply(); },
+          acceptLabel: creatingSupplier
+            ? 'Creating…'
+            : confirmSupplier
+              ? `Confirm — create '${doc.copy_supplier}'`
+              : undefined,
+          dismiss: () => dismissSuggestion(csKey, summary),
+        });
+      }
     }
     // Header totals from the copy (Gate 11): one row, accepted as a local
     // header edit — written to Loaded on receive.
@@ -1318,6 +1732,61 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         `Invoice total ${cur(doc.total)} → ${cur(doc.copy_total)} (per the invoice copy)`,
         applyTotalSuggestion,
       );
+    }
+    // The copy prints a DIFFERENT invoice number (pdf_invoice_number): a
+    // local header edit; dismiss is the "wrong attachment" escape hatch.
+    if (invNumSuggestPending) {
+      pushLineRow(
+        `invnum:${doc.invoice_id}`,
+        `Invoice number '${doc.reference_number ?? ''}' → '${doc.copy_invoice_number}' (per the invoice copy)`,
+        applyInvoiceNumberSuggestion,
+      );
+    }
+    // The linked order belongs to ANOTHER supplier (po_supplier) and no
+    // supplier-switch suggestion covers the conflict (when the supplier
+    // itself is wrong, switching it is the primary fix): offer the unlink.
+    if (doc.po_supplier_mismatch && doc.linked_purchase_order_id && !suggestedSupplier) {
+      pushLineRow(
+        `unlinkpo:${doc.linked_purchase_order_id}`,
+        `Order ${doc.purchase_order_number ?? ''} belongs to '${doc.po_supplier_name ?? 'another supplier'}', not this invoice's supplier — unlink it (pick the correct order if needed)`,
+        applyPoUnlinkSuggestion,
+      );
+    }
+    // Split order, scenario 3: the copy names an order Loaded didn't match —
+    // offer setting the reference (never the 1:1 link, which the sibling
+    // invoice holds).
+    const sibLinks = (): SuggestionRow['links'] => {
+      const links: SuggestionRow['links'] = [];
+      if (doc.split_po_id) links.push({ label: 'PO in Loaded', href: loadedPoUrl(doc.split_po_id) });
+      if (doc.split_sibling_invoice_id) links.push({ label: 'Its invoice', href: loadedInvoiceUrl(doc.split_sibling_invoice_id) });
+      if (doc.split_sibling_file_id) links.push({ label: 'View its copy', onClick: () => openCopy({ fileId: doc.split_sibling_file_id!, nameHint: doc.split_sibling_reference || 'split-sibling' }) });
+      return links;
+    };
+    if (doc.split_po_suggested && doc.split_po_id && !logged.has(`splitpo:${doc.split_po_id}`)) {
+      const summary = `Set order ${doc.split_po_number ?? ''} on this invoice — part of a split order (also invoiced on '${doc.split_sibling_reference ?? 'another invoice'}')`;
+      rows.push({
+        key: `splitpo:${doc.split_po_id}`,
+        summary,
+        state: 'pending',
+        accept: applySplitPoSuggestion,
+        dismiss: () => dismissSuggestion(`splitpo:${doc.split_po_id}`, summary),
+        links: sibLinks(),
+      });
+    }
+    // Split order, scenario 2 (NOT a split — the sibling invoice already
+    // contains the same goods and total): offer removing the bogus order
+    // reference; dismiss = "genuinely a second delivery".
+    if (doc.split_remove_po && doc.split_po_id && doc.purchase_order_number
+      && !logged.has(`removepo:${doc.split_po_id}`)) {
+      const summary = `Remove order reference ${doc.split_po_number ?? doc.purchase_order_number} — already fully invoiced on '${doc.split_sibling_reference ?? 'another invoice'}' (same items and total)`;
+      rows.push({
+        key: `removepo:${doc.split_po_id}`,
+        summary,
+        state: 'pending',
+        accept: applyRemovePoSuggestion,
+        dismiss: () => dismissSuggestion(`removepo:${doc.split_po_id}`, summary),
+        links: sibLinks(),
+      });
     }
     doc.lines.forEach((l, idx) => {
       // A struck line is inert: no pending rows of any kind (its own strike /
@@ -1411,6 +1880,18 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         );
       }
     });
+    // Loaded's own header doesn't add up and NO other money suggestion is
+    // pending (line qty/cost, copy totals, add-line — those come first; this
+    // is the fallback when nothing else explains the drift): set the header
+    // from the line items.
+    if (totalMismatch && !totalSuggestPending && doc.invoice_id
+      && !rows.some((r) => r.state === 'pending' && /^(qty|cost|total|add):/.test(r.key))) {
+      pushLineRow(
+        `totals-recompute:${doc.invoice_id}`,
+        `Invoice totals don't add up — set subtotal ${cur(totals.excl)} / total ${cur(totals.incl)} from the line items`,
+        applyTotalsRecompute,
+      );
+    }
     for (const a of log) {
       if (a.dismissed) {
         rows.push({
@@ -1501,16 +1982,38 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
   };
 
-  const openCopy = async () => {
+  // Opens THIS draft's copy by default. Pass fileId to open another invoice's
+  // copy (the already-received duplicate sibling — its file id rides on the
+  // review because received invoices can't be resolved by invoice id).
+  const openCopy = async (opts?: { fileId?: string; nameHint?: string }) => {
     if (embedded || !venueId) return;
+    const query = opts?.fileId
+      ? `venue_id=${venueId}&file_id=${encodeURIComponent(opts.fileId)}`
+      : `venue_id=${venueId}&invoice_id=${doc.invoice_id}`;
+    // Open the tab SYNCHRONOUSLY inside the click — window.open AFTER the
+    // fetch has lost the user-activation, so popup blockers silently eat it
+    // (it only ever worked while the file fetch was fast enough to keep the
+    // gesture alive). Navigate the pre-opened tab once the blob arrives.
+    const w = window.open('about:blank', '_blank');
     try {
-      const r = await apiFetch(`/api/invoice-fixes/file?venue_id=${venueId}&invoice_id=${doc.invoice_id}`);
+      const r = await apiFetch(`/api/invoice-fixes/file?${query}`);
       if (!r.ok) throw new Error(r.status === 404 ? 'No copy attached' : `Error ${r.status}`);
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
-      window.open(url, '_blank', 'noopener');
+      if (w && !w.closed) {
+        w.location.replace(url);
+      } else {
+        // Hard-blocked popup: download instead — no new window needed.
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `invoice-${opts?.nameHint || doc.reference_number || doc.invoice_id}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (e) {
+      if (w && !w.closed) w.close();
       setMessage(e instanceof Error ? e.message : 'Could not open copy');
       setStatus('error');
     }
@@ -1724,6 +2227,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         unit_ratio: l.unit_ratio,
         quantity_received: l.quantity_received,
         unit_cost: l.unit_cost,
+        // Added lines (accepted add_line / Add Item) NEED the tax rate on the
+        // wire: without it Loaded computes zero tax for the new line and
+        // rejects the receive with invoice-totals-mismatch (Allied
+        // TLC-686713, 08 Aug 2026 — the $25 freight line's $3.75 tax).
+        sale_tax_rate: l.sale_tax_rate,
         total_cost: Number(((l.quantity_received ?? 0) * (l.unit_cost ?? 0)).toFixed(4)),
         // struck lines are soft-deleted in Loaded by do_receive (a redundant $0
         // duplicate), so they never enter the received invoice.
@@ -1741,6 +2249,23 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           // picker — receiving is the approval that writes the link.
           linked_purchase_order_id: doc.linked_purchase_order_id ?? suggestedPo?.purchase_order_id ?? null,
           po_number: null,
+          // Accepted "unlink this order": clears Loaded's existing link (a
+          // null id alone means "don't touch" server-side). Moot when a PO
+          // is linked again — the server unlinks first, then links.
+          unlink_purchase_order: !!doc.po_unlinked && !doc.linked_purchase_order_id,
+          // Split order (adopted state): the reference field rides the
+          // header write-through, and the server stamps cross-reference
+          // notes on the PO + sibling. Never links the PO (Loaded is 1:1).
+          purchase_order_number:
+            doc.split_order && !doc.split_po_suggested && !doc.linked_purchase_order_id
+              ? doc.purchase_order_number ?? null
+              : null,
+          split_po_id:
+            doc.split_order && !doc.split_po_suggested ? doc.split_po_id ?? null : null,
+          split_sibling_invoice_id:
+            doc.split_order && !doc.split_po_suggested
+              ? doc.split_sibling_invoice_id ?? null
+              : null,
           lines,
           variant_updates,
           // Editable header fields — sent so a change persists to Loaded.
@@ -1829,14 +2354,48 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 {expandedFull ? 'Hide details ▾' : 'Show full invoice ▸'}
               </button>
             )}
+            {/* Deep-link to Loaded's own UI (the user's Loaded session
+                authenticates) — the escape hatch for everything the card
+                can't fix (attach/replace a copy, credit notes…). Received
+                invoices resolve directly; unreceived drafts don't resolve on
+                the invoice route, so they land on the invoices list. */}
+            {!embedded && !doc.is_deleted && (
+              <a href={doc.is_received ? loadedInvoiceUrl(doc.invoice_id) : `${LOADED_APP_URL}/stock/invoices`}
+                target="_blank" rel="noreferrer"
+                title={doc.is_received ? 'Open this invoice in Loaded' : 'Open Loaded invoices'}
+                aria-label={doc.is_received ? 'Open this invoice in Loaded' : 'Open Loaded invoices'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 22, padding: '0 7px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', fontSize: '0.62rem', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+                Open in Loaded ↗
+              </a>
+            )}
             {!embedded && doc.file_id && (
-              <button type="button" onClick={openCopy} title="View invoice copy" aria-label="View invoice copy"
+              <button type="button" onClick={() => openCopy()} title="View invoice copy" aria-label="View invoice copy"
                 style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, padding: 0, border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: 'pointer' }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                   <polyline points="14 2 14 8 20 8" />
                 </svg>
               </button>
+            )}
+            {/* Add to training dojo (platform admins): files the PDF as a
+                supplier-spec sample and kicks the analysis agent. */}
+            {!embedded && isPlatformAdmin && doc.file_id && doc.invoice_id && (
+              dojoAdd === 'added' ? (
+                <span title="Analysis running — review the proposal in Settings → Supplier Specs"
+                  style={{ fontSize: '0.62rem', color: '#2e7d4f', border: '1px solid #b7d5c2', borderRadius: 4, padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                  ✓ In dojo — analysing…
+                </span>
+              ) : (
+                <button type="button" onClick={addToDojo} disabled={dojoAdd === 'adding'}
+                  title="Add this invoice to the training dojo — the analysis agent studies it and drafts a supplier-prompt update for review"
+                  aria-label="Add to training dojo"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 22, padding: '0 7px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: dojoAdd === 'adding' ? 'wait' : 'pointer', fontSize: '0.62rem', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+                  </svg>
+                  {dojoAdd === 'adding' ? 'Adding…' : 'Add to dojo'}
+                </button>
+              )
             )}
           </div>
         </div>
@@ -1871,15 +2430,49 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 <span style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 2 }}>
                   {suggestedSupplier ? (
                     <>
-                      not linked to a Loaded supplier —{' '}
+                      {doc.copy_supplier ? `copy names '${doc.copy_supplier}' — ` : 'not linked to a Loaded supplier — '}
                       <button type="button" onClick={() => applySupplierSuggestion(suggestedSupplier)}
                         style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
                         use {suggestedSupplier.name}
                       </button>
                       {' '}(saved to Loaded on receive)
                     </>
+                  ) : doc.copy_supplier ? (
+                    <>
+                      copy names ‘{doc.copy_supplier}’ — no matching Loaded supplier; pick one, or{' '}
+                      <button type="button" onClick={() => { void createSupplierAndApply(); }} disabled={creatingSupplier}
+                        style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                        {creatingSupplier ? 'creating…' : confirmSupplier ? `confirm — create '${doc.copy_supplier}'` : 'create it'}
+                      </button>
+                    </>
                   ) : (
                     'not linked to a Loaded supplier — pick one before receiving'
+                  )}
+                </span>
+              )}
+              {/* Linked, but the copy names a DIFFERENT business (Gate 12) —
+                  naming variations never reach here. Hidden once a supplier
+                  suggestion was actioned. */}
+              {!done && !embedded && doc.supplier_differs && doc.linked_supplier_id
+                && !(doc.actioned_suggestions || []).some((a) => a.key.startsWith('supplier:') && !a.dismissed) && (
+                <span style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 2 }}>
+                  {suggestedSupplier ? (
+                    <>
+                      copy names ‘{doc.copy_supplier}’ —{' '}
+                      <button type="button" onClick={() => applySupplierSuggestion(suggestedSupplier)}
+                        style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                        use {suggestedSupplier.name}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      copy names ‘{doc.copy_supplier}’ — a different business than the linked supplier;{' '}
+                      <button type="button" onClick={() => { void createSupplierAndApply(); }} disabled={creatingSupplier}
+                        style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                        {creatingSupplier ? 'creating…' : confirmSupplier ? `confirm — create '${doc.copy_supplier}'` : 'create it in Loaded'}
+                      </button>
+                      {' '}or pick the right one
+                    </>
                   )}
                 </span>
               )}
@@ -1895,7 +2488,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   ? `Suggested — Norm matched purchase order ${suggestedPo.po_number ?? ''} from the invoice. Accept it below to link now, or it links when you receive.`
                   : undefined}
                 style={{ ...inputStyle, width: '100%', ...(suggestedPo ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }}>
-                <option value="">Not linked</option>
+                {/* Split order (adopted): the field shows the accepted order
+                    REFERENCE — Loaded's 1:1 link stays with the sibling, so
+                    the select value remains '' (never a link). */}
+                <option value="">
+                  {doc.split_order && !doc.split_po_suggested && !doc.linked_purchase_order_id && doc.purchase_order_number
+                    ? `${doc.purchase_order_number} — split order (reference only)`
+                    : 'Not linked'}
+                </option>
                 {/* A linked/suggested PO may be an older, already-received order
                     that isn't in the open-PO picker list — keep it shown as the
                     current value rather than reading as "Not linked". */}
@@ -1924,6 +2524,48 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   copy says {doc.copy_po} — no matching purchase order found in Loaded
                 </span>
               )}
+              {/* Split order, PENDING accept (the number came off the copy):
+                  the inline hint mirrors the suggestion row — accepting sets
+                  the order reference, never the 1:1 link. */}
+              {!done && doc.split_order && doc.split_po_suggested && !doc.linked_purchase_order_id && (
+                <span style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
+                  copy says order {doc.split_po_number ?? ''} — part of a split order (also invoiced on{' '}
+                  {doc.split_sibling_invoice_id ? (
+                    <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer"
+                      style={{ color: '#b78a2f' }}>
+                      {doc.split_sibling_reference ?? 'another invoice'}
+                    </a>
+                  ) : (doc.split_sibling_reference ?? 'another invoice')}
+                  {') — '}
+                  <button type="button" onClick={applySplitPoSuggestion}
+                    style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                    set it
+                  </button>
+                </span>
+              )}
+              {/* Split order (second delivery): the order's 1:1 link lives on
+                  the sibling invoice — this card validates against the order
+                  and receives without re-linking. */}
+              {doc.split_order && !doc.split_po_suggested && !doc.linked_purchase_order_id && (
+                <span style={{ fontSize: '0.6rem', color: '#8a6d3b', marginTop: 2 }}>
+                  part of a split order — order {doc.split_po_number ?? ''} also invoiced on{' '}
+                  {doc.split_sibling_invoice_id ? (
+                    <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer"
+                      style={{ color: '#8a6d3b' }}>
+                      {doc.split_sibling_reference ?? 'another invoice'}
+                    </a>
+                  ) : (doc.split_sibling_reference ?? 'another invoice')}
+                  {doc.split_sibling_file_id && (
+                    <>
+                      {' · '}
+                      <button type="button" onClick={() => openCopy({ fileId: doc.split_sibling_file_id!, nameHint: doc.split_sibling_reference || 'split-sibling' })}
+                        style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                        view its copy
+                      </button>
+                    </>
+                  )}
+                </span>
+              )}
             </label>
             {doc.order_date && (
               <label style={fieldCol}>
@@ -1941,7 +2583,17 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             <label style={fieldCol}>
               <span style={microLabel}>Invoice Number</span>
               <input type="text" value={doc.reference_number || ''} disabled={done}
-                onChange={(e) => patchHeader({ reference_number: e.target.value })} style={{ ...inputStyle, width: '100%' }} />
+                onChange={(e) => patchHeader({ reference_number: e.target.value })}
+                style={{ ...inputStyle, width: '100%', ...(!done && invNumSuggestPending ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+              {!done && invNumSuggestPending && (
+                <span style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
+                  copy says {doc.copy_invoice_number} —{' '}
+                  <button type="button" onClick={applyInvoiceNumberSuggestion}
+                    style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                    use
+                  </button>
+                </span>
+              )}
             </label>
             <label style={fieldCol}>
               <span style={microLabel}>Invoice Date</span>
@@ -2281,10 +2933,44 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         </table>
       </div>
 
+      {/* Split order: PO items that arrived on the SIBLING delivery — they were
+          received, just on the other invoice. Read-only; never sent on receive. */}
+      {(doc.ordered_received_elsewhere?.length ?? 0) > 0 && !doc.split_po_suggested && (
+        <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fafafa' }}>
+          <div style={{ ...microLabel, marginBottom: 4 }}>
+            Ordered, received on {doc.split_sibling_reference ?? 'another invoice'} ({doc.ordered_received_elsewhere!.length})
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', color: '#8a8a8a' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: '#b0b0b0', fontSize: '0.6rem', textTransform: 'uppercase' }}>
+                <th style={{ padding: '0.25rem 0.6rem' }}>Code</th>
+                <th style={{ padding: '0.25rem 0.6rem' }}>Description</th>
+                <th style={{ padding: '0.25rem 0.6rem' }}>Unit</th>
+                <th style={{ padding: '0.25rem 0.6rem', textAlign: 'right' }}>Qty ordered</th>
+                <th style={{ padding: '0.25rem 0.6rem', textAlign: 'right' }}>Qty received</th>
+                <th style={{ padding: '0.25rem 0.6rem', textAlign: 'right' }}>Unit cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {doc.ordered_received_elsewhere!.map((o, i) => (
+                <tr key={`${o.code || 'ore'}-${i}`} style={{ borderTop: '1px solid #f0f0f0' }}>
+                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.code || '—'}</td>
+                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.description || '—'}</td>
+                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.unit || '—'}</td>
+                  <td style={{ padding: '0.25rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.quantity_ordered ?? '—'}</td>
+                  <td style={{ padding: '0.25rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.quantity_received ?? '—'}</td>
+                  <td style={{ padding: '0.25rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.unit_cost != null ? cur(o.unit_cost) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* Ordered, not delivered — PO items with NO invoice line at all (neither by
           code nor as a substitute). An item delivered under a different code shows
           as its substitute line above, not here. Read-only; never sent on receive. */}
-      {(doc.ordered_not_received?.length ?? 0) > 0 && (
+      {(doc.ordered_not_received?.length ?? 0) > 0 && !doc.split_po_suggested && (
         <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fafafa' }}>
           <div style={{ ...microLabel, marginBottom: 4 }}>
             Ordered, not delivered ({doc.ordered_not_received!.length})
@@ -2349,12 +3035,29 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               <span>Discount</span><span>−{cur(totals.discount)}</span>
             </div>
           )}
+          {/* Loaded absorbs ≤10c of drift vs the stated total as a Rounding
+              row and keeps the stated total — mirrored exactly here. */}
+          {totals.rounding != null && (
+            <div title="Loaded absorbs differences of 10 cents or less between the line totals and the stated invoice total as rounding"
+              style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
+              <span>Rounding</span><span>{totals.rounding < 0 ? '−' : ''}{cur(Math.abs(totals.rounding))}</span>
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #eee', marginTop: 4, paddingTop: 4, fontWeight: 700 }}>
-            <span>Total incl Tax</span><span>{cur(totals.incl)}</span>
+            <span>Total incl Tax</span><span>{cur(totals.rounding != null ? doc.total ?? totals.incl : totals.incl)}</span>
           </div>
           {totalMismatch && (
             <div style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 3, textAlign: 'right' }}>
               differs from the stated invoice total {cur(doc.total)}
+              {!done && !totalSuggestPending && (
+                <>
+                  {' — '}
+                  <button type="button" onClick={applyTotalsRecompute}
+                    style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+                    use computed
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -2431,6 +3134,27 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       {dismissed && !row.key.includes('confirm-unit:') && <span style={{ fontStyle: 'italic' }}> — dismissed</span>}
                       {notActioned && <span style={{ fontStyle: 'italic' }}> — not actioned</span>}
                     </span>
+                    {!embedded && row.links && row.links.length > 0 && (
+                      <span style={{ display: 'flex', gap: 8, whiteSpace: 'nowrap' }}>
+                        {row.links.map((lk) =>
+                          lk.href ? (
+                            <a key={lk.label} href={lk.href} target="_blank" rel="noreferrer"
+                              style={{ fontSize: '0.62rem', color: '#2563a8', textDecoration: 'underline' }}>
+                              {lk.label} ↗
+                            </a>
+                          ) : lk.onClick ? (
+                            <button key={lk.label} type="button" onClick={lk.onClick}
+                              style={{ fontSize: '0.62rem', padding: 0, border: 'none', background: 'none', color: '#2563a8', textDecoration: 'underline', cursor: 'pointer' }}>
+                              {lk.label}
+                            </button>
+                          ) : (
+                            <span key={lk.label} style={{ fontSize: '0.62rem', color: '#9ca3af', fontStyle: 'italic' }}>
+                              {lk.label}
+                            </span>
+                          ),
+                        )}
+                      </span>
+                    )}
                     {(applied || dismissed) && row.undo && !done && !embedded && (
                       <button type="button" onClick={row.undo}
                         title={dismissed ? 'restore this suggestion' : 'undo this change'}

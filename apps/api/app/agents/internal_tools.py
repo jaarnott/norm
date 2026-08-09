@@ -1835,6 +1835,18 @@ def execute_consolidator(
             "error": "consolidator_config must contain function_code — see Settings > Connectors to edit",
         }
 
+    # Merge the automated task's persistent configuration (set via
+    # norm.update_task_config — e.g. require_valid_po) into params, so
+    # task-level knobs reach the consolidator without riding the LLM's tool
+    # call. Explicit call params always win.
+    if thread_id:
+        _at = _get_automated_task_for_conversation(thread_id, db)
+        if _at and _at.task_config:
+            input_params = {
+                **{k: v for k, v in _at.task_config.items() if k not in input_params},
+                **input_params,
+            }
+
     # Inject the caller's per-workflow run mode (approve_all / approve_fixes /
     # autopilot) resolved from the thread's user. The consolidator reads it
     # from params like dry_run; "unset" ⇒ the safest behaviour + an ask.
@@ -2040,11 +2052,41 @@ def _match_stock_items_tool(params: dict, db: Session, thread_id: str | None) ->
         "norm", "match_stock_items", {"venue_id": venue_id, "lines": lines}, {}, ""
     )
     cached = _extraction_cache_get(db, cache_key)
-    if cached is not None:
-        return {"success": True, "data": {"suggestions": cached}}
-
     config_db = _ConfigSessionLocal()
     try:
+        if cached is not None:
+            # A cached match may point at a stock item DELETED since it was
+            # computed (live case: 'porterhouse sirloin') — offering it would
+            # link a dead record. Any matched id missing from the live
+            # catalogue invalidates the entry and we re-match fresh (the LLM
+            # then never sees the deleted item). Entries with no matches
+            # (all-create) serve straight from cache — no catalogue call.
+            matched_ids = {
+                (v.get("matched_item") or {}).get("id")
+                for v in cached.values()
+                if isinstance(v, dict)
+            }
+            matched_ids.discard(None)
+            if matched_ids:
+                from app.services.item_match import _fetch_raw_stock_items
+
+                try:
+                    live_ids = {
+                        i.get("id")
+                        for i in _fetch_raw_stock_items(venue_id, db, config_db)
+                    }
+                except Exception:  # noqa: BLE001 — catalogue unreachable: serve cache
+                    live_ids = None
+                if live_ids is not None and not matched_ids <= live_ids:
+                    from app.db.models import DocumentExtraction
+
+                    db.query(DocumentExtraction).filter(
+                        DocumentExtraction.cache_key == cache_key
+                    ).delete()
+                    cached = None
+        if cached is not None:
+            return {"success": True, "data": {"suggestions": cached}}
+
         suggestions = suggest_item_matches(venue_id, lines, db, config_db)
     finally:
         config_db.close()
@@ -2052,6 +2094,55 @@ def _match_stock_items_tool(params: dict, db: Session, thread_id: str | None) ->
     if suggestions:
         _extraction_cache_put(db, cache_key, "norm", "match_stock_items", suggestions)
     return {"success": True, "data": {"suggestions": suggestions}}
+
+
+@register("norm", "match_supplier")
+def _match_supplier_tool(params: dict, db: Session, thread_id: str | None) -> dict:  # noqa: ARG001
+    """Match a copy-printed supplier name to ONE Loaded supplier — an LLM
+    function the review engine calls only when an invoice has no linked
+    supplier or the copy names a different business. Read-only; never raises;
+    an LLM/list failure returns no match so the review degrades to "pick one
+    manually". Params: ``venue``/``venue_id`` + ``supplier_name``. Results are
+    cached by input hash (the extraction-cache infra).
+    """
+    from app.connectors.function_executor import (
+        _extraction_cache_get,
+        _extraction_cache_key,
+        _extraction_cache_put,
+    )
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.models import Venue
+    from app.services.item_match import suggest_supplier_match
+
+    name = str(params.get("supplier_name") or "").strip()
+    if not name:
+        return {"success": True, "data": {"match": None}}
+
+    venue_id = params.get("venue_id")
+    if not venue_id and params.get("venue"):
+        venue_obj = (
+            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
+        )
+        venue_id = venue_obj.id if venue_obj else None
+    if not venue_id:
+        return {"success": False, "data": {}, "error": "venue not found"}
+
+    cache_key = _extraction_cache_key(
+        "norm", "match_supplier", {"venue_id": venue_id, "supplier_name": name}, {}, ""
+    )
+    cached = _extraction_cache_get(db, cache_key)
+    if cached is not None:
+        return {"success": True, "data": {"match": cached.get("match")}}
+
+    config_db = _ConfigSessionLocal()
+    try:
+        match = suggest_supplier_match(venue_id, name, db, config_db)
+    finally:
+        config_db.close()
+    # Cache only a real match — an empty {} may be a transient LLM failure.
+    if match:
+        _extraction_cache_put(db, cache_key, "norm", "match_supplier", {"match": match})
+    return {"success": True, "data": {"match": match or None}}
 
 
 @register("norm", "update_task_config")

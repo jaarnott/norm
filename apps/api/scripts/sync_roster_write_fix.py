@@ -119,9 +119,16 @@ ALIASES = [
         "headers": dict(_HEADERS),
         "required_fields": ["role_id", "clockin_time", "clockout_time"],
         "field_mapping": {
-            k: k for k in (
-                "roster_id", "role_id", "role_name", "staff_member_id",
-                "clockin_time", "clockout_time", "breaks", "remuneration_type",
+            k: k
+            for k in (
+                "roster_id",
+                "role_id",
+                "role_name",
+                "staff_member_id",
+                "clockin_time",
+                "clockout_time",
+                "breaks",
+                "remuneration_type",
             )
         },
         "field_descriptions": {
@@ -145,10 +152,20 @@ ALIASES = [
         "headers": dict(_HEADERS),
         "required_fields": ["shift_id", "datestamp_deleted"],
         "field_mapping": {
-            k: k for k in (
-                "shift_id", "roster_id", "role_id", "staff_member_id", "venue_id",
-                "clockin_time", "clockout_time", "hourly_rate", "breaks", "rules",
-                "remuneration_type", "datestamp_deleted",
+            k: k
+            for k in (
+                "shift_id",
+                "roster_id",
+                "role_id",
+                "staff_member_id",
+                "venue_id",
+                "clockin_time",
+                "clockout_time",
+                "hourly_rate",
+                "breaks",
+                "rules",
+                "remuneration_type",
+                "datestamp_deleted",
             )
         },
         "field_descriptions": {

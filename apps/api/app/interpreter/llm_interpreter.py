@@ -531,10 +531,31 @@ def call_llm_with_tools(
 
 
 def _parse_response(raw: str) -> dict:
-    """Parse JSON from LLM response, handling markdown fences."""
+    """Parse JSON from LLM response, handling markdown fences and prose.
+
+    Models occasionally think aloud before the JSON ('"Sailor Jerry Spiced
+    Rum" — same brand as index 203 … {"matches": …}') — observed live on the
+    stock-item matcher, 08 Aug 2026, where the strict parse silently degraded
+    a correct match to "NEW item". Strict parse first (unchanged semantics);
+    on failure, decode the first JSON CONTAINER found in the text — a leading
+    quoted phrase must not satisfy the parse as a bare string.
+    """
     text = raw.strip()
     if text.startswith("```"):
         lines = text.split("\n")
         lines = [line for line in lines if not line.strip().startswith("```")]
         text = "\n".join(lines).strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            try:
+                obj, _ = decoder.raw_decode(text, i)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, (dict, list)):
+                return obj
+    raise json.JSONDecodeError("no JSON object found in response", text, 0)

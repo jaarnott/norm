@@ -88,14 +88,18 @@ class TestPayload:
         ).json()
         modes = body["derived"]["effective_run_modes"]["reconcile_received_invoices"]
         assert modes["stored"] is None
-        assert modes["effective"] == body["derived"]["default_run_mode"] == "approve_all"
+        assert (
+            modes["effective"] == body["derived"]["default_run_mode"] == "approve_all"
+        )
 
     def test_email_tool_flag_tracks_the_tool_filter(
         self, client, db_session, admin_user, admin_headers
     ):
         # A task only emails its owner if the email tool is permitted.
         without = _make_task(db_session, admin_user, tool_filter=["reconcile"])
-        with_email = _make_task(db_session, admin_user, tool_filter=["send_report_email"])
+        with_email = _make_task(
+            db_session, admin_user, tool_filter=["send_report_email"]
+        )
         unrestricted = _make_task(db_session, admin_user, tool_filter=None)
 
         def flag(task):

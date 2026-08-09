@@ -408,7 +408,10 @@ class TestToolResultManifest:
 
         rows = [
             _make_tool_call(
-                "t1", "x", {"venue_id": "uuid-here", "mode": "autopilot", "period": "yesterday"}, [1]
+                "t1",
+                "x",
+                {"venue_id": "uuid-here", "mode": "autopilot", "period": "yesterday"},
+                [1],
             )
         ]
         out = build_tool_result_manifest(MagicMock(), _db_returning(rows))

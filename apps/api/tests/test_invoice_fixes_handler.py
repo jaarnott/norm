@@ -7,6 +7,8 @@ no DB — asserting the exact LoadedHub request sequence each fix produces.
 import asyncio
 import re
 
+import pytest
+
 from app.routers import invoice_fixes as IF
 from app.services.received_invoice import resolve_po_id
 
@@ -232,6 +234,49 @@ def test_multipack_equal_mirror():
     assert not multipack_equal("6x750ml", "6x1L")
     assert not multipack_equal("4x6 pack", "24 pack")
     assert not multipack_equal("2x12 pack", "24 pack")
+    # Case/whitespace never distinguish; digits and DOTS do (user rule,
+    # 08 Aug 2026 — the alnum norm let '1.9 KG' name-match '19 KG').
+    assert multipack_equal("Each", " each")
+    assert not multipack_equal("6x1.5L", "6x15L")
+
+
+def test_units_equivalent_mirror():
+    # Mirror of the consolidator's _units_equivalent (Hancocks 4358010,
+    # 08 Aug 2026): a copy printing only a pack COUNT names the same pack as
+    # the sized multipack, and EA names a single sized bottle — neither may
+    # churn a unit suggestion. Counts still gate everything else.
+    from app.services.invoice_units import units_equivalent
+
+    # Pack "6 PK" vs the Loaded multipack it denotes
+    assert units_equivalent("6x750mL", "6 pack")
+    assert units_equivalent("6 pk", "6x 750ml")
+    assert units_equivalent("dozen", "12x330ml")
+    # EA vs the single-bottle unit
+    assert units_equivalent("375 mL", "each")
+    assert units_equivalent("750 mL", "EA")
+    # Magnitude equality still holds
+    assert units_equivalent("0.7 L", "700 mL")
+    # Counts must actually match
+    assert not units_equivalent("6x750mL", "12 pack")
+    assert not units_equivalent("each", "12 pack")
+    assert not units_equivalent("24 pack", "4x6 pack")
+    # 'each' never absorbs weight-priced units (quantities mean kilos)
+    assert not units_equivalent("1.9 KG", "each")
+    # Vague packaging words still aren't equivalence material
+    assert not units_equivalent("Case(s)", "6x750ml")
+    assert not units_equivalent("Case(s)", "750ml")
+
+
+def test_resolve_unit_keeps_dots_distinct():
+    # '1.9 KG' must never NAME-match '19 KG' (the old alnum norm merged them);
+    # with no name hit and different magnitudes, resolution correctly fails.
+    units = UNITS + [
+        {"id": "u-19kg", "name": "19 KG", "ratio": 19.0, "stockUnitType": "Weight"}
+    ]
+    lh = FakeLoaded({"/1.0/stock/internal/units": units}, {})
+    assert IF._resolve_unit(lh, "1.9 KG") is None
+    # Case/whitespace variants of the SAME name still resolve.
+    assert IF._resolve_unit(lh, " 19 kg ")["id"] == "u-19kg"
 
 
 def test_resolve_unit_component_equivalent_multipack():
@@ -359,6 +404,134 @@ class TestReceive:
         assert put[2]["total"] == 1189.27
         assert put[2]["subtotal"] == 1034.15
         assert put[2]["taxAmount"] == 155.12
+
+    def test_reference_number_written_through(self):
+        # Accepted "Invoice number X → Y (per the invoice copy)" lands on the
+        # PUT as referenceNumber — the copy-number suggestion's write path.
+        lh = self._lh()
+        IF._do_receive(lh, self._req(reference_number="INV-9999"))
+        put = [w for w in lh.writes if w[0] == "PUT"][0]
+        assert put[2]["referenceNumber"] == "INV-9999"
+
+    def test_unlink_purchase_order_clears_link(self):
+        # Accepted "unlink this order" (PO belongs to another supplier): the
+        # fetched invoice carries the stale link; the flag must clear BOTH
+        # fields on the PUT — a null po_id alone means "don't touch".
+        lh = self._lh()
+        lh._invoices["inv-1"]["linkedPurchaseOrderId"] = "po-oops"
+        lh._invoices["inv-1"]["purchaseOrderNumber"] = "4041451-1"
+        IF._do_receive(lh, self._req(unlink_purchase_order=True))
+        put = [w for w in lh.writes if w[0] == "PUT"][0]
+        assert put[2]["linkedPurchaseOrderId"] is None
+        assert put[2]["purchaseOrderNumber"] is None
+
+    def test_loaded_rejection_surfaces_as_502_with_detail(self):
+        # Loaded's own validations (invoice-totals-mismatch, Allied
+        # TLC-686713, 08 Aug 2026) must reach the card as a detailed error,
+        # never an opaque 500 ("X Error 500" was all the user saw).
+        from fastapi import HTTPException
+
+        lh = self._lh()
+
+        real_request = lh.request
+
+        def rejecting(method, path, body=None):
+            if method == "PUT":
+                raise RuntimeError(
+                    "Loaded PUT /invoices/inv-1 → 400: "
+                    '{"type":"invoice-totals-mismatch"}'
+                )
+            return real_request(method, path, body)
+
+        lh.request = rejecting
+        with pytest.raises(HTTPException) as exc:
+            IF._do_receive(lh, self._req())
+        assert exc.value.status_code == 502
+        assert "invoice-totals-mismatch" in str(exc.value.detail)
+
+    def test_purchase_order_number_reference_written_through(self):
+        # Split order accepted from the copy: the order-number REFERENCE
+        # rides the header write-through (never the 1:1 link).
+        lh = self._lh()
+        IF._do_receive(lh, self._req(purchase_order_number="1520987"))
+        put = [w for w in lh.writes if w[0] == "PUT"][0]
+        assert put[2]["purchaseOrderNumber"] == "1520987"
+        assert put[2]["linkedPurchaseOrderId"] is None
+
+    def test_link_path_owns_the_number_when_linking(self):
+        # A stale reference field from the card must never overwrite the
+        # number the link path resolved.
+        lh = self._lh()
+        IF._do_receive(
+            lh,
+            self._req(linked_purchase_order_id="po-77", purchase_order_number="STALE"),
+        )
+        put = [w for w in lh.writes if w[0] == "PUT"][0]
+        assert put[2]["linkedPurchaseOrderId"] == "po-77"
+        assert put[2]["purchaseOrderNumber"] != "STALE"
+
+    def test_split_notes_stamped_on_po_and_sibling(self):
+        # Receiving a split invoice stamps cross-reference notes on the PO
+        # and the sibling invoice (best-effort; verified live 08 Aug 2026).
+        lh = self._lh()
+        # More specific path FIRST — FakeLoaded matches by prefix, in order.
+        lh._gets = {
+            "/1.0/stock/internal/purchase-orders/po-split": {
+                "id": "po-split",
+                "orderNumber": "1520987",
+                "notes": "",
+            },
+            **lh._gets,
+        }
+        lh._invoices["sib-9"] = {"id": "sib-9", "notes": ""}
+        IF._do_receive(
+            lh,
+            self._req(
+                split_po_id="po-split",
+                split_sibling_invoice_id="sib-9",
+                reference_number="IN-2ND",
+            ),
+        )
+        po_put = [w for w in lh.writes if w[1].endswith("/po-split")][0]
+        assert "Split order: also invoiced on IN-2ND" in po_put[2]["notes"]
+        sib_put = [w for w in lh.writes if w[1].endswith("/invoices/sib-9")][0]
+        assert "Split order: order 1520987 also covers IN-2ND" in sib_put[2]["notes"]
+
+    def test_receive_survives_note_failures(self):
+        # A note-write failure must never fail the receive itself.
+        lh = self._lh()
+        lh._gets = {
+            "/1.0/stock/internal/purchase-orders/po-split": {
+                "id": "po-split",
+                "orderNumber": "1520987",
+                "notes": "",
+            },
+            **lh._gets,
+        }
+        out = IF._do_receive(
+            lh,
+            self._req(
+                split_po_id="po-split",
+                split_sibling_invoice_id="sib-missing",  # KeyError in the fake
+            ),
+        )
+        assert out["ok"] is True
+        by_target = {n["target"]: n for n in out["split_notes"]}
+        assert by_target["purchase_order"]["ok"] is True
+        assert by_target["sibling_invoice"]["ok"] is False
+
+    def test_unlink_then_relink_links_the_new_po(self):
+        # Unlink + a new PO in the same receive: the unlink clears the stale
+        # link first, then the chosen order links — the user unlinked the
+        # wrong supplier's PO and picked the right one before receiving.
+        lh = self._lh()
+        lh._invoices["inv-1"]["linkedPurchaseOrderId"] = "po-oops"
+        IF._do_receive(
+            lh,
+            self._req(unlink_purchase_order=True, linked_purchase_order_id="po-77"),
+        )
+        put = [w for w in lh.writes if w[0] == "PUT"][0]
+        assert put[2]["linkedPurchaseOrderId"] == "po-77"
 
     def test_receive_with_no_lines_rejected(self):
         # An empty draft (a letter/statement uploaded as an invoice — live:
@@ -916,6 +1089,110 @@ class TestAttachPoReference:
         assert onr["FULL1"]["quantity_ordered"] == 3  # full ordered qty, shown
         assert onr["PART1"]["quantity_ordered"] == 5  # full ordered qty, shown
 
+    def test_attach_runs_from_split_po_id_without_a_link(self):
+        # Split order: no Loaded link on THIS invoice (the sibling holds it),
+        # but the card carries split_po_id — reconcile against that order
+        # (QTY ORDERED / ordered-not-delivered) without touching link fields.
+        po = {
+            "createdAt": "2026-07-20",
+            "lines": [
+                {
+                    "itemCode": "SPLIT1",
+                    "itemName": "OTHER DELIVERY ITEM",
+                    "unitName": "Each",
+                    "quantityOrdered": 4,
+                    "unitCost": 2.5,
+                },
+            ],
+        }
+        lh = FakeLoaded(
+            gets={"/1.0/stock/internal/purchase-orders/po-split": po}, invoices={}
+        )
+        data = {
+            "split_po_id": "po-split",
+            "lines": [{"id": "ln-x", "code": "OTHER", "unit_cost": 1.0}],
+        }
+        IF._attach_po_reference(data, lh)
+        assert [o["code"] for o in data["ordered_not_received"]] == ["SPLIT1"]
+        assert not data.get("linked_purchase_order_id")
+
+    def test_attach_runs_even_before_split_acceptance(self):
+        # Scenario 3 (number found on the copy only): the order's reference
+        # data shows from the FIRST open — the engine already validated
+        # against this order, and waiting for the accept left the card
+        # without QTY ORDERED until a reopen (Bidvest 109827538, 09 Aug).
+        po = {"createdAt": "2026-07-20", "lines": []}
+        data = {
+            "split_po_id": "po-split",
+            "split_po_suggested": True,
+            "lines": [{"id": "ln-x"}],
+        }
+        IF._attach_po_reference(
+            data,
+            FakeLoaded(
+                gets={"/1.0/stock/internal/purchase-orders/po-split": po},
+                invoices={},
+            ),
+        )
+        assert data["ordered_not_received"] == []
+        assert data["order_date"] == "2026-07-20"
+
+    def test_split_sibling_receipts_partition_out_of_not_delivered(self):
+        # Split order: a PO line the SIBLING invoice received is "Ordered,
+        # received on <sibling>", not "not delivered"; a line on neither
+        # invoice stays under "not delivered". Sibling unfetchable → all
+        # stay "not delivered" (best-effort).
+        po = {
+            "createdAt": "2026-07-20",
+            "lines": [
+                {
+                    "itemCode": "VIN1",
+                    "itemName": "CHARDONNAY VINEGAR",
+                    "unitName": "Each",
+                    "quantityOrdered": 3,
+                    "unitCost": 40.0,
+                },
+                {
+                    "itemCode": "MISS1",
+                    "itemName": "NEVER DELIVERED",
+                    "unitName": "Each",
+                    "quantityOrdered": 1,
+                    "unitCost": 5.0,
+                },
+            ],
+        }
+        lh = FakeLoaded(
+            gets={"/1.0/stock/internal/purchase-orders/po-split": po},
+            invoices={
+                "sib-1": {
+                    "id": "sib-1",
+                    "lines": [{"id": "s1", "code": "VIN1", "quantityReceived": 3.0}],
+                }
+            },
+        )
+        data = {
+            "split_po_id": "po-split",
+            "split_sibling_invoice_id": "sib-1",
+            "lines": [{"id": "ln-x", "code": "OTHER", "unit_cost": 1.0}],
+        }
+        IF._attach_po_reference(data, lh)
+        assert [o["code"] for o in data["ordered_received_elsewhere"]] == ["VIN1"]
+        assert data["ordered_received_elsewhere"][0]["quantity_received"] == 3.0
+        assert [o["code"] for o in data["ordered_not_received"]] == ["MISS1"]
+
+        # Sibling fetch failure → everything stays under "not delivered".
+        lh2 = FakeLoaded(
+            gets={"/1.0/stock/internal/purchase-orders/po-split": po}, invoices={}
+        )
+        data2 = {
+            "split_po_id": "po-split",
+            "split_sibling_invoice_id": "sib-missing",
+            "lines": [{"id": "ln-x", "code": "OTHER", "unit_cost": 1.0}],
+        }
+        IF._attach_po_reference(data2, lh2)
+        assert len(data2["ordered_not_received"]) == 2
+        assert data2["ordered_received_elsewhere"] == []
+
 
 class TestResolvePoId:
     """Resolving a PO NUMBER to an id — the open-PO list first, then the
@@ -1446,6 +1723,95 @@ class TestListSuppliersEndpoint:
         ]
         out = self._call(client, admin_headers, monkeypatch, rows)
         assert [s["name"] for s in out] == ["Active", "Alive"]
+
+
+class TestCreateSupplierEndpoint:
+    """POST /invoice-fixes/create-supplier: resolve-first against the venue's
+    list (normalized containment — never a duplicate record), else the one
+    Loaded write (POST /suppliers, verified live 08 Aug 2026: 201 + the
+    created object). The invoice links the supplier LOCALLY in the editor."""
+
+    def _fake(self, monkeypatch, rows, created=None):
+        calls = []
+
+        class FakeLh:
+            def get(self, path):
+                assert path == "/1.0/stock/internal/suppliers"
+                return rows
+
+            def request(self, method, path, body=None):
+                calls.append((method, path, body))
+                return created if created is not None else {}
+
+        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: FakeLh())
+        return calls
+
+    def test_resolves_existing_record_without_writing(
+        self, client, admin_headers, monkeypatch
+    ):
+        # "EuroVintage Ltd" on the copy, "Eurovintage" in Loaded: containment
+        # resolves the existing record — no write, no duplicate supplier.
+        calls = self._fake(
+            monkeypatch, [{"id": "sup-e", "name": "Eurovintage", "removedAt": None}]
+        )
+        r = client.post(
+            "/api/invoice-fixes/create-supplier",
+            headers=admin_headers,
+            json={"venue_id": "v-1", "name": "EuroVintage Ltd"},
+        )
+        assert r.status_code == 200
+        out = r.json()
+        assert out["created"] is False
+        assert out["supplier_id"] == "sup-e"
+        assert out["supplier_name"] == "Eurovintage"
+        assert calls == []
+
+    def test_creates_when_no_record_covers_it(self, client, admin_headers, monkeypatch):
+        calls = self._fake(
+            monkeypatch,
+            [{"id": "sup-1", "name": "Bidfood"}],
+            created={"id": "sup-new", "name": "EuroVintage Ltd"},
+        )
+        r = client.post(
+            "/api/invoice-fixes/create-supplier",
+            headers=admin_headers,
+            json={"venue_id": "v-1", "name": "EuroVintage Ltd"},
+        )
+        assert r.status_code == 200
+        out = r.json()
+        assert out["created"] is True
+        assert out["supplier_id"] == "sup-new"
+        assert calls == [
+            (
+                "POST",
+                "/1.0/stock/internal/suppliers",
+                {"name": "EuroVintage Ltd"},
+            )
+        ]
+
+    def test_removed_record_does_not_resolve(self, client, admin_headers, monkeypatch):
+        # A soft-deleted record must not swallow the create.
+        self._fake(
+            monkeypatch,
+            [{"id": "sup-x", "name": "EuroVintage Ltd", "removedAt": "2025-01-01"}],
+            created={"id": "sup-new2", "name": "EuroVintage Ltd"},
+        )
+        r = client.post(
+            "/api/invoice-fixes/create-supplier",
+            headers=admin_headers,
+            json={"venue_id": "v-1", "name": "EuroVintage Ltd"},
+        )
+        assert r.status_code == 200
+        assert r.json()["created"] is True
+
+    def test_502_when_loaded_returns_no_id(self, client, admin_headers, monkeypatch):
+        self._fake(monkeypatch, [], created={})
+        r = client.post(
+            "/api/invoice-fixes/create-supplier",
+            headers=admin_headers,
+            json={"venue_id": "v-1", "name": "New Supplier"},
+        )
+        assert r.status_code == 502
 
 
 class TestStruckAndAddedLines:

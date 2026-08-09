@@ -148,10 +148,16 @@ class TestAttachItemNames:
     def test_resolves_names_for_linked_lines_only(self):
         from app.services.received_invoice import attach_item_names
 
-        data = {"lines": [
-            {"id": "l1", "description": "Spianata Piccante 2kg C6", "linked_item_id": "i-1"},
-            {"id": "l2", "description": "FREIGHT - FOOD", "linked_item_id": None},
-        ]}
+        data = {
+            "lines": [
+                {
+                    "id": "l1",
+                    "description": "Spianata Piccante 2kg C6",
+                    "linked_item_id": "i-1",
+                },
+                {"id": "l2", "description": "FREIGHT - FOOD", "linked_item_id": None},
+            ]
+        }
         lh = self.FakeLh({"i-1": "SPIANATA PICCANTE"})
         attach_item_names(data, lh)
         assert data["lines"][0]["item_name"] == "SPIANATA PICCANTE"
@@ -162,9 +168,16 @@ class TestAttachItemNames:
     def test_resolved_lines_are_not_refetched(self):
         from app.services.received_invoice import attach_item_names
 
-        data = {"lines": [
-            {"id": "l1", "linked_item_id": "i-1", "item_name": "X", "item_name_for": "i-1"},
-        ]}
+        data = {
+            "lines": [
+                {
+                    "id": "l1",
+                    "linked_item_id": "i-1",
+                    "item_name": "X",
+                    "item_name_for": "i-1",
+                },
+            ]
+        }
         lh = self.FakeLh({"i-1": "X"})
         attach_item_names(data, lh)
         assert lh.calls == []  # persisted — no refetch on re-open
@@ -172,9 +185,16 @@ class TestAttachItemNames:
     def test_relink_refreshes_the_name(self):
         from app.services.received_invoice import attach_item_names
 
-        data = {"lines": [
-            {"id": "l1", "linked_item_id": "i-2", "item_name": "OLD", "item_name_for": "i-1"},
-        ]}
+        data = {
+            "lines": [
+                {
+                    "id": "l1",
+                    "linked_item_id": "i-2",
+                    "item_name": "OLD",
+                    "item_name_for": "i-1",
+                },
+            ]
+        }
         lh = self.FakeLh({"i-2": "NEW NAME"})
         attach_item_names(data, lh)
         assert data["lines"][0]["item_name"] == "NEW NAME"

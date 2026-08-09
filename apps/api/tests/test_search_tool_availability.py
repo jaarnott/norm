@@ -18,7 +18,9 @@ SEARCH = "norm__search_tool_result"
 
 
 def _tools():
-    return [{"name": "loadedhub__get_sales_data", "description": "d", "input_schema": {}}]
+    return [
+        {"name": "loadedhub__get_sales_data", "description": "d", "input_schema": {}}
+    ]
 
 
 class TestEnsureSearchTool:
@@ -85,7 +87,11 @@ class TestCompactMessages:
             {
                 "role": "user",
                 "content": [
-                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "x" * 50_000}
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": "x" * 50_000,
+                    }
                 ],
             },
         ]

@@ -114,6 +114,9 @@ _MATCH_SYSTEM_PROMPT = (
     "matches catalogue 'SPIANATA PICCANTE').\n"
     "- BEVERAGE: the brand matters — a different brand is a different product; "
     "ignore size/packaging.\n"
+    "- Naming VARIATIONS of the same branded product ARE a match: invoice "
+    "'SAILOR JERRY SPICED RUM' matches catalogue 'SAILOR JERRY RUM' (same "
+    "brand, same product, fuller name).\n"
     "- WINE: the brand/label matters; ignore vintage, size and packaging.\n"
     "- If you are not confident the same product exists, return match_index: null. "
     "Do NOT force a match.\n\n"
@@ -339,3 +342,83 @@ def suggest_item_matches_for_invoice(
     except Exception as exc:  # noqa: BLE001 — suggestions are best-effort
         logger.warning("suggest_item_matches_for_invoice failed: %s", exc)
         return {}
+
+
+_SUPPLIER_MATCH_SYSTEM_PROMPT = (
+    "You match a supplier name printed on an invoice to a venue's supplier "
+    "records. Naming VARIATIONS of the same business match ('Hancocks' vs "
+    "'Hancock Ltd' vs 'Hancocks Family Merchants'); a DIFFERENT business "
+    "never matches. The list is numbered — return ONLY a JSON object "
+    '{"index": <number of the matching supplier, or null when none is the '
+    "same business>}."
+)
+
+
+def suggest_supplier_match(
+    venue_id: str, supplier_name: str, db: Session, config_db: Session
+) -> dict:
+    """Match a copy-printed supplier name to ONE Loaded supplier record.
+
+    The review engine's supplier gate calls this (via ``norm.match_supplier``)
+    only when the invoice has no linked supplier or the copy names a different
+    business — rare, so one bounded LLM call over the full list. Admin
+    spec-row aliases ride along as hints ("Tasman Liquor Company" is Allied
+    Liquor). Returns ``{"supplier_id", "supplier_name"}`` or ``{}`` when no
+    supplier is confidently the same business — a miss degrades to "pick one
+    manually", never a guess.
+    """
+    from app.db.config_models import SupplierInvoiceSpec
+    from app.interpreter.llm_interpreter import call_llm
+    from app.services.component_api import execute_component_action
+
+    try:
+        result = execute_component_action(
+            "purchase_order_editor", "get_suppliers", {}, venue_id, db, config_db
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade to no match
+        logger.warning("supplier match: suppliers fetch failed: %s", exc)
+        return {}
+    rows = result.get("data") if isinstance(result, dict) else result
+    rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
+    suppliers = [
+        {"id": s.get("id"), "name": s.get("name") or s.get("supplierName")}
+        for s in rows
+        if isinstance(s, dict)
+        and s.get("id")
+        and not (s.get("removedAt") or s.get("datestampDeleted"))
+    ]
+    if not suppliers:
+        return {}
+    alias_lines = []
+    try:
+        for sp in (
+            config_db.query(SupplierInvoiceSpec)
+            .filter(SupplierInvoiceSpec.enabled.is_(True))
+            .all()
+        ):
+            for a in sp.aliases or []:
+                alias_lines.append(f"'{a}' is another name for '{sp.name}'")
+    except Exception:  # noqa: BLE001 — hints only, never fatal
+        pass
+    listing = "\n".join(f"[{i}] {s['name']}" for i, s in enumerate(suppliers))
+    user_prompt = f'INVOICE SUPPLIER: "{supplier_name}"\n\nSUPPLIERS:\n{listing}' + (
+        "\n\nKNOWN ALIASES:\n" + "\n".join(alias_lines) if alias_lines else ""
+    )
+    try:
+        parsed, _ = call_llm(
+            system_prompt=_SUPPLIER_MATCH_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            db=db,
+            call_type="extraction",
+            max_tokens=200,
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade to no match
+        logger.warning("supplier match failed: %s", exc)
+        return {}
+    idx = parsed.get("index") if isinstance(parsed, dict) else None
+    if isinstance(idx, int) and 0 <= idx < len(suppliers):
+        return {
+            "supplier_id": suppliers[idx]["id"],
+            "supplier_name": suppliers[idx]["name"],
+        }
+    return {}

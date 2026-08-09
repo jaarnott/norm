@@ -107,7 +107,9 @@ def wired(db_session, monkeypatch):
         wrapped=GET_SALES_DATA,
     )
 
-    org = Organization(id=str(uuid.uuid4()), name="Cook", slug=f"o{uuid.uuid4().hex[:6]}")
+    org = Organization(
+        id=str(uuid.uuid4()), name="Cook", slug=f"o{uuid.uuid4().hex[:6]}"
+    )
     db_session.add(org)
     db_session.flush()
     venue = Venue(
@@ -203,7 +205,9 @@ def _stub_upstream(monkeypatch, sink):
     def wrapper(spec, tool_def, params, credentials, db, thread_id, venue_id=None):
         if tool_def.get("action") == "get_sales_data":
             sink.append(dict(params))
-        return real(spec, tool_def, params, credentials, db, thread_id, venue_id=venue_id)
+        return real(
+            spec, tool_def, params, credentials, db, thread_id, venue_id=venue_id
+        )
 
     monkeypatch.setattr(se, "execute_spec", wrapper)
 

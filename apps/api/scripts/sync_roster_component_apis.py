@@ -76,7 +76,8 @@ ROWS = [
         "required_fields": ["from_date", "to_date"],
         "field_mapping": {"from_date": "from_date", "to_date": "to_date"},
         "field_descriptions": {
-            "from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD",
+            "from_date": "YYYY-MM-DD",
+            "to_date": "YYYY-MM-DD",
         },
         "ref_fields": {},
         "id_field": None,
@@ -106,7 +107,8 @@ ROWS = [
         "required_fields": ["from_date", "to_date"],
         "field_mapping": {"from_date": "from_date", "to_date": "to_date"},
         "field_descriptions": {
-            "from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD",
+            "from_date": "YYYY-MM-DD",
+            "to_date": "YYYY-MM-DD",
         },
         "ref_fields": {},
         "id_field": None,
@@ -167,9 +169,7 @@ def main() -> None:
                 .first()
             )
             if existing:
-                dirty = [
-                    k for k, v in row.items() if getattr(existing, k, None) != v
-                ]
+                dirty = [k for k, v in row.items() if getattr(existing, k, None) != v]
                 if not dirty:
                     print(f"  = {row['action_name']}: already up to date")
                     continue

@@ -294,21 +294,27 @@ class TestDaylightSaving:
     """
 
     def test_a_week_wholly_inside_daylight_saving_uses_the_summer_offset(self):
-        w = bc.trading_week(venue(), dt.datetime(2026, 10, 7, 12, tzinfo=dt.timezone.utc))
+        w = bc.trading_week(
+            venue(), dt.datetime(2026, 10, 7, 12, tzinfo=dt.timezone.utc)
+        )
         assert w.start.utcoffset() == dt.timedelta(hours=13)
         assert w.start.strftime("%H:%M") == "07:00"
 
     def test_a_week_spanning_the_transition_changes_offset_across_it(self):
         """The start is NZST and the end is NZDT. A window that used one offset
         for both ends would run an hour long."""
-        w = bc.trading_week(venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc))
+        w = bc.trading_week(
+            venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc)
+        )
         assert w.start.utcoffset() == dt.timedelta(hours=12)
         assert w.end.utcoffset() == dt.timedelta(hours=13)
 
     def test_the_local_trading_boundary_holds_on_both_sides(self):
         """What actually matters: 07:00 to 06:59 in local wall-clock terms,
         whichever side of the transition each end falls."""
-        w = bc.trading_week(venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc))
+        w = bc.trading_week(
+            venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc)
+        )
         assert w.start.strftime("%H:%M") == "07:00"
         assert w.end.strftime("%H:%M") == "06:59"
 
@@ -319,11 +325,17 @@ class TestDaylightSaving:
         aware datetimes in the SAME zone uses wall-clock semantics and would
         report 168 hours regardless, hiding exactly what is being checked.
         """
-        span = bc.trading_week(venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc))
-        plain = bc.trading_week(venue(), dt.datetime(2026, 10, 7, 12, tzinfo=dt.timezone.utc))
+        span = bc.trading_week(
+            venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc)
+        )
+        plain = bc.trading_week(
+            venue(), dt.datetime(2026, 10, 7, 12, tzinfo=dt.timezone.utc)
+        )
 
         def absolute(w):
-            return w.end.astimezone(dt.timezone.utc) - w.start.astimezone(dt.timezone.utc)
+            return w.end.astimezone(dt.timezone.utc) - w.start.astimezone(
+                dt.timezone.utc
+            )
 
         assert absolute(plain) == dt.timedelta(days=7) - dt.timedelta(seconds=1)
         assert absolute(span) == absolute(plain) - dt.timedelta(hours=1)

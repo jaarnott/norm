@@ -166,10 +166,25 @@ def _ensure_config_tables() -> None:
 
     log = logging.getLogger(__name__)
     try:
+        from sqlalchemy import text as _sqltext
+
         from app.db.config_models import ConfigBase
         from app.db.engine import _config_engine
 
         ConfigBase.metadata.create_all(_config_engine)
+        # create_all only ADDS TABLES — columns added to an existing config
+        # table need explicit (idempotent) ALTERs. Postgres supports
+        # IF NOT EXISTS, so these are safe on every startup.
+        with _config_engine.begin() as conn:
+            for ddl in (
+                "ALTER TABLE supplier_spec_samples "
+                "ADD COLUMN IF NOT EXISTS source_venue_id VARCHAR",
+                "ALTER TABLE supplier_spec_samples "
+                "ADD COLUMN IF NOT EXISTS source_invoice_id VARCHAR",
+                "ALTER TABLE supplier_spec_samples "
+                "ADD COLUMN IF NOT EXISTS analysis JSON",
+            ):
+                conn.execute(_sqltext(ddl))
     except Exception as exc:
         log.warning("Could not ensure config DB tables: %s", exc)
 
