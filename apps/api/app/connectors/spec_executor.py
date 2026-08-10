@@ -526,14 +526,48 @@ def execute_spec(
     if spec.execution_mode == "mcp":
         from app.connectors.mcp_executor import mcp_call_tool
 
-        result = mcp_call_tool(
-            mcp_url=spec.base_url_template,
-            tool_name=operation.get("action"),
-            arguments=extracted_fields,
-            credentials=credentials,
-            auth_type=spec.auth_type,
-            auth_config=spec.auth_config or {},
-        )
+        # OAuth 2.1 MCP connectors authenticate with a per-venue access token, not
+        # a static credential. Resolve (and lazily refresh) it here and hand it to
+        # the executor; on a 401 the token may have just expired, so refresh once
+        # and retry before giving up.
+        mcp_credentials = credentials
+        if spec.auth_type == "oauth2":
+            from app.services.oauth_service import get_valid_access_token
+
+            mcp_credentials = {
+                "access_token": get_valid_access_token(spec, db, venue_id=venue_id)
+            }
+
+        def _call(creds):
+            return mcp_call_tool(
+                mcp_url=spec.base_url_template,
+                tool_name=operation.get("action"),
+                arguments=extracted_fields,
+                credentials=creds,
+                auth_type=spec.auth_type,
+                auth_config=spec.auth_config or {},
+            )
+
+        result = _call(mcp_credentials)
+
+        if (
+            spec.auth_type == "oauth2"
+            and not result.success
+            and result.error_message
+            and "401" in result.error_message
+        ):
+            try:
+                from app.services.oauth_service import refresh_access_token
+
+                result = _call(
+                    {"access_token": refresh_access_token(spec, db, venue_id=venue_id)}
+                )
+            except Exception:
+                # Refresh failed — refresh_access_token has already flagged
+                # needs_reconnect, which drives the in-conversation reconnect card.
+                # Leave the original 401 result to surface the failure.
+                pass
+
         rendered = RenderedRequest(
             method="POST",
             url=spec.base_url_template,

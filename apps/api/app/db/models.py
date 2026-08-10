@@ -386,6 +386,11 @@ class OAuthState(Base):
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=True)
     state = Column(String, unique=True, nullable=False, index=True)
+    # PKCE (OAuth 2.1 public clients): the code_verifier is generated when the
+    # authorize URL is built and must survive the redirect round-trip to be sent
+    # on token exchange. Single-use, consumed with the state. Null for legacy /
+    # non-PKCE flows.
+    code_verifier = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
 

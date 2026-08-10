@@ -4,6 +4,8 @@ Handles token exchange, refresh, and credential management for
 connectors that use OAuth2 authentication.
 """
 
+import base64
+import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -20,6 +22,98 @@ logger = logging.getLogger(__name__)
 # the provider's login within this window; long enough for a real login, short
 # enough that a leaked/abandoned state doesn't linger.
 OAUTH_STATE_TTL_MIN = 15
+
+
+def _uses_pkce(oauth: dict) -> bool:
+    """Whether this connector's OAuth flow uses PKCE.
+
+    Explicit ``pkce: true`` opts in; a public client
+    (``token_endpoint_auth_method == "none"``) always does, since OAuth 2.1
+    requires PKCE when there is no client secret to authenticate the exchange.
+    """
+    return bool(oauth.get("pkce")) or oauth.get("token_endpoint_auth_method") == "none"
+
+
+def _generate_pkce() -> tuple[str, str]:
+    """Return (code_verifier, code_challenge) for PKCE S256 (RFC 7636)."""
+    verifier = secrets.token_urlsafe(64)  # ~86 chars, within the 43-128 range
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .decode("ascii")
+        .rstrip("=")
+    )
+    return verifier, challenge
+
+
+def register_client(
+    spec: ConnectorSpec, redirect_uris: list[str], config_db: Session
+) -> str:
+    """Dynamically register Norm as an OAuth client (RFC 7591). Returns client_id.
+
+    Public-client registration (``token_endpoint_auth_method: none``), so no
+    secret is issued. Done once per connector — the returned ``client_id`` is
+    persisted into ``spec.oauth_config`` (config DB), and subsequent calls
+    short-circuit. All environments' callback URLs are registered together so the
+    single stored ``client_id`` works across the shared config DB.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    oauth = dict(spec.oauth_config or {})
+    if oauth.get("client_id"):
+        return oauth["client_id"]
+
+    registration_url = oauth.get("registration_url", "")
+    if not registration_url:
+        raise ValueError("OAuth config missing registration_url")
+
+    body = {
+        "client_name": oauth.get("client_name", "Norm"),
+        "redirect_uris": redirect_uris,
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": oauth.get("token_endpoint_auth_method", "none"),
+        "application_type": "web",
+    }
+    if oauth.get("scopes"):
+        body["scope"] = oauth["scopes"]
+
+    resp = httpx.post(
+        registration_url,
+        json=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        timeout=15.0,
+    )
+    if resp.status_code not in (200, 201):
+        logger.error(
+            "OAuth dynamic registration failed: %s %s",
+            resp.status_code,
+            resp.text[:300],
+        )
+        raise ValueError(
+            f"Client registration failed ({resp.status_code}): {resp.text[:200]}"
+        )
+
+    data = resp.json()
+    client_id = data.get("client_id")
+    if not client_id:
+        raise ValueError("Registration response missing client_id")
+
+    oauth["client_id"] = client_id
+    # Persist anything else the server returned (a secret/registration token even
+    # for a "none" client, etc.) so we don't lose it.
+    for k in (
+        "client_secret",
+        "registration_access_token",
+        "registration_client_uri",
+        "client_id_issued_at",
+    ):
+        if data.get(k):
+            oauth[k] = data[k]
+    spec.oauth_config = oauth
+    flag_modified(spec, "oauth_config")
+    config_db.commit()
+    logger.info("Registered OAuth client for %s (client_id set)", spec.connector_name)
+    return client_id
 
 
 def build_authorize_url(
@@ -40,12 +134,21 @@ def build_authorize_url(
 
     state = secrets.token_urlsafe(32)
 
-    # Persist state for verification on callback
+    # PKCE (OAuth 2.1 public clients): generate a verifier now, persist it with
+    # the state so it survives the redirect, and send only the challenge.
+    use_pkce = _uses_pkce(oauth)
+    code_verifier = None
+    code_challenge = None
+    if use_pkce:
+        code_verifier, code_challenge = _generate_pkce()
+
+    # Persist state (+ verifier) for verification on callback
     oauth_state = OAuthState(
         connector_name=spec.connector_name,
         state=state,
         venue_id=venue_id,
         user_id=user_id,
+        code_verifier=code_verifier,
     )
     db.add(oauth_state)
     db.commit()
@@ -58,6 +161,9 @@ def build_authorize_url(
     }
     if scopes:
         query["scope"] = scopes
+    if use_pkce and code_challenge:
+        query["code_challenge"] = code_challenge
+        query["code_challenge_method"] = "S256"
 
     # Google-specific: request offline access for refresh tokens
     if "accounts.google.com" in authorize_url:
@@ -99,6 +205,9 @@ def exchange_code(
             raise ValueError(
                 "OAuth state has expired — please start the connection again"
             )
+    # Capture the PKCE verifier before the state row is deleted — it must be
+    # replayed on the token exchange.
+    code_verifier = oauth_state.code_verifier
     db.delete(oauth_state)
 
     oauth = spec.oauth_config or {}
@@ -109,16 +218,23 @@ def exchange_code(
     if not token_url:
         raise ValueError("OAuth config missing token_url")
 
+    # Public clients (PKCE, no secret) omit client_secret and send code_verifier;
+    # confidential clients (LoadedHub, Google) send the secret as before.
+    token_body = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+    }
+    if client_secret:
+        token_body["client_secret"] = client_secret
+    if code_verifier:
+        token_body["code_verifier"] = code_verifier
+
     # Exchange code for tokens
     resp = httpx.post(
         token_url,
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "client_id": client_id,
-            "client_secret": client_secret,
-        },
+        data=token_body,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
@@ -210,8 +326,12 @@ def refresh_access_token(
         "grant_type": "refresh_token",
         "refresh_token": config_row.refresh_token,
         "client_id": client_id,
-        "client_secret": client_secret,
     }
+    # Confidential clients authenticate the refresh with their secret; public
+    # clients (token_endpoint_auth_method=none, e.g. the MCP connectors) have
+    # none and rely on refresh-token rotation instead.
+    if client_secret:
+        refresh_body["client_secret"] = client_secret
     # LoadedHub expects scope on refresh requests; include if configured
     if scopes:
         refresh_body["scope"] = scopes

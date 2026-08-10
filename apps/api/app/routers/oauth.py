@@ -16,7 +16,11 @@ from sqlalchemy.orm import Session
 from app.db.engine import get_db, get_config_db
 from app.db.models import ConnectorSpec, ConnectorConfig, User
 from app.auth.dependencies import get_current_user, require_role, require_permission
-from app.services.oauth_service import build_authorize_url, exchange_code
+from app.services.oauth_service import (
+    build_authorize_url,
+    exchange_code,
+    register_client,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,6 +35,26 @@ def _get_redirect_uri(request: Request) -> str:
         return configured
     # Derive from request
     return str(request.base_url).rstrip("/") + "/api/oauth/callback"
+
+
+# Callback URLs registered for a dynamically-registered public client. All cloud
+# environments are registered on the one client so the single client_id stored in
+# the shared config DB works everywhere (PKCE makes a shared public client safe).
+# The current request's redirect is added too, covering local dev / a pinned
+# OAUTH_REDIRECT_URI.
+_CLOUD_CALLBACK_URIS = [
+    "https://bettercallnorm.com/api/oauth/callback",
+    "https://staging.bettercallnorm.com/api/oauth/callback",
+    "https://testing.bettercallnorm.com/api/oauth/callback",
+]
+
+
+def _registration_redirect_uris(request: Request) -> list[str]:
+    uris = list(_CLOUD_CALLBACK_URIS)
+    current = _get_redirect_uri(request)
+    if current not in uris:
+        uris.append(current)
+    return uris
 
 
 @router.get("/oauth/authorize/{connector}")
@@ -76,6 +100,17 @@ async def oauth_authorize(
 
     if not spec.oauth_config:
         raise HTTPException(400, f"Connector {connector} has no OAuth configuration")
+
+    # Public clients (RFC 7591 dynamic registration): register once, lazily, the
+    # first time anyone connects — no manual client provisioning. Idempotent
+    # (skips if a client_id is already stored).
+    if not spec.oauth_config.get("client_id") and spec.oauth_config.get(
+        "registration_url"
+    ):
+        try:
+            register_client(spec, _registration_redirect_uris(request), config_db)
+        except ValueError as exc:
+            raise HTTPException(502, f"OAuth client registration failed: {exc}")
 
     redirect_uri = _get_redirect_uri(request)
     # For email connectors, scope tokens to the current user

@@ -39,7 +39,12 @@ def _build_auth_headers(
     }
     auth_config = auth_config or {}
 
-    if auth_type == "bearer":
+    if auth_type == "oauth2":
+        # OAuth 2.1 MCP connectors: the caller resolves a valid per-venue access
+        # token (refreshing if needed) and passes it here as access_token.
+        token = credentials.get("access_token", "")
+        headers["Authorization"] = f"Bearer {token}"
+    elif auth_type == "bearer":
         token_field = auth_config.get("token_field", "api_key")
         token = credentials.get(token_field, "")
         headers["Authorization"] = f"Bearer {token}"

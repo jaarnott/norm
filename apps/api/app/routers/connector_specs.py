@@ -367,6 +367,24 @@ async def test_spec(
         }
 
 
+def _mcp_discovery_credentials(spec, config_row, db) -> dict:
+    """Credentials to authenticate an MCP tools/list discovery call.
+
+    OAuth 2.1 connectors keep their token in the ``access_token`` column, not in
+    ``config``, so resolve (and lazily refresh) it here; static connectors just
+    use their stored ``config`` dict.
+    """
+    if spec.auth_type == "oauth2":
+        from app.services.oauth_service import get_valid_access_token
+
+        return {
+            "access_token": get_valid_access_token(
+                spec, db, venue_id=config_row.venue_id, user_id=config_row.user_id
+            )
+        }
+    return config_row.config
+
+
 @router.post("/{name}/preview-mcp-tools")
 async def preview_mcp_tools(
     name: str,
@@ -405,7 +423,7 @@ async def preview_mcp_tools(
     try:
         raw_tools = mcp_discover_tools(
             mcp_url=spec.base_url_template,
-            credentials=config_row.config,
+            credentials=_mcp_discovery_credentials(spec, config_row, db),
             auth_type=spec.auth_type,
             auth_config=spec.auth_config or {},
         )
@@ -458,7 +476,7 @@ async def sync_mcp_tools(
     try:
         raw_tools = mcp_discover_tools(
             mcp_url=spec.base_url_template,
-            credentials=config_row.config,
+            credentials=_mcp_discovery_credentials(spec, config_row, db),
             auth_type=spec.auth_type,
             auth_config=spec.auth_config or {},
         )
