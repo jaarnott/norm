@@ -663,3 +663,112 @@ class TestSuggestionSummaryEmbedded:
         from app.mcp.receive_display import _suggestion_summary
 
         assert _suggestion_summary({"lines": []}) is None
+
+
+class TestDerivedSubtotal:
+    def test_subtotal_is_never_suggested(self):
+        # subtotal is derived from the lines; only tax/discount/total are
+        # header suggestions.
+        det = DETAIL(subtotal=0.0, total=0.0, taxAmount=0.0)
+        data = _review(detail=det)
+        fields = {s.get("field") for s in data["suggestions"]}
+        assert "subtotal" not in fields
+        assert "total" in fields  # the printed total still rides as one
+
+    def test_receive_writes_the_derived_subtotal(self):
+        # Loaded's stored subtotal (0 here) is ignored — the receive carries
+        # the sum of the non-struck lines.
+        det = DETAIL(subtotal=0.0)
+        data = _review(detail=det)
+        req = receive_request_from_doc(data, "v-1", "inv-1")
+        assert req.subtotal == round(4.95 * 44.4, 2)
+
+    def test_struck_lines_leave_the_subtotal(self):
+        data = _review()
+        data["lines"][0]["struck"] = True
+        data["lines"].append(
+            {
+                "id": "rep-9",
+                "code": "X",
+                "description": "Added",
+                "quantity_received": 2,
+                "unit_cost": 10.0,
+                "total_cost": 20.0,
+            }
+        )
+        req = receive_request_from_doc(data, "v-1", "inv-1")
+        assert req.subtotal == 20.0
+
+
+class TestDateSuggestionHygiene:
+    def test_equal_dates_in_different_prints_never_suggest(self):
+        # "Aug 08 2026" (no comma) must parse to the SAME day as Loaded's ISO
+        # — a false diff here proposed a verbatim string into a date field.
+        ext = EXTRACTION(invoice_date="Aug 08 2026")
+        det = DETAIL(issuedAt="2026-08-08T00:00:00")
+        data = _review(detail=det, extraction=ext)
+        assert not any(s["field"] == "issued_at" for s in data["suggestions"])
+
+    def test_unparseable_copy_date_is_never_proposed(self):
+        ext = EXTRACTION(invoice_date="8th of Augustish")
+        data = _review(extraction=ext)
+        assert not any(s["field"] == "issued_at" for s in data["suggestions"])
+
+
+class TestCreditNote:
+    """A credit note is a receivable document that REVERSES stock and cost.
+
+    User decision (2026-08-10): a fully-validated credit note auto-receives
+    exactly like a fully-validated invoice, so the credit marker is
+    informational and never gates. The hard guards live at receive
+    (sign coherence) and in the replica (zero-quantity value credits).
+    """
+
+    CREDIT_EXT = dict(EXTRACTION(), document_type="credit_note")
+
+    def _credit_detail(self):
+        # Loaded's OCR reads a credit note as an ordinary positive draft —
+        # which is exactly why every line will carry a sign-flip suggestion.
+        det = DETAIL()
+        det["linkedPurchaseOrderId"] = None
+        det["purchaseOrderNumber"] = None
+        return det
+
+    def test_marked_and_negated_on_the_document(self):
+        data = _review(detail=self._credit_detail(), extraction=self.CREDIT_EXT)
+        assert data["is_credit_note"] is True
+        assert data["replica"]["total"] == -252.75
+        assert data["replica"]["lines"][0]["quantity_received"] == -4.95
+        assert data["replica"]["lines"][0]["unit_cost"] == 44.4
+
+    def test_the_credit_issue_never_blocks(self):
+        data = _review(detail=self._credit_detail(), extraction=self.CREDIT_EXT)
+        credit = next(i for i in data["issues"] if i["code"] == "credit_note")
+        assert credit["blocking"] is False
+
+    def test_no_purchase_order_is_demanded(self):
+        # A credit legitimately has no PO of its own — po_missing would block
+        # every credit note under the batch policy.
+        data = _review(
+            detail=self._credit_detail(),
+            extraction=self.CREDIT_EXT,
+            require_valid_po=True,
+        )
+        assert "po_missing" not in _issue_codes(data)
+
+    def test_a_clean_credit_reaches_ready(self):
+        # The signs disagree with Loaded's positive draft, so there are
+        # suggestions — but nothing BLOCKS, which is what ready means.
+        data = _review(detail=self._credit_detail(), extraction=self.CREDIT_EXT)
+        assert data["confidence"] == "ready"
+
+    def test_receive_request_carries_the_negatives(self):
+        data = _review(detail=self._credit_detail(), extraction=self.CREDIT_EXT)
+        for s in data["suggestions"]:
+            apply_suggestion(data, s)
+        req = receive_request_from_doc(data, "v-1", "inv-1")
+        assert req.lines[0]["quantity_received"] == -4.95
+        assert req.lines[0]["unit_cost"] == 44.4  # a price, never negative
+        assert req.lines[0]["total_cost"] == round(-4.95 * 44.4, 4)
+        assert req.subtotal == round(-4.95 * 44.4, 4)  # derived from the lines
+        assert req.total == -252.75

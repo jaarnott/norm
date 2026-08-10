@@ -37,6 +37,12 @@ interface Line {
   original_unit_id?: string | null;
   unit_ratio: number | null;
   quantity_ordered?: number | null;
+  // LOADED-mirror only (loaded_snapshot lines): what Loaded's own Receive
+  // Invoice screen resolves against the linked order — its API returns none
+  // of it. Server-filled; absent on working lines.
+  unit_name?: string | null;
+  item_is_new?: boolean | null;
+  unit_is_new?: boolean | null;
   quantity_received: number | null;
   unit_cost: number | null;
   total_cost: number | null;
@@ -141,6 +147,9 @@ interface DocData {
   notes?: string | null;
   file_id: string | null;
   is_received?: boolean;
+  // Server-derived: this document CREDITS the supplier — receiving it reverses
+  // stock and cost, and every quantity/total on it is negative.
+  is_credit_note?: boolean;
   // Tombstone: the draft was deleted from Loaded (statement/duplicate accept).
   is_deleted?: boolean;
   deleted_reason?: string | null;
@@ -738,16 +747,30 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     setLine(idx, { struck }, [{ op: 'update_line', index: idx, fields: { struck } }]);
   };
 
-  const onPo = (poId: string) => {
+  const onPo = async (poId: string) => {
     const po = pos.find((p) => p.id === poId);
     setDoc((prev) => ({
       ...prev,
       linked_purchase_order_id: poId || null,
       purchase_order_number: po?.order_number ?? prev.purchase_order_number,
     }));
-    if (workingDocId) {
-      patchDoc([{ op: 'update_header', fields: { linked_purchase_order_id: poId || null, purchase_order_number: po?.order_number } }]);
-    }
+    if (!workingDocId) return;
+    await patchDoc([{ op: 'update_header', fields: { linked_purchase_order_id: poId || null, purchase_order_number: po?.order_number } }]);
+    // A DIFFERENT order means the cached reference rows no longer apply — the
+    // server drops the projection rather than show another order's numbers.
+    // Re-open the draft (it re-fetches and re-projects) so the new order's
+    // ordered quantities appear without waiting for a reopen.
+    if (!poId || embedded || !venueId || !docRef.current.invoice_id) return;
+    try {
+      const res = await apiFetch('/api/invoice-fixes/draft', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, invoice_id: docRef.current.invoice_id }),
+      });
+      if (!res.ok) return;
+      const fresh = await res.json();
+      if (fresh?.data) setDoc((prev) => ({ ...prev, ...(fresh.data as DocData) }));
+      if (typeof fresh?.version === 'number') setVersion(fresh.version);
+    } catch { /* reference data is an enhancement — the next open re-attaches */ }
   };
 
   // Header field edits (invoice #, dates, total, supplier, tax toggle) — merge
@@ -814,8 +837,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
       const ln = docRef.current.lines[idx];
       if (!ln) return;
-      const before: Record<string, unknown> = {};
-      for (const k of Object.keys(apply)) before[k] = (ln as unknown as Record<string, unknown>)[k] ?? null;
       const fields: Record<string, unknown> = { ...apply };
       // Total follows qty × cost — the ONLY client math (the receive
       // recomputes anyway; this keeps the display honest).
@@ -823,10 +844,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         const q = Number(fields.quantity_received ?? ln.quantity_received);
         const c = Number(fields.unit_cost ?? ln.unit_cost);
         if (Number.isFinite(q) && Number.isFinite(c)) {
-          before.total_cost = ln.total_cost ?? null;
           fields.total_cost = round4(q * c);
         }
       }
+      // An accepted item link also settles the PO reference — but that is
+      // derived state the SERVER recomputes on this very patch and returns;
+      // undo therefore restores only what the user actually changed.
+      const before: Record<string, unknown> = {};
+      for (const k of Object.keys(fields)) before[k] = (ln as unknown as Record<string, unknown>)[k] ?? null;
       const entry: SuggestionAction = {
         suggestion_id: s.id, action: 'accepted', by: 'user', at: nowIso(), before, after: apply,
       };
@@ -836,7 +861,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         suggestion_actions: log,
         lines: prev.lines.map((l, i) => (i === idx ? { ...l, ...(fields as Partial<Line>) } : l)),
       }));
-      if (workingDocId) patchDoc([{ op: 'update_line', line_id: ln.id, index: idx, fields }, logOp]);
+      if (workingDocId) patchDoc([
+        { op: 'update_line', line_id: ln.id, index: idx, fields },
+        logOp,
+      ]);
       return;
     }
     // Header apply.
@@ -915,6 +943,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     ),
     [docLive.suggestions],
   );
+  // A credit note: the server derives the flag, but a negative total is
+  // Loaded's own definition and covers a doc saved before the flag existed.
+  const isCredit = !!docLive.is_credit_note
+    || (typeof docLive.total === 'number' && docLive.total < 0);
   const issues = useMemo(
     () => (docLive.issues || []).filter((i) => !!i && !!i.id && !!i.message),
     [docLive.issues],
@@ -1150,6 +1182,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // and do_receive registers the supplier variant then. The item_unmatched
   // issue clears via its clears_when (linked_item_id not_null); the PO
   // reference re-attaches server-side on the next open.
+  // The PO reconciliation beside the lines (ordered qty, "ordered, not
+  // delivered", substitutes) is SERVER-owned derived state: the patch
+  // response carries it back recomputed, and the merge at patchDoc paints it.
+  // Never patch those fields from here — two writers is exactly how the list
+  // drifted empty on undo (INV-958).
   const applyLocalLink = (lineId: string, itemId: string, itemName: string | null) => {
     const idx = docRef.current.lines.findIndex((l) => l.id === lineId);
     if (idx < 0) return;
@@ -1167,13 +1204,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     applyLocalLink(lineId, itemId, cat?.name ?? null);
   };
 
-  // The line's unit name isn't a Loaded unit record at all (linked_unit_id
-  // null): create it in Loaded — the ONE write, two-step confirm — then the
-  // line takes it as a plain local edit (landing on the line + supplier
-  // variant at receive).
+  // The REPLICA read a delivered unit off the copy that doesn't exist in
+  // Loaded (unit_not_in_loaded / unit_missing with a unit_name): offer to
+  // create THAT name — never a bare unlinked unit string Loaded's OCR left
+  // behind. The create is the ONE write, two-step confirm; the line takes it
+  // as a plain local edit (landing on the line + supplier variant at receive).
+  const replicaUnitName = (lineId: string): string | null => {
+    for (const i of issues) {
+      if (
+        String(i.line_id ?? '') === String(lineId) &&
+        (i.code === 'unit_not_in_loaded' || i.code === 'unit_missing')
+      ) {
+        const n = i.data?.unit_name;
+        if (typeof n === 'string' && n.trim()) return n.trim();
+      }
+    }
+    return null;
+  };
   const createUnitAndApply = async (idx: number) => {
     const l = doc.lines[idx];
-    const name = l?.unit?.trim();
+    const name = l ? replicaUnitName(String(l.id)) : null;
     if (!name || !venueId || embedded || creatingUnitLine) return;
     if (confirmUnitLine !== l.id) {
       setConfirmUnitLine(l.id);
@@ -1569,7 +1619,17 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       <div style={{ padding: '0.7rem 0.9rem', background: 'linear-gradient(#faf9f7,#f5f3ef)', borderBottom: '1px solid #eee' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#3a3a3a' }}>Receive Invoice</span>
+            <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#3a3a3a' }}>
+              {isCredit ? 'Receive Credit Note' : 'Receive Invoice'}
+            </span>
+            {/* Never let a credit be mistaken for a delivery: it REVERSES
+                stock and cost, and every quantity on it is negative. */}
+            {isCredit && (
+              <span title="this document credits the supplier — receiving it reverses stock and cost"
+                style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.04em', padding: '2px 7px', borderRadius: 4, background: '#fdecea', color: '#a4322a', border: '1px solid #f0c2bc', whiteSpace: 'nowrap' }}>
+                CREDIT NOTE
+              </span>
+            )}
             {confidenceChip}
           </span>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -1826,6 +1886,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 <td style={{ padding: '0.4rem 0.6rem', color: '#666' }}>{l.display_code || l.code || '—'}</td>
                 <td style={{ padding: '0.4rem 0.6rem' }}>
                   {l.item_name || l.description}
+                  {/* Unlinked item: NEW rides at the end of the name, the
+                      same convention as the unit dropdown's "— NEW". In the
+                      LOADED mirror the server decides (item_is_new): Loaded's
+                      screen resolves the stock item against the linked order,
+                      so a line with no linkedItemId is only NEW when that
+                      lookup also came up empty. */}
+                  {!struck && (viewMode === 'norm' ? !l.linked_item_id : viewMode === 'loaded' && l.item_is_new) && (
+                    <span style={{ color: '#b45309', fontWeight: 600 }}> — NEW</span>
+                  )}
                   {/* The server's strike suggestion (the copy doesn't bill
                       this line) — same object as its summary row. */}
                   {!struck && suggChip(strikeSugg, 'not billed on the copy — strike')}
@@ -1853,17 +1922,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   {!l.linked_item_id && !struck && !dojo && viewMode === 'norm' && (
                     itemSugg
                       ? suggChip(itemSugg, `link to '${fmtVal(itemSugg.proposed)}'`)
-                      : (embedded || doneState)
-                        ? <span title="this stock item doesn't exist in Loaded" style={newBadge}>NEW item</span>
-                        : itemForm?.lineId === l.id
-                          ? null
-                          : (
-                            <button type="button" onClick={() => openItemForm(l)}
-                              title="this stock item isn't linked in Loaded — link an existing item or create it before receiving"
-                              style={{ ...newBadge, cursor: 'pointer', font: 'inherit', fontWeight: 700 }}>
-                              NEW item — link or create
-                            </button>
-                          )
+                      : (embedded || doneState || itemForm?.lineId === l.id)
+                        ? null
+                        : (
+                          <button type="button" onClick={() => openItemForm(l)}
+                            title="this stock item isn't linked in Loaded — link an existing item or create it before receiving"
+                            style={{ ...newBadge, cursor: 'pointer', font: 'inherit', fontWeight: 700 }}>
+                            link or create
+                          </button>
+                        )
                   )}
                   {itemForm?.lineId === l.id && (
                     <div style={{ marginTop: 5, padding: 7, border: '1px solid #f0c88a', background: '#fff9f0', borderRadius: 5, display: 'flex', flexDirection: 'column', gap: 5, maxWidth: 340 }}>
@@ -1920,13 +1987,23 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   {viewMode !== 'norm' ? (
                     // X-ray modes are read-only — the unit renders as text
                     // (extracted lines carry no Loaded unit records at all).
-                    <span style={{ fontSize: '0.8rem', color: '#555' }}>{l.unit || '—'}</span>
+                    <span style={{ fontSize: '0.8rem', color: '#555' }}>
+                      {l.unit_name || l.unit || '—'}
+                      {viewMode === 'loaded' && l.unit_is_new && (
+                        <span style={{ color: '#b45309', fontWeight: 600 }}> — NEW</span>
+                      )}
+                    </span>
                   ) : (
                   <select value={l.linked_unit_id || ''} disabled={doneState || struck}
                     onChange={(e) => onUnit(idx, e.target.value)}
                     style={{ ...inputStyle, minWidth: 120, borderColor: struck ? '#e2e2e2' : suggFor(l.id, 'unit') ? '#b78a2f' : (!l.linked_unit_id ? '#f0c88a' : '#d1d5db'), background: struck ? '#fafafa' : suggFor(l.id, 'unit') && !doneState ? '#fdf6e7' : (!l.linked_unit_id && !doneState ? '#fff4e5' : '#fff') }}>
+                    {/* The unresolved state lives INSIDE the dropdown: an
+                        unlinked unit string renders as the selected option,
+                        marked NEW — picking a real unit replaces it. */}
                     {!units.some((u) => u.id === l.linked_unit_id) && (
-                      <option value={l.linked_unit_id || ''}>{l.unit || 'Select unit'}</option>
+                      <option value={l.linked_unit_id || ''}>
+                        {l.unit ? `${l.unit} — NEW` : 'Select unit'}
+                      </option>
                     )}
                     {sortedUnits.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                   </select>
@@ -1934,40 +2011,39 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   {/* The server's unit suggestion (the copy's delivered unit
                       resolves to a different Loaded unit). */}
                   {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'unit'))}
-                  {/* No Loaded unit record at all: the receive gate holds until
-                      one is picked — or the named unit is CREATED in Loaded
-                      (two-step confirm, the one write). */}
-                  {!l.linked_unit_id && !struck && !dojo && viewMode === 'norm' && (
-                    <div style={{ fontSize: '0.58rem', color: '#b45309', marginTop: 2 }}>
-                      NEW unit — not in Loaded
-                      {!doneState && !embedded && l.unit?.trim() && (
-                        <>
-                          {' — '}
-                          {creatingUnitLine === l.id ? (
-                            <span style={{ color: '#8a2f2f' }}>creating unit…</span>
-                          ) : confirmUnitLine === l.id ? (
-                            <span style={{ color: '#8a2f2f' }}>
-                              creates a NEW unit “{l.unit}” in Loaded —{' '}
-                              <button type="button" onClick={() => createUnitAndApply(idx)}
-                                style={{ ...linkBtn, color: '#8a2f2f', fontWeight: 700 }}>
-                                create it
-                              </button>
-                              {' · '}
-                              <button type="button" onClick={() => setConfirmUnitLine(null)}
-                                style={{ ...linkBtn, color: '#888' }}>
-                                cancel
-                              </button>
-                            </span>
-                          ) : (
+                  {/* Create-in-Loaded is offered ONLY for a unit the REPLICA
+                      read off the copy (unit_not_in_loaded / unit_missing
+                      with a unit_name) — never for a bare unlinked string
+                      that came from Loaded. Two-step confirm, the one write. */}
+                  {!struck && !dojo && viewMode === 'norm' && !doneState && !embedded && (() => {
+                    const createName = replicaUnitName(String(l.id));
+                    if (!createName) return null;
+                    return (
+                      <div style={{ fontSize: '0.58rem', color: '#b45309', marginTop: 2 }}>
+                        {creatingUnitLine === l.id ? (
+                          <span style={{ color: '#8a2f2f' }}>creating unit…</span>
+                        ) : confirmUnitLine === l.id ? (
+                          <span style={{ color: '#8a2f2f' }}>
+                            creates a NEW unit “{createName}” in Loaded —{' '}
                             <button type="button" onClick={() => createUnitAndApply(idx)}
-                              style={{ ...linkBtn, color: '#8a2f2f' }}>
-                              create “{l.unit}”
+                              style={{ ...linkBtn, color: '#8a2f2f', fontWeight: 700 }}>
+                              create it
                             </button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  )}
+                            {' · '}
+                            <button type="button" onClick={() => setConfirmUnitLine(null)}
+                              style={{ ...linkBtn, color: '#888' }}>
+                              cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <button type="button" onClick={() => createUnitAndApply(idx)}
+                            style={{ ...linkBtn, color: '#8a2f2f' }}>
+                            the copy says “{createName}” — create it in Loaded
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </td>
                 <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', color: '#888', fontVariantNumeric: 'tabular-nums' }}>
                   {l.quantity_ordered ?? '—'}
@@ -2141,11 +2217,30 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
             <span>Tax</span><span>{cur(totals.tax)}</span>
           </div>
-          {!!totals.discount && (
+          {/* The Loaded mirror shows the discount row even at zero, and a
+              Rounding row reconciling the derived total to Loaded's stated
+              one — both exactly as Loaded's own screen does. */}
+          {(viewMode === 'loaded' || !!totals.discount) && (
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
-              <span>Discount</span><span>−{cur(totals.discount)}</span>
+              <span>{viewMode === 'loaded' ? 'Discount incl tax' : 'Discount'}</span>
+              <span>{totals.discount ? `−${cur(totals.discount)}` : cur(0)}</span>
             </div>
           )}
+          {viewMode === 'loaded' && (() => {
+            const stated = typeof doc.total === 'number' ? doc.total : null;
+            if (stated === null) return null;
+            const rounding = round2(stated - totals.incl);
+            // Loaded's Rounding field absorbs its ±10c entry band and nothing
+            // more. A larger gap is a real discrepancy between Loaded's own
+            // header and its own lines — calling that "rounding" would be a
+            // lie, and the Norm view already raises it as a suggestion.
+            if (!rounding || Math.abs(rounding) > 0.1) return null;
+            return (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
+                <span>Rounding</span><span>{rounding < 0 ? `−${cur(-rounding)}` : cur(rounding)}</span>
+              </div>
+            );
+          })()}
           <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #eee', marginTop: 4, paddingTop: 4, fontWeight: 700 }}>
             <span>Total incl Tax</span><span>{cur(totals.incl)}</span>
           </div>
@@ -2320,7 +2415,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     : undefined
             }
             style={{ padding: '0.4rem 1.1rem', fontSize: '0.78rem', fontWeight: 500, border: 'none', borderRadius: 6, cursor: receiveBlocked ? 'not-allowed' : 'pointer', background: '#2e7d4f', color: '#fff', fontFamily: 'inherit', opacity: receiveBlocked ? 0.5 : 1, whiteSpace: 'nowrap' }}>
-            {status === 'saving' ? 'Receiving…' : 'Accept & Receive'}
+            {status === 'saving' ? 'Receiving…' : isCredit ? 'Accept & Receive credit' : 'Accept & Receive'}
           </button>
         )}
       </div>

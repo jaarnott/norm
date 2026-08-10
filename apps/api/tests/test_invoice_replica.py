@@ -437,8 +437,11 @@ class TestDocumentFlags:
         assert not any("letter/notice" in w for w in doc["warnings"])
 
     def test_credit_note_flagged(self):
+        # A credit note is RECEIVABLE (it reverses stock and cost) — flagged
+        # loudly, never gated. See TestCreditNoteSigns for the sign contract.
         doc = _build(dict(EXTRACTION, total_incl_tax=-252.75))
-        assert any("credit note" in w for w in doc["warnings"])
+        assert any("CREDIT NOTE" in w for w in doc["warnings"])
+        assert doc["is_credit_note"] is True
 
     def test_inconsistent_line_logged(self):
         line = dict(EXTRACTION["lines"][0], quantity=3, line_total_ex_tax=219.78)
@@ -555,11 +558,14 @@ class TestReplicaIssues:
         assert issue["blocking"] is True
         assert "Totally Unknown Vendor" in issue["message"]
 
-    def test_statement_and_credit_note_block(self):
+    def test_statement_blocks_but_a_credit_note_does_not(self):
+        # A statement is not a receivable document; a credit note IS one.
         doc = _build(dict(EXTRACTION, document_type="statement"), received_feed=[])
         assert "not_an_invoice" in self._codes(doc)
         doc = _build(dict(EXTRACTION, total_incl_tax=-252.75), received_feed=[])
-        issue = next(i for i in doc["issues"] if i["code"] == "not_an_invoice")
+        assert "not_an_invoice" not in self._codes(doc)
+        issue = next(i for i in doc["issues"] if i["code"] == "credit_note")
+        assert issue["blocking"] is False  # informational — never a gate
         assert issue["data"]["document_type"] == "credit_note"
 
     def test_totals_inconsistent_flags_bad_arithmetic(self):
@@ -605,3 +611,239 @@ class TestReplicaIssues:
         ext = dict(EXTRACTION, discount_amount=5.5)
         doc = _build(ext, received_feed=[])
         assert doc["discount_amount"] == 5.5
+
+    def test_copy_unit_not_in_loaded_offers_replica_named_create(self):
+        # The copy confidently names a pack the venue has no unit for: the
+        # variant default is kept (receivable → non-blocking) and the issue
+        # carries the REPLICA's unit name for the editor's create offer.
+        line = dict(EXTRACTION["lines"][0], unit_of_measure="9x123ml")
+        doc = _build(dict(EXTRACTION, lines=[line]), received_feed=[])
+        issue = next(i for i in doc["issues"] if i["code"] == "unit_not_in_loaded")
+        assert issue["blocking"] is False
+        assert issue["data"]["unit_name"] == "9x123ml"
+        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"  # variant kept
+
+    def test_unit_missing_carries_confident_copy_name(self):
+        ext = dict(
+            EXTRACTION,
+            lines=[
+                {
+                    "code": "ZZZ9",
+                    "description": "Mystery Product",
+                    "quantity": 1,
+                    "unit_of_measure": "9x123ml",
+                    "unit_price_ex_tax": 219.78,
+                    "line_total_ex_tax": 219.78,
+                }
+            ],
+        )
+        doc = _build(ext, received_feed=[])
+        issue = next(i for i in doc["issues"] if i["code"] == "unit_missing")
+        assert issue["data"]["unit_name"] == "9x123ml"
+
+    def test_unit_missing_has_no_name_when_nothing_confident(self):
+        ext = dict(
+            EXTRACTION,
+            lines=[
+                {
+                    "code": "ZZZ9",
+                    "description": "Mystery Product",
+                    "quantity": 1,
+                    "unit": None,
+                    "unit_of_measure": None,
+                    "unit_price_ex_tax": 219.78,
+                    "line_total_ex_tax": 219.78,
+                }
+            ],
+        )
+        doc = _build(ext, received_feed=[])
+        issue = next(i for i in doc["issues"] if i["code"] == "unit_missing")
+        assert "data" not in issue  # no create offer from nothing
+
+
+class TestCreditNoteSigns:
+    """A credit note reverses stock and cost, so it must land in Loaded's own
+    sign space: quantities and totals NEGATIVE, unit costs POSITIVE.
+
+    That shape was read off 18 live credit notes across the three venues —
+    every one stores quantityReceived negative, unitCostExclTax positive,
+    totalCostExclTax negative, total negative. (Loaded's own header
+    subtotal/tax are inconsistent in its records — null on 8, positive on 7
+    while the total is negative — so we always produce the coherent form.)
+
+    The extraction stays AS PRINTED; the replica does the negating.
+    """
+
+    # A credit note normally prints POSITIVE numbers under a "CREDIT NOTE"
+    # heading — this is the common shape, and the one Loaded's OCR mangles.
+    PRINTED = dict(EXTRACTION, document_type="credit_note")
+
+    def _line(self, doc):
+        return doc["lines"][0]
+
+    def test_all_positive_print_is_negated_end_to_end(self):
+        doc = _build(self.PRINTED)
+        ln = self._line(doc)
+        assert doc["is_credit_note"] is True
+        assert doc["document_type"] == "credit_note"
+        assert ln["quantity_received"] == -4.95
+        assert ln["unit_cost"] == 44.4  # a price is never negative
+        assert ln["total_cost"] == -219.78
+        assert doc["subtotal"] == -219.78
+        assert doc["tax_amount"] == -32.97
+        assert doc["total"] == -252.75
+
+    def test_recognised_by_printed_negative_total_alone(self):
+        # document_type still says "invoice" — the printed total decides.
+        doc = _build(dict(EXTRACTION, total_incl_tax=-252.75))
+        assert doc["is_credit_note"] is True
+        assert self._line(doc)["quantity_received"] == -4.95
+
+    def test_recognised_by_loaded_total_alone(self):
+        # Neither the classification nor the print says credit — but Loaded
+        # read it as negative, which is Loaded's own definition.
+        doc = _build(EXTRACTION, loaded_total=-252.75)
+        assert doc["is_credit_note"] is True
+        assert doc["total"] == -252.75
+
+    def test_a_plain_invoice_is_untouched(self):
+        doc = _build(EXTRACTION)
+        assert doc["is_credit_note"] is False
+        assert self._line(doc)["quantity_received"] == 4.95
+        assert doc["total"] == 252.75
+        assert not any(i["code"] == "credit_note" for i in doc["issues"])
+
+    def test_already_signed_print_passes_through(self):
+        # A credit note that prints its own negatives must not be flipped back.
+        ext = dict(
+            EXTRACTION,
+            document_type="credit_note",
+            subtotal_ex_tax=-219.78,
+            tax_amount=-32.97,
+            total_incl_tax=-252.75,
+            lines=[
+                dict(EXTRACTION["lines"][0], quantity=-4.95, line_total_ex_tax=-219.78)
+            ],
+        )
+        doc = _build(ext)
+        ln = self._line(doc)
+        assert ln["quantity_received"] == -4.95
+        assert ln["unit_cost"] == 44.4
+        assert ln["total_cost"] == -219.78
+        assert doc["total"] == -252.75
+
+    def test_normalising_is_idempotent(self):
+        from app.services.invoice_replica import _credit_normalise
+
+        once = _credit_normalise(self.PRINTED)
+        twice = _credit_normalise(once)
+        assert once == twice
+
+    def test_header_and_lines_are_scoped_independently(self):
+        # Lines already signed, header printed positive: force the header only.
+        ext = dict(
+            EXTRACTION,
+            document_type="credit_note",
+            lines=[
+                dict(EXTRACTION["lines"][0], quantity=-4.95, line_total_ex_tax=-219.78)
+            ],
+        )
+        doc = _build(ext)
+        assert self._line(doc)["total_cost"] == -219.78  # untouched
+        assert doc["total"] == -252.75  # forced
+
+    def test_a_signed_mixed_line_keeps_its_own_sign(self):
+        # A restocking charge among the credits: the print is signed, so each
+        # line keeps the sign it was given.
+        ext = dict(
+            EXTRACTION,
+            document_type="credit_note",
+            total_incl_tax=-252.75,
+            lines=[
+                dict(EXTRACTION["lines"][0], quantity=-4.95, line_total_ex_tax=-219.78),
+                dict(
+                    EXTRACTION["lines"][0],
+                    code="EX1",
+                    description="Restocking fee",
+                    quantity=1,
+                    unit_price_ex_tax=10.0,
+                    line_total_ex_tax=10.0,
+                ),
+            ],
+        )
+        doc = _build(ext)
+        assert doc["lines"][0]["quantity_received"] == -4.95
+        assert doc["lines"][1]["quantity_received"] == 1
+
+    def test_the_credit_issue_is_informational(self):
+        doc = _build(self.PRINTED, received_feed=[])
+        issue = next(i for i in doc["issues"] if i["code"] == "credit_note")
+        assert issue["blocking"] is False
+        assert "REVERSES" in issue["message"]
+        assert "document_type" in issue["data"]["signals"]
+
+    def test_totals_still_reconcile_after_negation(self):
+        doc = _build(self.PRINTED, received_feed=[])
+        assert not any(i["code"] == "totals_inconsistent" for i in doc["issues"])
+
+    def test_copy_tax_rate_survives_a_negative_subtotal(self):
+        # The guard used to be `subtotal > 0`, which silently dropped the
+        # copy-derived rate for every credit note.
+        ext = dict(self.PRINTED, lines=[dict(EXTRACTION["lines"][0], code="NOPE")])
+        doc = _build(ext, received_feed=[])
+        assert self._line(doc)["sale_tax_rate"] == 0.15
+
+    def test_purchase_order_is_never_linked(self):
+        # The PO a credit prints belongs to the invoice being credited;
+        # resolving it would steal Loaded's 1:1 link and stamp bogus
+        # split-order notes onto that PO and that invoice at receive.
+        ext = dict(self.PRINTED, customer_purchase_order_number="po#1521145")
+        doc = _build(ext, lh=_PoLh("inv-own"), own_invoice_id="inv-own")
+        assert doc["linked_purchase_order_id"] is None
+        # Dropped, not just unlinked: the field means "THIS document's order",
+        # and Loaded stores none for a credit either (verified on 24 live
+        # credits) — carrying it would diff against Loaded forever.
+        assert doc["purchase_order_number"] is None
+        assert any("dropped" in e for e in doc["resolution_log"])
+
+    def test_zero_quantity_value_credit_blocks(self):
+        # Receive recomputes every line as quantity x cost, so a lump-sum
+        # value credit with no quantity would silently come through as zero.
+        ext = dict(
+            self.PRINTED,
+            lines=[dict(EXTRACTION["lines"][0], quantity=0, line_total_ex_tax=25.0)],
+        )
+        doc = _build(ext, received_feed=[])
+        issue = next(i for i in doc["issues"] if i["code"] == "credit_zero_quantity")
+        assert issue["blocking"] is True
+
+    def test_credit_is_not_a_duplicate_of_the_invoice_it_credits(self):
+        # A credit note commonly reprints the original's invoice number.
+        feed = [
+            {
+                "id": "other",
+                "invoiceNumber": "F55755100",
+                "supplierName": "Akaroa Salmon",
+                "type": "Invoice",
+                "total": 252.75,  # the ORIGINAL, positive
+                "receivedAt": "2026-08-01",
+            }
+        ]
+        doc = _build(self.PRINTED, received_feed=feed)
+        assert not any(i["code"] == "duplicate_invoice" for i in doc["issues"])
+
+    def test_the_same_credit_received_twice_is_still_a_duplicate(self):
+        # Double-reversing stock is the nastiest failure here — the sign rule
+        # must not switch duplicate detection off for credits entirely.
+        feed = [
+            {
+                "id": "other",
+                "invoiceNumber": "F55755100",
+                "supplierName": "Akaroa Salmon",
+                "type": "Invoice",
+                "total": -252.75,
+                "receivedAt": "2026-08-01",
+            }
+        ]
+        doc = _build(self.PRINTED, received_feed=feed)
+        assert any(i["code"] == "duplicate_invoice" for i in doc["issues"])

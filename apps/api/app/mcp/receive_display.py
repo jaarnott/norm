@@ -229,6 +229,13 @@ def _suggestion_summary(data: dict) -> str | None:
     confidence = data.get("confidence")
     issues = data.get("issues") or []
     suggestions = data.get("suggestions") or []
+    # Lead with it: Claude cannot see inside the card, and "this document
+    # REVERSES stock and cost" changes what every other number means.
+    if data.get("is_credit_note"):
+        parts.append(
+            "This is a CREDIT NOTE — receiving it reverses stock and cost "
+            "(quantities and totals are negative)."
+        )
     if confidence:
         blocking = sum(1 for i in issues if i.get("blocking"))
         parts.append(

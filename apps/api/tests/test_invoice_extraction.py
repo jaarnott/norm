@@ -25,6 +25,38 @@ class _FakeLoaded:
 
 
 class TestSchema:
+    def test_schema_keys_are_frozen(self):
+        # PDF_SCHEMA is extraction-CACHE-KEY material (function_executor hashes
+        # it with the instructions), and the dojo's candidate harness can only
+        # override instruction TEXT — so a schema edit silently invalidates
+        # every cached extraction with no way to score the blast radius first.
+        # Teaching goes in BUILTIN_MAIN_PROMPT, which does have a harness.
+        assert set(ie.PDF_SCHEMA) == {
+            "document_type",
+            "invoice_number",
+            "invoice_date",
+            "supplier_name",
+            "supplier_differs",
+            "customer_purchase_order_number",
+            "purchase_order_number",
+            "supplier_order_number",
+            "subtotal_ex_tax",
+            "discount_amount",
+            "tax_amount",
+            "total_incl_tax",
+            "lines",
+        }
+
+    def test_credit_notes_are_taught_in_the_prompt(self):
+        # The schema has always ALLOWED 'credit_note'; nothing taught the
+        # model to use it, or what to do with the signs. Credit notes now
+        # auto-receive when clean, so the classification must be specified
+        # behaviour rather than emergent.
+        text = ie.BUILTIN_MAIN_PROMPT.lower()
+        assert "credit_note" in text
+        assert "credit note" in text
+        assert "exactly as printed" in text  # never invent or drop a minus
+
     def test_buyer_po_fields_folded_in(self):
         # PO_EXTRACT_SCHEMA is retired: ONE extraction reads the buyer PO and
         # the supplier's own order number alongside the lines.

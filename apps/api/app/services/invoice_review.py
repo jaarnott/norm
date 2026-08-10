@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -295,8 +296,11 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
         )
 
 
+# Header values worth suggesting. subtotal is deliberately ABSENT: it is
+# derived from the lines, so the receive always writes the derived value
+# (receive_request_from_doc) and a stored/suggested subtotal would only
+# drift from edits.
 _HEADER_VALUE_FIELDS = (
-    ("subtotal", "subtotal"),
     ("tax_amount", "tax"),
     ("discount_amount", "discount"),
     ("total", "total"),
@@ -408,9 +412,13 @@ def build_suggestions(
             ),
             apply={"reference_number": replica.get("reference_number")},
         )
-    if replica.get("issued_at") and _date_part(replica.get("issued_at")) != _date_part(
-        data.get("issued_at")
-    ):
+    # Only a PARSEABLE copy date is worth proposing: _iso_date keeps an
+    # unparseable print verbatim (honest for the dojo diff), but a verbatim
+    # string is never a value to write into a date field.
+    rep_date = str(replica.get("issued_at") or "")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", _date_part(rep_date)) and _date_part(
+        rep_date
+    ) != _date_part(data.get("issued_at")):
         _sugg(
             suggestions,
             "header_value",
@@ -806,9 +814,20 @@ def review_invoice(
                 extraction,
                 lh=lh,
                 own_invoice_id=invoice_id,
+                # Loaded's own read of the document — its rule for a credit
+                # note is simply total < 0, and it is a signal the extraction
+                # alone cannot supply.
+                loaded_total=data.get("total"),
                 **(reference or {}),
             )
             data["replica"] = replica
+            # DERIVED, server-owned: never patched by the client, never sent
+            # to Loaded. The replica's verdict wins; Loaded's sign is the
+            # fallback for a draft that has not been reviewed yet.
+            data["is_credit_note"] = bool(
+                replica.get("is_credit_note")
+                or (isinstance(data.get("total"), (int, float)) and data["total"] < 0)
+            )
             suggestions, extra_issues, pairs = build_suggestions(data, replica)
             data["suggestions"] = suggestions
             data["issues"] = _finalise_issues(
@@ -822,8 +841,15 @@ def review_invoice(
             # Blocking only under the require_valid_po policy — the batch
             # default; the interactive review passes False (the human is
             # looking at the card) and gets a note instead.
-            if not data.get("linked_purchase_order_id") and not any(
-                s.get("kind") in ("link_po", "split_reference") for s in suggestions
+            # A credit note legitimately has no purchase order — the one it
+            # prints belongs to the invoice being credited (see the replica's
+            # PO skip), so demanding a link would block every credit.
+            if (
+                not data.get("linked_purchase_order_id")
+                and not data.get("is_credit_note")
+                and not any(
+                    s.get("kind") in ("link_po", "split_reference") for s in suggestions
+                )
             ):
                 data["issues"].append(
                     {

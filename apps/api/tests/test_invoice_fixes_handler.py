@@ -404,6 +404,75 @@ class TestReceive:
         assert put[2]["subtotal"] == 1034.15
         assert put[2]["taxAmount"] == 155.12
 
+    def test_credit_note_writes_loaded_sign_convention(self):
+        # Parity with what Loaded actually stores for a credit note (verified
+        # on 18 live credits): quantity NEGATIVE, unit cost POSITIVE, line
+        # total and header totals NEGATIVE.
+        lh = self._lh()
+        IF._do_receive(
+            lh,
+            self._req(
+                total=-252.75,
+                subtotal=-219.78,
+                tax_amount=-32.97,
+                lines=[
+                    {
+                        "id": "ln-1",
+                        "quantity_received": -4.95,
+                        "unit_cost": 44.4,
+                        "total_cost": -219.78,
+                    }
+                ],
+            ),
+        )
+        put = [w for w in lh.writes if w[0] == "PUT"][0][2]
+        ln = put["lines"][0]
+        assert ln["quantityReceived"] == -4.95
+        assert ln["unitCost"] == 44.4 and ln["unitCostExclTax"] == 44.4
+        assert ln["totalCost"] == -219.78 and ln["totalCostExclTax"] == -219.78
+        assert put["total"] == -252.75 and put["subtotal"] == -219.78
+
+    def test_mixed_sign_lines_are_refused(self):
+        # Accepting the sign flip on only SOME lines of a credit produces a
+        # document Loaded rejects opaquely — refuse it in our own words.
+        from fastapi import HTTPException
+
+        lh = self._lh()
+        lh._invoices["inv-1"]["lines"].append(
+            {
+                "id": "ln-2",
+                "code": "CUP",
+                "unit": "Each",
+                "linkedUnitId": "u-each",
+                "linkedItemId": "item-2",
+                "quantityReceived": 1,
+                "unitCost": 5.0,
+            }
+        )
+        with pytest.raises(HTTPException) as exc:
+            IF._do_receive(
+                lh,
+                self._req(
+                    total=-252.75,
+                    lines=[
+                        {
+                            "id": "ln-1",
+                            "quantity_received": -4.95,
+                            "unit_cost": 44.4,
+                            "total_cost": -219.78,
+                        },
+                        {
+                            "id": "ln-2",
+                            "quantity_received": 1,
+                            "unit_cost": 5.0,
+                            "total_cost": 5.0,
+                        },
+                    ],
+                ),
+            )
+        assert exc.value.status_code == 400
+        assert "run the other way" in exc.value.detail
+
     def test_reference_number_written_through(self):
         # Accepted "Invoice number X → Y (per the invoice copy)" lands on the
         # PUT as referenceNumber — the copy-number suggestion's write path.

@@ -68,6 +68,8 @@ _DATE_FORMATS = (
     "%d %B %y",
     "%b %d, %Y",
     "%B %d, %Y",
+    "%b %d %Y",
+    "%B %d %Y",
     "%d.%m.%Y",
     "%d/%m/%Y",
     "%d-%m-%Y",
@@ -95,6 +97,80 @@ def _iso_date(v: object) -> str | None:
         except ValueError:
             continue
     return s
+
+
+def _credit_signals(extraction: dict, loaded_total: object = None) -> list[str]:
+    """Which signals say this document is a CREDIT NOTE — any one is enough.
+
+    Loaded ingests credit notes as ordinary drafts (it OCRs the PDF; there is
+    no b2b feed) and usually keeps the printed positive numbers, so the
+    extraction's own classification is the common signal. The other two catch
+    documents that print negative, or that Loaded itself read as negative —
+    Loaded's own rule is simply ``total < 0``.
+    """
+    signals: list[str] = []
+    if str(extraction.get("document_type") or "").lower() == "credit_note":
+        signals.append("document_type")
+    printed = extraction.get("total_incl_tax")
+    if isinstance(printed, (int, float)) and printed < 0:
+        signals.append("printed_total")
+    if isinstance(loaded_total, (int, float)) and loaded_total < 0:
+        signals.append("loaded_total")
+    return signals
+
+
+def _credit_normalise(extraction: dict) -> dict:
+    """Put a credit note into Loaded's sign space: quantities, line totals and
+    the header totals NEGATIVE, unit costs POSITIVE.
+
+    That shape is not a guess — it is what all 18 live credit notes across the
+    three venues store (a unit cost is a price, never a credit). Loaded's own
+    header subtotal/tax are inconsistent in its records (null on 8, positive
+    on 7 while the total is negative, correctly negative on 3); we always
+    produce the coherent form, which is also what ``receive_request_from_doc``
+    derives from the line totals anyway.
+
+    Normalisation is PER SCOPE and idempotent: a sign is only forced where the
+    document prints unsigned, so a credit note that already prints negatives
+    passes through untouched and normalising twice changes nothing. Returns a
+    NEW dict — the caller's as-printed extraction is the audit trail
+    (``extracted_snapshot``) and must not be mutated.
+    """
+
+    def _num(v: object) -> float | None:
+        return float(v) if isinstance(v, (int, float)) else None
+
+    out = dict(extraction)
+    lines = [dict(ln) for ln in (extraction.get("lines") or []) if isinstance(ln, dict)]
+    lines_signed = any((_num(ln.get("line_total_ex_tax")) or 0) < 0 for ln in lines)
+    for ln in lines:
+        price = _num(ln.get("unit_price_ex_tax"))
+        if price is not None:
+            ln["unit_price_ex_tax"] = abs(price)
+        total = _num(ln.get("line_total_ex_tax"))
+        if total is not None and not lines_signed:
+            total = -abs(total)
+            ln["line_total_ex_tax"] = total
+        qty = _num(ln.get("quantity"))
+        if qty is not None:
+            # The quantity follows its own line's sign, so a mixed credit note
+            # (a restocking charge among the credits) keeps that line positive.
+            ln["quantity"] = abs(qty) if (total or 0) > 0 else -abs(qty)
+    out["lines"] = lines
+
+    if not (_num(extraction.get("total_incl_tax")) or 0) < 0:
+        # discount flips with the rest: it sits inside the identity
+        # line_sum + tax − discount = total, so negating both sides negates it.
+        for key in (
+            "subtotal_ex_tax",
+            "tax_amount",
+            "total_incl_tax",
+            "discount_amount",
+        ):
+            v = _num(extraction.get(key))
+            if v is not None:
+                out[key] = -abs(v)
+    return out
 
 
 def sales_tax_rates(lh) -> dict[int, float]:
@@ -289,6 +365,7 @@ def build_replica(
     item_matcher=None,
     own_invoice_id: str | None = None,
     received_feed: list | None = None,
+    loaded_total: object = None,
 ) -> dict:
     """Extraction result → a complete ``received_invoice``-shaped document.
 
@@ -332,11 +409,26 @@ def build_replica(
         msg = "this document is a letter/notice, not an invoice — nothing to receive"
         warnings.append(msg)
         _issue("not_an_invoice", msg, data={"document_type": "letter"})
-    total_incl = extraction.get("total_incl_tax")
-    if isinstance(total_incl, (int, float)) and total_incl < 0:
-        msg = "credit note (negative total) — out of scope for receiving"
+    # A CREDIT NOTE is a real, receivable document — receiving it REVERSES
+    # stock and cost. Recognised from any of three signals (see
+    # _credit_signals) and negated here, so everything downstream — the
+    # resolution, the working document, the receive request, the dojo's
+    # replica-vs-Loaded compare — reads Loaded's own sign space for free.
+    credit_signals = _credit_signals(extraction, loaded_total)
+    is_credit_note = bool(credit_signals)
+    if is_credit_note:
+        extraction = _credit_normalise(extraction)
+        msg = (
+            "CREDIT NOTE — receiving this REVERSES stock and cost "
+            "(quantities are negative)"
+        )
         warnings.append(msg)
-        _issue("not_an_invoice", msg, data={"document_type": "credit_note"})
+        _issue(
+            "credit_note",
+            msg,
+            blocking=False,
+            data={"document_type": "credit_note", "signals": credit_signals},
+        )
 
     if lh is None:
         from app.services.received_invoice import LoadedInvoiceClient
@@ -533,7 +625,9 @@ def build_replica(
     sub = extraction.get("subtotal_ex_tax")
     tax = extraction.get("tax_amount")
     try:
-        if sub and tax is not None and float(sub) > 0:
+        # != 0, not > 0: a credit note's subtotal is negative and its tax with
+        # it, so the ratio is still the right positive rate.
+        if sub and tax is not None and float(sub) != 0:
             copy_rate = round(float(tax) / float(sub), 4)
     except (TypeError, ValueError, ZeroDivisionError):
         pass
@@ -590,6 +684,19 @@ def build_replica(
                         f"line {i + 1} unit: copy says '{derived}' but the venue "
                         f"has no such unit — kept variant default "
                         f"'{unit_rec.get('name')}' (unit would need creating)"
+                    )
+                    # Structured marker so the editor can offer "create the
+                    # unit" ONLY for a unit WE read off the copy — never for
+                    # a bare unlinked unit string Loaded's OCR left behind.
+                    _issue(
+                        "unit_not_in_loaded",
+                        f"line {i + 1} '{el.get('description')}': the copy's "
+                        f"delivered unit '{derived}' doesn't exist in Loaded — "
+                        f"create it, or keep the variant default "
+                        f"'{unit_rec.get('name')}'",
+                        blocking=False,
+                        line_id=f"rep-{i}",
+                        data={"unit_name": str(derived)},
                     )
         if unit_rec is None:
             unit_rec = _resolve_unit_record(derived or el.get("unit"), units)
@@ -673,13 +780,17 @@ def build_replica(
         if (unit_rec or {}).get("id") is None:
             # The confidence rule the user named: the copy's unit can't be
             # resolved to a venue unit record AND no supplier variant supplies
-            # one — we cannot be confident in this line.
+            # one — we cannot be confident in this line. When the copy DID
+            # print a confidently-readable unit (it just doesn't exist in
+            # Loaded), carry its name so the editor can offer to create it —
+            # a replica-sourced name, never Loaded's leftover string.
             _issue(
                 "unit_missing",
                 f"line {i + 1} '{el.get('description')}': no unit could be "
                 "determined (nothing recognisable on the copy and no unit on "
                 "the Loaded variant) — set the unit before receiving",
                 line_id=f"rep-{i}",
+                data={"unit_name": str(derived)} if confident and derived else None,
             )
 
     # ---- Totals reconciliation (the engine's `totals` gate, copy-side) ----
@@ -691,6 +802,22 @@ def build_replica(
             return float(v)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return None
+
+    if is_credit_note:
+        # A lump-sum value credit (a price adjustment: no quantity, just a
+        # value) cannot be received as-is — receive recomputes every line
+        # total as qty × cost, which silently zeroes it. Loaded needs a
+        # quantity, so this one has to be resolved by a human.
+        for ln in out_lines:
+            if not _f(ln.get("quantity_received")) and _f(ln.get("total_cost")):
+                _issue(
+                    "credit_zero_quantity",
+                    f"'{ln.get('description') or ln.get('code') or '?'}' credits a "
+                    "value with no quantity — receiving computes quantity × cost, "
+                    "so this line would come through as zero. Give it a quantity "
+                    "(or handle this credit in Loaded).",
+                    line_id=ln.get("id"),
+                )
 
     if out_lines:
         line_sum = sum(t for t in (_f(ln.get("total_cost")) for ln in out_lines) if t)
@@ -734,7 +861,19 @@ def build_replica(
         "purchase_order_number"
     )
     linked_po_id = None
-    if po_number:
+    if po_number and is_credit_note:
+        # Never resolve a credit note's PO reference. It names the ORIGINAL
+        # order, which Loaded (1:1) has already linked to the original
+        # invoice — resolving it would classify this as a split order and
+        # stamp bogus cross-references onto both that PO and that invoice at
+        # receive. The printed reference is kept for display only.
+        log.append(
+            f"credit note: purchase order {po_number} dropped — the reference "
+            "belongs to the invoice being credited, not to this document "
+            "(Loaded stores none either)"
+        )
+        po_number = None
+    elif po_number:
         try:
             from app.services.received_invoice import resolve_po_id
 
@@ -874,6 +1013,16 @@ def build_replica(
                     continue
                 if _norm(row.get("supplierName")) != sup_key:
                     continue
+                # A credit note usually reprints the number of the invoice it
+                # credits. Opposite signs mean this IS that credit, not a
+                # duplicate of it — matching signs (credit vs credit) still
+                # count, because receiving a credit twice double-reverses
+                # stock with nothing else to catch it.
+                row_total = row.get("total")
+                if isinstance(row_total, (int, float)) and is_credit_note != (
+                    row_total < 0
+                ):
+                    continue
                 dup_date = str(row.get("receivedAt") or "")[:10]
                 if str(row.get("type") or "") == "PurchaseOrder":
                     dup_po_id = row.get("id")
@@ -925,6 +1074,10 @@ def build_replica(
         "duplicate_of_invoice_id": dup_invoice_id,
         "duplicate_of_file_id": dup_file_id,
         "duplicate_of_purchase_order_id": dup_po_id,
+        # A credit note reverses stock and cost — the flag rides so the doc,
+        # the editor and the receive path all know without re-deriving it.
+        "is_credit_note": is_credit_note,
+        "document_type": "credit_note" if is_credit_note else doc_type or "invoice",
         "warnings": warnings,
         "issues": issues,
         "subtotal": extraction.get("subtotal_ex_tax"),

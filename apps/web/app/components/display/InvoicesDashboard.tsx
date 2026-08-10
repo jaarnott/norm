@@ -225,9 +225,19 @@ export default function InvoicesDashboard({ data, props }: DisplayBlockProps) {
                     >
                       <td style={tdStyle}>{formatDate(inv.issuedAt)}</td>
                       <td style={tdStyle}>{inv.supplierName}</td>
-                      <td style={tdStyle}>{inv.referenceNumber || '—'}</td>
+                      <td style={tdStyle}>
+                        {inv.referenceNumber || '—'}
+                        {/* Loaded's own rule for a credit note is total < 0 —
+                            flag it here so nobody opens one expecting goods. */}
+                        {typeof inv.total === 'number' && inv.total < 0 && (
+                          <span title="credit note — receiving it reverses stock and cost"
+                            style={{ marginLeft: 6, fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.04em', padding: '1px 5px', borderRadius: 3, background: '#fdecea', color: '#a4322a', border: '1px solid #f0c2bc', whiteSpace: 'nowrap' }}>
+                            CREDIT
+                          </span>
+                        )}
+                      </td>
                       <td style={tdStyle}>{inv.linkedPurchaseOrderId ? (inv.purchaseOrderNumber || 'linked') : '—'}</td>
-                      <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 500 }}>{cur(inv.total)}</td>
+                      <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 500, ...(typeof inv.total === 'number' && inv.total < 0 ? { color: '#a4322a' } : {}) }}>{cur(inv.total)}</td>
                     </tr>
                     {isExpanded && (
                       <tr>
