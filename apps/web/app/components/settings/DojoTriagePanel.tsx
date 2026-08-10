@@ -109,6 +109,18 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // Poll while any sample is mid-analysis. Add-to-dojo and the sensei both
+  // run in the background, so without this the row keeps showing "sensei
+  // analysing…" long after the proposal landed (Trents 206688357 finished at
+  // 09:38 and still read as running, 10 Aug 2026). The server reports an
+  // interrupted run as failed, so this loop always terminates.
+  const pending = overview?.pending_review;
+  useEffect(() => {
+    if (!pending?.some((s) => s.analysis_status === 'running')) return;
+    const t = setInterval(() => { load(); }, 5000);
+    return () => clearInterval(t);
+  }, [pending, load]);
+
   const toRunView = (data: Record<string, unknown>): RunView => ({
     status: String(data.status ?? 'new'),
     replica: (data.replica as Record<string, unknown>) ?? null,

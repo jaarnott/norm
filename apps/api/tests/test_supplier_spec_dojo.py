@@ -1779,3 +1779,59 @@ class TestCompareReplica:
         assert [
             d["field"] for d in spec_dojo.compare_replica(rep, loaded_other_day)
         ] == ["issued_at"]
+
+
+class TestInterruptedAnalysis:
+    """An analysis runs in a thread that dies with the process. The row is
+    left at "running" with no error and the panel spins forever (Lion Nathan
+    94793550, stuck across a restart, 10 Aug 2026). A run older than the
+    stale threshold is reported failed so it can be started again."""
+
+    @staticmethod
+    def _running(minutes_ago: float) -> dict:
+        import datetime as dt
+
+        at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes_ago)
+        return {"status": "running", "thread": [], "at": at.isoformat()}
+
+    def test_fresh_run_still_reports_running(self):
+        view = spec_dojo.analysis_view(self._running(2))
+        assert view["status"] == "running"
+        assert "error" not in view
+
+    def test_orphaned_run_reports_failed_with_a_reason(self):
+        view = spec_dojo.analysis_view(
+            self._running(spec_dojo.STALE_ANALYSIS_MINUTES + 5)
+        )
+        assert view["status"] == "failed"
+        assert "interrupted" in view["error"]
+
+    def test_the_stored_row_is_not_mutated(self):
+        # Pure: another replica may still own the run, and the next real run
+        # overwrites the row anyway.
+        stored = self._running(spec_dojo.STALE_ANALYSIS_MINUTES + 5)
+        spec_dojo.analysis_view(stored)
+        assert stored["status"] == "running"
+
+    def test_finished_and_missing_analyses_pass_through(self):
+        assert spec_dojo.analysis_view(None) is None
+        done = {"status": "ready", "green": True}
+        assert spec_dojo.analysis_view(done) is done
+
+    def test_undatable_run_is_left_alone(self):
+        odd = {"status": "running", "at": "not-a-date"}
+        assert spec_dojo.analysis_view(odd)["status"] == "running"
+
+    def test_sample_meta_surfaces_the_failure(self, db_session):
+        from app.routers.supplier_spec_dojo import _sample_meta
+
+        spec = _make_spec(db_session, "Interrupted Co")
+        sample = SupplierSpecSample(
+            spec_id=spec.id,
+            label="stuck.pdf",
+            pdf_bytes=b"%PDF-x",
+            analysis=self._running(spec_dojo.STALE_ANALYSIS_MINUTES + 1),
+        )
+        db_session.add(sample)
+        db_session.flush()
+        assert _sample_meta(sample)["analysis_status"] == "failed"

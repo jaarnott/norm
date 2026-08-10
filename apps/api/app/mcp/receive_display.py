@@ -131,10 +131,12 @@ def _attach_reference_data(
         # Ordered qty / substitution flags / un-received lines from the linked PO,
         # matched by stock code — the same reference data the web draft attaches.
         from app.routers.invoice_fixes import _attach_po_reference
+        from app.services.invoice_po_reference import enrich_loaded_snapshot
         from app.services.received_invoice import attach_item_names
 
         _attach_po_reference(data, lh)
         attach_item_names(data, lh)
+        enrich_loaded_snapshot(data)
     except Exception as exc:  # noqa: BLE001 — reference data is enhancement
         logger.info("receive_display: PO reference pre-resolve failed: %s", exc)
 

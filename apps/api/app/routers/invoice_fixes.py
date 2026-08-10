@@ -37,6 +37,7 @@ from app.db.models import User
 # service so the web router and the MCP submit tool share ONE implementation.
 # Kept under the old private names here so the endpoints and tests below (and
 # test_invoice_fixes_handler.py) are untouched by the move.
+from app.services.invoice_po_reference import enrich_loaded_snapshot
 from app.services.received_invoice import (
     LoadedInvoiceClient as _Loaded,
     ReceiveRequest,
@@ -420,6 +421,7 @@ def _reshape_draft_after_write(
             # /review); the draft only mirrors Loaded's own linked PO.
             _attach_po_reference(fresh, lh)
             attach_item_names(fresh, lh)
+            enrich_loaded_snapshot(fresh)
             fresh["checks"] = None
             fresh["suggestions"] = []
             fresh["check_reasons"] = []
@@ -937,6 +939,8 @@ _META_HEADER_FIELDS = (
     "discount_amount",
     "unit_cost_includes_tax",
     "loaded_invoice_fingerprint",
+    # Server-derived, so it heals onto drafts opened before it existed.
+    "is_credit_note",
 )
 _META_LINE_FIELDS = ("brand", "tax_amount", "sale_tax_rate")
 
@@ -962,176 +966,15 @@ def _refresh_metadata(doc, detail: dict) -> None:
 
 
 def _attach_po_reference(data: dict, lh) -> None:
-    """Mirror Loaded's Receive Invoice reconciliation against the linked PO.
+    """Fetch the linked order and project it onto the draft.
 
-    Loaded reconciles an invoice line to its purchase-order line by the supplier
-    CODE (the exact ordered variant) — NOT the stock item. A delivered line whose
-    code isn't on the PO shows no ordered qty even when the SAME item was ordered
-    under a different code, and that ordered line stays as "ordered, not received"
-    (verified live: BROCCOLI delivered ``VEGF0223`` vs ordered ``165618`` — same
-    item, shown as two separate lines). Only a CODELESS invoice line falls back to
-    ``itemId`` (so a line Loaded left un-coded still picks up its ordered qty, e.g.
-    PORK RACK), and its display code then borrows the PO line's ``itemCode``.
-
-    Per line it sets ``quantity_ordered`` / ``reference_cost`` (from the PO),
-    ``on_order`` (matched a PO line), ``display_code``, and — for a delivery under
-    a different code — ``substitute_for`` (the original ordered line, shown as an
-    expandable row). ``ordered_not_received`` lists only the PO items GENUINELY not
-    delivered (no invoice line by code or item); an item delivered as a substitute
-    is represented by its substitute line, not repeated here.
-
-    Loaded leaves ``quantityOrdered`` null on the invoice detail, so the linked PO
-    is the only source. Best-effort and idempotent — run on every open.
+    Thin delegate to ``services.invoice_po_reference`` — the projection lives
+    there because it must also run (pure, no network) after every working-
+    document patch, and because it is the ONE writer of that derived state.
     """
-    lines = data.get("lines") or []
-    po_id = data.get("linked_purchase_order_id")
-    if not po_id and data.get("split_po_id"):
-        # Split order: the referenced PO is linked to a SIBLING invoice, so
-        # this draft carries no Loaded link — but the user still needs the
-        # order's reference data (QTY ORDERED, ordered-not-delivered) for
-        # this delivery. Reconcile against the split PO WITHOUT touching the
-        # link fields — from the FIRST open, before any accept: the engine
-        # already validated the lines against this order, so showing what it
-        # says is honest context for the split/remove decision.
-        po_id = data.get("split_po_id")
-    if not po_id:
-        # No order to reconcile against: clear any stale reference data.
-        data.pop("ordered_not_received", None)
-        data.pop("ordered_received_elsewhere", None)
-        data.pop("order_date", None)
-        for ln in lines:
-            ln["quantity_ordered"] = None
-            ln["reference_cost"] = None
-            ln["on_order"] = None
-            ln["substitute_for"] = None
-            ln["display_code"] = ln.get("code")
-        return
+    from app.services.invoice_po_reference import attach_po_reference
 
-    po = lh.get(f"/1.0/stock/internal/purchase-orders/{po_id}")
-    if not isinstance(po, dict):
-        return  # keep last-known-good reference data on a bad fetch
-
-    data["order_date"] = po.get("createdAt")
-    po_by_item: dict[str, dict] = {}
-    po_by_code: dict[str, dict] = {}
-    for pl in po.get("lines") or []:
-        if not isinstance(pl, dict):
-            continue
-        if pl.get("itemId"):
-            po_by_item.setdefault(pl.get("itemId"), pl)
-        if pl.get("itemCode"):
-            po_by_code.setdefault(_norm(pl.get("itemCode")), pl)
-
-    consumed: set[int] = set()  # id() of PO lines matched to an invoice line
-    for ln in lines:
-        ln["substitute_for"] = None
-        code = _norm(ln.get("code")) if ln.get("code") else ""
-        item_id = ln.get("linked_item_id")
-        # A coded line matches by CODE (Loaded's exact ordered variant). If its
-        # code isn't on the PO but the SAME item WAS ordered under a different
-        # code, it's a SUBSTITUTE — delivered under a different stock code. A
-        # codeless line just matches by itemId.
-        pl = None
-        is_sub = False
-        if code:
-            pl = po_by_code.get(code)
-            if not pl and item_id:
-                pl = po_by_item.get(item_id)
-                is_sub = pl is not None
-        elif item_id:
-            pl = po_by_item.get(item_id)
-        if pl:
-            consumed.add(id(pl))
-            ln["quantity_ordered"] = pl.get("quantityOrdered")
-            ln["reference_cost"] = pl.get("unitCost")
-            ln["on_order"] = True
-            ln["display_code"] = ln.get("code") or pl.get("itemCode")
-            if is_sub:
-                # The original ordered line this delivery stands in for — shown as
-                # a full expandable row under the substitute; NOT also listed as
-                # "ordered, not delivered" (it WAS delivered, under another code).
-                ln["substitute_for"] = {
-                    "code": pl.get("itemCode"),
-                    "description": pl.get("itemName"),
-                    "unit": pl.get("unitName"),
-                    "quantity_ordered": pl.get("quantityOrdered"),
-                    "unit_cost": pl.get("unitCost"),
-                }
-        else:
-            ln["quantity_ordered"] = None
-            ln["reference_cost"] = None
-            ln["on_order"] = False
-            ln["display_code"] = ln.get("code")
-
-    # PO items with no matching invoice line — ordered but not delivered on this
-    # invoice. Loaded shows these as receivable rows (ordered qty, received 0)
-    # regardless of the PO's cumulative received, so we mirror that: the full
-    # ordered qty, deduped by item.
-    ordered_not_received = []
-    seen: set = set()
-    for pl in po.get("lines") or []:
-        if not isinstance(pl, dict) or id(pl) in consumed:
-            continue
-        key = pl.get("itemId") or _norm(pl.get("itemCode"))
-        if key in seen:
-            continue
-        seen.add(key)
-        ordered_not_received.append(
-            {
-                "code": pl.get("itemCode"),
-                "description": pl.get("itemName"),
-                "unit": pl.get("unitName"),
-                "quantity_ordered": pl.get("quantityOrdered"),
-                "unit_cost": pl.get("unitCost"),
-                # The PO line's stock item: lets the editor reconcile a LOCAL
-                # item link immediately (delivered as a substitute → drop from
-                # this list, badge the line) without waiting for a reopen.
-                "item_id": pl.get("itemId"),
-            }
-        )
-
-    # Split order: PO lines missing from THIS invoice may have been received
-    # on the SIBLING delivery — those aren't "not delivered", they arrived on
-    # the other invoice. Partition them into their own section (matched by
-    # code, then item id — the same convention as above). Best-effort: if the
-    # sibling can't be fetched, everything stays under "not delivered".
-    ordered_received_elsewhere = []
-    if (
-        ordered_not_received
-        and data.get("split_po_id")
-        and not data.get("linked_purchase_order_id")
-        and data.get("split_sibling_invoice_id")
-    ):
-        sib_qty: dict[str, object] = {}
-        try:
-            sib = lh.invoice(data["split_sibling_invoice_id"])
-            for sl in (sib or {}).get("lines") or []:
-                if not isinstance(sl, dict) or sl.get("deletedAt"):
-                    continue
-                for k in (_norm(sl.get("code")), str(sl.get("linkedItemId") or "")):
-                    if k:
-                        sib_qty[k] = sl.get("quantityReceived")
-        except Exception as exc:  # noqa: BLE001 — reference data is enhancement
-            logger.info("split sibling lines unavailable: %s", exc)
-        if sib_qty:
-            still_missing = []
-            for o in ordered_not_received:
-                k_code = _norm(o.get("code"))
-                k_item = str(o.get("item_id") or "")
-                hit = (
-                    k_code
-                    if k_code in sib_qty
-                    else (k_item if k_item in sib_qty else None)
-                )
-                if hit is not None:
-                    ordered_received_elsewhere.append(
-                        {**o, "quantity_received": sib_qty[hit]}
-                    )
-                else:
-                    still_missing.append(o)
-            ordered_not_received = still_missing
-    data["ordered_not_received"] = ordered_not_received
-    data["ordered_received_elsewhere"] = ordered_received_elsewhere
+    attach_po_reference(data, lh)
 
 
 @router.post("/invoice-fixes/draft")
@@ -1177,6 +1020,7 @@ async def create_receive_draft(
             _refresh_metadata(doc, detail)
             _attach_po_reference(doc.data, lh)
             attach_item_names(doc.data, lh)
+            enrich_loaded_snapshot(doc.data)
             # Fingerprint gate: the review is cached per invoice STATE. If
             # the invoice changed in Loaded since the review ran (its content
             # fingerprint moved — Loaded has no revision field), clear the
@@ -1208,6 +1052,7 @@ async def create_receive_draft(
         # consolidator's job, run in /invoice-fixes/review.
         _attach_po_reference(data, lh)
         attach_item_names(data, lh)
+        enrich_loaded_snapshot(data)
     except Exception as exc:  # noqa: BLE001 — reference data is enhancement
         logger.info("draft PO reference unavailable: %s", exc)
     doc = WorkingDocument(
@@ -1294,6 +1139,7 @@ async def reset_validation(
                 fresh[k] = doc.data[k]
         _attach_po_reference(fresh, lh)
         attach_item_names(fresh, lh)
+        enrich_loaded_snapshot(fresh)
         doc.data = fresh
         doc.version += 1
         flag_modified(doc, "data")
@@ -1362,6 +1208,7 @@ async def review_receive_draft(
         lh = _Loaded(db, config_db, body.venue_id)
         _attach_po_reference(fresh, lh)
         attach_item_names(fresh, lh)
+        enrich_loaded_snapshot(fresh)
     except Exception as exc:  # noqa: BLE001 — reference data is enhancement
         logger.info("review PO reference unavailable: %s", exc)
 

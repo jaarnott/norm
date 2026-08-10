@@ -33,6 +33,47 @@ __all__ = ["MAIN_PROMPT_NAME", "find_spec_for_supplier"]  # re-exported for call
 logger = logging.getLogger(__name__)
 
 
+# An analysis runs either in a background daemon thread (add-to-dojo) or
+# inline in a request (the sensei). Both die with the process, leaving the
+# stored analysis at "running" forever with no error — the panel then shows
+# "sensei analysing…" for eternity and offers no way back (Lion Nathan
+# 94793550, stuck 4 hours across a restart, 10 Aug 2026).
+#
+# Nothing can revive that thread, so a run older than this is reported as
+# interrupted and can simply be started again. Deliberately evaluated at READ
+# time rather than swept at startup: with more than one API replica, a boot
+# sweep would mark another replica's genuinely-running analysis as dead. A
+# real run takes 35-120s, so this threshold only ever catches corpses.
+STALE_ANALYSIS_MINUTES = 15
+
+
+def analysis_view(analysis: dict | None) -> dict | None:
+    """The analysis as a client should see it: a run whose owner died is
+    reported ``failed``, never eternally ``running``. Pure — the stored row
+    is left alone (the next run overwrites it)."""
+    import datetime as _dt
+
+    if not isinstance(analysis, dict) or analysis.get("status") != "running":
+        return analysis
+    started = analysis.get("at")
+    try:
+        age = _dt.datetime.now(_dt.timezone.utc) - _dt.datetime.fromisoformat(
+            str(started)
+        )
+    except (TypeError, ValueError):
+        return analysis
+    if age < _dt.timedelta(minutes=STALE_ANALYSIS_MINUTES):
+        return analysis
+    return {
+        **analysis,
+        "status": "failed",
+        "error": (
+            "the sensei was interrupted before it finished (the server "
+            "restarted, most likely) — run it again"
+        ),
+    }
+
+
 def dojo_schema(config_db: Session) -> dict:
     """The extraction schema (shared with the live path)."""
     return PDF_SCHEMA

@@ -227,3 +227,101 @@ class TestAttachItemNames:
         data = {"lines": [{"id": "l1", "description": "RAW", "linked_item_id": "i-x"}]}
         attach_item_names(data, self.FakeLh({}))  # fetch raises
         assert "item_name" not in data["lines"][0]
+
+
+class TestLinkedLineDescription:
+    """Loaded's invariant: a line linked to a stock item carries THAT ITEM'S
+    name as its description. Its own client does it on every link (mercury:
+    `description: t.name`), and 99/99 linked lines across 18 human-received
+    invoices obey it. Norm left the supplier's raw text, so matched lines read
+    as unmatched in Loaded (Eurovintage 1229552, 10 Aug 2026)."""
+
+    class _Lh:
+        def __init__(self, items=None, fail=False):
+            self.items = items or {}
+            self.fail = fail
+            self.gets: list[str] = []
+            self.writes: list[tuple] = []
+
+        def get(self, path):
+            self.gets.append(path)
+            if self.fail:
+                raise RuntimeError("boom")
+            return self.items.get(path.rsplit("/", 1)[-1])
+
+        def invoice(self, invoice_id):  # noqa: ARG002
+            return self.inv
+
+        def request(self, method, path, body=None):
+            self.writes.append((method, path, body))
+            return {**(body or {}), "isReceived": True}
+
+    @staticmethod
+    def _inv():
+        return {
+            "id": "inv-1",
+            "linkedSupplierId": "sup-1",
+            "lines": [
+                {
+                    "id": "ln-1",
+                    "code": "RB2ROSE624",
+                    "description": "Rosabel Dry Rose 2024 6x 750ml",
+                    "linkedItemId": "item-rose",
+                },
+                {
+                    "id": "ln-2",
+                    "code": "ZZ",
+                    "description": "Unlinked supplier text",
+                    "linkedItemId": None,
+                },
+            ],
+        }
+
+    def _receive(self, lh, lines, **kw):
+        from app.services.received_invoice import ReceiveRequest, do_receive
+
+        lh.inv = self._inv()
+        body = ReceiveRequest(
+            venue_id="v-1", invoice_id="inv-1", lines=lines, receive=False, **kw
+        )
+        do_receive(lh, body)
+        return lh.writes[-1][2]
+
+    def test_linked_line_takes_the_item_name(self):
+        lh = self._Lh({"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}})
+        out = self._receive(lh, [{"id": "ln-1", "linked_item_id": "item-rose"}])
+        assert out["lines"][0]["description"] == "ROSABEL PAYS D'OC ROSE"
+
+    def test_unlinked_line_keeps_the_suppliers_text(self):
+        lh = self._Lh({"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}})
+        out = self._receive(lh, [{"id": "ln-2"}])
+        assert out["lines"][1]["description"] == "Unlinked supplier text"
+
+    def test_request_item_name_avoids_the_fetch(self):
+        lh = self._Lh()
+        out = self._receive(
+            lh,
+            [{"id": "ln-1", "linked_item_id": "item-rose", "item_name": "ROSABEL PAYS D'OC ROSE"}],
+        )
+        assert out["lines"][0]["description"] == "ROSABEL PAYS D'OC ROSE"
+        assert not [g for g in lh.gets if "items/" in g]  # no lookup needed
+
+    def test_a_failed_lookup_never_blocks_the_receive(self):
+        lh = self._Lh(fail=True)
+        out = self._receive(lh, [{"id": "ln-1", "linked_item_id": "item-rose"}])
+        assert out["lines"][0]["description"] == "Rosabel Dry Rose 2024 6x 750ml"
+
+    def test_an_appended_linked_line_is_named_too(self):
+        lh = self._Lh({"item-new": {"id": "item-new", "name": "FREIGHT - FOOD"}})
+        out = self._receive(
+            lh,
+            [{"id": "rep-9", "code": "FGT", "description": "Courier chg", "linked_item_id": "item-new"}],
+        )
+        added = out["lines"][-1]
+        assert added["description"] == "FREIGHT - FOOD"
+
+    def test_struck_lines_are_left_alone(self):
+        lh = self._Lh({"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}})
+        out = self._receive(lh, [{"id": "ln-1", "linked_item_id": "item-rose", "struck": True}])
+        # soft-deleted: not part of the received invoice, so not renamed
+        assert out["lines"][0]["description"] == "Rosabel Dry Rose 2024 6x 750ml"

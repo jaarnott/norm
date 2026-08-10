@@ -306,6 +306,53 @@ def resolve_po_id(
     return None
 
 
+def _apply_item_descriptions(
+    lh: LoadedInvoiceClient, inv: dict, body: ReceiveRequest
+) -> None:
+    """A line linked to a stock item must carry THAT ITEM'S NAME as its
+    description — Loaded's invariant, and the only way a matched line reads as
+    matched on its screens.
+
+    Loaded's own client does this on every link (mercury React bundle:
+    ``{...e, linkedItemId: t.id, description: t.name, brand: a?.name,
+    unit: l?.name}``), and all 99 linked lines across 18 human-received
+    invoices obey it — including cases where the supplier VARIANT's
+    description differs from the item name, which stores the item name.
+
+    Norm was leaving the supplier's raw line text, so a correctly matched line
+    looked unmatched in Loaded (Eurovintage 1229552: "Rosabel Dry Rose 2024 6x
+    750ml" on a line linked to ROSABEL PAYS D'OC ROSE — 10 Aug 2026).
+
+    Names come from the request when the caller already resolved them
+    (``attach_item_names`` fills ``item_name`` on every open); anything still
+    missing is fetched here, so the invariant holds no matter which surface
+    called. Best-effort per item: a failed lookup leaves that line's text
+    alone rather than blocking the receive.
+    """
+    names: dict[str, str] = {}
+    for e in body.lines:
+        iid, nm = e.get("linked_item_id"), e.get("item_name")
+        if iid and isinstance(nm, str) and nm.strip():
+            names[str(iid)] = nm.strip()
+
+    live = [ln for ln in inv.get("lines") or [] if not ln.get("deletedAt")]
+    for iid in {
+        str(ln.get("linkedItemId")) for ln in live if ln.get("linkedItemId")
+    } - set(names):
+        try:
+            item = lh.get(f"/1.0/stock/internal/items/{iid}")
+            nm = (item or {}).get("name") if isinstance(item, dict) else None
+            if nm:
+                names[iid] = str(nm)
+        except Exception as exc:  # noqa: BLE001 — never block a receive
+            logger.info("item name lookup failed for %s: %s", iid, exc)
+
+    for ln in live:
+        nm = names.get(str(ln.get("linkedItemId") or ""))
+        if nm:
+            ln["description"] = nm
+
+
 def _register_missing_variants(
     lh: LoadedInvoiceClient, inv: dict, body: ReceiveRequest
 ) -> None:
@@ -350,7 +397,10 @@ def _register_missing_variants(
                     "supplierId": supplier_id,
                     "stockCode": code,
                     "unitId": unit_id,
-                    "unitCost": (
+                    # abs(): a supplier variant's cost is a PRICE, never a
+                    # credit — a credit note must not register a negative
+                    # default cost for every future invoice of this item.
+                    "unitCost": _abs_cost(
                         e.get("unit_cost")
                         if e.get("unit_cost") is not None
                         else _ln_unit_cost(pre or {})
@@ -523,6 +573,11 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
                 new_line[dst] = e[src]
         inv.setdefault("lines", []).append(new_line)
 
+    # Every linked line (edited or appended) takes its stock item's name —
+    # Loaded's invariant for a matched line. Runs last so it sees the links
+    # this receive just made.
+    _apply_item_descriptions(lh, inv, body)
+
     if body.receive:
         # Guard: Loaded's server 500s (opaque internal-error, seen live on
         # Sawmill 201458) when receiving an invoice with NO linked supplier —
@@ -566,6 +621,29 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
                 f"{len(unresolved)} new value(s) must be created in Loaded before "
                 f"receiving: {shown}",
             )
+        # Guard: sign coherence. A credit note receives with NEGATIVE line
+        # totals; an invoice with positive ones. Accepting the sign flip on
+        # only some lines of a credit produces a mixed document that Loaded
+        # rejects with an opaque error — say so here, in our own words.
+        header_total = inv.get("total")
+        if isinstance(header_total, (int, float)) and header_total:
+            wrong_way = [
+                ln.get("description") or ln.get("code") or "?"
+                for ln in inv.get("lines") or []
+                if not ln.get("deletedAt")
+                and isinstance(_ln_total_cost(ln), (int, float))
+                and _ln_total_cost(ln)
+                and (_ln_total_cost(ln) < 0) != (header_total < 0)
+            ]
+            if wrong_way:
+                kind = "credit note" if header_total < 0 else "invoice"
+                raise HTTPException(
+                    400,
+                    f"this is a {kind} (total {header_total:.2f}) but "
+                    f"{len(wrong_way)} line(s) run the other way: "
+                    + "; ".join(wrong_way[:5])
+                    + " — every line must share the document's sign",
+                )
         inv["isReceived"] = True
         # Honour a Received Date set in the header; otherwise stamp now.
         if not inv.get("receivedAt"):
@@ -676,6 +754,11 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
 
 
 # ── Draft shaping ────────────────────────────────────────────────────────
+
+
+def _abs_cost(v):
+    """A catalogue/variant cost is a price — never a credit's negative."""
+    return abs(v) if isinstance(v, (int, float)) else v
 
 
 def _ln_unit_cost(ln: dict):
@@ -851,6 +934,11 @@ def build_received_invoice_data(detail: dict) -> dict:
         "tax_amount": detail.get("taxAmount"),
         "discount_amount": detail.get("discountAmount"),
         "total": detail.get("total"),
+        # Loaded's own rule for a credit note is total < 0 (verified across 18
+        # live credits). A pre-review draft open therefore already knows, and
+        # the review overwrites this with the replica's stronger verdict.
+        "is_credit_note": isinstance(detail.get("total"), (int, float))
+        and detail["total"] < 0,
         "unit_cost_includes_tax": _inv_includes_tax(detail),
         "file_id": detail.get("fileId"),
         "is_received": bool(detail.get("isReceived")),
@@ -901,7 +989,17 @@ _SNAPSHOT_LINE_KEYS = (
     "tax_amount",
     "sale_tax_rate",
     "linked_item_id",
+    "linked_brand_id",
+    # Presentation fields Loaded's own Receive Invoice screen shows but its
+    # API does not return: it resolves the stock item, the unit and the
+    # ordered quantity against the linked purchase order. Filled in by
+    # invoice_po_reference.enrich_loaded_snapshot after the PO rows are
+    # cached; None until then. See that module for the resolution rules.
     "item_name",
+    "unit_name",
+    "quantity_ordered",
+    "item_is_new",
+    "unit_is_new",
 )
 
 
@@ -981,6 +1079,10 @@ def receive_request_from_doc(
                 "code": ln.get("code"),
                 "description": ln.get("description"),
                 "linked_item_id": ln.get("linked_item_id"),
+                # Resolved on every open by attach_item_names — passing it
+                # saves do_receive an item fetch when it stamps Loaded's
+                # linked-line description.
+                "item_name": ln.get("item_name"),
                 "unit": ln.get("unit"),
                 "linked_unit_id": ln.get("linked_unit_id"),
                 "unit_ratio": ln.get("unit_ratio"),
@@ -1007,6 +1109,16 @@ def receive_request_from_doc(
             )
     linked_po = data.get("linked_purchase_order_id")
     split_po_id = data.get("split_po_id")
+    # subtotal is DERIVED from the lines, always — a stored header subtotal
+    # (Loaded's, or an old suggestion) drifts the moment a line is edited.
+    line_totals = [
+        t
+        for t in (ln.get("total_cost") for ln in lines if not ln.get("struck"))
+        if isinstance(t, (int, float))
+    ]
+    derived_subtotal = (
+        round(sum(line_totals), 2) if line_totals else data.get("subtotal")
+    )
     return ReceiveRequest(
         venue_id=venue_id,
         invoice_id=invoice_id,
@@ -1028,7 +1140,7 @@ def receive_request_from_doc(
         due_at=data.get("due_at"),
         received_at=data.get("received_at"),
         total=data.get("total"),
-        subtotal=data.get("subtotal"),
+        subtotal=derived_subtotal,
         tax_amount=data.get("tax_amount"),
         linked_supplier_id=data.get("linked_supplier_id"),
         unit_cost_includes_tax=data.get("unit_cost_includes_tax"),

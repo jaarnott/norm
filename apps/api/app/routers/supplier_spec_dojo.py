@@ -58,8 +58,10 @@ def _sample_meta(s: SupplierSpecSample) -> dict:
         # Dojo-page triage staging — excluded from regression until promoted.
         "draft": bool(getattr(s, "draft", None)),
         # The analysis agent's state: running | ready | not_green | failed |
-        # applied | None — drives the panel's proposal UI + polling.
-        "analysis_status": (s.analysis or {}).get("status"),
+        # applied | None — drives the panel's proposal UI + polling. Read
+        # through analysis_view so an interrupted run reports failed (and can
+        # be re-run) instead of spinning forever.
+        "analysis_status": (spec_dojo.analysis_view(s.analysis) or {}).get("status"),
         "analysis_green": bool((s.analysis or {}).get("green")),
     }
 
@@ -767,6 +769,7 @@ def _slim_analysis(analysis: dict | None) -> dict | None:
     kept deliberately: "the agent says it passed" is not evidence — the admin
     must be able to see the values the proposed prompt actually pulled, next
     to the agent's corrected values, and check both against the PDF."""
+    analysis = spec_dojo.analysis_view(analysis)
     if not analysis:
         return None
     out = dict(analysis)

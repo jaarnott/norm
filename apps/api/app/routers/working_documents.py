@@ -55,6 +55,29 @@ class PatchRequest(BaseModel):
     version: int
 
 
+def post_apply(doc, data) -> None:
+    """Recompute SERVER-OWNED derived state after a patch.
+
+    Some document types carry a projection derived from their editable values
+    plus cached reference data — for a received_invoice, the purchase-order
+    reconciliation (per-line ordered qty, "ordered, not delivered"). It has
+    exactly one writer: here. A client that patched it directly drifted the
+    moment an edit was undone (INV-958, 10 Aug 2026), so the editor now sends
+    only real edits and reads the recomputed projection back off the response.
+
+    Pure and best-effort — no network, no config DB; never fails a patch.
+    """
+    try:
+        if getattr(doc, "doc_type", None) == "received_invoice" and isinstance(
+            data, dict
+        ):
+            from app.services.invoice_po_reference import project_po_reference
+
+            project_po_reference(data)
+    except Exception:  # noqa: BLE001 — a projection must never sink an edit
+        logger.warning("post-apply projection failed", exc_info=True)
+
+
 @router.patch("/threads/{thread_id}/working-documents/{doc_id}")
 async def patch_document(
     thread_id: str,
@@ -76,6 +99,7 @@ async def patch_document(
     data = doc.data
     for op in body.ops:
         data = _apply_op(data, op)
+    post_apply(doc, data)
 
     doc.data = data
     flag_modified(doc, "data")
@@ -321,6 +345,7 @@ async def patch_standalone_document(
     data = doc.data
     for op in body.ops:
         data = _apply_op(data, op)
+    post_apply(doc, data)
 
     doc.data = data
     flag_modified(doc, "data")
