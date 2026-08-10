@@ -16,9 +16,10 @@ interface FunctionalPageProps {
   loading: boolean;
   onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   activeVenueId?: string | null;
+  onVenueChange?: (venueId: string) => void;
 }
 
-export default function FunctionalPage({ config, thread, onSend, loading, onWidgetAction, activeVenueId }: FunctionalPageProps) {
+export default function FunctionalPage({ config, thread, onSend, loading, onWidgetAction, activeVenueId, onVenueChange }: FunctionalPageProps) {
   const [input, setInput] = useState('');
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [workingDocId, setWorkingDocId] = useState<string | null>(null);
@@ -162,7 +163,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     }}>
       <select
         value={localVenueId || ''}
-        onChange={e => setLocalVenueId(e.target.value)}
+        onChange={e => { setLocalVenueId(e.target.value); onVenueChange?.(e.target.value); }}
         style={{
           padding: '4px 8px', fontSize: '0.75rem',
           border: '1px solid #e2ddd7', borderRadius: 6, fontFamily: 'inherit',
@@ -178,7 +179,11 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       block={{
         component: config.component,
         data: data || {},
-        props: { ...config.componentProps, activeVenueId: effectiveVenueId },
+        // persistVenue marks this as a PAGE instance: its venue selector may
+        // read from and write to the shared, remembered page venue. The same
+        // component rendered inside a conversation gets no such flag, so a
+        // conversation never moves the page venue or inherits it.
+        props: { ...config.componentProps, activeVenueId: effectiveVenueId, persistVenue: true },
       }}
       onAction={handleAction}
       threadId={thread?.id}

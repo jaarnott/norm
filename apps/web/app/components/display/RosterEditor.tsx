@@ -6,6 +6,7 @@ import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
 import { extractShifts, extractRosterMeta, venueWeekDays, dateKey, buildStaffRows, DAY_NAMES, calcHours, roleColor, formatWithOffset, OPEN_ROW_ID } from './roster/shared';
 import { apiFetch, callComponentApi } from '../../lib/api';
+import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { computeWarnings, summarise } from './roster/warnings';
 import type { LeaveRecord, UnavailabilityRecord } from './roster/warnings';
 import { venueTimePrefs, formatClock, venueOffset, formatInTz, wallClockToInstant } from '../../lib/rosterTime';
@@ -45,6 +46,11 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
 
   const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
   const activeVenueId = selectedVenue || (props?.activeVenueId as string) || null;
+  // Persist the page's venue choice so other pages open on it. Only when this
+  // is a PAGE instance (persistVenue) and not an MCP-embedded iframe — a roster
+  // shown inside a conversation must not move the shared page venue.
+  const persistVenue = !!props?.persistVenue && !props?.embedded;
+  const [, setActiveVenue] = useActiveVenue();
   const [docVersion, setDocVersion] = useState<number>(1);
   const [syncStatus, setSyncStatus] = useState<string>('synced');
   const [shifts, setShifts] = useState<Shift[]>(() => workingDocId ? [] : extractShifts(data));
@@ -123,6 +129,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
   // Reload roster for a different venue
   const handleVenueChange = useCallback(async (venueId: string) => {
     setSelectedVenue(venueId);
+    if (persistVenue) setActiveVenue(venueId);
     // Get current week range for the new venue
     const now = new Date();
     const day = now.getDay();

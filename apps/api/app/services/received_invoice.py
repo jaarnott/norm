@@ -188,16 +188,22 @@ def resolve_po_id(
     """Resolve a purchase-order NUMBER (e.g. "1520272") to a Loaded PO id.
 
     Loaded has no PO-by-number / search endpoint, and its bulk PO list returns
-    only OPEN orders — so a number for an already-received or older PO can't be
-    found there. Two passes:
+    only OPEN orders — so a number for a PO already claimed by an invoice can't
+    be found there. Three passes:
 
     1. the open-PO list (fast; covers not-yet-invoiced POs), preferring a match
        on ``supplier_id`` when given;
-    2. a fallback that scans the received/invoiced-invoices feed for an invoice
+    2. the outstanding-drafts list — Loaded links a PO at ingestion, which
+       drops it from the open list while the invoice is still a draft; the
+       drafts list carries ``purchaseOrderNumber`` AND ``linkedPurchaseOrderId``
+       per row (verified live: 1521145 was reachable only here). The PO's
+       ``linkedInvoiceId`` is what lets the caller run the split-order
+       validator against whichever invoice holds the link;
+    3. a fallback that scans the received/invoiced-invoices feed for an invoice
        carrying the same PO number and reads its ``linkedPurchaseOrderId`` — the
-       only route to a received PO's id (verified live: 1520272 → 4c8c77df…).
-       The feed projection omits ``linkedPurchaseOrderId``, so the full
-       ``get_invoice_detail`` is fetched for a matching row.
+       only route to a fully-received PO's id (verified live: 1520272 →
+       4c8c77df…). The feed projection omits ``linkedPurchaseOrderId``, so the
+       full ``get_invoice_detail`` is fetched for a matching row.
 
     Returns ``{"id", "order_number", "linked_invoice_id"}`` or None when the
     number is missing, unresolved, or ambiguous (resolves to >1 distinct id).
@@ -221,13 +227,41 @@ def resolve_po_id(
                 "id": p.get("id"),
                 "order_number": p.get("orderNumber"),
                 "linked_invoice_id": p.get("linkedInvoiceId"),
+                "supplier_id": p.get("supplierId"),
             }
         if len(matches) > 1:
             return None  # genuinely ambiguous in the open list
     except Exception as exc:  # noqa: BLE001 — fall through to the feed pass
         logger.info("resolve_po_id open-list pass failed: %s", exc)
 
-    # Pass 2 — the received/invoiced feed (reaches already-received POs).
+    # Pass 2 — the outstanding-drafts list: a PO claimed by a draft invoice is
+    # in NEITHER the open list nor the received feed; the drafts row carries
+    # the number and the PO id directly.
+    try:
+        rows = lh.get("/1.0/stock/internal/invoices")
+        rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
+        draft_po_ids = {
+            r.get("linkedPurchaseOrderId")
+            for r in rows
+            if isinstance(r, dict)
+            and not r.get("deletedAt")
+            and r.get("linkedPurchaseOrderId")
+            and _po_key(r.get("purchaseOrderNumber")) == want
+        }
+        if len(draft_po_ids) == 1:
+            pid = next(iter(draft_po_ids))
+            po = lh.get(f"/1.0/stock/internal/purchase-orders/{pid}")
+            if isinstance(po, dict):
+                return {
+                    "id": pid,
+                    "order_number": po.get("orderNumber"),
+                    "linked_invoice_id": po.get("linkedInvoiceId"),
+                    "supplier_id": po.get("supplierId"),
+                }
+    except Exception as exc:  # noqa: BLE001 — fall through to the feed pass
+        logger.info("resolve_po_id drafts pass failed: %s", exc)
+
+    # Pass 3 — the received/invoiced feed (reaches already-received POs).
     try:
         today = datetime.date.today()
         frm = (today - datetime.timedelta(days=400)).isoformat()
@@ -251,18 +285,20 @@ def resolve_po_id(
                 po_ids.add(pid)
         if len(po_ids) == 1:
             pid = next(iter(po_ids))
-            order_number = linked_invoice_id = None
+            order_number = linked_invoice_id = po_supplier_id = None
             try:
                 po = lh.get(f"/1.0/stock/internal/purchase-orders/{pid}")
                 if isinstance(po, dict):
                     order_number = po.get("orderNumber")
                     linked_invoice_id = po.get("linkedInvoiceId")
+                    po_supplier_id = po.get("supplierId")
             except Exception:  # noqa: BLE001 — id is enough on its own
                 pass
             return {
                 "id": pid,
                 "order_number": order_number,
                 "linked_invoice_id": linked_invoice_id,
+                "supplier_id": po_supplier_id,
             }
     except Exception as exc:  # noqa: BLE001 — resolution is best-effort
         logger.info("resolve_po_id feed pass failed: %s", exc)
@@ -671,10 +707,9 @@ def invoice_fingerprint(detail: dict) -> str:
     attached file. Anything else (e.g. notes) changing does not invalidate a
     cached review.
 
-    FNV-1a (pure Python) rather than hashlib deliberately: the
-    ``prepare_receive_invoice`` consolidator must shape IDENTICALLY to this
-    builder (tests/test_prepare_receive_invoice.py) and the sandbox has no
-    hashlib. Change detection, not security — collisions are inconsequential.
+    FNV-1a (pure Python) kept from the era when a sandboxed consolidator had
+    to reproduce it byte-for-byte (no hashlib there). Change detection, not
+    security — collisions are inconsequential.
     """
     import json as _json
 
@@ -802,7 +837,7 @@ def build_received_invoice_data(detail: dict) -> dict:
         for ln in (detail.get("lines") or [])
         if isinstance(ln, dict)
     ]
-    return {
+    data = {
         "invoice_id": detail.get("id"),
         "reference_number": detail.get("referenceNumber"),
         "supplier_name": detail.get("supplierName"),
@@ -829,6 +864,58 @@ def build_received_invoice_data(detail: dict) -> dict:
         "loaded_invoice_fingerprint": invoice_fingerprint(detail),
         "lines": lines,
     }
+    # Pristine mirror of what Loaded returned, refreshed on every draft open
+    # (admin-only "Loaded view" toggle in the editor): local edits mutate the
+    # main fields, this snapshot always shows Loaded's current truth.
+    data["loaded_snapshot"] = loaded_snapshot(data)
+    return data
+
+
+_SNAPSHOT_HEADER_KEYS = (
+    "reference_number",
+    "supplier_name",
+    "linked_supplier_id",
+    "purchase_order_number",
+    "linked_purchase_order_id",
+    "issued_at",
+    "due_at",
+    "received_at",
+    "subtotal",
+    "tax_amount",
+    "discount_amount",
+    "total",
+    "unit_cost_includes_tax",
+    "notes",
+)
+_SNAPSHOT_LINE_KEYS = (
+    "id",
+    "code",
+    "description",
+    "brand",
+    "unit",
+    "linked_unit_id",
+    "unit_ratio",
+    "quantity_received",
+    "unit_cost",
+    "total_cost",
+    "tax_amount",
+    "sale_tax_rate",
+    "linked_item_id",
+    "item_name",
+)
+
+
+def loaded_snapshot(shaped: dict) -> dict:
+    """The editor-shape subset of a freshly-shaped draft — what Loaded holds
+    RIGHT NOW for every editable field, header + lines."""
+    return {
+        "header": {k: shaped.get(k) for k in _SNAPSHOT_HEADER_KEYS},
+        "lines": [
+            {k: ln.get(k) for k in _SNAPSHOT_LINE_KEYS}
+            for ln in shaped.get("lines") or []
+            if isinstance(ln, dict)
+        ],
+    }
 
 
 def carry_local_state(fresh: dict, old: dict) -> None:
@@ -842,7 +929,7 @@ def carry_local_state(fresh: dict, old: dict) -> None:
     doc.data wholesale without this silently discards the user's accepted
     edits. reset-validation deliberately does NOT call it (from-scratch).
     """
-    for k in ("actioned_suggestions",):
+    for k in ("actioned_suggestions", "suggestion_actions"):
         if k in old:
             fresh[k] = old[k]
     old_lines = old.get("lines") or []
@@ -863,6 +950,90 @@ def carry_local_state(fresh: dict, old: dict) -> None:
                 for k in ("linked_unit_id", "unit", "unit_ratio"):
                     if old_ln.get(k) is not None:
                         fresh_ln[k] = old_ln[k]
+
+
+def receive_request_from_doc(
+    data: dict, venue_id: str, invoice_id: str
+) -> "ReceiveRequest":
+    """Build the receive request server-side from a working document's WORKING
+    values (Loaded's draft + accepted suggestions + manual edits).
+
+    No receive-time pairing: working lines carry real Loaded line ids from
+    birth; accepted add_line suggestions carry synthetic ids that
+    ``do_receive`` appends (guarded on code/linked_item_id); strikes ride as
+    ``struck`` → deletedAt. ``variant_updates`` are derived HERE (the
+    ``original_unit_id`` each line was born with exists exactly for this) —
+    the client no longer computes them.
+    """
+    lines = []
+    variant_updates = []
+    for ln in data.get("lines") or []:
+        if not isinstance(ln, dict):
+            continue
+        qty, cost = ln.get("quantity_received"), ln.get("unit_cost")
+        try:
+            total = round(float(qty) * float(cost), 4)
+        except (TypeError, ValueError):
+            total = ln.get("total_cost")
+        lines.append(
+            {
+                "id": ln.get("id"),
+                "code": ln.get("code"),
+                "description": ln.get("description"),
+                "linked_item_id": ln.get("linked_item_id"),
+                "unit": ln.get("unit"),
+                "linked_unit_id": ln.get("linked_unit_id"),
+                "unit_ratio": ln.get("unit_ratio"),
+                "quantity_received": qty,
+                "unit_cost": cost,
+                "sale_tax_rate": ln.get("sale_tax_rate"),
+                "total_cost": total,
+                "struck": bool(ln.get("struck")),
+            }
+        )
+        if (
+            ln.get("linked_unit_id")
+            and ln.get("original_unit_id")
+            and ln["linked_unit_id"] != ln["original_unit_id"]
+            and ln.get("linked_item_id")
+            and ln.get("code")
+        ):
+            variant_updates.append(
+                {
+                    "linked_item_id": ln["linked_item_id"],
+                    "line_code": ln["code"],
+                    "unit_id": ln["linked_unit_id"],
+                }
+            )
+    linked_po = data.get("linked_purchase_order_id")
+    split_po_id = data.get("split_po_id")
+    return ReceiveRequest(
+        venue_id=venue_id,
+        invoice_id=invoice_id,
+        linked_purchase_order_id=linked_po,
+        po_number=None,
+        unlink_purchase_order=bool(data.get("po_unlinked")) and not linked_po,
+        # Split order: the reference field is written without linking (Loaded
+        # POs are 1:1) — only when no real link exists.
+        purchase_order_number=(
+            data.get("purchase_order_number") if split_po_id and not linked_po else None
+        ),
+        split_po_id=split_po_id,
+        split_sibling_invoice_id=data.get("split_sibling_invoice_id"),
+        lines=lines,
+        variant_updates=variant_updates,
+        receive=True,
+        reference_number=data.get("reference_number"),
+        issued_at=data.get("issued_at"),
+        due_at=data.get("due_at"),
+        received_at=data.get("received_at"),
+        total=data.get("total"),
+        subtotal=data.get("subtotal"),
+        tax_amount=data.get("tax_amount"),
+        linked_supplier_id=data.get("linked_supplier_id"),
+        unit_cost_includes_tax=data.get("unit_cost_includes_tax"),
+        notes=data.get("notes"),
+    )
 
 
 def invalidate_conflicting_drafts(
@@ -960,9 +1131,13 @@ def invalidate_conflicting_drafts(
                         if s.get(k):
                             sib_pos.add(str(s[k]))
             if duplicate or (po_set and po_set & sib_pos):
-                data["checks"] = None
+                data["checks"] = None  # legacy-shape cache marker
                 data["check_reasons"] = []
                 data["suggestions"] = []
+                # replica_v1 cache marker: clearing reviewed_at makes the
+                # card's next open re-run the review against the fresh feed.
+                data["reviewed_at"] = None
+                data["issues"] = []
                 d.data = data
                 d.version += 1
                 flag_modified(d, "data")

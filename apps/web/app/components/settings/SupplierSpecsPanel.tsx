@@ -1,8 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import DojoSampleView, { type DojoDiff, type ExtractionDoc } from './DojoSampleView';
+import { type DojoDiff, type ExtractionDoc } from './DojoSampleView';
+import ReceiveInvoiceEditor from '../display/ReceiveInvoiceEditor';
+import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
+import InvoicePdfPane from './InvoicePdfPane';
+import SenseiProposalCard, { type DojoAnalysis } from './SenseiProposalCard';
+import DojoTriagePanel from './DojoTriagePanel';
 
 // Per-supplier invoice-extraction instructions + name aliases, matched by the
 // review engine against the invoice's supplierName (normalized substring).
@@ -33,32 +38,10 @@ interface DojoSample {
   last_status: string;
   last_run_at: string | null;
   diff_count: number;
+  replica_warning_count?: number;
+  source_venue_id?: string | null;
   analysis_status?: string | null;
   analysis_green?: boolean;
-}
-
-// The analysis agent's stored proposal. Carries the agent's ground truth AND
-// the candidate's own extraction so the admin can VERIFY the green gate —
-// "the agent says it passed" is a claim; these are the values behind it.
-interface DojoAnalysis {
-  status: string;
-  green?: boolean;
-  rationale?: string;
-  layout_facts?: string[];
-  proposed_instructions?: string;
-  // Same layout as an existing spec: Apply adds this supplier as an alias on
-  // that spec (and moves the sample there) instead of keeping a duplicate.
-  alias_of?: string | null;
-  // The correction conversation: admin replies the agent has folded in.
-  thread?: { role: string; text: string; at?: string }[];
-  error?: string;
-  ground_truth?: ExtractionDoc | null;
-  candidate_results?: {
-    own?: { status?: string; diffs?: DojoDiff[]; extraction?: ExtractionDoc | null };
-    siblings?: { samples?: { id: string; label: string; status: string; diffs?: unknown[] }[]; passed?: number; failed?: number; errors?: number; new?: number };
-  };
-  model?: string;
-  at?: string;
 }
 
 interface CandidateResult {
@@ -77,6 +60,12 @@ interface DojoView {
   expected: ExtractionDoc | null;
   extraction: ExtractionDoc | null;
   diffs: DojoDiff[];
+  // The replica: our extraction resolved into a full working document,
+  // scored against Loaded's own resolution (add-to-dojo samples only).
+  replica?: Record<string, unknown> | null;
+  replicaDiffs?: DojoDiff[];
+  replicaCompare?: ReplicaCompare | null;
+  hasExpectedReplica?: boolean;
 }
 interface DojoSummaryRow { spec_id: string; total: number; pass: number; fail: number; error: number; new: number }
 
@@ -108,12 +97,12 @@ export default function SupplierSpecsPanel() {
   const [error, setError] = useState<string | null>(null);
   // ---- Dojo state ----
   const [samples, setSamples] = useState<DojoSample[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [runningSample, setRunningSample] = useState<string | null>(null);
   const [dojoView, setDojoView] = useState<DojoView | null>(null);
+  const [showDojo, setShowDojo] = useState(false);
+  // Sample view tab: the extraction compare vs the resolved replica.
   const [dojoRunning, setDojoRunning] = useState(false);
   const [dojoSummary, setDojoSummary] = useState<Record<string, DojoSummaryRow>>({});
-  const fileInput = useRef<HTMLInputElement | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -155,30 +144,6 @@ export default function SupplierSpecsPanel() {
   };
 
   // ---- Dojo actions -----------------------------------------------------
-  const uploadSample = async (file: File) => {
-    if (!editing?.id) return;
-    setUploading(true);
-    setError(null);
-    try {
-      const form = new FormData();
-      form.append('file', file);
-      const res = await apiFetch(`/api/supplier-invoice-specs/${editing.id}/samples`, {
-        method: 'POST',
-        body: form,
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
-      }
-      await loadSamples(editing.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Upload failed');
-    } finally {
-      setUploading(false);
-      if (fileInput.current) fileInput.current.value = '';
-    }
-  };
-
   const runSample = async (sampleId: string) => {
     if (!editing?.id || runningSample) return;
     setRunningSample(sampleId);
@@ -188,7 +153,17 @@ export default function SupplierSpecsPanel() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
       if (data.error) setError(String(data.error));
-      setDojoView({ sampleId, status: data.status, expected: data.expected ?? null, extraction: data.extraction ?? null, diffs: data.diffs ?? [] });
+      setDojoView({
+        sampleId,
+        status: data.status,
+        expected: data.expected ?? null,
+        extraction: data.extraction ?? null,
+        diffs: data.diffs ?? [],
+        replica: data.replica ?? null,
+        replicaDiffs: data.replica_diffs ?? [],
+        replicaCompare: data.replica_compare ?? null,
+        hasExpectedReplica: !!data.expected_replica,
+      });
       await loadSamples(editing.id);
       loadSummary();
     } catch (e) {
@@ -204,32 +179,46 @@ export default function SupplierSpecsPanel() {
       const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/last-run`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
-      setDojoView({ sampleId, status: data.status, expected: data.expected ?? null, extraction: data.extraction ?? null, diffs: data.diffs ?? [] });
+      setDojoView({
+        sampleId,
+        status: data.status,
+        expected: data.expected ?? null,
+        extraction: data.extraction ?? null,
+        diffs: data.diffs ?? [],
+        replica: data.replica ?? null,
+        replicaDiffs: data.replica_diffs ?? [],
+        replicaCompare: data.replica_compare ?? null,
+        hasExpectedReplica: !!data.expected_replica,
+      });
+      // A waiting proposal displays at the top of the invoice view — load it
+      // with the sample; anything from another sample is stale.
+      if (analysisView?.sampleId !== sampleId) setAnalysisView(null);
+      const meta = samples.find((x) => x.id === sampleId);
+      if (meta && (meta.analysis_status === 'ready' || meta.analysis_status === 'not_green')) {
+        viewAnalysis(sampleId);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load the last run');
     }
   };
 
-  const saveExpected = async (sampleId: string) => {
-    if (!editing?.id) return;
+  const blessReplica = async (sampleId: string) => {
     setError(null);
     try {
-      const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/expected`, { method: 'POST' });
+      const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/replica-expected`, { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
       }
-      await loadSamples(editing.id);
-      loadSummary();
-      if (dojoView?.sampleId === sampleId) await viewSample(sampleId);
+      await viewSample(sampleId);
+      if (editing?.id) loadSamples(editing.id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save the baseline');
+      setError(e instanceof Error ? e.message : 'Could not bless the replica');
     }
   };
 
   // ---- Analysis agent (proposals) ---------------------------------------
   const [analysisView, setAnalysisView] = useState<{ sampleId: string; analysis: DojoAnalysis } | null>(null);
-  const [analysisFeedback, setAnalysisFeedback] = useState('');
   const [analysing, setAnalysing] = useState<string | null>(null);
   const [applyingAnalysis, setApplyingAnalysis] = useState(false);
   // ---- Candidate runs (Test against dojo) -------------------------------
@@ -243,7 +232,7 @@ export default function SupplierSpecsPanel() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
       if (data.analysis) setAnalysisView({ sampleId, analysis: data.analysis });
-      else setError('No analysis yet — run Analyse on the sample first.');
+      else setError('No sensei proposal yet — ask the sensei from the sample view first.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load the analysis');
     }
@@ -256,6 +245,15 @@ export default function SupplierSpecsPanel() {
     if (!editing?.id || analysing) return;
     setAnalysing(sampleId);
     setError(null);
+    const specId = editing.id;
+    // The server marks the sample 'running' immediately; refresh the row so
+    // the "analysing…" chip + the running-poll take over. The analysis takes
+    // 1–2 minutes — if THIS request's connection dies (mobile tab suspension,
+    // proxy timeout) the poll still flips the row to "proposal ready" when
+    // the server finishes, so the result is never lost.
+    setTimeout(() => {
+      loadSamples(specId);
+    }, 1500);
     try {
       const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/analyse`, {
         method: 'POST',
@@ -264,10 +262,14 @@ export default function SupplierSpecsPanel() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
       if (data.analysis) setAnalysisView({ sampleId, analysis: data.analysis });
-      setAnalysisFeedback('');
-      await loadSamples(editing.id);
+      await loadSamples(specId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Analysis failed');
+      setError(
+        e instanceof Error && !/fetch|network/i.test(e.message)
+          ? e.message
+          : 'Lost the connection to the sensei — it keeps working on the server; the sample row shows "sensei proposal" when it finishes.',
+      );
+      loadSamples(specId);
     } finally {
       setAnalysing(null);
     }
@@ -335,23 +337,6 @@ export default function SupplierSpecsPanel() {
     return () => clearInterval(t);
   }, [editing?.id, samples, loadSamples]);
 
-  const viewPdf = async (sampleId: string) => {
-    // The auth token lives in localStorage, not a cookie — a bare <a href>
-    // would 401. Open the tab synchronously (keeps the click's
-    // user-activation; window.open after the await gets popup-blocked),
-    // then navigate it to the fetched blob.
-    const w = window.open('about:blank', '_blank');
-    const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/pdf`).catch(() => null);
-    if (!res?.ok) {
-      if (w && !w.closed) w.close();
-      return;
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    if (w && !w.closed) w.location.replace(url);
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  };
-
   const deleteSample = async (sampleId: string) => {
     if (!editing?.id) return;
     if (!window.confirm('Delete this sample invoice?')) return;
@@ -415,7 +400,13 @@ export default function SupplierSpecsPanel() {
   if (editing) {
     const main = isMainPrompt(editing);
     return (
-      <div style={{ maxWidth: 720 }}>
+      <div>
+        {/* The form stays narrow; the sample viewer below goes full width. */}
+        <div style={{ maxWidth: 720 }}>
+        <button type="button" onClick={() => setEditing(null)}
+          style={{ border: 'none', background: 'none', padding: 0, marginBottom: 8, fontSize: '0.74rem', color: '#8a6d3b', cursor: 'pointer', fontFamily: 'inherit' }}>
+          ← Back to supplier specs
+        </button>
         <h3 style={{ margin: '0 0 12px', fontSize: '1rem' }}>{isNew ? 'New supplier spec' : main ? 'Edit — Main prompt (all suppliers)' : `Edit — ${editing.name}`}</h3>
         {error && <div style={{ color: '#c0392b', fontSize: '0.8rem', marginBottom: 10 }}>{error}</div>}
         {!main && (
@@ -492,46 +483,50 @@ export default function SupplierSpecsPanel() {
             </button>
           )}
         </div>
+        </div>
 
         {/* ---- Dojo: sample invoices + regression runs ------------------- */}
         {!isNew && !main && (
           <div style={{ marginTop: 24, borderTop: '1px solid #eee', paddingTop: 14 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <label style={{ ...labelStyle, marginBottom: 0 }}>Test invoices (Dojo)</label>
-              <label style={{ fontSize: '0.75rem', color: '#2e7d4f', border: '1px solid #2e7d4f', borderRadius: 6, padding: '4px 10px', cursor: uploading ? 'wait' : 'pointer' }}>
-                {uploading ? 'Uploading…' : '+ Upload invoice PDF'}
-                <input ref={fileInput} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }}
-                  disabled={uploading}
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadSample(f); }} />
-              </label>
-            </div>
+            <div style={{ maxWidth: 720 }}>
+            <label style={{ ...labelStyle, marginBottom: 6 }}>Test invoices (Dojo)</label>
             <div style={{ fontSize: '0.7rem', color: '#999', marginBottom: 8 }}>
-              Each run reads the PDF with the CURRENT prompts (main + this spec) and compares against the stored expected values. Review a run, then “Save as expected” to set the baseline.
+              Each run reads the PDF with the CURRENT prompts (main + this spec) and compares against the stored expected values. Open a sample with View; ask the sensei there to review and baseline it.
             </div>
             {samples.length === 0 && (
-              <div style={{ fontSize: '0.75rem', color: '#aaa', padding: '6px 0' }}>No sample invoices yet.</div>
+              <div style={{ fontSize: '0.75rem', color: '#aaa', padding: '6px 0' }}>
+                No sample invoices yet — add one with <strong>Add to dojo</strong> on an invoice card.
+              </div>
             )}
             {samples.map((s) => (
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #f4f4f4', fontSize: '0.78rem' }}>
                 <StatusBadge status={s.last_status} count={s.last_status === 'fail' ? s.diff_count : undefined} />
+                {(s.replica_warning_count ?? 0) > 0 && (
+                  <span title="the replica raised warnings — open the sample to see them"
+                    style={{ fontSize: '0.62rem', color: '#8a6d3b', background: '#fdf6e7', border: '1px solid #ecd9ac', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>
+                    ⚠ {s.replica_warning_count}
+                  </span>
+                )}
                 {s.analysis_status === 'running' && (
-                  <span style={{ fontSize: '0.62rem', color: '#1d4ed8', background: '#dbeafe', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>analysing…</span>
+                  <span style={{ fontSize: '0.62rem', color: '#1d4ed8', background: '#dbeafe', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>sensei analysing…</span>
                 )}
                 {s.analysis_status === 'ready' && (
-                  <button type="button" onClick={() => viewAnalysis(s.id)}
+                  <button type="button" onClick={() => viewSample(s.id)}
+                    title="open the sample — the sensei's proposal shows at the top of the invoice view"
                     style={{ fontSize: '0.62rem', fontWeight: 700, color: '#065f46', background: '#d1fae5', border: '1px solid #a7dcc4', borderRadius: 4, padding: '1px 7px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    proposal ready
+                    sensei proposal
                   </button>
                 )}
                 {s.analysis_status === 'not_green' && (
-                  <button type="button" onClick={() => viewAnalysis(s.id)}
+                  <button type="button" onClick={() => viewSample(s.id)}
+                    title="open the sample — the sensei's proposal shows at the top of the invoice view"
                     style={{ fontSize: '0.62rem', fontWeight: 700, color: '#8a6d3b', background: '#fdf6e7', border: '1px solid #ecd9ac', borderRadius: 4, padding: '1px 7px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    analysis not green
+                    sensei not green
                   </button>
                 )}
                 {s.analysis_status === 'failed' && (
-                  <span title="the analysis run errored — try Analyse again"
-                    style={{ fontSize: '0.62rem', color: '#991b1b', background: '#fee2e2', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>analysis failed</span>
+                  <span title="the sensei run errored — ask it again from the sample view"
+                    style={{ fontSize: '0.62rem', color: '#991b1b', background: '#fee2e2', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>sensei failed</span>
                 )}
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
                 {s.last_run_at && <span style={{ fontSize: '0.65rem', color: '#aaa', whiteSpace: 'nowrap' }}>{new Date(s.last_run_at).toLocaleString()}</span>}
@@ -540,181 +535,117 @@ export default function SupplierSpecsPanel() {
                   style={{ fontSize: '0.68rem', padding: '2px 10px', border: '1px solid #2e7d4f', borderRadius: 4, background: '#fff', color: '#2e7d4f', cursor: runningSample ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
                   {runningSample === s.id ? 'Running…' : 'Run'}
                 </button>
-                <button onClick={() => runAnalysis(s.id)} disabled={analysing !== null || s.analysis_status === 'running'}
-                  title="the analysis agent studies this invoice with full context and drafts a spec update (1–2 min)"
-                  style={{ fontSize: '0.68rem', padding: '2px 10px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: analysing ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
-                  {analysing === s.id ? 'Analysing…' : 'Analyse'}
-                </button>
                 {s.last_run_at && (
-                  <button onClick={() => viewSample(s.id)}
+                  <button onClick={() => (dojoView?.sampleId === s.id ? setDojoView(null) : viewSample(s.id))}
                     style={{ fontSize: '0.68rem', padding: '2px 10px', border: '1px solid #ccc', borderRadius: 4, background: dojoView?.sampleId === s.id ? '#f0f0ec' : '#fff', color: '#555', cursor: 'pointer' }}>
-                    View
+                    {dojoView?.sampleId === s.id ? 'Close' : 'View'}
                   </button>
                 )}
-                {s.last_run_at && (!s.has_expected || s.last_status === 'fail') && (
-                  <button onClick={() => saveExpected(s.id)}
-                    title="store this run's values as the expected baseline for future runs"
-                    style={{ fontSize: '0.68rem', padding: '2px 10px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    Save as expected
-                  </button>
-                )}
-                <button onClick={() => viewPdf(s.id)}
-                  style={{ fontSize: '0.68rem', padding: '2px 8px', border: 'none', background: 'none', color: '#888', cursor: 'pointer', textDecoration: 'underline' }}>
-                  PDF
-                </button>
                 <button onClick={() => deleteSample(s.id)}
                   style={{ fontSize: '0.68rem', padding: '2px 8px', border: 'none', background: 'none', color: '#c0392b', cursor: 'pointer' }}>
                   ✕
                 </button>
               </div>
             ))}
-            {/* The analysis agent's proposal: rationale + spec text +
-                candidate verification. Apply = write the spec AND baseline
-                the agent's ground truth; green means every dojo check held. */}
-            {analysisView && (() => {
-              const a = analysisView.analysis;
-              const own = a.candidate_results?.own;
-              const sib = a.candidate_results?.siblings;
-              return (
-                <div style={{ marginTop: 12, border: '1px solid #e6d9b8', borderRadius: 8, background: '#fffdf6', padding: '10px 14px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <strong style={{ fontSize: '0.82rem' }}>Analysis proposal</strong>
-                    <StatusBadge status={a.status === 'ready' ? 'pass' : a.status === 'failed' ? 'error' : 'new'} />
-                    {a.model && <span style={{ fontSize: '0.62rem', color: '#999' }}>{a.model}</span>}
-                    <button type="button" onClick={() => setAnalysisView(null)}
-                      style={{ marginLeft: 'auto', fontSize: '0.66rem', border: 'none', background: 'none', color: '#999', cursor: 'pointer' }}>✕</button>
-                  </div>
-                  {a.error && <div style={{ fontSize: '0.72rem', color: '#c0392b', marginBottom: 6 }}>{a.error}</div>}
-                  {a.rationale && (
-                    <div style={{ fontSize: '0.74rem', color: '#4a4a4a', marginBottom: 8, whiteSpace: 'pre-wrap' }}>{a.rationale}</div>
-                  )}
-                  {(a.layout_facts?.length ?? 0) > 0 && (
-                    <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: '0.7rem', color: '#666' }}>
-                      {a.layout_facts!.map((f, i) => <li key={i}>{f}</li>)}
-                    </ul>
-                  )}
-                  {a.alias_of && (
-                    <div style={{ fontSize: '0.72rem', color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
-                      Same layout as existing spec <strong>{a.alias_of}</strong> — Apply adds this supplier as an alias on that spec
-                      and moves this sample there. No new spec is created.
-                    </div>
-                  )}
-                  {(a.proposed_instructions ?? '').trim() ? (
-                    <div style={{ marginBottom: 8 }}>
-                      <div style={{ ...labelStyle, marginBottom: 2 }}>
-                        {a.alias_of ? `Proposed spec text for '${a.alias_of}' (replaces its current instructions)` : 'Proposed spec text (replaces the current instructions)'}
-                      </div>
-                      <pre style={{ fontSize: '0.7rem', whiteSpace: 'pre-wrap', background: '#fff', border: '1px solid #eee', borderRadius: 6, padding: '8px 10px', margin: 0, fontFamily: 'inherit' }}>{a.proposed_instructions}</pre>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: '0.7rem', color: '#777', marginBottom: 8 }}>
-                      {a.alias_of
-                        ? `No text change — '${a.alias_of}' already covers this layout as written.`
-                        : 'No spec change proposed — the agent corrected the expected values only.'}
-                    </div>
-                  )}
-                  {own && (
-                    <div style={{ fontSize: '0.7rem', color: '#555', marginBottom: 2, display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <StatusBadge status={own.status || 'new'} />
-                      <span>this invoice vs the agent’s corrected values{own.status === 'fail' ? ` — ${own.diffs?.length ?? 0} mismatch(es)` : ''}</span>
-                    </div>
-                  )}
-                  {/* The evidence behind that badge: the agent's corrected
-                      values AND the raw extraction the proposed prompt
-                      produced — check either against the PDF, don't take the
-                      agent's word for it. Wrong corrected values? Fix them in
-                      View → Expected, then Test against dojo re-checks. */}
-                  {(a.ground_truth || own?.extraction) && (
-                    <div style={{ margin: '8px 0' }}>
-                      <div style={{ ...labelStyle, marginBottom: 4 }}>Verify the values yourself (against the PDF)</div>
-                      <DojoSampleView
-                        key={`${analysisView.sampleId}:${a.at ?? ''}`}
-                        sampleId={analysisView.sampleId}
-                        expected={a.ground_truth ?? null}
-                        extraction={own?.extraction ?? null}
-                        diffs={own?.diffs ?? []}
-                        status={own?.status === 'pass' ? 'pass' : own?.status === 'fail' ? 'fail' : 'new'}
-                        readOnly
-                        labels={{
-                          expected: 'Agent’s corrected values',
-                          extracted: 'Extracted with proposed prompt',
-                          expectedHint: 'what the agent read off the PDF — these become the sample’s expected values',
-                          extractedHint: 'what the PROPOSED prompt actually pulled in the verification run — the pass/fail above compares exactly these two',
-                        }}
-                      />
-                    </div>
-                  )}
-                  {sib?.samples?.map((s) => (
-                    <div key={s.id} style={{ fontSize: '0.7rem', color: '#555', display: 'flex', gap: 6, alignItems: 'center', padding: '1px 0' }}>
-                      <StatusBadge status={s.status} />
-                      <span>{s.label} (existing baseline)</span>
-                    </div>
-                  ))}
-                  {/* Reply to the thread: a wrong value in the proposal gets
-                      corrected here — the agent re-reads the document with the
-                      correction as authoritative and re-tests before
-                      re-proposing. Never fix a wrong proposal by hand-editing
-                      config; correct the agent so the spec text AND the
-                      expected values move together. */}
-                  {(a.thread?.filter((m) => m.role === 'admin').length ?? 0) > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      <div style={{ ...labelStyle, marginBottom: 2 }}>Your corrections so far</div>
-                      {a.thread!.filter((m) => m.role === 'admin').map((m, i) => (
-                        <div key={i} style={{ fontSize: '0.7rem', color: '#555', padding: '1px 0' }}>↳ {m.text}</div>
-                      ))}
-                    </div>
-                  )}
-                  {a.status !== 'applied' && (
-                    <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'flex-start' }}>
-                      <textarea value={analysisFeedback} onChange={(e) => setAnalysisFeedback(e.target.value)} rows={2}
-                        placeholder={'Correct the agent — e.g. "line 4’s unit must stay ‘2x12 pack’, never flattened to ‘24 pack’" — it re-analyses with your correction as authoritative and re-tests'}
-                        style={{ flex: 1, fontSize: '0.7rem', padding: '5px 8px', border: '1px solid #d8d4cc', borderRadius: 6, fontFamily: 'inherit', resize: 'vertical' }} />
-                      <button type="button" onClick={() => runAnalysis(analysisView.sampleId, analysisFeedback)}
-                        disabled={analysing !== null || !analysisFeedback.trim()}
-                        style={{ fontSize: '0.72rem', padding: '5px 12px', border: '1px solid #b78a2f', borderRadius: 6, background: '#fff', color: '#8a6d3b', cursor: analysing || !analysisFeedback.trim() ? 'default' : 'pointer', whiteSpace: 'nowrap', opacity: analysisFeedback.trim() ? 1 : 0.5 }}>
-                        {analysing === analysisView.sampleId ? 'Re-analysing…' : 'Send correction & re-analyse'}
-                      </button>
-                    </div>
-                  )}
-                  {a.status !== 'applied' && (
-                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                      <button type="button" onClick={() => applyAnalysis(analysisView.sampleId)} disabled={applyingAnalysis}
-                        title={a.status === 'ready'
-                          ? (a.alias_of ? `add the alias to '${a.alias_of}' and move this sample there` : 'write the proposed spec text and baseline the corrected values')
-                          : 'the candidate run was NOT fully green — applying anyway is your call'}
-                        style={{ fontSize: '0.72rem', padding: '5px 14px', border: 'none', borderRadius: 6, background: a.status === 'ready' ? '#2e7d4f' : '#b78a2f', color: '#fff', cursor: applyingAnalysis ? 'wait' : 'pointer' }}>
-                        {applyingAnalysis ? 'Applying…' : a.status === 'ready' ? (a.alias_of ? `Add alias to '${a.alias_of}'` : 'Apply spec update') : 'Apply anyway'}
-                      </button>
-                      <button type="button" onClick={() => dismissAnalysis(analysisView.sampleId)}
-                        style={{ fontSize: '0.72rem', padding: '5px 12px', border: '1px solid #ccc', borderRadius: 6, background: '#fff', color: '#666', cursor: 'pointer' }}>
-                        Dismiss proposal
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+            </div>
             {dojoView && (
-              <div style={{ marginTop: 12 }}>
-                <DojoSampleView
-                  key={dojoView.sampleId}
-                  sampleId={dojoView.sampleId}
-                  expected={dojoView.expected}
-                  extraction={dojoView.extraction}
-                  diffs={dojoView.diffs}
-                  status={dojoView.status}
-                  onSaved={(res) => {
-                    setDojoView({
-                      sampleId: dojoView.sampleId,
-                      status: res.status,
-                      expected: res.expected,
-                      extraction: res.extraction,
-                      diffs: res.diffs ?? [],
-                    });
-                    if (editing?.id) loadSamples(editing.id);
-                    loadSummary();
-                  }}
+              <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                {/* Side by side by side: the invoice COPY (left, sticky) next
+                    to what was extracted vs what Loaded holds (right). Each
+                    pane takes half the page; they stack on narrow screens. */}
+                <div style={{ flex: '1 1 420px', minWidth: 320, position: 'sticky', top: 8 }}>
+                  <InvoicePdfPane sampleId={dojoView.sampleId} />
+                </div>
+                <div style={{ flex: '1 1 420px', minWidth: 320 }}>
+            {/* The analysis agent's proposal, shown at the TOP of the invoice
+                view: rationale + spec text + candidate verification. Apply =
+                write the spec AND baseline the agent's ground truth; green
+                means every dojo check held. */}
+            {analysisView && analysisView.sampleId === dojoView.sampleId && (
+              <div style={{ marginBottom: 12 }}>
+                <SenseiProposalCard
+                  sampleId={analysisView.sampleId}
+                  analysis={analysisView.analysis}
+                  analysing={analysing === analysisView.sampleId}
+                  applying={applyingAnalysis}
+                  onReanalyse={(fb) => runAnalysis(analysisView.sampleId, fb)}
+                  onApply={() => applyAnalysis(analysisView.sampleId)}
+                  onDismiss={() => dismissAnalysis(analysisView.sampleId)}
+                  onClose={() => setAnalysisView(null)}
                 />
+              </div>
+            )}
+                {/* The replica IS the view — Extracted | Loaded | Diff inside
+                    ReplicaCompareView. A sample with no replica (uploaded by
+                    hand, so no source venue/invoice to resolve against) gets
+                    an explanation, not the retired extraction editor —
+                    baselining still runs via the sensei. */}
+                {!dojoView.replica && (
+                  <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#faf9f7', padding: '1rem', fontSize: '0.74rem', color: '#6b655c' }}>
+                    {samples.find((x) => x.id === dojoView.sampleId)?.source_venue_id ? (
+                      <>
+                        No replica stored for this run — press <strong>Run</strong> on
+                        the sample to build the invoice view (the stored run predates
+                        the replica, or its build failed).
+                      </>
+                    ) : (
+                      <>
+                        No invoice view for this sample — it was uploaded by hand,
+                        so there is no source venue or Loaded invoice to resolve
+                        against. Extraction pass/fail still runs against its
+                        expected values (see the status badge; baseline via
+                        the sensei below). To get the full invoice view, add this
+                        supplier&rsquo;s next real invoice via
+                        <strong> Add to dojo</strong> from the invoice card.
+                      </>
+                    )}
+                    <div style={{ marginTop: 8 }}>
+                      <button type="button" onClick={() => runAnalysis(dojoView.sampleId)} disabled={analysing !== null}
+                        style={{ fontSize: '0.68rem', padding: '3px 12px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: analysing ? 'default' : 'pointer' }}>
+                        {analysing === dojoView.sampleId ? 'Sensei analysing…' : 'Ask the sensei'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {dojoView.replica && (
+                  <div>
+                    {dojoView.replicaCompare ? (
+                      <ReplicaCompareView
+                        compare={dojoView.replicaCompare}
+                        replicaDoc={dojoView.replica as Record<string, unknown>}
+                        resolutionLog={(dojoView.replica as Record<string, unknown>).resolution_log as string[] | undefined}
+                        warnings={(dojoView.replica as Record<string, unknown>).warnings as string[] | undefined}
+                        onBless={() => blessReplica(dojoView.sampleId)}
+                        blessed={dojoView.hasExpectedReplica}
+                        onAnalyse={() => runAnalysis(dojoView.sampleId)}
+                        analysing={analysing === dojoView.sampleId}
+                      />
+                    ) : (
+                      <div style={{ fontSize: '0.72rem', color: '#8a8a8a' }}>
+                        No comparison stored for this run — re-run the sample.
+                      </div>
+                    )}
+                    {/* The replica rendered as a real Receive Invoice card —
+                        secondary, collapsed by default. */}
+                    <details style={{ marginTop: 10 }}>
+                      <summary style={{ fontSize: '0.72rem', color: '#666', cursor: 'pointer' }}>
+                        Card view (replica as a Receive Invoice card)
+                      </summary>
+                      <div style={{ marginTop: 8 }}>
+                        <ReceiveInvoiceEditor
+                          key={`rep-${dojoView.sampleId}`}
+                          data={{
+                            ...dojoView.replica,
+                            dojo_status: (dojoView.replicaDiffs ?? []).length ? 'fail' : 'pass',
+                            dojo_diffs: dojoView.replicaDiffs ?? [],
+                          }}
+                          props={{ dojo: true }}
+                        />
+                      </div>
+                    </details>
+                  </div>
+                )}
+                </div>
               </div>
             )}
           </div>
@@ -723,8 +654,26 @@ export default function SupplierSpecsPanel() {
     );
   }
 
+  if (showDojo) {
+    return <DojoTriagePanel onBack={() => { setShowDojo(false); loadSummary(); }} />;
+  }
+
   return (
     <div style={{ maxWidth: 860 }}>
+      {/* The Dojo: triage every venue's outstanding invoices before they
+          join the per-supplier regression suite below. */}
+      <div onClick={() => setShowDojo(true)}
+        style={{ border: '1px solid #e6d9b8', borderLeft: '4px solid #b78a2f', borderRadius: 8, background: '#fffdf6', padding: '12px 16px', marginBottom: 14, cursor: 'pointer' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <strong style={{ fontSize: '0.9rem', color: '#1e1c18' }}>🥋 Dojo</strong>
+          <span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: '#8a6d3b' }}>Enter →</span>
+        </div>
+        <div style={{ fontSize: '0.74rem', color: '#6b655c', marginTop: 4 }}>
+          Review outstanding invoices from every venue side-by-side with what Norm
+          extracts, let the sensei tune supplier specs, then promote keepers into
+          regression testing.
+        </div>
+      </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10 }}>
         <div style={{ fontSize: '0.8rem', color: '#777' }}>
           Per-supplier notes for reading invoice copies — matched by supplier name or alias during the invoice review.

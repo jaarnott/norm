@@ -203,6 +203,13 @@ class SupplierSpecSample(ConfigBase):
     # The analysis agent's latest output: {status, rationale,
     # proposed_instructions, ground_truth, candidate_results, green, model, at}.
     analysis = Column(JSON, nullable=True)
+    # Admin-blessed replica values — adjudication when Loaded's own
+    # resolution (the replica scorecard's ground truth) is itself wrong.
+    expected_replica = Column(JSON, nullable=True)
+    # Dojo-page triage staging: a draft sample gets the full toolkit (run /
+    # analyse / apply) but is EXCLUDED from the per-spec lists, Run Dojo and
+    # the summary until promoted (draft -> False) via "Add to dojo".
+    draft = Column(Boolean, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 

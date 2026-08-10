@@ -39,9 +39,6 @@ pytestmark = pytest.mark.skipif(
 _CONSOLIDATORS = (
     pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
 )
-FUNCTION_CODE = (_CONSOLIDATORS / "review_and_receive_invoices.py").read_text(
-    encoding="utf-8"
-)
 RECONCILE_CODE = (_CONSOLIDATORS / "reconcile_received_invoices.py").read_text(
     encoding="utf-8"
 )
@@ -82,59 +79,6 @@ def lh():
     client.close()
 
 
-def make_call_api(client, received_log):
-    def call_api(connector, action, params=None):
-        params = params or {}
-        try:
-            if action == "list_stock_invoices":
-                r = client.get(
-                    "/1.0/stock/internal/invoices",
-                    params={
-                        "from": params["from_date"],
-                        "to": params["to_date"],
-                        "page": params.get("page", 0),
-                        "pageSize": params.get("pageSize", 100),
-                    },
-                )
-            elif action == "get_invoice_detail":
-                r = client.get(
-                    f"/1.0/stock/invoices/{params['invoice_id']}",
-                    params={"isAdjustingInvoice": "false", "includeDeleted": "false"},
-                )
-            elif action == "get_stock_purchase_order":
-                r = client.get(
-                    f"/1.0/stock/internal/purchase-orders/{params['purchase_order_id']}"
-                )
-            elif action == "receive_invoice":
-                received_log.append(params["invoice_id"])
-                r = client.put(
-                    f"/1.0/stock/internal/invoices/{params['invoice_id']}",
-                    json=params["invoice"],
-                )
-            else:
-                return {"error": f"unexpected action {action}"}
-            if r.status_code != 200:
-                return {"error": f"API error {r.status_code}: {r.text[:200]}"}
-            return r.json()
-        except Exception as exc:  # noqa: BLE001 — mirror call_api contract
-            return {"error": str(exc)}
-
-    return call_api
-
-
-def run_code(call_api, extract_document, **params):
-    namespace = {
-        "__builtins__": _SAFE_BUILTINS,
-        **_SAFE_MODULES,
-        "extract_document": extract_document,
-    }
-    exec(FUNCTION_CODE, namespace)
-    import datetime as _dt
-
-    defaults = {"today": _dt.date.today().isoformat(), **params}
-    return namespace["run"](defaults, call_api, print)
-
-
 class TestLiveContract:
     def test_pdf_download_returns_real_pdf(self, lh):
         """The binary download endpoint must return actual PDF bytes."""
@@ -169,66 +113,75 @@ class TestLiveContract:
         assert r.headers.get("content-type", "").startswith("application/pdf")
         assert r.content[:5] == b"%PDF-"
 
-    def test_dry_run_pipeline_mutates_nothing(self, lh):
-        received_log = []
-        call_api = make_call_api(lh, received_log)
+    @staticmethod
+    def _local_sessions():
+        """Real local sessions — the live environment contract: the local DB
+        holds real Loaded credentials and the shared config DB the specs."""
+        from app.db.engine import SessionLocal, _ConfigSessionLocal
 
-        def stub_extract(
-            connector, action, params=None, schema=None, instructions=None
-        ):
-            # Transport-contract stub: echo the draft's own values so PDF gates
-            # pass through; the real extraction is unit-tested separately.
-            inv = self._current_detail
-            return {
-                "invoice_number": inv.get("referenceNumber"),
-                "lines": [
-                    {
-                        "code": ln.get("code"),
-                        "description": ln.get("description"),
-                        "quantity": ln.get("quantityReceived"),
-                        "unit_price_ex_tax": ln.get("unitCost"),
-                        "line_total_ex_tax": ln.get("totalCost"),
-                    }
-                    for ln in inv.get("lines", [])
-                    if not ln.get("deletedAt")
-                ],
-                "charges": [],
-                "total_incl_tax": inv.get("total"),
-            }
+        return SessionLocal(), _ConfigSessionLocal()
 
-        # wrap get_invoice_detail to remember the latest detail for the stub
-        original = call_api
+    @staticmethod
+    def _venue_id(db):
+        from app.db.models import ConnectorConfig
 
-        def tracking_call_api(connector, action, params=None):
-            result = original(connector, action, params)
-            if action == "get_invoice_detail" and isinstance(result, dict):
-                self._current_detail = result
-            return result
-
-        before = original(
-            "loadedhub",
-            "list_stock_invoices",
-            {"from_date": "2026-01-01", "to_date": "2026-12-31"},
+        cred = (
+            db.query(ConnectorConfig)
+            .filter(
+                ConnectorConfig.connector_name == "loadedhub",
+                ConnectorConfig.enabled == "true",
+            )
+            .first()
         )
-        before_flags = {i["id"]: i.get("isReceived") for i in before}
+        assert cred, "local DB has no loadedhub credentials"
+        return cred.venue_id
 
-        result = run_code(tracking_call_api, stub_extract, dry_run=True)
+    def _flags(self, lh):
+        invs = lh.get(
+            "/1.0/stock/internal/invoices",
+            params={
+                "from": "2026-01-01",
+                "to": "2026-12-31",
+                "page": 0,
+                "pageSize": 200,
+            },
+        ).json()
+        return {i["id"]: i.get("isReceived") for i in invs}
 
-        assert received_log == [], "dry run must never call receive_invoice"
-        assert (
-            result["summary"]["received"] + result["summary"]["skipped"]
-            == result["reviewed"]
-        )
-        for verdict in result["skipped"]:
-            assert verdict["reasons"], "every skipped invoice must carry reasons"
+    def test_dry_run_pipeline_mutates_nothing(self, lh, monkeypatch):
+        """The full service loop (listing, details, replica reference data)
+        against real Loaded, extraction stubbed unreadable — approve_all must
+        write nothing and every invoice must surface as a card with reasons."""
+        from app.services import invoice_review as IR
 
-        after = original(
-            "loadedhub",
-            "list_stock_invoices",
-            {"from_date": "2026-01-01", "to_date": "2026-12-31"},
-        )
-        after_flags = {i["id"]: i.get("isReceived") for i in after}
-        assert before_flags == after_flags, "dry run changed isReceived state!"
+        db, cdb = self._local_sessions()
+        try:
+            venue_id = self._venue_id(db)
+            before = self._flags(lh)
+
+            monkeypatch.setattr(
+                IR,
+                "extract_invoice_copies_parallel",
+                lambda db_, lh_, reqs, **kw: [
+                    {"error": "stubbed in live transport test"}
+                ]
+                * len(reqs),
+            )
+            out = IR.review_invoices(db, cdb, venue_id, mode="approve_all")
+
+            assert out["received"] == [], "approve_all must never receive"
+            assert len(out["skipped"]) == len(out["verdicts"])
+            for card in out["cards"]:
+                assert card["doc_schema"] == "replica_v1"
+                assert any(
+                    i["code"] in ("copy_unreadable", "no_copy_attached")
+                    for i in card["issues"]
+                )
+            after = self._flags(lh)
+            assert before == after, "dry run changed isReceived state!"
+        finally:
+            db.close()
+            cdb.close()
 
     def test_reconcile_dry_run_mutates_nothing(self, lh):
         """Phase 2: the reconciliation pipeline against real statements."""
@@ -300,54 +253,35 @@ class TestLiveContract:
         reason="live receive writes to the test venue — set LOADEDHUB_LIVE_RECEIVE=1",
     )
     def test_live_receive_flips_isreceived(self, lh):
-        received_log = []
-        call_api = make_call_api(lh, received_log)
+        """REAL autopilot run — real extraction, real replica, real receives
+        against the live test venue. Only confident invoices flip; everything
+        else must be untouched."""
+        from app.services import invoice_review as IR
 
-        def stub_extract(
-            connector, action, params=None, schema=None, instructions=None
-        ):
-            inv = self._current_detail
-            return {
-                "invoice_number": inv.get("referenceNumber"),
-                "lines": [
-                    {
-                        "code": ln.get("code"),
-                        "description": ln.get("description"),
-                        "quantity": ln.get("quantityReceived"),
-                        "unit_price_ex_tax": ln.get("unitCost"),
-                        "line_total_ex_tax": ln.get("totalCost"),
-                    }
-                    for ln in inv.get("lines", [])
-                    if not ln.get("deletedAt")
-                ],
-                "charges": [],
-                "total_incl_tax": inv.get("total"),
-            }
+        db, cdb = self._local_sessions()
+        try:
+            venue_id = self._venue_id(db)
+            result = IR.review_invoices(db, cdb, venue_id, mode="autopilot")
 
-        def tracking_call_api(connector, action, params=None):
-            result = call_api(connector, action, params)
-            if action == "get_invoice_detail" and isinstance(result, dict):
-                self._current_detail = result
-            return result
-
-        result = run_code(tracking_call_api, stub_extract, dry_run=False)
-
-        for verdict in result["received"]:
-            assert verdict["invoice_id"] in received_log
-            check = call_api(
-                "loadedhub", "get_invoice_detail", {"invoice_id": verdict["invoice_id"]}
-            )
-            assert check.get("isReceived") is True, (
-                f"{verdict['reference_number']} not received"
-            )
-        for verdict in result["skipped"]:
-            if "Receive failed" not in " ".join(verdict["reasons"]):
-                check = call_api(
-                    "loadedhub",
-                    "get_invoice_detail",
-                    {"invoice_id": verdict["invoice_id"]},
+            for verdict in result["received"]:
+                check = lh.get(
+                    f"/1.0/stock/invoices/{verdict['invoice_id']}",
+                    params={"isAdjustingInvoice": "false", "includeDeleted": "false"},
+                ).json()
+                assert check.get("isReceived") is True, (
+                    f"{verdict['reference_number']} not received"
                 )
-                if isinstance(check, dict) and "error" not in check:
+            for verdict in result["skipped"]:
+                if "receive failed" in str(verdict.get("outcome", "")).lower():
+                    continue
+                check = lh.get(
+                    f"/1.0/stock/invoices/{verdict['invoice_id']}",
+                    params={"isAdjustingInvoice": "false", "includeDeleted": "false"},
+                ).json()
+                if isinstance(check, dict):
                     assert check.get("isReceived") is not True, (
                         f"skipped invoice {verdict['reference_number']} was modified!"
                     )
+        finally:
+            db.close()
+            cdb.close()

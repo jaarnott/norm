@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch, callComponentApi } from '../../lib/api';
+import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
 import PurchaseOrderEditor from './PurchaseOrderEditor';
 
@@ -60,8 +61,13 @@ function statusBadge(status: string): { bg: string; text: string } {
 
 export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
   // Venue selector — same pattern as RosterEditor
+  // Shared page venue — only honoured when this dashboard is a PAGE instance
+  // (persistVenue), never when it's embedded in a conversation.
+  const persistVenue = !!props?.persistVenue;
+  const [sharedVenue, setActiveVenue] = useActiveVenue();
+  const rememberedVenue = persistVenue ? sharedVenue : null;
   const [venues, setVenues] = useState<VenueOption[]>([]);
-  const [selectedVenue, setSelectedVenue] = useState<string | null>((props?.activeVenueId as string) || null);
+  const [selectedVenue, setSelectedVenue] = useState<string | null>((props?.activeVenueId as string) || rememberedVenue || null);
   const [creating, setCreating] = useState(false);
   const [orders, setOrders] = useState<OrderSummary[]>(() => extractOrders(data));
   const [loading, setLoading] = useState(false);
@@ -87,7 +93,10 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
         if (d?.venues?.length > 0) {
           setVenues(d.venues);
           if (!selectedVenue) {
-            setSelectedVenue(d.venues[0].id);
+            // Prefer the venue the user last picked (if still accessible),
+            // else the first.
+            const remembered = rememberedVenue && d.venues.some((v: VenueOption) => v.id === rememberedVenue) ? rememberedVenue : null;
+            setSelectedVenue(remembered || d.venues[0].id);
           }
         }
       })
@@ -114,9 +123,10 @@ export default function OrdersDashboard({ data, props }: DisplayBlockProps) {
 
   const handleVenueChange = useCallback((venueId: string) => {
     setSelectedVenue(venueId);
+    if (persistVenue) setActiveVenue(venueId);
     setExpandedId(null);
     loadOrders(venueId);
-  }, [loadOrders]);
+  }, [persistVenue, loadOrders, setActiveVenue]);
 
   const sortedOrders = useMemo(() =>
     [...orders].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),

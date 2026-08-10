@@ -4,7 +4,6 @@ Exercises the orchestration logic with a scripted _Loaded fake — no network,
 no DB — asserting the exact LoadedHub request sequence each fix produces.
 """
 
-import asyncio
 import re
 
 import pytest
@@ -1208,7 +1207,12 @@ class TestResolvePoId:
             invoices={},
         )
         r = resolve_po_id(lh, "PO#1520987")
-        assert r == {"id": "po-1", "order_number": "1520987", "linked_invoice_id": None}
+        assert r == {
+            "id": "po-1",
+            "order_number": "1520987",
+            "linked_invoice_id": None,
+            "supplier_id": None,
+        }
 
     def test_open_list_ambiguous_returns_none(self):
         lh = FakeLoaded(
@@ -1255,6 +1259,7 @@ class TestResolvePoId:
             "id": "po-x",
             "order_number": "1520272",
             "linked_invoice_id": "inv-recv",
+            "supplier_id": None,
         }
 
     def test_unresolved_returns_none(self):
@@ -1266,6 +1271,55 @@ class TestResolvePoId:
             invoices={},
         )
         assert resolve_po_id(lh, "9999") is None
+
+    def test_drafts_pass_reaches_a_po_claimed_by_a_draft(self):
+        # Live-verified gap (Tamar 1521145): a PO linked to a DRAFT invoice is
+        # in NEITHER the open list nor the received feed — only the drafts
+        # list, whose rows carry the number AND the PO id.
+        lh = FakeLoaded(
+            gets={
+                "/1.0/stock/internal/purchase-orders/po-t": {
+                    "orderNumber": "1521145",
+                    "linkedInvoiceId": "inv-draft",
+                },
+                "/1.0/stock/internal/purchase-orders?": [],
+                "/1.0/stock/internal/invoices": [
+                    {
+                        "id": "inv-draft",
+                        "purchaseOrderNumber": "1521145",
+                        "linkedPurchaseOrderId": "po-t",
+                        "isReceived": False,
+                    }
+                ],
+                "/1.0/stock/internal/stock-received": [],
+            },
+            invoices={},
+        )
+        r = resolve_po_id(lh, "po#1521145")
+        assert r == {
+            "id": "po-t",
+            "order_number": "1521145",
+            "linked_invoice_id": "inv-draft",
+            "supplier_id": None,
+        }
+
+    def test_drafts_pass_ignores_other_numbers(self):
+        # A draft holding a DIFFERENT order never satisfies the lookup.
+        lh = FakeLoaded(
+            gets={
+                "/1.0/stock/internal/purchase-orders?": [],
+                "/1.0/stock/internal/invoices": [
+                    {
+                        "id": "inv-draft",
+                        "purchaseOrderNumber": "1521145",
+                        "linkedPurchaseOrderId": "po-t",
+                    }
+                ],
+                "/1.0/stock/internal/stock-received": [],
+            },
+            invoices={},
+        )
+        assert resolve_po_id(lh, "9999999") is None
 
 
 class TestConditionalPoWriteback:
@@ -1593,99 +1647,6 @@ class TestItemMatch:
         lines = [{"id": "L1", "description": "A", "code": "", "brand": "", "unit": ""}]
         # classify fails → all "other" → match fails → {}
         assert IF._match_stock_items(lines, groups, cands, db=None) == {}
-
-
-class TestLinkItem:
-    """POST /invoice-fixes/link-item — link an existing item and register the
-    supplier variant so the supplier's future invoices auto-match."""
-
-    def _inv(self):
-        return {
-            "id": "inv-1",
-            "linkedSupplierId": "sup-1",
-            "lines": [
-                {
-                    "id": "ln-1",
-                    "code": "NAP",
-                    "description": "Napkins",
-                    "unit": "KGM",
-                    "linkedUnitId": None,
-                    "unitCost": 3.99,
-                    "linkedBrandId": "brand-1",
-                }
-            ],
-        }
-
-    def _run(self, lh, monkeypatch):
-        monkeypatch.setattr(IF, "_Loaded", lambda db, cfg, vid: lh)
-        monkeypatch.setattr(IF, "_reshape_draft_after_write", lambda *a, **k: None)
-        body = IF.LinkItemRequest(
-            venue_id="v1", invoice_id="inv-1", line_id="ln-1", item_id="item-9"
-        )
-        return asyncio.run(IF.link_stock_item(body, db=None, config_db=None, user=None))
-
-    def test_registers_missing_variant_and_links_line(self, monkeypatch):
-        item = {
-            "id": "item-9",
-            "name": "NAPKINS",
-            "orderingUnitId": "u-kilo",
-            "suppliers": [],
-        }
-        lh = FakeLoaded(
-            {
-                "/1.0/stock/internal/items/item-9": item,
-                "/1.0/stock/internal/units": UNITS,
-            },
-            {"inv-1": self._inv()},
-        )
-        out = self._run(lh, monkeypatch)
-        # the item is PUT with a new supplier variant for (sup-1, NAP)
-        item_put = [w for w in lh.writes if w[0] == "PUT" and "/items/item-9" in w[1]][
-            0
-        ]
-        variant = item_put[2]["suppliers"][0]
-        assert variant["supplierId"] == "sup-1" and variant["stockCode"] == "NAP"
-        assert variant["unitId"] == "u-kilo" and variant["unitCost"] == 3.99
-        # the invoice is PUT linking the line to the item + the item's unit
-        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][
-            0
-        ]
-        ln = inv_put[2]["lines"][0]
-        assert ln["linkedItemId"] == "item-9"
-        assert ln["linkedUnitId"] == "u-kilo" and ln["unit"] == "Kilo"
-        assert "registered supplier variant" in out["message"]
-
-    def test_existing_variant_is_not_duplicated(self, monkeypatch):
-        item = {
-            "id": "item-9",
-            "name": "NAPKINS",
-            "orderingUnitId": "u-kilo",
-            "suppliers": [
-                {
-                    "id": "v1",
-                    "supplierId": "sup-1",
-                    "stockCode": "NAP",
-                    "unitId": "u-each",
-                }
-            ],
-        }
-        lh = FakeLoaded(
-            {
-                "/1.0/stock/internal/items/item-9": item,
-                "/1.0/stock/internal/units": UNITS,
-            },
-            {"inv-1": self._inv()},
-        )
-        out = self._run(lh, monkeypatch)
-        # no item PUT — the variant already exists
-        assert not [w for w in lh.writes if w[0] == "PUT" and "/items/item-9" in w[1]]
-        # still links the line; unit comes from the existing variant (u-each)
-        inv_put = [w for w in lh.writes if w[0] == "PUT" and "/invoices/inv-1" in w[1]][
-            0
-        ]
-        ln = inv_put[2]["lines"][0]
-        assert ln["linkedItemId"] == "item-9" and ln["linkedUnitId"] == "u-each"
-        assert "registered supplier variant" not in out["message"]
 
 
 class TestListSuppliersEndpoint:

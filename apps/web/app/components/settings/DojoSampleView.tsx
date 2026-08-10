@@ -79,6 +79,8 @@ export default function DojoSampleView({
   status,
   onSaved,
   readOnly,
+  current,
+  currentDiffs,
   labels,
 }: {
   sampleId: string;
@@ -90,9 +92,14 @@ export default function DojoSampleView({
   // Proposal-review mode: same comparison table, no editing/saving — used to
   // show the agent's corrected values vs the candidate extraction verbatim.
   readOnly?: boolean;
-  labels?: { expected?: string; extracted?: string; expectedHint?: string; extractedHint?: string };
+  // Optional third value set: what the CURRENT prompts extract (the sample's
+  // last run) — lets a proposal review compare before/after side by side.
+  // undefined hides the toggle entirely; null shows it disabled (no run yet).
+  current?: ExtractionDoc | null;
+  currentDiffs?: Diff[];
+  labels?: { expected?: string; extracted?: string; expectedHint?: string; extractedHint?: string; current?: string; currentHint?: string };
 }) {
-  const [mode, setMode] = useState<'extracted' | 'expected'>(extraction ? 'extracted' : 'expected');
+  const [mode, setMode] = useState<'extracted' | 'expected' | 'current'>(extraction ? 'extracted' : 'expected');
   const [draft, setDraft] = useState<ExtractionDoc | null>(() => deepCopy(expected));
   const [dirty, setDirty] = useState(false);
   // Re-seed when the parent hands over a DIFFERENT value set — a corrected
@@ -107,16 +114,18 @@ export default function DojoSampleView({
   const [error, setError] = useState<string | null>(null);
 
   // Mismatch lookup from the server's stored diffs: header by field name,
-  // lines by (1-based line, field).
+  // lines by (1-based line, field). The current-prompt view highlights its
+  // OWN diffs (current extraction vs the expected values).
+  const activeDiffs = mode === 'current' ? currentDiffs || [] : diffs;
   const diffMap = useMemo(() => {
     const header = new Map<string, Diff>();
     const line = new Map<string, Diff>();
-    for (const d of diffs || []) {
+    for (const d of activeDiffs || []) {
       if (d.line == null) header.set(d.field, d);
       else line.set(`${d.line}:${d.field}`, d);
     }
     return { header, line };
-  }, [diffs]);
+  }, [activeDiffs]);
 
   const edit = (fn: (d: ExtractionDoc) => void) => {
     setDraft((prev) => {
@@ -147,7 +156,7 @@ export default function DojoSampleView({
     }
   };
 
-  const doc = mode === 'expected' ? draft : extraction;
+  const doc = mode === 'expected' ? draft : mode === 'current' ? (current ?? null) : extraction;
   const editable = mode === 'expected' && !readOnly;
 
   const numOrNull = (v: string): number | string | null => {
@@ -160,6 +169,15 @@ export default function DojoSampleView({
     d ? { background: '#fdf6e7', border: '1px solid #e0b95d', borderRadius: 4 } : {};
 
   const statusChip = (() => {
+    // The current-prompt view carries its own verdict — its diffs against the
+    // expected values — so the chip must not claim the verification result.
+    if (mode === 'current') {
+      const n = (currentDiffs || []).length;
+      const p = n === 0
+        ? { bg: '#d1fae5', fg: '#065f46', label: 'CURRENT PROMPT — matches the expected values' }
+        : { bg: '#fee2e2', fg: '#991b1b', label: `CURRENT PROMPT — ${n} mismatch${n === 1 ? '' : 'es'} vs expected` };
+      return <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: p.bg, color: p.fg }}>{p.label}</span>;
+    }
     const map: Record<string, { bg: string; fg: string; label: string }> = {
       pass: { bg: '#d1fae5', fg: '#065f46', label: 'PASS — extracted matches expected' },
       fail: { bg: '#fee2e2', fg: '#991b1b', label: `FAIL — ${diffs.length} mismatch${diffs.length === 1 ? '' : 'es'}` },
@@ -173,10 +191,18 @@ export default function DojoSampleView({
   return (
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', padding: '12px 14px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-        {/* The toggle: which value set the table below shows. */}
+        {/* The toggle: which value set the table below shows. Current-prompt
+            sits FIRST (before → after reads left to right). */}
         <div style={{ display: 'inline-flex', border: '1px solid #d8d4cc', borderRadius: 6, overflow: 'hidden' }}>
+          {current !== undefined && (
+            <button type="button" onClick={() => setMode('current')} disabled={!current}
+              title={current ? undefined : 'no current-prompt run stored yet — press Run on the sample'}
+              style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', cursor: current ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'current' ? '#8a6d3b' : '#fff', color: mode === 'current' ? '#fff' : current ? '#666' : '#bbb', fontWeight: 600 }}>
+              {labels?.current ?? 'Current prompt'}
+            </button>
+          )}
           <button type="button" onClick={() => setMode('expected')}
-            style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: mode === 'expected' ? '#2e7d4f' : '#fff', color: mode === 'expected' ? '#fff' : '#666', fontWeight: 600 }}>
+            style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', ...(current !== undefined ? { borderLeft: '1px solid #d8d4cc' } : {}), cursor: 'pointer', fontFamily: 'inherit', background: mode === 'expected' ? '#2e7d4f' : '#fff', color: mode === 'expected' ? '#fff' : '#666', fontWeight: 600 }}>
             {labels?.expected ?? (readOnly ? 'Expected' : 'Expected (editable)')}
           </button>
           <button type="button" onClick={() => setMode('extracted')} disabled={!extraction}
@@ -194,6 +220,11 @@ export default function DojoSampleView({
         {mode === 'extracted' && (
           <span style={{ fontSize: '0.64rem', color: '#667' }}>
             {labels?.extractedHint ?? 'what the last run actually pulled — mismatches vs expected are highlighted'}
+          </span>
+        )}
+        {mode === 'current' && (
+          <span style={{ fontSize: '0.64rem', color: '#667' }}>
+            {labels?.currentHint ?? 'what the CURRENT prompts pull from this document — mismatches vs the expected values are highlighted'}
           </span>
         )}
       </div>
@@ -223,7 +254,7 @@ export default function DojoSampleView({
           {/* Header fields */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '6px 12px', marginBottom: 10 }}>
             {HEADER_FIELDS.map(({ key, label }) => {
-              const d = mode === 'extracted' ? diffMap.header.get(key as string) : undefined;
+              const d = mode !== 'expected' ? diffMap.header.get(key as string) : undefined;
               const val = doc[key];
               return (
                 <label key={key as string} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -259,10 +290,10 @@ export default function DojoSampleView({
             </thead>
             <tbody>
               {(doc.lines || []).map((l, i) => (
-                <tr key={i} style={{ borderTop: '1px solid #f3f3f3', ...(mode === 'extracted' && diffMap.line.has(`${i + 1}:line_extra`) ? { background: '#fdf6e7' } : {}) }}
-                  title={mode === 'extracted' && diffMap.line.has(`${i + 1}:line_extra`) ? 'extracted line not present in the expected values' : undefined}>
+                <tr key={i} style={{ borderTop: '1px solid #f3f3f3', ...(mode !== 'expected' && diffMap.line.has(`${i + 1}:line_extra`) ? { background: '#fdf6e7' } : {}) }}
+                  title={mode !== 'expected' && diffMap.line.has(`${i + 1}:line_extra`) ? 'extracted line not present in the expected values' : undefined}>
                   {LINE_COLS.map((c) => {
-                    const d = mode === 'extracted' ? diffMap.line.get(`${i + 1}:${c.key as string}`) : undefined;
+                    const d = mode !== 'expected' ? diffMap.line.get(`${i + 1}:${c.key as string}`) : undefined;
                     const val = l[c.key];
                     return (
                       <td key={c.key as string} style={{ padding: '3px 6px', verticalAlign: 'top' }}>
@@ -304,7 +335,7 @@ export default function DojoSampleView({
                 </tr>
               ))}
               {/* Lines the run pulled beyond the baseline, or vice versa */}
-              {mode === 'extracted' && [...diffMap.line.entries()]
+              {mode !== 'expected' && [...diffMap.line.entries()]
                 .filter(([k]) => k.endsWith(':line_missing'))
                 .map(([k, d]) => (
                   <tr key={k} style={{ borderTop: '1px solid #f3f3f3', color: '#991b1b', fontSize: '0.68rem' }}>

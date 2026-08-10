@@ -118,6 +118,13 @@ _MATCH_SYSTEM_PROMPT = (
     "'SAILOR JERRY SPICED RUM' matches catalogue 'SAILOR JERRY RUM' (same "
     "brand, same product, fuller name).\n"
     "- WINE: the brand/label matters; ignore vintage, size and packaging.\n"
+    "- Freight/delivery/courier/fuel/fee lines are ORDINARY lines — match "
+    "them to the venue's existing item for that service like any other "
+    "product: 'Minimum Freight' matches 'FREIGHT - BEVERAGE' or 'Freight'. "
+    "When several exist, pick the one appropriate to the SUPPLIER's "
+    "department (a liquor supplier's freight → the beverage freight item; a "
+    "food supplier's → the food one; else the generic one). Different "
+    "services never match (a card fee is not freight).\n"
     "- If you are not confident the same product exists, return match_index: null. "
     "Do NOT force a match.\n\n"
     "When there is no match, propose how a NEW item would be named and grouped:\n"
@@ -182,7 +189,11 @@ def _classify_item_lines(lines: list[dict], db: Session) -> dict[str, str]:
 
 
 def _match_subset(
-    lines: list[dict], groups: list[dict], candidates: list[dict], db: Session
+    lines: list[dict],
+    groups: list[dict],
+    candidates: list[dict],
+    db: Session,
+    supplier_name: str | None = None,
 ) -> dict:
     """One LLM match call over a candidate subset. Sends the subset as a numbered
     list and the model returns INDEXES (never UUIDs); indexes are subset-relative.
@@ -213,7 +224,8 @@ def _match_subset(
         for ln in lines
     )
     user_prompt = (
-        "INVOICE LINES (resolve each):\n"
+        (f"SUPPLIER: {supplier_name}\n\n" if supplier_name else "")
+        + "INVOICE LINES (resolve each):\n"
         + line_txt
         + "\n\nGROUPS (index · name · category):\n"
         + grp
@@ -267,7 +279,11 @@ def _match_subset(
 
 
 def _match_stock_items(
-    lines: list[dict], groups: list[dict], candidates: list[dict], db: Session
+    lines: list[dict],
+    groups: list[dict],
+    candidates: list[dict],
+    db: Session,
+    supplier_name: str | None = None,
 ) -> dict:
     """Match each NEW-item line to an existing catalogue item (to link), else
     suggest a normalized name + group (to create). First classifies each line
@@ -292,11 +308,13 @@ def _match_stock_items(
 
     out: dict = {}
     if buckets["food"]:
-        out.update(_match_subset(buckets["food"], groups, food, db))
+        out.update(_match_subset(buckets["food"], groups, food, db, supplier_name))
     if buckets["beverage"]:
-        out.update(_match_subset(buckets["beverage"], groups, bev, db))
+        out.update(_match_subset(buckets["beverage"], groups, bev, db, supplier_name))
     if buckets["other"]:
-        out.update(_match_subset(buckets["other"], groups, candidates, db))
+        out.update(
+            _match_subset(buckets["other"], groups, candidates, db, supplier_name)
+        )
     return out
 
 
@@ -307,6 +325,7 @@ def suggest_item_matches(
     config_db: Session,
     *,
     lh=None,
+    supplier_name: str | None = None,
 ) -> dict:
     """Public entry: per-line match/create suggestions for NEW-item lines.
 
@@ -323,7 +342,7 @@ def suggest_item_matches(
             lh = LoadedInvoiceClient(db, config_db, venue_id)
         candidates = _fetch_raw_stock_items(venue_id, db, config_db)
         groups = _fetch_stock_groups(lh)
-        return _match_stock_items(lines, groups, candidates, db)
+        return _match_stock_items(lines, groups, candidates, db, supplier_name)
     except Exception as exc:  # noqa: BLE001 — suggestions are best-effort
         logger.warning("suggest_item_matches failed: %s", exc)
         return {}
@@ -337,8 +356,16 @@ def suggest_item_matches_for_invoice(
         from app.services.received_invoice import LoadedInvoiceClient
 
         lh = LoadedInvoiceClient(db, config_db, venue_id)
-        lines = _new_item_lines(lh.invoice(invoice_id))
-        return suggest_item_matches(venue_id, lines, db, config_db, lh=lh)
+        inv = lh.invoice(invoice_id)
+        lines = _new_item_lines(inv)
+        return suggest_item_matches(
+            venue_id,
+            lines,
+            db,
+            config_db,
+            lh=lh,
+            supplier_name=inv.get("supplierName") if isinstance(inv, dict) else None,
+        )
     except Exception as exc:  # noqa: BLE001 — suggestions are best-effort
         logger.warning("suggest_item_matches_for_invoice failed: %s", exc)
         return {}

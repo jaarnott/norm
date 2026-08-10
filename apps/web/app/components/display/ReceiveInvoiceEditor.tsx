@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Working-document-backed "Receive Invoice" editor.
+ * Working-document-backed "Receive Invoice" editor — replica_v1.
  *
  * The invoice analogue of PurchaseOrderEditor: it reads and PATCHes a Norm
  * working document (doc_type "received_invoice") so every edit persists — a
@@ -15,9 +15,12 @@
  *   norm__receive_invoice. Reference data is pre-baked into the block by
  *   receive_display.py, and the PDF viewer degrades to "open in Norm".
  *
- * The "proper receive invoice" is the working document itself — shaped from the
- * real Loaded invoice (received/qty/cost/unit and the linked PO), with the
- * PDF-copy review cached onto it. This editor is the approval surface over it.
+ * The SERVER computes everything (app/services/invoice_review.py): the doc's
+ * top-level working values are Loaded's draft + accepted suggestions + manual
+ * edits; `suggestions` / `issues` / `confidence` / the `replica` sidecar are
+ * the review's verdicts. This component is a pure renderer + value-applier —
+ * it evaluates the tiny clears_when predicate and recomputes a line total on
+ * accept (plain arithmetic), and derives NOTHING else.
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -31,7 +34,7 @@ interface Line {
   brand?: string | null;
   unit: string | null;
   linked_unit_id: string | null;
-  original_unit_id: string | null;
+  original_unit_id?: string | null;
   unit_ratio: number | null;
   quantity_ordered?: number | null;
   quantity_received: number | null;
@@ -41,61 +44,25 @@ interface Line {
   sale_tax_rate?: number | null;
   linked_item_id: string | null;
   linked_brand_id?: string | null;
+  item_type?: string | null;
   // Reference cost from the linked PO (attached on open) — a red ↑ shows when
   // the invoice unit cost is higher.
   reference_cost?: number | null;
-  // Matched to a line on the linked PO by itemId (Loaded's own reconciliation).
+  // Matched to a line on the linked PO (Loaded's own reconciliation).
   on_order?: boolean | null;
   // The LINKED stock item's name — what Loaded's "Stock Item Description"
-  // column shows for linked lines (resolved server-side at draft open). The raw
-  // supplier description stays in `description` (engine matching, create
-  // prefill). item_name_for = the linked_item_id the name was resolved for.
+  // column shows for linked lines (resolved server-side at draft open).
   item_name?: string | null;
   item_name_for?: string | null;
-  // The code Loaded shows: the invoice line's own code, else the linked item's
-  // code from the PO line (e.g. "[F311849]") when the line carries none.
+  // The code Loaded shows: the line's own code, else the linked item's code
+  // from the PO line when the line carries none.
   display_code?: string | null;
   // Set when this delivery came in under a DIFFERENT code than ordered (a
   // substitute): the original ordered PO line, shown as an expandable row.
   substitute_for?: OrderedNotReceived | null;
-  // PDF-copy comparison, present once the review has run.
-  copy_unit?: string | null;
-  copy_quantity?: number | null;
-  copy_unit_price?: number | null;
-  copy_line_total?: number | null;
-  // The line's unit disagreed with the copy (authoritative review result) —
-  // shown even when the copy's unit isn't a derivable one to suggest.
-  copy_unit_mismatch?: boolean | null;
-  // Qty received disagreed with the copy (the review's decision) — the component
-  // renders "use copy qty" from this; it does not decide the mismatch itself.
-  copy_quantity_mismatch?: boolean | null;
-  // Unit COST disagreed with the copy — renders "use copy price" (common with
-  // unpriced feeds where Loaded ingests lines at $0 and only the copy prices them).
-  copy_unit_cost_mismatch?: boolean | null;
-  // The delivered unit the review derived from the copy per the venue's unit
-  // guidelines (e.g. "CREAM FRESH 2L" → "2L"), NOT the raw packaging word.
-  recommended_unit?: string | null;
-  // The review's decision that this is a redundant $0 duplicate of another line
-  // (same code, empty total). The component renders a "strike" affordance from
-  // it; it does not decide the duplicate itself.
-  copy_duplicate?: boolean | null;
-  // The review's decision that this line is NOT on the attached invoice copy.
-  // The component renders a "remove" affordance (strike-style) from it.
-  copy_missing?: boolean | null;
-  // The copy carries unit/size info that can't be read (cut off / illegible /
-  // ambiguous) — the component asks the user to CONFIRM the unit; no value is
-  // ever proposed.
-  unit_needs_confirmation?: boolean | null;
-  // Applied state: the user struck this line (via the affordance above). A struck
-  // line renders struck-through, is left out of the totals, and is dropped from
-  // the receive PUT (soft-deleted in Loaded).
+  // Applied state: the line is excluded from the totals and soft-deleted from
+  // the receive (a $0 artifact / a line the copy doesn't bill).
   struck?: boolean | null;
-  // Item-match suggestions for a NEW (unlinked) line, set by the review engine's
-  // norm.match_stock_items LLM function and merged onto the draft by /review —
-  // the component renders Link / Create from them, it never derives them.
-  matched_item?: { id: string; name: string | null; group?: string | null; unit_id?: string | null; unit_cost?: number | null } | null;
-  suggested_name?: string | null;
-  suggested_group_id?: string | null;
 }
 
 // One mismatch from a Supplier Spec Dojo run (expected baseline vs the
@@ -108,6 +75,47 @@ interface DojoDiff {
   actual?: unknown;
 }
 
+// The server's review verdicts (invoice_review.py) — rendered, never derived.
+interface Suggestion {
+  id: string;
+  kind: 'line_value' | 'add_line' | 'strike' | 'header_value' | 'supplier'
+    | 'link_po' | 'unlink_po' | 'split_reference' | 'delete_invoice' | string;
+  field?: string | null;
+  line_id?: string | null;
+  current?: unknown;
+  proposed?: unknown;
+  explanation: string;
+  // Field patch to accept: line_id present → the line, else the header.
+  apply?: Record<string, unknown>;
+  // add_line: the full line to append. delete_invoice: the /accept fix body.
+  payload?: Record<string, unknown>;
+}
+interface ClearsWhen {
+  scope: 'line' | 'header';
+  line_id?: string;
+  field: string;
+  op: 'not_null' | 'truthy' | 'equals';
+  value?: unknown;
+}
+interface Issue {
+  id: string;
+  code: string;
+  blocking: boolean;
+  line_id?: string | null;
+  message: string;
+  data?: Record<string, unknown> | null;
+  clears_when?: ClearsWhen;
+}
+// THE RECORD: every accept/dismiss/undo, human or autopilot (by: "norm").
+interface SuggestionAction {
+  suggestion_id: string;
+  action: 'accepted' | 'dismissed' | 'undone';
+  by: 'user' | 'norm';
+  at?: string;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+}
+
 interface DocData {
   invoice_id: string;
   reference_number: string | null;
@@ -115,6 +123,12 @@ interface DocData {
   linked_supplier_id: string | null;
   purchase_order_number: string | null;
   linked_purchase_order_id: string | null;
+  // Split order: the referenced PO is linked to a SIBLING invoice (Loaded is
+  // 1:1) — the reference rides the receive without linking.
+  split_po_id?: string | null;
+  split_sibling_invoice_id?: string | null;
+  // Accepted "unlink this order": sent as unlink_purchase_order on receive.
+  po_unlinked?: boolean | null;
   issued_at: string | null;
   due_at?: string | null;
   received_at?: string | null;
@@ -127,16 +141,7 @@ interface DocData {
   notes?: string | null;
   file_id: string | null;
   is_received?: boolean;
-  // Duplicate: the already-received sibling's Loaded invoice id — rendered as
-  // "Open in Loaded" + "View received copy" links so both copies can be compared.
-  // The PO variant means the goods were receipted straight against the order
-  // (no invoice document exists in Loaded) — link the order instead.
-  duplicate_of_invoice_id?: string | null;
-  duplicate_of_file_id?: string | null;
-  duplicate_of_purchase_order_id?: string | null;
   // Tombstone: the draft was deleted from Loaded (statement/duplicate accept).
-  // The doc row is kept so old chat cards can render "deleted" instead of
-  // hanging on a missing document.
   is_deleted?: boolean;
   deleted_reason?: string | null;
   status?: string;
@@ -144,70 +149,47 @@ interface DocData {
   // PO lines whose stock code never appeared on the invoice — ordered, not
   // received. Read-only reference, never part of the receive payload.
   ordered_not_received?: OrderedNotReceived[];
-  // Split order: PO items that arrived on the SIBLING delivery — shown under
-  // "Ordered, received on <sibling ref>" instead of "not delivered".
+  // Split order: PO items that arrived on the SIBLING delivery.
   ordered_received_elsewhere?: OrderedNotReceived[];
-  checks?: string;
-  // Specific reasons the failed checks failed (e.g. a line-vs-copy mismatch).
-  check_reasons?: string[];
+  // ---- The replica_v1 review contract ----
+  doc_schema?: string;
+  reviewed_at?: string | null;
+  confidence?: 'ready' | 'needs_review';
+  suggestions?: Suggestion[];
+  issues?: Issue[];
+  suggestion_actions?: SuggestionAction[];
+  // Sidecars (read-only, admin X-ray): the replica shadow (doc-shaped, our
+  // full resolution of the copy), Loaded's pristine mirror, and the verbatim
+  // extraction.
+  replica?: (Partial<DocData> & { resolution_log?: string[]; supplier_name?: string | null }) | null;
+  loaded_snapshot?: { header?: Partial<DocData>; lines?: Line[] } | null;
+  extracted_snapshot?: {
+    header?: {
+      document_type?: string | null;
+      invoice_number?: string | null;
+      supplier_name?: string | null;
+      customer_purchase_order_number?: string | null;
+      purchase_order_number?: string | null;
+      subtotal_ex_tax?: number | null;
+      tax_amount?: number | null;
+      total_incl_tax?: number | null;
+      supplier_differs?: boolean | null;
+    } | null;
+    lines?: {
+      code?: string | null;
+      description?: string | null;
+      quantity?: number | null;
+      unit?: string | null;
+      unit_of_measure?: string | null;
+      unit_unrecognisable?: boolean | null;
+      unit_price_ex_tax?: number | null;
+      line_total_ex_tax?: number | null;
+    }[] | null;
+  } | null;
   // Dojo (supplier-spec regression run) payloads only: run status + the
   // structured diffs vs the stored baseline. Rendered as the dojo banner.
   dojo_status?: string | null;
   dojo_diffs?: DojoDiff[] | null;
-  // The buyer PO the review read off the invoice copy, and whether it (and
-  // Loaded's own field) resolved to NO Loaded purchase order — drives the
-  // "copy says X — no matching purchase order" note under the picker.
-  copy_po?: string | null;
-  po_unresolved?: boolean | null;
-  // The copy's printed totals when Loaded's header disagrees (e.g. a feed
-  // that left the invoice total $0) — drives the "Invoice total X → Y"
-  // suggestion; accepted values are written to Loaded on receive.
-  copy_total?: number | null;
-  copy_subtotal?: number | null;
-  copy_tax_amount?: number | null;
-  copy_total_mismatch?: boolean | null;
-  // The copy's printed invoice number when it disagrees with the draft's
-  // reference — drives the "Invoice number X → Y" suggestion (a local header
-  // edit; reference_number already rides the receive write-through).
-  copy_invoice_number?: string | null;
-  // The supplier printed on the copy + the review's LLM-matched Loaded record
-  // (Gate 12: missing link, or a genuinely different business — naming
-  // variations never flag) — drives the supplier link suggestion.
-  copy_supplier?: string | null;
-  supplier_differs?: boolean | null;
-  matched_supplier_id?: string | null;
-  matched_supplier_name?: string | null;
-  // The linked PO's supplier when it isn't this invoice's supplier — drives
-  // the "unlink this order" suggestion (hidden while a supplier-switch
-  // suggestion covers the same conflict).
-  po_supplier_mismatch?: boolean | null;
-  po_supplier_name?: string | null;
-  // Split-order state: the referenced PO is already linked to a SIBLING
-  // invoice (Loaded is 1:1). split_order = genuine second delivery (shown
-  // automatically); split_po_suggested = the number came off the copy only —
-  // accept sets the reference first; split_remove_po = NOT a split (sibling
-  // has the same goods) — accept removes the bogus reference.
-  split_order?: boolean | null;
-  split_po_suggested?: boolean | null;
-  split_remove_po?: boolean | null;
-  split_po_id?: string | null;
-  split_po_number?: string | null;
-  split_sibling_invoice_id?: string | null;
-  split_sibling_reference?: string | null;
-  split_sibling_file_id?: string | null;
-  // Local flag: the user accepted the unlink — sent as unlink_purchase_order
-  // on receive (a null PO id alone means "don't touch" server-side).
-  po_unlinked?: boolean | null;
-  // Changes the review made/proposes (e.g. an auto-matched PO, a unit fix).
-  suggestions?: Suggestion[];
-  // Persisted record of suggestions the user APPLIED or DISMISSED (dismissed:
-  // true = declined without applying — unblocks receiving): the ✓/⊘ rows in
-  // Suggested Changes survive line edits, re-reviews and re-opens, so the
-  // user can always see what was actioned. Keyed stably per suggestion.
-  // undo_fields: the line fields to restore when the action is undone (item
-  // links record their pre-link state here).
-  actioned_suggestions?: { key: string; summary: string; dismissed?: boolean; undo_fields?: Partial<Line>; undo_header?: Record<string, unknown> }[];
-  reviewed_at?: string;
   _units?: Unit[];
   _purchase_orders?: PO[];
   _suppliers?: Supplier[];
@@ -221,52 +203,9 @@ interface OrderedNotReceived {
   unit_cost: number | null;
   // Split order: the qty the SIBLING invoice received (ordered_received_elsewhere).
   quantity_received?: number | null;
-  // The PO line's stock item — lets a LOCAL item link reconcile immediately
-  // (substitute detection) instead of waiting for the next server reopen.
   item_id?: string | null;
 }
 interface StockGroup { id: string; name: string | null; category?: string | null }
-interface Suggestion {
-  id?: string;
-  type?: string;
-  summary?: string;
-  po_number?: string;
-  // link_po: the Loaded PO id the engine resolved — lets the Order Number
-  // picker show the suggestion in place (pre-filled, marked suggested).
-  purchase_order_id?: string | null;
-  // quantity: the copy's qty for the line — Accept sets Qty received to it
-  // (a local draft edit, applied on receive).
-  proposed_quantity?: number | null;
-  current_quantity?: number | null;
-  proposed_unit?: string;
-  already_linked_elsewhere?: boolean;
-  // split-PO: the invoice the PO is already linked to in Loaded (+ its
-  // reference and attachment file id for the compare links)
-  linked_invoice_id?: string | null;
-  linked_invoice_reference?: string | null;
-  linked_invoice_file_id?: string | null;
-  // duplicate delete: the already-received sibling invoice in Loaded (+ its
-  // attachment's file id), or the PO the goods were receipted against when
-  // no invoice document exists in Loaded
-  duplicate_of_invoice_id?: string | null;
-  duplicate_of_file_id?: string | null;
-  duplicate_of_purchase_order_id?: string | null;
-  line_id?: string;
-  invoice_id?: string;
-  linked_item_id?: string | null;
-  linked_supplier_id?: string | null;
-  line_code?: string | null;
-  // add_line: the copy's line data — Accept appends it as a new draft line
-  // (a local edit, applied on receive), pre-linked when matched_item resolved.
-  code?: string | null;
-  description?: string | null;
-  quantity?: number | null;
-  unit?: string | null;
-  unit_price_ex_tax?: number | null;
-  line_total_ex_tax?: number | null;
-  sale_tax_rate?: number | null;
-  matched_item?: { id: string; name: string | null; unit_id?: string | null; unit_cost?: number | null } | null;
-}
 interface Unit { id: string; name: string; type?: string; ratio?: number }
 interface Supplier { id: string; name: string | null }
 interface StockItem {
@@ -287,38 +226,9 @@ interface PO {
   linked_invoice_id?: string | null;
 }
 
-// Position of each check in the packed `checks` string — MUST mirror the order
-// of CHECK_LABELS in config/consolidators/review_and_receive_invoices.py.
-const CHECK_ORDER = [
-  'credit_note', 'pdf_present', 'po_linked', 'po_supplier', 'items_matched',
-  'totals', 'pdf_readable', 'pdf_invoice_number', 'pdf_lines', 'unit_of_measure',
-  'pdf_total', 'duplicate', 'supplier',
-];
-const CHECK_LABEL: Record<string, string> = {
-  credit_note: 'Document is an invoice (not a credit note or statement)',
-  pdf_present: 'Invoice copy attached',
-  po_linked: 'Linked to a purchase order',
-  po_supplier: 'Supplier matches the purchase order',
-  items_matched: 'Stock items, brands and units all exist in Loaded (no NEW)',
-  totals: 'Invoice totals consistent',
-  pdf_readable: 'Invoice copy readable',
-  pdf_invoice_number: 'Invoice number matches the copy',
-  pdf_lines: 'Lines match the invoice copy',
-  unit_of_measure: 'Unit of measure matches the copy',
-  pdf_total: 'Total matches the invoice copy',
-  duplicate: 'Not a duplicate of an already-received invoice',
-  supplier: 'Supplier matches the copy',
-};
-// How the checks are grouped and ordered for display (independent of the packed
-// string order above). Each check reads its state from the packed string by key.
-const CHECK_SECTIONS: { title: string; keys: string[] }[] = [
-  { title: 'Loaded Invoice', keys: ['credit_note', 'duplicate', 'items_matched', 'totals'] },
-  { title: 'Purchase Order', keys: ['po_linked', 'po_supplier'] },
-  { title: 'Invoice Copy', keys: ['pdf_present', 'pdf_readable', 'pdf_invoice_number', 'pdf_lines', 'unit_of_measure', 'pdf_total', 'supplier'] },
-];
-
 const cur = (n: number | null | undefined) => `$${(n ?? 0).toFixed(2)}`;
 const round2 = (n: number) => Math.round(n * 100) / 100;
+const round4 = (n: number) => Math.round(n * 10000) / 10000;
 
 // Per-line tax, honouring the "line item costs include tax" toggle: costs
 // exclude tax → tax is added on top; costs include tax → tax is the portion
@@ -328,6 +238,13 @@ function lineTax(lineTotal: number, rate: number | null | undefined, includesTax
   if (!r) return 0;
   return includesTax ? lineTotal - lineTotal / (1 + r) : lineTotal * r;
 }
+
+// Compact display of a suggestion's current/proposed values.
+const fmtVal = (v: unknown): string => {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(round4(v));
+  return String(v);
+};
 
 // One venue-wide fetch of the editor's reference data, shared by every mounted
 // editor — the chat batch flow renders N cards at once, and without this each
@@ -390,72 +307,48 @@ const newBadge: React.CSSProperties = {
   padding: '1px 5px', whiteSpace: 'nowrap',
 };
 const fieldCol: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3 };
+// Inline suggestion chip + its tiny accept/dismiss buttons.
+const chipStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.6rem',
+  color: '#8a6d3b', background: '#fdf6e7', border: '1px solid #e6d3a3',
+  borderRadius: 4, padding: '1px 6px', marginTop: 2, whiteSpace: 'nowrap',
+};
+const chipBtn: React.CSSProperties = {
+  border: 'none', background: 'none', cursor: 'pointer', padding: 0,
+  font: 'inherit', fontWeight: 700,
+};
+const linkBtn: React.CSSProperties = {
+  border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline',
+  cursor: 'pointer', padding: 0, font: 'inherit',
+};
 // ISO string → the YYYY-MM-DD a <input type="date"> wants (and back on change).
 const dateVal = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '');
 
-// Unit-of-measure resolution — mirrors app/services/invoice_units.py so a
-// guideline-derived unit like "2L" resolves to the
-// real Loaded unit "2 L" by MAGNITUDE, not just an exact name. A bare packaging
-// word (bottle/bag/box) is deliberately not comparable.
-const UOM_WORDS: Record<string, [string, number]> = {
-  kg: ['weight', 1000], kgs: ['weight', 1000], kilo: ['weight', 1000], kilos: ['weight', 1000],
-  kilogram: ['weight', 1000], kilograms: ['weight', 1000],
-  g: ['weight', 1], gm: ['weight', 1], gr: ['weight', 1], gram: ['weight', 1], grams: ['weight', 1],
-  l: ['volume', 1000], lt: ['volume', 1000], ltr: ['volume', 1000], litre: ['volume', 1000],
-  liter: ['volume', 1000], litres: ['volume', 1000], liters: ['volume', 1000],
-  ml: ['volume', 1], mls: ['volume', 1],
-  ea: ['count', 1], each: ['count', 1], pc: ['count', 1], pcs: ['count', 1],
-  piece: ['count', 1], pieces: ['count', 1], pack: ['count', 1], pk: ['count', 1],
-  doz: ['count', 12], dozen: ['count', 12], dz: ['count', 12], pair: ['count', 2],
-};
-const UOM_VAGUE = new Set(['pkt', 'packet', 'box', 'carton', 'ctn', 'outer', 'unit', 'case', 'cs', 'bx', 'un', 'btl', 'bottle', 'bag']);
-
-function parseUnit(text: string | null | undefined): [string, number] | null {
-  const s = String(text ?? '').trim().toLowerCase();
-  if (!s) return null;
-  let num = '', word = '';
-  for (const ch of s) {
-    if ((ch >= '0' && ch <= '9') || (ch === '.' && num && !num.includes('.'))) {
-      if (word) return null;
-      num += ch;
-    } else if (/[a-z]/.test(ch)) word += ch;
-    else if (ch === ' ' || ch === '-') continue;
-    else return null;
+// The tiny clears_when evaluator — the SAME dumb predicate the server runs
+// (invoice_review._clears): scope line → find the line, else the header;
+// then not_null / truthy / equals. Nothing more.
+function evalClears(data: DocData, issue: Issue): boolean {
+  const cw = issue.clears_when;
+  if (!cw) return false;
+  let v: unknown;
+  if (cw.scope === 'line') {
+    const ln = (data.lines || []).find((l) => String(l.id) === String(cw.line_id));
+    v = ln ? (ln as unknown as Record<string, unknown>)[cw.field] : undefined;
+  } else {
+    v = (data as unknown as Record<string, unknown>)[cw.field];
   }
-  if (UOM_VAGUE.has(word)) return null;
-  const entry = UOM_WORDS[word];
-  if (!entry) return null;
-  const [type, factor] = entry;
-  if (!num) return [type, factor];
-  const n = parseFloat(num);
-  return Number.isNaN(n) ? null : [type, n * factor];
-}
-
-/** The Loaded unit best matching `name` — exact name first, then guideline
- *  magnitude equivalence. undefined if none is confident. */
-// Unit-name key: case and whitespace never distinguish units ('Each'/'each',
-// '1kg'/'1 kg') — but digits and dots do ('1.9 KG' vs '19 KG'), so keep them.
-const unitNameKey = (v: string | null | undefined) => (v ?? '').toLowerCase().replace(/\s+/g, '');
-
-function resolveUnit(name: string | null | undefined, units: Unit[]): Unit | undefined {
-  if (!name) return undefined;
-  const lc = unitNameKey(name);
-  const exact = units.find((u) => unitNameKey(u.name) === lc);
-  if (exact) return exact;
-  const target = parseUnit(name);
-  if (!target) return undefined;
-  return units.find((u) => {
-    const pu = parseUnit(u.name);
-    return pu && pu[0] === target[0] && Math.abs(pu[1] - target[1]) < 0.001;
-  });
+  if (cw.op === 'not_null') return v !== null && v !== undefined;
+  if (cw.op === 'truthy') return !!v;
+  if (cw.op === 'equals') return v === cw.value;
+  return false;
 }
 
 export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayBlockProps) {
   const embedded = !!props?.embedded;
   // Dojo: a supplier-spec regression run rendered in this component. The data
   // is an ephemeral local sandbox (no venue, no working document — every
-  // network effect below is already guarded off); suggestions/validation/
-  // receive are replaced by the dojo banner (status + diffs vs baseline).
+  // network effect below is already guarded off); suggestions/issues/receive
+  // are replaced by the dojo banner (status + diffs vs baseline).
   const dojo = !!props?.dojo;
   // Compact (chat) rendering: starts collapsed — header strip + suggested
   // changes + footer only; "Show full invoice" expands to the complete editor.
@@ -473,11 +366,78 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // block carries only { working_document_id }, so the draft (lines, totals,
   // invoice_id) only arrives once the fetch below resolves.
   const initial = data as unknown as DocData;
-  const [doc, setDoc] = useState<DocData>(() => ({ ...initial, lines: initial.lines ?? [] }));
-  // Mirror for callbacks that must read the CURRENT doc without re-creating
-  // themselves per render (patch line-id injection).
-  const docRef = useRef<DocData>(doc);
-  docRef.current = doc;
+  const [docLive, setDoc] = useState<DocData>(() => ({ ...initial, lines: initial.lines ?? [] }));
+  // Admin X-ray (the "Norm | Extracted | Loaded | Replica" slider): flip every
+  // field to the PDF extraction (what we READ from the copy), Loaded's
+  // pristine snapshot (refreshed server-side on every open), or the replica
+  // sidecar (our full resolution). Display-only — the whole body renders
+  // read-only while a non-Norm view is on; edits always target the live draft.
+  const [viewMode, setViewMode] = useState<'norm' | 'extracted' | 'loaded' | 'replica'>('norm');
+  const viewLoaded = viewMode !== 'norm';
+  const doc = useMemo<DocData>(() => {
+    if (viewMode === 'loaded' && docLive.loaded_snapshot) {
+      const snap = docLive.loaded_snapshot;
+      return {
+        ...docLive,
+        ...(snap.header || {}),
+        lines: (snap.lines || []) as Line[],
+      };
+    }
+    if (viewMode === 'replica' && docLive.replica) {
+      // The replica is already doc-shaped (build_received_invoice_data
+      // parity) — overlay it wholesale; keep live identity fields.
+      return {
+        ...docLive,
+        ...docLive.replica,
+        invoice_id: docLive.invoice_id,
+        file_id: docLive.file_id,
+        is_received: docLive.is_received,
+        lines: (docLive.replica.lines || []) as Line[],
+      } as DocData;
+    }
+    if (viewMode === 'extracted' && docLive.extracted_snapshot) {
+      const ext = docLive.extracted_snapshot;
+      const h = ext.header || {};
+      return {
+        ...docLive,
+        reference_number: h.invoice_number ?? null,
+        supplier_name: h.supplier_name ?? null,
+        purchase_order_number: h.customer_purchase_order_number ?? h.purchase_order_number ?? null,
+        linked_purchase_order_id: null,
+        subtotal: h.subtotal_ex_tax ?? null,
+        tax_amount: h.tax_amount ?? null,
+        total: h.total_incl_tax ?? null,
+        lines: (ext.lines || []).map((el, i) => ({
+          id: `ext-${i}`,
+          code: el.code ?? null,
+          description: el.description ?? null,
+          brand: null,
+          // AS PRINTED on the copy, with the derived delivered unit beside it
+          // ("50L → 50 L") — the unit cell renders plain text in x-ray modes.
+          unit: [
+            el.unit ?? '—',
+            el.unit_of_measure && el.unit_of_measure !== el.unit ? `→ ${el.unit_of_measure}` : null,
+            el.unit_unrecognisable ? '(unreadable)' : null,
+          ].filter(Boolean).join(' '),
+          linked_unit_id: null,
+          unit_ratio: null,
+          quantity_ordered: null,
+          quantity_received: el.quantity ?? null,
+          unit_cost: el.unit_price_ex_tax ?? null,
+          total_cost: el.line_total_ex_tax ?? null,
+          tax_amount: null,
+          sale_tax_rate: null,
+          linked_item_id: null,
+        })) as Line[],
+      };
+    }
+    return docLive;
+  }, [docLive, viewMode]);
+  // Mirror for callbacks that must read the CURRENT (live) doc without
+  // re-creating themselves per render (patch line-id injection, the
+  // suggestion appliers' before-capture and action-log appends).
+  const docRef = useRef<DocData>(docLive);
+  docRef.current = docLive;
   // Version lives in a ref: PATCHes are queued and each must use the LATEST
   // version, not the one captured when its closure was created (two accepts
   // in one tick used to make the second 409).
@@ -503,12 +463,21 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // The NEW-stock-item line currently being created, and the form's group id.
   const [itemForm, setItemForm] = useState<{ lineId: string; name: string; groupId: string } | null>(null);
   const [creatingItem, setCreatingItem] = useState(false);
-  const [linkingLine, setLinkingLine] = useState<string | null>(null);
-  // Line whose copy-delivered unit is being CREATED in Loaded (create-unit).
+  // Line whose (unlinked) unit name is being CREATED in Loaded (create-unit).
   const [creatingUnitLine, setCreatingUnitLine] = useState<string | null>(null);
-  // Add-to-Dojo (admin): files this invoice's PDF as a training sample and
-  // kicks the analysis agent server-side. Admin-only; the mcp-ui sandbox's
-  // getStoredUser() returns null, so embedded cards hide it automatically.
+  // Second confirmation before creating a unit (like create-item's form): the
+  // first click ARMS this line; only the explicit confirm click writes.
+  const [confirmUnitLine, setConfirmUnitLine] = useState<string | null>(null);
+  // Same two-step for creating the copy's supplier in Loaded (create-supplier).
+  const [confirmSupplier, setConfirmSupplier] = useState(false);
+  const [creatingSupplier, setCreatingSupplier] = useState(false);
+  const [linkQuery, setLinkQuery] = useState('');
+  // Substitute lines whose original ordered row is expanded.
+  const [openSub, setOpenSub] = useState<Set<string>>(new Set());
+  // Line briefly highlighted after an issue row's "show line" jump.
+  const [flashLine, setFlashLine] = useState<string | null>(null);
+  // Per-mount uid so line anchors never collide across sibling cards.
+  const uid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const isPlatformAdmin = getStoredUser()?.role === 'admin';
   const [dojoAdd, setDojoAdd] = useState<'idle' | 'adding' | 'added' | 'error'>('idle');
   const addToDojo = async () => {
@@ -531,15 +500,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       setMessage(e instanceof Error ? e.message : 'Could not add to the dojo');
     }
   };
-  // Second confirmation before creating a unit (like create-item's form): the
-  // first Accept/click ARMS this line; only the explicit confirm click writes.
-  const [confirmUnitLine, setConfirmUnitLine] = useState<string | null>(null);
-  // Same two-step for creating the copy's supplier in Loaded (create-supplier).
-  const [confirmSupplier, setConfirmSupplier] = useState(false);
-  const [creatingSupplier, setCreatingSupplier] = useState(false);
-  const [linkQuery, setLinkQuery] = useState('');
-  // Substitute lines whose original ordered row is expanded.
-  const [openSub, setOpenSub] = useState<Set<string>>(new Set());
 
   // Embedded uses a distinct URL so the sandbox routes it to the invoice-scoped
   // tools; the web uses the session-auth working-documents REST.
@@ -602,21 +562,29 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     });
   }, [embedded, venueId, refreshTick]);
 
-  // Item-match suggestions arrive WITH the review below — the engine
-  // (review_and_receive_invoices) runs norm.match_stock_items itself and
-  // /review merges matched_item/suggested_name/suggested_group_id onto the
-  // lines. The component renders them; it never fetches them separately.
+  // Fetch this card's OWN doc and adopt it (state + version). The review and
+  // receive endpoints land on ALL twin docs server-side, and their response
+  // bodies may belong to a canonical twin — adopting a twin's lines and
+  // version wholesale was how validation could visibly "move" or vanish.
+  const refetchOwnDoc = async (): Promise<boolean> => {
+    if (!docUrl) return false;
+    const own = await apiFetch(docUrl).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (own?.data) {
+      setDoc(own.data as DocData);
+      if (typeof own.version === 'number') setVersion(own.version);
+      return true;
+    }
+    return false;
+  };
 
-  // The cached PDF review — "checks after". Web-only (the endpoint is session-
-  // auth). Callable from the mount effect AND explicitly (reset validation) —
-  // relying on effect dep changes alone left a card already showing "not yet
-  // reviewed" permanently stuck: a reset kept checks undefined → undefined, no
-  // dep change, no re-run. `explicit` surfaces failures a background run keeps
-  // quiet.
-  const runReview = async (explicit = false) => {
+  // The server review (POST /invoice-fixes/review) — builds/rebuilds the
+  // replica_v1 payload. Web-only (embedded cards are pre-reviewed at block
+  // build). force=true is "Re-run replica": recomputes AND SQUASHES local
+  // edits + the accept/dismiss record (the button confirms first).
+  const runReview = async (explicit = false, force = false) => {
     if (embedded || !venueId || !doc.invoice_id || doc.is_deleted) return;
-    // One review at a time — but NEVER a dead-end: if checks get cleared
-    // while a run is in flight, queue exactly one follow-up run. (The old
+    // One review at a time — but NEVER a dead-end: if the review state gets
+    // cleared while a run is in flight, queue exactly one follow-up run. (A
     // plain early-return left cards stranded on "not yet reviewed": the ref
     // clears without a re-render, so nothing ever retried.)
     if (reviewInFlight.current) {
@@ -628,36 +596,31 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     try {
       const r = await apiFetch('/api/invoice-fixes/review', {
         method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id }),
+        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id, ...(force ? { force: true } : {}) }),
       });
       if (!r.ok) {
         if (explicit) {
           setStatus('error');
-          setMessage(`Validation could not run (${r.status}) — reload and try again`);
+          setMessage(`The review could not run (${r.status}) — reload and try again`);
         }
         return;
       }
       // The review landed on ALL twin docs server-side — refetch THIS card's
-      // own doc so state (and the version) match its identity exactly. The
-      // response body may belong to a canonical twin; adopting its lines and
-      // version wholesale was how validation could visibly "move" or vanish.
-      let adopted = false;
-      if (docUrl) {
-        const own = await apiFetch(docUrl).then((r2) => (r2.ok ? r2.json() : null)).catch(() => null);
-        if (own?.data) {
-          setDoc(own.data as DocData);
-          if (typeof own.version === 'number') setVersion(own.version);
-          adopted = true;
-        }
-      }
+      // own doc so state (and the version) match its identity exactly.
+      const adopted = await refetchOwnDoc();
       if (!adopted) {
         const d = await r.json();
         if (d?.data) setDoc((prev) => ({ ...prev, ...(d.data as DocData) }));
       }
+      if (force) {
+        window.dispatchEvent(new CustomEvent(INVOICE_ACTIONED_EVENT, {
+          detail: { venueId, invoiceId: doc.invoice_id, sourceDocId: workingDocId },
+        }));
+      }
     } catch {
       if (explicit) {
         setStatus('error');
-        setMessage('Validation could not run — check the connection and try again');
+        setMessage('The review could not run — check the connection and try again');
       }
     } finally {
       reviewInFlight.current = false;
@@ -668,19 +631,27 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       }
     }
   };
+  const reviewed = docLive.doc_schema === 'replica_v1' && !!docLive.reviewed_at;
   useEffect(() => {
     if (embedded || !venueId || !doc.invoice_id) return;
     if (doc.is_deleted) return; // tombstone — nothing left to review
-    // Re-review whenever checks are absent. "" is a REAL result (credit note /
-    // no PDF: the review ran and produced no artifact) — treating it as
-    // unreviewed used to re-run the engine on every open.
-    if (doc.checks != null) return;
+    // (Re)build whenever the doc is not a reviewed replica_v1 payload — a
+    // legacy doc, or one whose cached review the server invalidated.
+    if (reviewed) return;
     runReview();
-    // Fires when the invoice_id is known AND whenever `checks` is cleared (e.g.
-    // after a server-applied fix reshapes the doc) — the guard above stops a
-    // re-run once the review returns.
+    // Fires when the invoice_id is known AND whenever the review state is
+    // cleared (server invalidation) — the guard above stops a re-run once
+    // the review returns.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedded, venueId, doc.invoice_id, doc.checks]);
+  }, [embedded, venueId, doc.invoice_id, reviewed]);
+
+  // "Re-run replica": force review after an explicit confirm — it resets
+  // every local edit and the accept/dismiss record (squash semantics).
+  const rerunReplica = () => {
+    if (embedded || !venueId || !doc.invoice_id || reviewing) return;
+    if (!window.confirm('Re-running the replica resets your edits and accepted suggestions for this invoice.')) return;
+    void runReview(true, true);
+  };
 
   // Serialized patches: one at a time, each using the LATEST version.
   // update_line ops get the target line's id injected so a server-side
@@ -748,377 +719,25 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const cost = doc.lines[idx]?.unit_cost ?? 0;
     setLine(
       idx,
-      { quantity_received: qty, total_cost: qty * cost },
-      [{ op: 'update_line', index: idx, fields: { quantity_received: qty, total_cost: qty * cost } }],
+      { quantity_received: qty, total_cost: round4(qty * cost) },
+      [{ op: 'update_line', index: idx, fields: { quantity_received: qty, total_cost: round4(qty * cost) } }],
     );
   };
   const onCost = (idx: number, cost: number) => {
     const qty = doc.lines[idx]?.quantity_received ?? 0;
     setLine(
       idx,
-      { unit_cost: cost, total_cost: qty * cost },
-      [{ op: 'update_line', index: idx, fields: { unit_cost: cost, total_cost: qty * cost } }],
+      { unit_cost: cost, total_cost: round4(qty * cost) },
+      [{ op: 'update_line', index: idx, fields: { unit_cost: cost, total_cost: round4(qty * cost) } }],
     );
   };
-  // Strike / un-strike a redundant $0 duplicate the review flagged. The review
-  // decides (copy_duplicate); the user applies it here — a struck line stays on
-  // screen struck-through, drops out of the totals, and is soft-deleted from the
-  // receive PUT.
+  // Strike / un-strike a line. Striking normally happens by accepting the
+  // server's strike suggestion; this is the plain toggle (restore, and the
+  // manual escape hatch).
   const onStrike = (idx: number, struck: boolean) => {
-    setLine(
-      idx,
-      { struck },
-      [{ op: 'update_line', index: idx, fields: { struck } }],
-    );
+    setLine(idx, { struck }, [{ op: 'update_line', index: idx, fields: { struck } }]);
   };
 
-  // ---- Suggestion apply paths -------------------------------------------
-  // ONE handler per suggestion type, used by BOTH the inline line affordance
-  // and the Suggested Changes list — the two surfaces can never diverge. Each
-  // apply is a single PATCH (line edit + action-log entry together, so the doc
-  // version can't race) and records itself in doc.actioned_suggestions, which
-  // keeps a ✓ row visible even after the line has changed.
-  const withActioned = (key: string, summary: string) =>
-    [...(doc.actioned_suggestions || []).filter((a) => a.key !== key), { key, summary }];
-  const applyUnitSuggestion = (idx: number, rec: Unit) => {
-    const l = doc.lines[idx];
-    if (!l) return;
-    const log = withActioned(
-      `unit:${l.id}`,
-      `${l.display_code || l.code || '?'} · ${l.description ?? ''}: unit ${l.unit || '—'} → ${rec.name}`,
-    );
-    setDoc((prev) => ({
-      ...prev,
-      actioned_suggestions: log,
-      lines: prev.lines.map((x, i) => (i === idx ? { ...x, linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null } : x)),
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'update_line', index: idx, fields: { linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null } },
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
-  // The copy's delivered unit isn't in Loaded's catalogue at all (e.g. a
-  // "49.5L" keg, a "5x3kg" multipack): create it in Loaded — the ONE write,
-  // mirroring create-item — then the line takes it as a LOCAL edit via
-  // applyUnitSuggestion, landing on the line + supplier variant at receive.
-  const createUnitAndApply = async (idx: number) => {
-    const l = doc.lines[idx];
-    if (!l?.recommended_unit || !venueId || embedded || creatingUnitLine) return;
-    // Two-step: first activation arms the confirmation (shown on the line AND
-    // the suggestion row); only the second, explicit confirm creates the unit.
-    if (confirmUnitLine !== l.id) {
-      setConfirmUnitLine(l.id);
-      return;
-    }
-    setConfirmUnitLine(null);
-    setCreatingUnitLine(l.id);
-    setMessage('');
-    try {
-      const res = await apiFetch('/api/invoice-fixes/create-unit', {
-        method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, name: l.recommended_unit }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
-        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
-      }
-      const out = await res.json();
-      if (!out?.unit_id) throw new Error('Loaded did not return the created unit');
-      const rec: Unit = { id: out.unit_id, name: out.unit_name ?? l.recommended_unit, ratio: out.unit_ratio ?? undefined };
-      // Into the dropdown (and future resolveUnit calls) before the line takes it.
-      setUnits((prev) => (prev.some((u) => u.id === rec.id) ? prev : [...prev, rec]));
-      applyUnitSuggestion(idx, rec);
-    } catch (e) {
-      setStatus('error');
-      setMessage(e instanceof Error ? e.message : 'Could not create the unit in Loaded');
-    } finally {
-      setCreatingUnitLine(null);
-    }
-  };
-  const applyQtySuggestion = (idx: number) => {
-    const l = doc.lines[idx];
-    if (!l || l.copy_quantity == null) return;
-    const qty = l.copy_quantity;
-    const cost = l.unit_cost ?? 0;
-    const log = withActioned(
-      `qty:${l.id}`,
-      `${l.display_code || l.code || '?'} · ${l.description ?? ''}: Qty received ${l.quantity_received ?? 0} → ${qty}`,
-    );
-    setDoc((prev) => ({
-      ...prev,
-      actioned_suggestions: log,
-      lines: prev.lines.map((x, i) => (i === idx ? { ...x, quantity_received: qty, total_cost: qty * cost } : x)),
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'update_line', index: idx, fields: { quantity_received: qty, total_cost: qty * cost } },
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
-  const applyCostSuggestion = (idx: number) => {
-    const l = doc.lines[idx];
-    if (!l || l.copy_unit_price == null) return;
-    const cost = l.copy_unit_price;
-    const qty = l.quantity_received ?? 0;
-    const log = withActioned(
-      `cost:${l.id}`,
-      `${l.display_code || l.code || '?'} · ${l.description ?? ''}: unit cost ${cur(l.unit_cost)} → ${cur(cost)}`,
-    );
-    setDoc((prev) => ({
-      ...prev,
-      actioned_suggestions: log,
-      lines: prev.lines.map((x, i) => (i === idx ? { ...x, unit_cost: cost, total_cost: qty * cost } : x)),
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'update_line', index: idx, fields: { unit_cost: cost, total_cost: qty * cost } },
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
-  // Header totals from the invoice copy (Gate 11): Loaded's feed sometimes
-  // leaves the invoice total/subtotal $0. A LOCAL edit like the line
-  // suggestions — written to Loaded on receive, undoable via undo_header.
-  const applyTotalSuggestion = () => {
-    if (doc.copy_total == null) return;
-    const key = `total:${doc.invoice_id}`;
-    const fields: Partial<DocData> = { total: doc.copy_total };
-    if (doc.copy_subtotal != null) fields.subtotal = doc.copy_subtotal;
-    if (doc.copy_tax_amount != null) fields.tax_amount = doc.copy_tax_amount;
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
-      {
-        key,
-        summary: `Invoice total ${cur(doc.total)} → ${cur(doc.copy_total)} (per the invoice copy)`,
-        undo_header: {
-          total: doc.total ?? null,
-          subtotal: doc.subtotal ?? null,
-          tax_amount: doc.tax_amount ?? null,
-        },
-      },
-    ];
-    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
-    ]);
-  };
-  // Invoice number from the copy (pdf_invoice_number): the attached copy
-  // prints a different number than the draft. A LOCAL header edit like the
-  // totals — reference_number already rides the receive write-through.
-  // Dismiss is the "wrong attachment" escape hatch.
-  const applyInvoiceNumberSuggestion = () => {
-    if (!doc.copy_invoice_number) return;
-    const key = `invnum:${doc.invoice_id}`;
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
-      {
-        key,
-        summary: `Invoice number '${doc.reference_number ?? ''}' → '${doc.copy_invoice_number}' (per the invoice copy)`,
-        undo_header: { reference_number: doc.reference_number ?? null },
-      },
-    ];
-    const fields: Partial<DocData> = { reference_number: doc.copy_invoice_number };
-    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
-    ]);
-  };
-  // Unlink a PO that belongs to another supplier (po_supplier): a LOCAL edit —
-  // the receive sends unlink_purchase_order so Loaded's link is cleared (a
-  // null id alone means "don't touch" server-side). Picking another order
-  // afterwards still wins: unlink, then link.
-  const applyPoUnlinkSuggestion = () => {
-    if (!doc.linked_purchase_order_id) return;
-    const key = `unlinkpo:${doc.linked_purchase_order_id}`;
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
-      {
-        key,
-        summary: `Unlinked order ${doc.purchase_order_number ?? ''} (belongs to '${doc.po_supplier_name ?? ''}', not this supplier)`,
-        undo_header: {
-          linked_purchase_order_id: doc.linked_purchase_order_id,
-          purchase_order_number: doc.purchase_order_number ?? null,
-          po_unlinked: null,
-        },
-      },
-    ];
-    const fields: Partial<DocData> = {
-      linked_purchase_order_id: null,
-      purchase_order_number: null,
-      po_unlinked: true,
-    };
-    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
-    ]);
-  };
-  // Split order, scenario 3: the copy names an order Loaded didn't match —
-  // accepting SETS the order-number reference (never the 1:1 link) and the
-  // card adopts the split state; the reference is written on receive.
-  const applySplitPoSuggestion = () => {
-    if (!doc.split_po_id || !doc.split_po_number) return;
-    const key = `splitpo:${doc.split_po_id}`;
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
-      {
-        key,
-        summary: `Order reference set to ${doc.split_po_number} — part of a split order (also invoiced on '${doc.split_sibling_reference ?? ''}')`,
-        undo_header: {
-          purchase_order_number: doc.purchase_order_number ?? null,
-          split_po_suggested: true,
-        },
-      },
-    ];
-    const fields: Partial<DocData> = {
-      purchase_order_number: doc.split_po_number,
-      split_po_suggested: false,
-    };
-    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
-    ]);
-  };
-  // Split order, scenario 2 (NOT actually a split — the sibling invoice
-  // already contains the same goods): accepting REMOVES the bogus order
-  // reference; the receive clears it in Loaded via unlink_purchase_order.
-  const applyRemovePoSuggestion = () => {
-    if (!doc.split_po_id) return;
-    const key = `removepo:${doc.split_po_id}`;
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
-      {
-        key,
-        summary: `Removed order reference ${doc.split_po_number ?? doc.purchase_order_number ?? ''} — order already fully invoiced on '${doc.split_sibling_reference ?? ''}'`,
-        undo_header: {
-          purchase_order_number: doc.purchase_order_number ?? null,
-          po_unlinked: null,
-        },
-      },
-    ];
-    const fields: Partial<DocData> = {
-      purchase_order_number: null,
-      po_unlinked: true,
-    };
-    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
-    ]);
-  };
-  const applyStrikeSuggestion = (idx: number) => {
-    const l = doc.lines[idx];
-    if (!l) return;
-    const log = withActioned(
-      `strike:${l.id}`,
-      `${l.display_code || l.code || '?'} · ${l.description ?? ''}: $0 duplicate struck (excluded from receive)`,
-    );
-    setDoc((prev) => ({
-      ...prev,
-      actioned_suggestions: log,
-      lines: prev.lines.map((x, i) => (i === idx ? { ...x, struck: true } : x)),
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'update_line', index: idx, fields: { struck: true } },
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
-  const undoStrikeSuggestion = (idx: number, keyPrefix: 'strike' | 'remove' = 'strike') => {
-    const l = doc.lines[idx];
-    if (!l) return;
-    const log = (doc.actioned_suggestions || []).filter((a) => a.key !== `${keyPrefix}:${l.id}`);
-    setDoc((prev) => ({
-      ...prev,
-      actioned_suggestions: log,
-      lines: prev.lines.map((x, i) => (i === idx ? { ...x, struck: false } : x)),
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'update_line', index: idx, fields: { struck: false } },
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
-  // Remove-line suggestion (the review found the line on the draft but NOT on
-  // the attached copy): strike-style — the line stays visible struck-through,
-  // drops from the totals, and is soft-deleted in Loaded at receive. Undoable.
-  const applyRemoveSuggestion = (idx: number) => {
-    const l = doc.lines[idx];
-    if (!l) return;
-    const log = withActioned(
-      `remove:${l.id}`,
-      `${l.display_code || l.code || '?'} · ${l.description ?? ''}: not on the invoice copy — removed (excluded from receive)`,
-    );
-    setDoc((prev) => ({
-      ...prev,
-      actioned_suggestions: log,
-      lines: prev.lines.map((x, i) => (i === idx ? { ...x, struck: true } : x)),
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'update_line', index: idx, fields: { struck: true } },
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
-  // Dismiss: decline a suggestion WITHOUT applying it. Logged (⊘ row, undoable)
-  // so it stops blocking Accept & Receive and stays suppressed across
-  // re-reviews. Never touches lines or Loaded.
-  const dismissSuggestion = (key: string, summary: string) => {
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
-      { key, summary, dismissed: true },
-    ];
-    setDoc((prev) => ({ ...prev, actioned_suggestions: log }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
-  const undoDismissSuggestion = (key: string) => {
-    const log = (doc.actioned_suggestions || []).filter((a) => a.key !== key);
-    setDoc((prev) => ({ ...prev, actioned_suggestions: log }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
-  // Stable key for an add_line suggestion: derived from the DOC line's own
-  // content, never its position — a re-review after a reshape re-emits the
-  // suggestion, and the actioned log must still recognize it as done.
-  const addSuggestionKey = (s: Suggestion) =>
-    `add:${`${s.code ?? ''}:${s.description ?? ''}:${s.line_total_ex_tax ?? ''}`
-      .toLowerCase()
-      .replace(/[^a-z0-9:.]/g, '')}`;
-  // Add-line suggestion (a line on the attached copy with no matching draft
-  // line): appends it like the manual Add Item flow. Pre-linked when the
-  // engine's item matcher resolved a stock item; otherwise it lands unlinked
-  // and the existing receive gate holds until the user links it.
-  const applyAddSuggestion = (s: Suggestion) => {
-    const key = addSuggestionKey(s);
-    const matched = s.matched_item;
-    const u = matched?.unit_id ? units.find((x) => x.id === matched.unit_id) : undefined;
-    const qty = s.quantity ?? 1;
-    const cost = s.unit_price_ex_tax ?? matched?.unit_cost ?? 0;
-    const fields = {
-      id: `new-${Date.now()}`,
-      code: s.code ?? null,
-      description: s.description ?? null,
-      brand: null,
-      // Always present: the add_line op defaults an ABSENT unit key to "case".
-      unit: u?.name ?? s.unit ?? null,
-      linked_unit_id: matched?.unit_id ?? null,
-      unit_ratio: u?.ratio ?? 1,
-      quantity_ordered: null,
-      quantity_received: qty,
-      unit_cost: cost,
-      total_cost: s.line_total_ex_tax ?? qty * cost,
-      sale_tax_rate: s.sale_tax_rate ?? null,
-      linked_item_id: matched?.id ?? null,
-    };
-    const log = withActioned(
-      key,
-      `Added '${s.description ?? ''}' (${cur(s.line_total_ex_tax)}) from the invoice copy`,
-    );
-    setDoc((prev) => ({
-      ...prev,
-      actioned_suggestions: log,
-      lines: [...prev.lines, fields as Line],
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'add_line', fields },
-      { op: 'update_header', fields: { actioned_suggestions: log } },
-    ]);
-  };
   const onPo = (poId: string) => {
     const po = pos.find((p) => p.id === poId);
     setDoc((prev) => ({
@@ -1141,156 +760,221 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const s = suppliers.find((x) => x.id === id);
     patchHeader({ linked_supplier_id: id || null, supplier_name: s?.name ?? null });
   };
-  // Loaded supplier whose name matches the invoice's printed supplier name
-  // (normalized substring either way) — offered when the feed left the
-  // invoice UNLINKED ("The Sawmill Brewing Company Limited" vs the Loaded
-  // record "Sawmill"). Picking it is a local header edit, written on receive.
-  const suggestedSupplier = useMemo(() => {
-    // The review's LLM match (from the copy's printed supplier — Gate 12)
-    // wins: it fires for a MISSING link and for a genuinely different
-    // business, and never churns on naming variations.
-    if (doc.matched_supplier_id
-      && (!doc.linked_supplier_id
-        || (doc.supplier_differs && doc.matched_supplier_id !== doc.linked_supplier_id))) {
-      return { id: doc.matched_supplier_id, name: doc.matched_supplier_name ?? '' };
-    }
-    if (doc.linked_supplier_id || !doc.supplier_name) return undefined;
-    const nrm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const target = nrm(doc.supplier_name);
-    if (target.length < 3) return undefined;
-    return suppliers.find((s) => {
-      const c = nrm(s.name || '');
-      return c.length >= 3 && (c === target || target.includes(c) || c.includes(target));
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc.linked_supplier_id, doc.supplier_name, doc.matched_supplier_id, doc.matched_supplier_name, doc.supplier_differs, suppliers]);
-  // ONE accept path for the supplier link — used by BOTH the inline note and
-  // its Suggested Changes row (logged ✓, undoable via undo_header).
-  const applySupplierSuggestion = (s: { id: string; name?: string | null }) => {
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== `supplier:${s.id}`),
-      {
-        key: `supplier:${s.id}`,
-        summary: `Supplier linked to '${s.name ?? ''}' — saved to Loaded on receive`,
-        undo_header: {
-          linked_supplier_id: doc.linked_supplier_id ?? null,
-          supplier_name: doc.supplier_name ?? null,
-        },
-      },
-    ];
-    setDoc((prev) => ({
-      ...prev,
-      actioned_suggestions: log,
-      linked_supplier_id: s.id,
-      supplier_name: s.name ?? prev.supplier_name,
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { linked_supplier_id: s.id, supplier_name: s.name ?? null, actioned_suggestions: log } },
-    ]);
+
+  // ---- The suggestion/issue action engine ------------------------------
+  // ONE generic applier for every server suggestion, used by BOTH the inline
+  // chips and the summary list — the two surfaces can never diverge. Each
+  // accept is a single PATCH (the value edit + the action-log entry together,
+  // so the doc version can't race), and every decision lands in
+  // doc.suggestion_actions — THE RECORD, shared with autopilot (by: "norm").
+  const nowIso = () => new Date().toISOString();
+  const actionsList = useMemo(() => docLive.suggestion_actions || [], [docLive.suggestion_actions]);
+  // Last action per suggestion_id wins (also covers autopilot's entries).
+  const lastAction = useMemo(() => {
+    const m = new Map<string, SuggestionAction>();
+    for (const a of actionsList) if (a?.suggestion_id) m.set(a.suggestion_id, a);
+    return m;
+  }, [actionsList]);
+  const stateOf = (id: string): 'pending' | 'accepted' | 'dismissed' => {
+    const a = lastAction.get(id);
+    if (!a || a.action === 'undone') return 'pending';
+    return a.action;
   };
-  // The copy names a supplier no Loaded record covers (the engine's match
-  // found nothing): create it and link — resolve-first server-side (an
-  // existing record is returned, never duplicated), two-step confirm like
-  // create-unit. The CREATE is the one Loaded write; the invoice takes the
-  // supplier locally via applySupplierSuggestion (written at receive).
-  const createSupplierAndApply = async () => {
-    const name = doc.copy_supplier?.trim();
-    if (!name || !venueId || embedded || creatingSupplier) return;
-    if (!confirmSupplier) {
-      setConfirmSupplier(true);
+  const recordOp = (entry: SuggestionAction): [SuggestionAction[], Record<string, unknown>] => {
+    const log = [...(docRef.current.suggestion_actions || []), entry];
+    return [log, { op: 'update_header', fields: { suggestion_actions: log } }];
+  };
+
+  const acceptSuggestion = (s: Suggestion) => {
+    if (doneState) return;
+    if (s.kind === 'delete_invoice') {
+      // A Loaded write (verified DELETE endpoint) — server applier, web only.
+      void acceptFix(s);
       return;
     }
-    setConfirmSupplier(false);
-    setCreatingSupplier(true);
-    setMessage('');
-    try {
-      const res = await apiFetch('/api/invoice-fixes/create-supplier', {
-        method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, name }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
-        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+    if (s.kind === 'add_line') {
+      const payload = { ...(s.payload || {}) } as Record<string, unknown>;
+      if (!Object.keys(payload).length) return;
+      const entry: SuggestionAction = {
+        suggestion_id: s.id, action: 'accepted', by: 'user', at: nowIso(),
+        before: { added_line_id: payload.id ?? null }, after: { added: true },
+      };
+      const [log, logOp] = recordOp(entry);
+      setDoc((prev) => ({
+        ...prev,
+        suggestion_actions: log,
+        lines: [...prev.lines, payload as unknown as Line],
+      }));
+      if (workingDocId) patchDoc([{ op: 'add_line', fields: payload }, logOp]);
+      return;
+    }
+    const apply = s.apply;
+    if (!apply || !Object.keys(apply).length) return;
+    if (s.line_id) {
+      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
+      const ln = docRef.current.lines[idx];
+      if (!ln) return;
+      const before: Record<string, unknown> = {};
+      for (const k of Object.keys(apply)) before[k] = (ln as unknown as Record<string, unknown>)[k] ?? null;
+      const fields: Record<string, unknown> = { ...apply };
+      // Total follows qty × cost — the ONLY client math (the receive
+      // recomputes anyway; this keeps the display honest).
+      if ('quantity_received' in apply || 'unit_cost' in apply) {
+        const q = Number(fields.quantity_received ?? ln.quantity_received);
+        const c = Number(fields.unit_cost ?? ln.unit_cost);
+        if (Number.isFinite(q) && Number.isFinite(c)) {
+          before.total_cost = ln.total_cost ?? null;
+          fields.total_cost = round4(q * c);
+        }
       }
-      const out = await res.json();
-      if (!out?.supplier_id) throw new Error('Loaded did not return the created supplier');
-      const rec = { id: out.supplier_id as string, name: (out.supplier_name as string) ?? name };
-      // Into the dropdown before the header takes it.
-      setSuppliers((prev) => (prev.some((s) => s.id === rec.id) ? prev : [...prev, rec]));
-      applySupplierSuggestion(rec);
-    } catch (e) {
-      setStatus('error');
-      setMessage(e instanceof Error ? e.message : 'Could not create the supplier in Loaded');
-    } finally {
-      setCreatingSupplier(false);
+      const entry: SuggestionAction = {
+        suggestion_id: s.id, action: 'accepted', by: 'user', at: nowIso(), before, after: apply,
+      };
+      const [log, logOp] = recordOp(entry);
+      setDoc((prev) => ({
+        ...prev,
+        suggestion_actions: log,
+        lines: prev.lines.map((l, i) => (i === idx ? { ...l, ...(fields as Partial<Line>) } : l)),
+      }));
+      if (workingDocId) patchDoc([{ op: 'update_line', line_id: ln.id, index: idx, fields }, logOp]);
+      return;
     }
-  };
-
-  // Notes persist on a debounce so a keystroke isn't a PATCH each.
-  const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onNotes = (value: string) => {
-    setDoc((prev) => ({ ...prev, notes: value }));
-    if (!workingDocId) return;
-    if (notesTimer.current) clearTimeout(notesTimer.current);
-    notesTimer.current = setTimeout(
-      () => patchDoc([{ op: 'update_notes', value }]),
-      500,
-    );
-  };
-
-  // Add Item — append a new line from the stock catalogue. A temporary id lets
-  // update_line/remove_line address it locally; do_receive drops it and Loaded
-  // assigns the real id on receive.
-  const addItem = (item: StockItem) => {
-    const u = units.find((x) => x.id === item.unit_id);
-    const fields = {
-      id: `new-${Date.now()}`,
-      code: item.code ?? null,
-      description: item.name ?? null,
-      brand: null,
-      unit: u?.name ?? item.unit_name ?? null,
-      linked_unit_id: item.unit_id ?? null,
-      unit_ratio: u?.ratio ?? item.unit_ratio ?? 1,
-      quantity_ordered: null,
-      quantity_received: 1,
-      unit_cost: item.unit_cost ?? 0,
-      total_cost: item.unit_cost ?? 0,
-      linked_item_id: item.id,
+    // Header apply.
+    const before: Record<string, unknown> = {};
+    for (const k of Object.keys(apply)) before[k] = (docRef.current as unknown as Record<string, unknown>)[k] ?? null;
+    const entry: SuggestionAction = {
+      suggestion_id: s.id, action: 'accepted', by: 'user', at: nowIso(), before, after: apply,
     };
-    setDoc((prev) => ({ ...prev, lines: [...prev.lines, fields as Line] }));
-    if (workingDocId) patchDoc([{ op: 'add_line', fields }]);
-    setAddQuery('');
-    setAddOpen(false);
+    const [log, logOp] = recordOp(entry);
+    setDoc((prev) => ({ ...prev, ...(apply as Partial<DocData>), suggestion_actions: log }));
+    if (workingDocId) patchDoc([{ op: 'update_header', fields: apply }, logOp]);
   };
 
-  const candidatePos = useMemo(
-    () => pos.filter((p) => !p.supplier_id || p.supplier_id === doc.linked_supplier_id),
-    [pos, doc.linked_supplier_id],
-  );
-  const sortedUnits = useMemo(
-    () => [...units].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true })),
-    [units],
-  );
+  // Dismiss: record-only ("declined without applying"). Also how a blocking
+  // ISSUE is waved through ("I've checked this") — same record, the issue id.
+  const dismissAction = (id: string) => {
+    if (doneState) return;
+    const entry: SuggestionAction = { suggestion_id: id, action: 'dismissed', by: 'user', at: nowIso() };
+    const [log, logOp] = recordOp(entry);
+    setDoc((prev) => ({ ...prev, suggestion_actions: log }));
+    if (workingDocId) patchDoc([logOp]);
+  };
 
-  // The Loaded unit the review recommends for each line, resolved from the
-  // guideline-derived `recommended_unit` (e.g. "2L" → the "2 L" unit). Only a
-  // recommendation that resolves AND differs from the line's current unit is a
-  // real suggestion — a 2L bottle already on "2 L" is not flagged.
-  const recommendedFor = useMemo(() => {
-    const m: Record<string, Unit | undefined> = {};
-    for (const l of doc.lines) {
-      const rec = l.recommended_unit ? resolveUnit(l.recommended_unit, units) : undefined;
-      // No suggestion when the resolved unit IS the line's unit — by id, or
-      // by case/whitespace-insensitive NAME: venues carry duplicate unit
-      // records ('each' AND 'Each'), and resolving to the twin record must
-      // not churn a "unit Each → each" row.
-      m[l.id] = rec
-        && rec.id !== l.linked_unit_id
-        && unitNameKey(rec.name) !== unitNameKey(l.unit)
-        ? rec : undefined;
+  // Undo: apply the recorded `before` back (accepted), or just clear the
+  // record (dismissed). Always appends an "undone" entry — the record is
+  // append-only, so the trail stays honest.
+  const undoAction = (s: Suggestion | null, id: string) => {
+    if (doneState) return;
+    const a = lastAction.get(id);
+    if (!a || a.action === 'undone') return;
+    const entry: SuggestionAction = { suggestion_id: id, action: 'undone', by: 'user', at: nowIso() };
+    const [log, logOp] = recordOp(entry);
+    if (a.action === 'dismissed' || !a.before) {
+      setDoc((prev) => ({ ...prev, suggestion_actions: log }));
+      if (workingDocId) patchDoc([logOp]);
+      return;
     }
-    return m;
-  }, [doc.lines, units]);
+    if (s?.kind === 'add_line') {
+      const lineId = a.before.added_line_id;
+      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(lineId));
+      setDoc((prev) => ({
+        ...prev,
+        suggestion_actions: log,
+        lines: idx >= 0 ? prev.lines.filter((_, i) => i !== idx) : prev.lines,
+      }));
+      if (workingDocId) patchDoc([...(idx >= 0 ? [{ op: 'remove_line', index: idx }] : []), logOp]);
+      return;
+    }
+    if (s?.line_id) {
+      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
+      const ln = docRef.current.lines[idx];
+      if (ln) {
+        setDoc((prev) => ({
+          ...prev,
+          suggestion_actions: log,
+          lines: prev.lines.map((l, i) => (i === idx ? { ...l, ...(a.before as Partial<Line>) } : l)),
+        }));
+        if (workingDocId) patchDoc([{ op: 'update_line', line_id: ln.id, index: idx, fields: a.before }, logOp]);
+        return;
+      }
+      // The line is gone — record the undo anyway.
+      setDoc((prev) => ({ ...prev, suggestion_actions: log }));
+      if (workingDocId) patchDoc([logOp]);
+      return;
+    }
+    setDoc((prev) => ({ ...prev, ...(a.before as Partial<DocData>), suggestion_actions: log }));
+    if (workingDocId) patchDoc([{ op: 'update_header', fields: a.before }, logOp]);
+  };
+
+  // ---- Derived review state (rendering only — the server decided) -------
+  // Legacy stored docs carry old-shape suggestions ({type, summary}) — those
+  // are not rendered; only replica_v1 entries ({id, kind}) are.
+  const suggestions = useMemo(
+    () => (docLive.suggestions || []).filter(
+      (s): s is Suggestion => !!s && typeof (s as { kind?: unknown }).kind === 'string' && !!(s as { id?: unknown }).id,
+    ),
+    [docLive.suggestions],
+  );
+  const issues = useMemo(
+    () => (docLive.issues || []).filter((i) => !!i && !!i.id && !!i.message),
+    [docLive.issues],
+  );
+  // An issue is CLEARED when its clears_when predicate holds against the
+  // current working values ('resolved'), or when it was explicitly accepted/
+  // dismissed — "I've checked this" ('checked'). Otherwise it is open, and a
+  // blocking open issue gates the Receive button on BOTH surfaces.
+  type IssueState = 'open' | 'resolved' | 'checked';
+  const issueStateOf = (i: Issue): IssueState => {
+    if (evalClears(docLive, i)) return 'resolved';
+    return stateOf(i.id) === 'pending' ? 'open' : 'checked';
+  };
+  const blockingIssues = issues.filter((i) => i.blocking);
+  const noteIssues = issues.filter((i) => !i.blocking);
+  const blockingOpen = blockingIssues.filter((i) => issueStateOf(i) === 'open');
+  const liveConfidence: 'ready' | 'needs_review' | null =
+    reviewed ? (blockingOpen.length ? 'needs_review' : 'ready') : null;
+  const pendingSuggestions = suggestions.filter((s) => stateOf(s.id) === 'pending');
+  // Inline chip lookups — the same suggestion objects the summary list
+  // renders, so accepting from either surface is the same action.
+  const suggFor = (lineId: string, field: string) =>
+    pendingSuggestions.find((s) => s.kind === 'line_value' && String(s.line_id) === String(lineId) && s.field === field);
+  const strikeSuggFor = (lineId: string) =>
+    pendingSuggestions.find((s) => s.kind === 'strike' && String(s.line_id) === String(lineId));
+  const itemSuggFor = (lineId: string) =>
+    pendingSuggestions.find((s) => s.kind === 'line_value' && String(s.line_id) === String(lineId) && s.field === 'linked_item_id');
+  const headerValueSugg = (field: string) =>
+    pendingSuggestions.find((s) => s.kind === 'header_value' && s.field === field);
+  const supplierSugg = pendingSuggestions.find((s) => s.kind === 'supplier');
+  const poSuggs = pendingSuggestions.filter((s) => ['link_po', 'unlink_po', 'split_reference'].includes(s.kind));
+  const moneySuggs = ['subtotal', 'tax_amount', 'discount_amount', 'total']
+    .map((f) => headerValueSugg(f))
+    .filter((s): s is Suggestion => !!s);
+  const deleteSugg = suggestions.find((s) => s.kind === 'delete_invoice');
+
+  const jumpToLine = (lineId: string) => {
+    const el = document.getElementById(`riv-${uid}-${lineId}`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setFlashLine(lineId);
+    window.setTimeout(() => setFlashLine((curr) => (curr === lineId ? null : curr)), 1800);
+  };
+
+  const doneState = status === 'done' || !!doc.is_received || !!doc.is_deleted;
+  const draftDeleted = deletedDraft || !!doc.is_deleted;
+  // Lines still pointing at a NEW (uncreated) stock item or unit — receiving is
+  // blocked until each is explicitly created in Loaded. A struck line is
+  // excluded from the receive entirely, so it never gates it.
+  const unresolved = useMemo(
+    () => doc.lines.filter((l) => !l.struck && (!l.linked_item_id || !l.linked_unit_id)),
+    [doc.lines],
+  );
+  // No linked supplier: Loaded rejects the receive outright (500), so block
+  // it here with a visible reason — on BOTH surfaces (same gating).
+  const supplierBlocking = !doneState && !!doc.invoice_id && !doc.linked_supplier_id;
+  // Nothing to receive: an empty draft (a statement/letter uploaded as an
+  // invoice, or every line struck). Deleting the draft is the action.
+  const noLines = !doneState && !!doc.invoice_id && !doc.lines.some((l) => !l.struck);
+  const receiveBlocked = status === 'saving' || unresolved.length > 0
+    || supplierBlocking || noLines || blockingOpen.length > 0;
 
   const includesTax = !!doc.unit_cost_includes_tax;
   const totals = useMemo(() => {
@@ -1304,47 +988,23 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       excl += includesTax ? lt - t : lt;
     }
     const discount = doc.discount_amount ?? 0;
-    // Loaded's own totals arithmetic (from their app bundle): 2dp-round the
-    // sub-sums, then absorb up to ±10c of drift vs the STATED total as a
-    // "rounding amount" — shown as a Rounding row, stated total kept.
     const excl2 = round2(excl);
     const tax2 = round2(tax);
-    const incl = round2(excl2 + tax2 - discount);
-    const diff = doc.total != null ? round2(doc.total - incl) : 0;
-    const rounding = diff >= -0.1 && diff <= 0.1 && Math.abs(diff) > Number.EPSILON ? diff : null;
-    return { excl: excl2, tax: tax2, discount, incl, diff, rounding };
-  }, [doc.lines, includesTax, doc.discount_amount, doc.total]);
-  // The header's stated Invoice Total vs what the lines add up to — only a
-  // mismatch when BEYOND Loaded's 10c rounding band.
-  const totalMismatch = doc.total != null && totals.diff !== 0 && totals.rounding == null;
-  // Loaded's own header doesn't add up (totals check) and no other money
-  // suggestion explains it: set the header from the line items — a LOCAL
-  // header edit like the copy-totals accept, written to Loaded on receive.
-  const applyTotalsRecompute = () => {
-    const key = `totals-recompute:${doc.invoice_id}`;
-    const fields: Partial<DocData> = {
-      subtotal: round2(totals.excl),
-      tax_amount: round2(totals.tax),
-      total: round2(totals.incl),
-    };
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== key),
-      {
-        key,
-        summary: `Invoice totals set from the line items (subtotal ${cur(totals.excl)}, total ${cur(totals.incl)})`,
-        undo_header: {
-          total: doc.total ?? null,
-          subtotal: doc.subtotal ?? null,
-          tax_amount: doc.tax_amount ?? null,
-        },
-      },
-    ];
-    setDoc((prev) => ({ ...prev, ...fields, actioned_suggestions: log }));
-    if (workingDocId) patchDoc([
-      { op: 'update_header', fields: { ...fields, actioned_suggestions: log } },
-    ]);
-  };
+    return { excl: excl2, tax: tax2, discount, incl: round2(excl2 + tax2 - discount) };
+  }, [doc.lines, includesTax, doc.discount_amount]);
 
+  const candidatePos = useMemo(
+    () => pos.filter((p) => !p.supplier_id || p.supplier_id === doc.linked_supplier_id),
+    [pos, doc.linked_supplier_id],
+  );
+  const sortedUnits = useMemo(
+    () => [...units].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true })),
+    [units],
+  );
+  const sortedGroups = useMemo(
+    () => [...stockGroups].sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    [stockGroups],
+  );
   const filteredStock = useMemo(() => {
     const q = addQuery.trim().toLowerCase();
     if (!q) return [] as StockItem[];
@@ -1352,9 +1012,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       .filter((i) => (i.name || '').toLowerCase().includes(q) || (i.code || '').toLowerCase().includes(q))
       .slice(0, 20);
   }, [addQuery, stockItems]);
-
   // Manual "search & link an existing item" inside the create form — the fallback
-  // when the LLM's single suggestion is wrong but the product does already exist.
+  // when the server's match is wrong but the product does already exist.
   const linkMatches = useMemo(() => {
     const q = linkQuery.trim().toLowerCase();
     if (!q) return [] as StockItem[];
@@ -1363,590 +1022,23 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       .slice(0, 8);
   }, [linkQuery, stockItems]);
 
-  const checks = useMemo(() => {
-    if (!doc.checks) return [] as { key: string; label: string; state: string }[];
-    const decode = (ch: string) =>
-      ch === 'p' ? 'pass' : ch === 'f' ? 'fail' : ch === 's' ? 'suggest' : 'skip';
-    // Emit in section/display order (not packed order), reading each state from
-    // the packed string by the check's fixed position.
-    return CHECK_SECTIONS.flatMap((sec) =>
-      sec.keys.map((key) => ({
-        key,
-        label: CHECK_LABEL[key],
-        state: decode(doc.checks![CHECK_ORDER.indexOf(key)]),
-      })),
-    );
-  }, [doc.checks]);
-  const checkByKey = useMemo(
-    () => Object.fromEntries(checks.map((c) => [c.key, c])) as Record<string, { key: string; label: string; state: string }>,
-    [checks],
-  );
-  const done = status === 'done' || !!doc.is_received || !!doc.is_deleted;
-  const draftDeleted = deletedDraft || !!doc.is_deleted;
-  // Lines still pointing at a NEW (uncreated) stock item or unit — receiving is
-  // blocked until each is explicitly created in Loaded. A struck line is
-  // excluded from the receive entirely, so it never gates it.
-  const unresolved = useMemo(
-    () => doc.lines.filter((l) => !l.struck && (!l.linked_item_id || !l.linked_unit_id)),
-    [doc.lines],
-  );
-  // The engine's "no NEW values" check is a snapshot of Loaded at review time.
-  // The user's LOCAL edits (picking an existing unit, linking an item) resolve
-  // it without any write until receive — reconcile the DISPLAY so it's clear
-  // nothing NEW will be created. Purely presentational: the engine's cached
-  // artifact is untouched, and the receive guard still runs off `unresolved`.
-  const newValuesResolvedByEdits =
-    !done && unresolved.length === 0 && checkByKey.items_matched?.state === 'fail';
-  // Incremental validation ("dirty parts"): a failed check whose underlying
-  // per-line mismatches were ALL addressed by local edits (accepted or
-  // dismissed suggestions, struck lines, values now matching the copy) is
-  // DISPLAYED resolved — no full re-review needed. Purely presentational,
-  // exactly like newValuesResolvedByEdits: the engine's cached artifact is
-  // never mutated, and full revalidation stays reserved for reset / a changed
-  // invoice in Loaded / server-applied fixes. Dismissing counts as resolved —
-  // the user made the decision.
-  // The copy's printed total disagrees with the header and hasn't been taken
-  // yet — drives the suggestion row and the amber Invoice Total input.
-  const totalSuggestPending = !!doc.copy_total_mismatch && doc.copy_total != null
-    && Math.abs((doc.total ?? 0) - doc.copy_total) > 0.02;
-  // The copy's printed invoice number disagrees with the draft's reference
-  // and hasn't been taken (or hand-fixed) yet — drives the suggestion row
-  // and the amber note under the Invoice Number input.
-  const refNorm = (v: string | null | undefined) =>
-    (v ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const invNumSuggestPending = !!doc.copy_invoice_number
-    && refNorm(doc.copy_invoice_number) !== refNorm(doc.reference_number);
-  const resolvedLocally = useMemo(() => {
-    const out = new Set<string>();
-    if (done || !doc.checks) return out;
-    const logged = new Set((doc.actioned_suggestions || []).map((a) => a.key));
-    const near = (a: number | null | undefined, b: number | null | undefined, tol: number) =>
-      a != null && b != null && Math.abs(a - b) <= tol;
-    // Totals accepted from the copy: the pdf_total check resolves when the
-    // header total now matches the copy, and the internal-consistency check
-    // resolves when the edited header arithmetic adds up again.
-    if (checkByKey.pdf_total?.state === 'fail'
-      && doc.copy_total != null && near(doc.total, doc.copy_total, 0.02)) {
-      out.add('pdf_total');
-    }
-    if (checkByKey.totals?.state === 'fail') {
-      const lineSum = doc.lines.filter((l) => !l.struck)
-        .reduce((s, l) => s + (l.quantity_received ?? 0) * (l.unit_cost ?? 0), 0);
-      if (near(lineSum, doc.subtotal, 0.02)
-        && near((doc.subtotal ?? 0) + (doc.tax_amount ?? 0), doc.total, 0.02)) {
-        out.add('totals');
-      }
-    }
-    if (checkByKey.unit_of_measure?.state === 'fail') {
-      const pending = doc.lines.some((l) => {
-        if (l.struck) return false;
-        if (recommendedFor[l.id]) return true; // derivable fix not yet taken
-        // Unreadable unit on the copy: pending until the user CONFIRMS the
-        // current unit or picks a different one.
-        if (l.unit_needs_confirmation
-          && l.linked_unit_id === l.original_unit_id
-          && !logged.has(`confirm-unit:${l.id}`)) return true;
-        // Flagged mismatch with no derivable fix: resolved once the user
-        // changed the unit away from the reviewed snapshot, or dismissed.
-        return !!l.copy_unit_mismatch
-          && l.linked_unit_id === l.original_unit_id
-          && !logged.has(`unit:${l.id}`);
-      });
-      if (!pending) out.add('unit_of_measure');
-    }
-    if (checkByKey.pdf_lines?.state === 'fail') {
-      const linePending = doc.lines.some((l) => {
-        if (l.struck) return false;
-        if (l.copy_quantity_mismatch && l.copy_quantity != null
-          && !near(l.quantity_received ?? 0, l.copy_quantity, 0.001)
-          && !logged.has(`qty:${l.id}`)) return true;
-        if (l.copy_unit_cost_mismatch && l.copy_unit_price != null
-          && !near(l.unit_cost ?? 0, l.copy_unit_price, 0.005)
-          && !logged.has(`cost:${l.id}`)) return true;
-        if (l.copy_missing && !logged.has(`remove:${l.id}`)) return true;
-        if (l.copy_duplicate && !logged.has(`strike:${l.id}`)) return true;
-        return false;
-      });
-      const addPending = (doc.suggestions || []).some(
-        (s) => s.type === 'add_line' && !logged.has(addSuggestionKey(s)),
-      );
-      if (!linePending && !addPending) out.add('pdf_lines');
-    }
-    if (checkByKey.po_linked?.state === 'fail' && doc.linked_purchase_order_id) {
-      out.add('po_linked');
-    }
-    // Supplier from the copy (Gate 12): resolved once a supplier link was
-    // accepted (logged), or — for the missing-link case — once any supplier
-    // is picked.
-    if (checkByKey.supplier?.state === 'fail') {
-      const supplierActioned = (doc.actioned_suggestions || []).some(
-        (a) => a.key.startsWith('supplier:') && !a.dismissed,
-      );
-      if (supplierActioned || (!doc.supplier_differs && doc.linked_supplier_id)) {
-        out.add('supplier');
-      }
-    }
-    // Invoice number from the copy: resolved once the reference matches the
-    // printed number (accepted or hand-fixed).
-    if (checkByKey.pdf_invoice_number?.state === 'fail'
-      && doc.copy_invoice_number
-      && refNorm(doc.reference_number) === refNorm(doc.copy_invoice_number)) {
-      out.add('pdf_invoice_number');
-    }
-    // Split order accepted (the order reference was set): the po_linked
-    // SUGGESTED change is actioned — show it resolved, not still pending.
-    if (checkByKey.po_linked?.state === 'suggest') {
-      const splitAccepted = (doc.actioned_suggestions || []).some(
-        (a) => a.key.startsWith('splitpo:') && !a.dismissed,
-      );
-      if (splitAccepted) out.add('po_linked');
-    }
-    // Doubled-up invoice (order already fully invoiced by the sibling):
-    // resolved once the bogus order reference was removed.
-    if (checkByKey.duplicate?.state === 'fail' && doc.split_remove_po) {
-      const removed = (doc.actioned_suggestions || []).some(
-        (a) => a.key.startsWith('removepo:') && !a.dismissed,
-      );
-      if (removed) out.add('duplicate');
-    }
-    // PO belongs to another supplier: resolved by unlinking it, or by a
-    // supplier switch (the invoice's supplier was the wrong half).
-    if (checkByKey.po_supplier?.state === 'fail') {
-      const unlinked = (doc.actioned_suggestions || []).some(
-        (a) => a.key.startsWith('unlinkpo:') && !a.dismissed,
-      );
-      const supplierSwitched = (doc.actioned_suggestions || []).some(
-        (a) => a.key.startsWith('supplier:') && !a.dismissed,
-      );
-      if ((unlinked && !doc.linked_purchase_order_id) || supplierSwitched) {
-        out.add('po_supplier');
-      }
-    }
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [done, doc.checks, doc.lines, doc.suggestions, doc.actioned_suggestions, doc.linked_purchase_order_id, doc.total, doc.subtotal, doc.tax_amount, doc.copy_total, doc.copy_invoice_number, doc.reference_number, checkByKey, recommendedFor]);
-  const checkSummary = useMemo(() => {
-    if (checks.length === 0) return reviewing ? 'checking against the copy…' : 'not yet reviewed';
-    let fail = checks.filter((c) => c.state === 'fail').length;
-    let suggest = checks.filter((c) => c.state === 'suggest').length;
-    const skip = checks.filter((c) => c.state === 'skip').length;
-    // resolvedLocally covers FAIL and SUGGEST states (e.g. the accepted
-    // split-order reference resolves a suggested po_linked) — decrement the
-    // bucket each resolved key actually came from.
-    let resolved = newValuesResolvedByEdits ? 1 : 0;
-    for (const key of resolvedLocally) {
-      const st = checkByKey[key]?.state;
-      if (st === 'suggest') suggest -= 1;
-      else fail -= 1;
-      resolved += 1;
-    }
-    if (fail < 0) fail = 0;
-    if (suggest < 0) suggest = 0;
-    if (!fail && !skip && !suggest && !resolved) return 'all checks pass';
-    return `${checks.filter((c) => c.state === 'pass').length} passed`
-      + `${fail ? ` · ${fail} failed` : ''}`
-      + `${suggest ? ` · ${suggest} suggested` : ''}`
-      + `${resolved ? ` · ${resolved} resolved by your edits` : ''}`
-      + `${skip ? ` · ${skip} not reached` : ''}`;
-  }, [checks, reviewing, newValuesResolvedByEdits, resolvedLocally, checkByKey]);
-  const failChecks = useMemo(
-    () => checks.filter(
-      (c) => c.state === 'fail'
-        && !(c.key === 'items_matched' && newValuesResolvedByEdits)
-        && !resolvedLocally.has(c.key),
-    ),
-    [checks, newValuesResolvedByEdits, resolvedLocally],
-  );
+  // The action record, effective state (last action per suggestion wins):
+  // "Norm applied 3 · you applied 2 · dismissed 1" + expandable trail.
+  const effectiveActions = useMemo(() => [...lastAction.values()].filter((a) => a.action !== 'undone'), [lastAction]);
+  const recordCounts = useMemo(() => ({
+    norm: effectiveActions.filter((a) => a.action === 'accepted' && a.by === 'norm').length,
+    user: effectiveActions.filter((a) => a.action === 'accepted' && a.by !== 'norm').length,
+    dismissed: effectiveActions.filter((a) => a.action === 'dismissed').length,
+  }), [effectiveActions]);
+  const explanationFor = (sid: string) =>
+    suggestions.find((s) => s.id === sid)?.explanation
+    ?? issues.find((i) => i.id === sid)?.message
+    ?? sid;
 
-  // The engine's link_po suggestion, shown IN the Order Number picker as a
-  // suggested value (strict mirror: the doc's own linked_purchase_order_id
-  // stays exactly as Loaded has it until accepted/received). A split PO
-  // (already invoiced elsewhere) is informational only — never offered.
-  const suggestedPo =
-    !done && !doc.linked_purchase_order_id
-      ? (doc.suggestions || []).find(
-          (s) => s.type === 'link_po' && s.purchase_order_id && s.already_linked_elsewhere !== true,
-        )
-      : undefined;
-
-  // ---- Suggested Changes: ONE derivation --------------------------------
-  // The list is computed from the SAME per-line engine fields that drive the
-  // inline affordances (recommended_unit, copy_quantity_mismatch,
-  // copy_duplicate, matched_item), so an inline suggestion can never be
-  // missing from the list. Engine entries are used only for server-write /
-  // informational types (link_po, split-PO). Applied entries come from the
-  // persisted action log and stay visible (✓, struck-through) even after the
-  // lines they touched were edited, re-reviewed or re-opened.
-  type SuggestionRow = {
-    key: string;
-    summary: string;
-    state: 'pending' | 'applied' | 'dismissed';
-    accept?: () => void;
-    acceptLabel?: string; // e.g. the armed "Confirm — create '8x300m'" state
-    dismiss?: () => void;
-    dismissLabel?: string; // e.g. "Confirm" for confirm-unit rows
-    undo?: () => void;
-    engineFix?: Suggestion; // link_po rows accept via the server
-    // "Open in Loaded" / "View received copy" affordances: href renders as a
-    // plain new-tab anchor (the user's own Loaded session authenticates);
-    // onClick uses the pre-opened-tab copy viewer. Shown in every row state —
-    // comparing the two copies matters most while deciding.
-    links?: { label: string; href?: string; onClick?: () => void }[];
-  };
-  const suggestionRows: SuggestionRow[] = (() => {
-    const rows: SuggestionRow[] = [];
-    const log = doc.actioned_suggestions || [];
-    const logged = new Set(log.map((a) => a.key));
-    (doc.suggestions || []).forEach((s, si) => {
-      if (s.type === 'link_po' && !doc.linked_purchase_order_id) {
-        const key = `po:${s.purchase_order_id || s.po_number || ''}:${si}`;
-        const split = s.already_linked_elsewhere === true;
-        // The dedicated split rows below own the actionable states — the
-        // engine's informational row would duplicate them.
-        if (split && (doc.split_po_suggested || doc.split_remove_po)) return;
-        if (!logged.has(key)) {
-          const summary = s.summary || `Link purchase order ${s.po_number ?? ''}`;
-          // Split-order case: the PO is already invoiced elsewhere — link the
-          // PO, the other invoice, and its copy so the user sees where the
-          // rest of the order went.
-          const links: SuggestionRow['links'] = [];
-          if (split && s.purchase_order_id) links.push({ label: 'PO in Loaded', href: loadedPoUrl(s.purchase_order_id) });
-          if (split && s.linked_invoice_id) links.push({ label: 'Its invoice', href: loadedInvoiceUrl(s.linked_invoice_id) });
-          if (split && s.linked_invoice_file_id) links.push({ label: 'View its copy', onClick: () => openCopy({ fileId: s.linked_invoice_file_id!, nameHint: `${s.linked_invoice_reference || 'split-sibling'}` }) });
-          rows.push({
-            key,
-            summary,
-            state: 'pending',
-            engineFix: split ? undefined : s,
-            dismiss: split ? undefined : () => dismissSuggestion(key, summary),
-            links: links.length ? links : undefined,
-          });
-        }
-      } else if (s.type === 'delete_invoice') {
-        // Statement or duplicate: Accept deletes the draft from Loaded
-        // (server applier, verified DELETE endpoint). Keyed by index — the
-        // engine dedupes, but two rows must never share a React key.
-        const key = `delete_invoice:${si}`;
-        if (!logged.has(key)) {
-          const summary = s.summary || 'This document is a supplier statement, not an invoice — delete this draft in Loaded';
-          // Duplicate case: link the already-received sibling + serve its copy
-          // so the user can compare both invoices before deleting this draft.
-          // The copy link only appears when the sibling actually has one
-          // (older invoices were often received without an attachment).
-          const dupId = s.duplicate_of_invoice_id || doc.duplicate_of_invoice_id || null;
-          const dupFileId = s.duplicate_of_file_id || doc.duplicate_of_file_id || null;
-          const dupPoId = s.duplicate_of_purchase_order_id || doc.duplicate_of_purchase_order_id || null;
-          const links: SuggestionRow['links'] = [];
-          if (dupId) links.push({ label: 'Received invoice in Loaded', href: loadedInvoiceUrl(dupId) });
-          // Goods receipted straight against the ORDER: there is no invoice
-          // document in Loaded to link or fetch a copy from — link the PO.
-          if (!dupId && dupPoId) links.push({ label: 'Received order in Loaded', href: loadedPoUrl(dupPoId) });
-          if (dupFileId) links.push({ label: 'View received copy', onClick: () => openCopy({ fileId: dupFileId, nameHint: `${doc.reference_number || dupId}-received` }) });
-          // Say WHY there's no copy to compare — a silently missing link
-          // reads as a bug, not as "it was received without an attachment".
-          if (dupId && !dupFileId) links.push({ label: '(received without a copy attached)' });
-          rows.push({
-            key,
-            summary,
-            state: 'pending',
-            engineFix: s,
-            dismiss: () => dismissSuggestion(key, summary),
-            links: links.length ? links : undefined,
-          });
-        }
-      } else if (s.type === 'add_line') {
-        // A line on the invoice copy with no matching draft line: Accept
-        // appends it as a LOCAL draft edit (applied on receive) — never via
-        // the server accept endpoint. Content-derived key: the log must
-        // recognize the same doc line across re-reviews.
-        const key = addSuggestionKey(s);
-        if (!logged.has(key)) {
-          const summary = s.summary || `Add document line '${s.description ?? ''}' from the invoice copy`;
-          rows.push({
-            key: `${key}:${si}`,
-            summary,
-            state: 'pending',
-            accept: () => applyAddSuggestion(s),
-            dismiss: () => dismissSuggestion(key, summary),
-          });
-        }
-      }
-    });
-    // Per-line rows share one shape: stable key, accept applies, dismiss
-    // declines (logged, undoable) — both suppressed once the key is logged.
-    const pushLineRow = (key: string, summary: string, accept: () => void) => {
-      if (logged.has(key)) return;
-      rows.push({
-        key,
-        summary,
-        state: 'pending',
-        accept,
-        dismiss: () => dismissSuggestion(key, summary),
-      });
-    };
-    // Header-level: the invoice has NO linked supplier (or the copy names a
-    // DIFFERENT business — Gate 12) and a Loaded record matches — same accept
-    // path as the inline note under the Supplier dropdown. Receiving stays
-    // blocked (supplierBlocking) even if dismissed when supplier-less: Loaded
-    // cannot receive a supplier-less invoice.
-    if (doc.invoice_id && suggestedSupplier
-      && (!doc.linked_supplier_id || doc.supplier_differs)) {
-      pushLineRow(
-        `supplier:${suggestedSupplier.id}`,
-        !doc.linked_supplier_id
-          ? `Supplier '${doc.copy_supplier ?? doc.supplier_name ?? ''}' is not linked in Loaded — link to '${suggestedSupplier.name}' (saved to Loaded on receive)`
-          : `Supplier '${doc.supplier_name ?? ''}' → '${suggestedSupplier.name}' (the copy names '${doc.copy_supplier ?? ''}' — saved to Loaded on receive)`,
-        () => applySupplierSuggestion(suggestedSupplier),
-      );
-    }
-    // Header-level: the copy names a supplier NO Loaded record covers (the
-    // engine's match found nothing and no name-hit fallback) — offer to
-    // create it, two-step confirm like create-unit. Accepting creates the
-    // record (the one Loaded write) and links it locally.
-    if (doc.invoice_id && !suggestedSupplier && doc.copy_supplier
-      && (!doc.linked_supplier_id || doc.supplier_differs)
-      && !embedded
-      && !(doc.actioned_suggestions || []).some((a) => a.key.startsWith('supplier:') && !a.dismissed)) {
-      const csKey = `create-supplier:${doc.invoice_id}`;
-      if (!logged.has(csKey)) {
-        const summary = `Supplier '${doc.copy_supplier}' is not in Loaded — create it and link (created in Loaded on accept)`;
-        rows.push({
-          key: csKey,
-          summary,
-          state: 'pending',
-          accept: () => { void createSupplierAndApply(); },
-          acceptLabel: creatingSupplier
-            ? 'Creating…'
-            : confirmSupplier
-              ? `Confirm — create '${doc.copy_supplier}'`
-              : undefined,
-          dismiss: () => dismissSuggestion(csKey, summary),
-        });
-      }
-    }
-    // Header totals from the copy (Gate 11): one row, accepted as a local
-    // header edit — written to Loaded on receive.
-    if (totalSuggestPending && doc.copy_total != null) {
-      pushLineRow(
-        `total:${doc.invoice_id}`,
-        `Invoice total ${cur(doc.total)} → ${cur(doc.copy_total)} (per the invoice copy)`,
-        applyTotalSuggestion,
-      );
-    }
-    // The copy prints a DIFFERENT invoice number (pdf_invoice_number): a
-    // local header edit; dismiss is the "wrong attachment" escape hatch.
-    if (invNumSuggestPending) {
-      pushLineRow(
-        `invnum:${doc.invoice_id}`,
-        `Invoice number '${doc.reference_number ?? ''}' → '${doc.copy_invoice_number}' (per the invoice copy)`,
-        applyInvoiceNumberSuggestion,
-      );
-    }
-    // The linked order belongs to ANOTHER supplier (po_supplier) and no
-    // supplier-switch suggestion covers the conflict (when the supplier
-    // itself is wrong, switching it is the primary fix): offer the unlink.
-    if (doc.po_supplier_mismatch && doc.linked_purchase_order_id && !suggestedSupplier) {
-      pushLineRow(
-        `unlinkpo:${doc.linked_purchase_order_id}`,
-        `Order ${doc.purchase_order_number ?? ''} belongs to '${doc.po_supplier_name ?? 'another supplier'}', not this invoice's supplier — unlink it (pick the correct order if needed)`,
-        applyPoUnlinkSuggestion,
-      );
-    }
-    // Split order, scenario 3: the copy names an order Loaded didn't match —
-    // offer setting the reference (never the 1:1 link, which the sibling
-    // invoice holds).
-    const sibLinks = (): SuggestionRow['links'] => {
-      const links: SuggestionRow['links'] = [];
-      if (doc.split_po_id) links.push({ label: 'PO in Loaded', href: loadedPoUrl(doc.split_po_id) });
-      if (doc.split_sibling_invoice_id) links.push({ label: 'Its invoice', href: loadedInvoiceUrl(doc.split_sibling_invoice_id) });
-      if (doc.split_sibling_file_id) links.push({ label: 'View its copy', onClick: () => openCopy({ fileId: doc.split_sibling_file_id!, nameHint: doc.split_sibling_reference || 'split-sibling' }) });
-      return links;
-    };
-    if (doc.split_po_suggested && doc.split_po_id && !logged.has(`splitpo:${doc.split_po_id}`)) {
-      const summary = `Set order ${doc.split_po_number ?? ''} on this invoice — part of a split order (also invoiced on '${doc.split_sibling_reference ?? 'another invoice'}')`;
-      rows.push({
-        key: `splitpo:${doc.split_po_id}`,
-        summary,
-        state: 'pending',
-        accept: applySplitPoSuggestion,
-        dismiss: () => dismissSuggestion(`splitpo:${doc.split_po_id}`, summary),
-        links: sibLinks(),
-      });
-    }
-    // Split order, scenario 2 (NOT a split — the sibling invoice already
-    // contains the same goods and total): offer removing the bogus order
-    // reference; dismiss = "genuinely a second delivery".
-    if (doc.split_remove_po && doc.split_po_id && doc.purchase_order_number
-      && !logged.has(`removepo:${doc.split_po_id}`)) {
-      const summary = `Remove order reference ${doc.split_po_number ?? doc.purchase_order_number} — already fully invoiced on '${doc.split_sibling_reference ?? 'another invoice'}' (same items and total)`;
-      rows.push({
-        key: `removepo:${doc.split_po_id}`,
-        summary,
-        state: 'pending',
-        accept: applyRemovePoSuggestion,
-        dismiss: () => dismissSuggestion(`removepo:${doc.split_po_id}`, summary),
-        links: sibLinks(),
-      });
-    }
-    doc.lines.forEach((l, idx) => {
-      // A struck line is inert: no pending rows of any kind (its own strike /
-      // remove action shows as an applied ✓ row from the log, with Undo).
-      if (l.struck) return;
-      const code = l.display_code || l.code || '?';
-      const rec = recommendedFor[l.id];
-      if (rec) {
-        pushLineRow(
-          `unit:${l.id}`,
-          `${code} · ${l.description ?? ''}: unit ${l.unit || '—'} → ${rec.name} (per the invoice copy)`,
-          () => applyUnitSuggestion(idx, rec),
-        );
-      } else if (l.copy_unit_mismatch && l.recommended_unit
-        && l.linked_unit_id === l.original_unit_id) {
-        // The copy's delivered unit doesn't exist in Loaded AT ALL: Accept
-        // arms a second confirmation (create-item style), and the confirm
-        // CREATES the unit (the one Loaded write), then the line takes it
-        // locally — applied to the line + variant on receive.
-        const unitKey = `unit:${l.id}`;
-        if (!logged.has(unitKey)) {
-          const summary = `${code} · ${l.description ?? ''}: unit ${l.unit || '—'} → ${l.recommended_unit} (new unit — created in Loaded on accept)`;
-          rows.push({
-            key: unitKey,
-            summary,
-            state: 'pending',
-            accept: () => { void createUnitAndApply(idx); },
-            acceptLabel: creatingUnitLine === l.id
-              ? 'Creating…'
-              : confirmUnitLine === l.id
-                ? `Confirm — create '${l.recommended_unit}'`
-                : undefined,
-            dismiss: () => dismissSuggestion(unitKey, summary),
-          });
-        }
-      }
-      const qtyPending = l.copy_quantity_mismatch && l.copy_quantity != null
-        && Math.abs((l.quantity_received ?? 0) - l.copy_quantity) > 0.001;
-      if (qtyPending) {
-        pushLineRow(
-          `qty:${l.id}`,
-          `${code} · ${l.description ?? ''}: Qty received ${l.quantity_received ?? 0} → ${l.copy_quantity} (per the invoice copy)`,
-          () => applyQtySuggestion(idx),
-        );
-      }
-      const costPending = l.copy_unit_cost_mismatch && l.copy_unit_price != null
-        && Math.abs((l.unit_cost ?? 0) - l.copy_unit_price) > 0.005;
-      if (costPending) {
-        pushLineRow(
-          `cost:${l.id}`,
-          `${code} · ${l.description ?? ''}: unit cost ${cur(l.unit_cost)} → ${cur(l.copy_unit_price)} (per the invoice copy)`,
-          () => applyCostSuggestion(idx),
-        );
-      }
-      if (l.copy_duplicate && !l.struck) {
-        pushLineRow(
-          `strike:${l.id}`,
-          `${code} · ${l.description ?? ''}: $0 duplicate line — strike it (excluded from receive)`,
-          () => applyStrikeSuggestion(idx),
-        );
-      }
-      if (l.copy_missing && !l.struck) {
-        pushLineRow(
-          `remove:${l.id}`,
-          `${code} · ${l.description ?? ''}: not on the attached invoice copy — remove it (excluded from receive)`,
-          () => applyRemoveSuggestion(idx),
-        );
-      }
-      // Unreadable unit: NO proposed value — a Confirm-only row (dismiss-style)
-      // that blocks Accept & Receive until the user confirms the current unit
-      // or picks another. Changing the unit resolves it via resolvedLocally.
-      if (l.unit_needs_confirmation && !l.struck
-        && l.linked_unit_id === l.original_unit_id
-        && !logged.has(`confirm-unit:${l.id}`)) {
-        const key = `confirm-unit:${l.id}`;
-        const summary = `${code} · ${l.description ?? ''}: the unit can't be read from the invoice copy — confirm the unit (currently '${l.unit ?? '—'}')`;
-        rows.push({
-          key,
-          summary,
-          state: 'pending',
-          dismiss: () => dismissSuggestion(key, `${code} · ${l.description ?? ''}: unit confirmed as '${l.unit ?? '—'}'`),
-          dismissLabel: 'Confirm',
-        });
-      }
-      const matched = l.matched_item;
-      if (!l.linked_item_id && matched?.id) {
-        pushLineRow(
-          `item:${l.id}`,
-          `${code} · ${l.description ?? ''}: link to existing '${matched.name ?? ''}'`,
-          () => linkItem(l.id, matched.id),
-        );
-      }
-    });
-    // Loaded's own header doesn't add up and NO other money suggestion is
-    // pending (line qty/cost, copy totals, add-line — those come first; this
-    // is the fallback when nothing else explains the drift): set the header
-    // from the line items.
-    if (totalMismatch && !totalSuggestPending && doc.invoice_id
-      && !rows.some((r) => r.state === 'pending' && /^(qty|cost|total|add):/.test(r.key))) {
-      pushLineRow(
-        `totals-recompute:${doc.invoice_id}`,
-        `Invoice totals don't add up — set subtotal ${cur(totals.excl)} / total ${cur(totals.incl)} from the line items`,
-        applyTotalsRecompute,
-      );
-    }
-    for (const a of log) {
-      if (a.dismissed) {
-        rows.push({
-          key: `done:${a.key}`,
-          summary: a.summary,
-          state: 'dismissed',
-          undo: () => undoDismissSuggestion(a.key),
-        });
-        continue;
-      }
-      const struckPrefix = a.key.startsWith('strike:') ? 'strike' : a.key.startsWith('remove:') ? 'remove' : null;
-      rows.push({
-        key: `done:${a.key}`,
-        summary: a.summary,
-        state: 'applied',
-        undo: struckPrefix
-          ? () => {
-              const li = doc.lines.findIndex((l) => `${struckPrefix}:${l.id}` === a.key);
-              if (li >= 0) undoStrikeSuggestion(li, struckPrefix);
-            }
-          : a.undo_fields || a.undo_header
-            ? () => undoActionedFields(a)
-            : undefined,
-      });
-    }
-    return rows;
-  })();
-  // Pending rows with a real action block Accept & Receive until decided
-  // (Accept or Dismiss). Rows with no action (e.g. a PO already invoiced on
-  // another order) are informational and never block. Web only — embedded
-  // cards hide the accept/dismiss buttons, so the gate must not apply there.
-  const blockingSuggestions = suggestionRows.filter(
-    (r) => r.state === 'pending' && (r.accept || r.engineFix || r.dismiss),
-  );
-  const suggestionsBlocking = !embedded && blockingSuggestions.length > 0;
-  // No linked supplier: Loaded rejects the receive outright (500), so block
-  // it here with a visible reason. Web only, once the draft has loaded.
-  const supplierBlocking = !embedded && !done && !!doc.invoice_id && !doc.linked_supplier_id;
-  // Nothing to receive: an empty draft (a statement/letter uploaded as an
-  // invoice — e.g. a surcharge notice — or every line struck). Deleting the
-  // draft is the action, never an empty receive; the server rejects it too.
-  const noLines = !embedded && !done && !!doc.invoice_id && !doc.lines.some((l) => !l.struck);
-  const receiveBlocked = status === 'saving' || unresolved.length > 0 || suggestionsBlocking || supplierBlocking || noLines;
-  const sortedGroups = useMemo(
-    () => [...stockGroups].sort((a, b) => (a.name || '').localeCompare(b.name || '')),
-    [stockGroups],
-  );
-
-  // Retest support: wipe every cached validation artifact for this invoice
-  // (server deletes the extraction cache and rebuilds the draft from Loaded),
-  // reload THIS card's own doc (never the endpoint's — with twin docs its
-  // returned version can belong to a sibling and would poison later PATCHes),
-  // then run the review EXPLICITLY — a card already showing "not yet
-  // reviewed" has no dep change to re-arm the effect. Twin cards refetch via
-  // the actioned event.
+  // Retest support (admin escape hatch, unchanged): wipe every cached
+  // validation artifact for this invoice (server deletes the extraction cache
+  // and rebuilds the draft from Loaded), reload THIS card's own doc, then run
+  // the review EXPLICITLY. Twin cards refetch via the actioned event.
   const resetValidation = async () => {
     if (embedded || !venueId || !doc.invoice_id) return;
     setReviewing(true);
@@ -1961,14 +1053,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         return;
       }
       const out = await r.json();
-      let fresh: { data?: DocData; version?: number } | null = null;
-      if (docUrl) {
-        fresh = await apiFetch(docUrl).then((r2) => (r2.ok ? r2.json() : null)).catch(() => null);
-      }
-      if (!fresh?.data) fresh = out?.document ?? null;
-      if (fresh?.data) {
-        setDoc(fresh.data as DocData);
-        if (typeof fresh.version === 'number') setVersion(fresh.version);
+      const adopted = await refetchOwnDoc();
+      if (!adopted && out?.document?.data) {
+        setDoc(out.document.data as DocData);
+        if (typeof out.document.version === 'number') setVersion(out.document.version);
       }
       window.dispatchEvent(new CustomEvent(INVOICE_ACTIONED_EVENT, {
         detail: { venueId, invoiceId: doc.invoice_id, sourceDocId: workingDocId },
@@ -1984,16 +1072,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
 
   // Opens THIS draft's copy by default. Pass fileId to open another invoice's
   // copy (the already-received duplicate sibling — its file id rides on the
-  // review because received invoices can't be resolved by invoice id).
+  // delete suggestion because received invoices can't be resolved by id).
   const openCopy = async (opts?: { fileId?: string; nameHint?: string }) => {
     if (embedded || !venueId) return;
     const query = opts?.fileId
       ? `venue_id=${venueId}&file_id=${encodeURIComponent(opts.fileId)}`
       : `venue_id=${venueId}&invoice_id=${doc.invoice_id}`;
     // Open the tab SYNCHRONOUSLY inside the click — window.open AFTER the
-    // fetch has lost the user-activation, so popup blockers silently eat it
-    // (it only ever worked while the file fetch was fast enough to keep the
-    // gesture alive). Navigate the pre-opened tab once the blob arrives.
+    // fetch has lost the user-activation, so popup blockers silently eat it.
+    // Navigate the pre-opened tab once the blob arrives.
     const w = window.open('about:blank', '_blank');
     try {
       const r = await apiFetch(`/api/invoice-fixes/file?${query}`);
@@ -2019,17 +1106,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
   };
 
-  // Accept ONE server-write suggestion (link_po): write it to Loaded (without
-  // receiving) and refresh the draft. Local suggestion types (unit/qty/strike)
-  // never come here — they apply through applyXSuggestion above.
-  const acceptFix = async (key: string, fix: Suggestion) => {
+  // Accept the delete_invoice suggestion: the ONE server-applied fix left —
+  // POST /invoice-fixes/accept with the suggestion's payload (web only).
+  const acceptFix = async (s: Suggestion) => {
     if (embedded || !venueId) return;
-    setAccepting(key);
+    setAccepting(s.id);
     setMessage('');
     try {
       const res = await apiFetch('/api/invoice-fixes/accept', {
         method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id, fix }),
+        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id, fix: s.payload }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
@@ -2037,11 +1123,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       }
       const out = await res.json();
       if (out?.deleted) {
-        // The draft was deleted from Loaded (a statement) — terminal state.
+        // The draft was deleted from Loaded — terminal state (tombstone).
         setDeletedDraft(true);
         setStatus('done');
         // Siblings may reference this draft (duplicate pair) — tell them.
-        if (venueId) window.dispatchEvent(new CustomEvent(INVOICE_ACTIONED_EVENT, {
+        window.dispatchEvent(new CustomEvent(INVOICE_ACTIONED_EVENT, {
           detail: { venueId, invoiceId: doc.invoice_id, sourceDocId: workingDocId },
         }));
         return;
@@ -2058,97 +1144,110 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
   };
 
-  // Explicitly create a NEW stock item (+ its supplier variant) in Loaded and
-  // link the line — a deliberate, controlled action, never silent on receive.
+  // ---- Loaded creates (web-only writes) + local link --------------------
   // Link a line to a stock item as a LOCAL draft edit. Nothing is written to
-  // Loaded until Accept & Receive — the receive PUT carries the linkedItemId
-  // and do_receive registers the supplier variant then. Logged (undoable via
-  // undo_fields: the pre-link state) so reset-validation genuinely starts
-  // from scratch.
-  const applyLocalLink = (
-    lineId: string,
-    itemId: string,
-    itemName: string | null,
-  ) => {
-    const idx = doc.lines.findIndex((l) => l.id === lineId);
-    const l = doc.lines[idx];
-    if (!l) return;
-    // The link sets the ITEM only. The line's unit is its own decision — the
-    // unit suggestion row / picker handles it explicitly; auto-filling it from
-    // the item's default variant silently changed units the user never chose.
+  // Loaded until Accept & Receive — the receive request carries the item id
+  // and do_receive registers the supplier variant then. The item_unmatched
+  // issue clears via its clears_when (linked_item_id not_null); the PO
+  // reference re-attaches server-side on the next open.
+  const applyLocalLink = (lineId: string, itemId: string, itemName: string | null) => {
+    const idx = docRef.current.lines.findIndex((l) => l.id === lineId);
+    if (idx < 0) return;
     const fields: Partial<Line> = { linked_item_id: itemId, item_name: itemName };
-    const undoFields: Partial<Line> = { linked_item_id: null, item_name: l.item_name ?? null };
-    // PO reconciliation, immediately: if the linked ITEM was ordered on the PO
-    // (listed under "ordered, not delivered"), this delivery covers it — under
-    // a different code it's a SUBSTITUTE (badge + expandable original), and
-    // either way the entry leaves the not-delivered list. Mirrors the server's
-    // _attach_po_reference, which recomputes the same thing on the next open.
-    const normCode = (s: string | null | undefined) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    const onr = doc.ordered_not_received || [];
-    const orderedEntry = onr.find((o) => o.item_id && o.item_id === itemId);
-    let headerFields: Record<string, unknown> | null = null;
-    let undoHeader: Record<string, unknown> | null = null;
-    if (orderedEntry) {
-      const isSub = !!l.code && normCode(l.code) !== normCode(orderedEntry.code);
-      fields.on_order = true;
-      fields.quantity_ordered = orderedEntry.quantity_ordered;
-      fields.reference_cost = orderedEntry.unit_cost;
-      fields.display_code = l.code ?? orderedEntry.code ?? null;
-      if (isSub) {
-        fields.substitute_for = {
-          code: orderedEntry.code,
-          description: orderedEntry.description,
-          unit: orderedEntry.unit,
-          quantity_ordered: orderedEntry.quantity_ordered,
-          unit_cost: orderedEntry.unit_cost,
-        };
-      }
-      undoFields.on_order = l.on_order ?? null;
-      undoFields.quantity_ordered = l.quantity_ordered ?? null;
-      undoFields.reference_cost = l.reference_cost ?? null;
-      undoFields.display_code = l.display_code ?? null;
-      undoFields.substitute_for = l.substitute_for ?? null;
-      headerFields = { ordered_not_received: onr.filter((o) => o !== orderedEntry) };
-      undoHeader = { ordered_not_received: onr };
-    }
-    const log = [
-      ...(doc.actioned_suggestions || []).filter((a) => a.key !== `item:${l.id}`),
-      {
-        key: `item:${l.id}`,
-        summary: `${l.display_code || l.code || '?'} · ${l.description ?? ''}: linked to '${itemName ?? ''}' — saved to Loaded on receive`,
-        undo_fields: undoFields,
-        ...(undoHeader ? { undo_header: undoHeader } : {}),
-      },
-    ];
-    setDoc((prev) => ({
-      ...prev,
-      ...(headerFields ?? {}),
-      actioned_suggestions: log,
-      lines: prev.lines.map((x, i) => (i === idx ? { ...x, ...fields } : x)),
-    }));
-    if (workingDocId) patchDoc([
-      { op: 'update_line', index: idx, fields },
-      { op: 'update_header', fields: { ...(headerFields ?? {}), actioned_suggestions: log } },
-    ]);
+    setLine(idx, fields, [{ op: 'update_line', line_id: lineId, index: idx, fields }]);
     setItemForm(null);
     setLinkQuery('');
   };
-  const undoActionedFields = (a: { key: string; undo_fields?: Partial<Line>; undo_header?: Record<string, unknown> }) => {
-    const lineId = a.key.slice(a.key.indexOf(':') + 1);
-    const idx = doc.lines.findIndex((l) => l.id === lineId);
-    const log = (doc.actioned_suggestions || []).filter((x) => x.key !== a.key);
-    setDoc((prev) => ({
-      ...prev,
-      ...((a.undo_header as Partial<DocData>) ?? {}),
-      actioned_suggestions: log,
-      lines: idx >= 0 ? prev.lines.map((x, i) => (i === idx ? { ...x, ...a.undo_fields } : x)) : prev.lines,
-    }));
-    if (workingDocId) patchDoc([
-      ...(idx >= 0 ? [{ op: 'update_line', index: idx, fields: a.undo_fields as Record<string, unknown> }] : []),
-      { op: 'update_header', fields: { ...(a.undo_header ?? {}), actioned_suggestions: log } },
-    ]);
+  // Link the line to an EXISTING Loaded item (a server linked_item_id
+  // suggestion goes through acceptSuggestion instead — this is the manual
+  // pick from the create form's search).
+  const linkItem = (lineId: string, itemId: string) => {
+    if (embedded) return;
+    const cat = stockItems.find((x) => x.id === itemId);
+    applyLocalLink(lineId, itemId, cat?.name ?? null);
   };
 
+  // The line's unit name isn't a Loaded unit record at all (linked_unit_id
+  // null): create it in Loaded — the ONE write, two-step confirm — then the
+  // line takes it as a plain local edit (landing on the line + supplier
+  // variant at receive).
+  const createUnitAndApply = async (idx: number) => {
+    const l = doc.lines[idx];
+    const name = l?.unit?.trim();
+    if (!name || !venueId || embedded || creatingUnitLine) return;
+    if (confirmUnitLine !== l.id) {
+      setConfirmUnitLine(l.id);
+      return;
+    }
+    setConfirmUnitLine(null);
+    setCreatingUnitLine(l.id);
+    setMessage('');
+    try {
+      const res = await apiFetch('/api/invoice-fixes/create-unit', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, name }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+      }
+      const out = await res.json();
+      if (!out?.unit_id) throw new Error('Loaded did not return the created unit');
+      const rec: Unit = { id: out.unit_id, name: out.unit_name ?? name, ratio: out.unit_ratio ?? undefined };
+      // Into the dropdown before the line takes it.
+      setUnits((prev) => (prev.some((u) => u.id === rec.id) ? prev : [...prev, rec]));
+      setLine(idx, { linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null },
+        [{ op: 'update_line', line_id: l.id, index: idx, fields: { linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null } }]);
+    } catch (e) {
+      setStatus('error');
+      setMessage(e instanceof Error ? e.message : 'Could not create the unit in Loaded');
+    } finally {
+      setCreatingUnitLine(null);
+    }
+  };
+
+  // The copy names a supplier no Loaded record covers (supplier_unresolved,
+  // with no supplier suggestion): create it and link — resolve-first
+  // server-side (an existing record is returned, never duplicated), two-step
+  // confirm. The CREATE is the one Loaded write; the invoice takes the
+  // supplier locally (written at receive), clearing the issue via clears_when.
+  const unresolvedSupplierName =
+    (docLive.replica?.supplier_name || doc.supplier_name || '').trim() || null;
+  const createSupplierAndApply = async () => {
+    const name = unresolvedSupplierName;
+    if (!name || !venueId || embedded || creatingSupplier) return;
+    if (!confirmSupplier) {
+      setConfirmSupplier(true);
+      return;
+    }
+    setConfirmSupplier(false);
+    setCreatingSupplier(true);
+    setMessage('');
+    try {
+      const res = await apiFetch('/api/invoice-fixes/create-supplier', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, name }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+      }
+      const out = await res.json();
+      if (!out?.supplier_id) throw new Error('Loaded did not return the created supplier');
+      const rec = { id: out.supplier_id as string, name: (out.supplier_name as string) ?? name };
+      // Into the dropdown before the header takes it.
+      setSuppliers((prev) => (prev.some((s) => s.id === rec.id) ? prev : [...prev, rec]));
+      patchHeader({ linked_supplier_id: rec.id, supplier_name: rec.name });
+    } catch (e) {
+      setStatus('error');
+      setMessage(e instanceof Error ? e.message : 'Could not create the supplier in Loaded');
+    } finally {
+      setCreatingSupplier(false);
+    }
+  };
+
+  // Explicitly create a NEW stock item (+ its supplier variant) in Loaded and
+  // link the line — a deliberate, controlled action, never silent on receive.
   const createItem = async () => {
     if (!itemForm || !venueId || embedded) return;
     const line = doc.lines.find((l) => l.id === itemForm.lineId);
@@ -2191,97 +1290,74 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
   };
 
-  // Link the line to an EXISTING Loaded item (the LLM's suggested match, or
-  // one the user searched for). LOCAL — see applyLocalLink.
-  const linkItem = (lineId: string, itemId: string) => {
-    if (embedded) return;
-    const l = doc.lines.find((x) => x.id === lineId);
-    const cat = stockItems.find((s) => s.id === itemId);
-    const matched = l?.matched_item?.id === itemId ? l.matched_item : null;
-    applyLocalLink(lineId, itemId, cat?.name ?? matched?.name ?? null);
-  };
-
-  // Open the create-item form for a line, prefilled from the review's suggestion.
+  // Open the create-item form for a line, prefilled from the item_unmatched
+  // issue's suggested name/group when the replica's matcher proposed one.
   const openItemForm = (l: Line) => {
+    const iss = issues.find((i) => i.code === 'item_unmatched' && String(i.line_id) === String(l.id));
+    const d = (iss?.data || {}) as { suggested_name?: string; suggested_group_id?: string };
     setItemForm(
       itemForm?.lineId === l.id
         ? null
-        : { lineId: l.id, name: l.suggested_name || l.description || l.code || '', groupId: l.suggested_group_id || '' },
+        : { lineId: l.id, name: d.suggested_name || l.description || l.code || '', groupId: d.suggested_group_id || '' },
     );
     setLinkQuery('');
   };
 
-  const accept = async () => {
+  // Notes persist on a debounce so a keystroke isn't a PATCH each.
+  const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onNotes = (value: string) => {
+    setDoc((prev) => ({ ...prev, notes: value }));
+    if (!workingDocId) return;
+    if (notesTimer.current) clearTimeout(notesTimer.current);
+    notesTimer.current = setTimeout(
+      () => patchDoc([{ op: 'update_notes', value }]),
+      500,
+    );
+  };
+
+  // Add Item — append a new line from the stock catalogue. A temporary id lets
+  // update_line/remove_line address it locally; do_receive appends it and
+  // Loaded assigns the real id on receive.
+  const addItem = (item: StockItem) => {
+    const u = units.find((x) => x.id === item.unit_id);
+    const fields = {
+      id: `new-${Date.now()}`,
+      code: item.code ?? null,
+      description: item.name ?? null,
+      brand: null,
+      unit: u?.name ?? item.unit_name ?? null,
+      linked_unit_id: item.unit_id ?? null,
+      unit_ratio: u?.ratio ?? item.unit_ratio ?? 1,
+      quantity_ordered: null,
+      quantity_received: 1,
+      unit_cost: item.unit_cost ?? 0,
+      total_cost: item.unit_cost ?? 0,
+      linked_item_id: item.id,
+    };
+    setDoc((prev) => ({ ...prev, lines: [...prev.lines, fields as Line] }));
+    if (workingDocId) patchDoc([{ op: 'add_line', fields }]);
+    setAddQuery('');
+    setAddOpen(false);
+  };
+
+  // Accept & Receive: the SERVER builds the receive request from the doc
+  // (working values incl. accepted suggestions + manual edits) — the body is
+  // just the identity pair. A 409 means the invoice changed in Loaded since
+  // the review: refetch and say so.
+  const receive = async () => {
     setStatus('saving');
     setMessage('');
     try {
-      const lines = doc.lines.map((l) => ({
-        id: l.id,
-        // code/description/linked_item_id let do_receive APPEND lines the user
-        // added (Add Item) — a line whose id is not on the Loaded invoice.
-        code: l.code,
-        description: l.description,
-        linked_item_id: l.linked_item_id,
-        unit: l.unit,
-        linked_unit_id: l.linked_unit_id,
-        unit_ratio: l.unit_ratio,
-        quantity_received: l.quantity_received,
-        unit_cost: l.unit_cost,
-        // Added lines (accepted add_line / Add Item) NEED the tax rate on the
-        // wire: without it Loaded computes zero tax for the new line and
-        // rejects the receive with invoice-totals-mismatch (Allied
-        // TLC-686713, 08 Aug 2026 — the $25 freight line's $3.75 tax).
-        sale_tax_rate: l.sale_tax_rate,
-        total_cost: Number(((l.quantity_received ?? 0) * (l.unit_cost ?? 0)).toFixed(4)),
-        // struck lines are soft-deleted in Loaded by do_receive (a redundant $0
-        // duplicate), so they never enter the received invoice.
-        struck: l.struck ?? false,
-      }));
-      const variant_updates = doc.lines
-        .filter((l) => l.code && l.linked_unit_id && l.linked_unit_id !== l.original_unit_id)
-        .map((l) => ({ linked_item_id: l.linked_item_id, line_code: l.code, unit_id: l.linked_unit_id }));
       const res = await apiFetch('/api/invoice-fixes/receive', {
         method: 'POST',
-        body: JSON.stringify({
-          venue_id: venueId,
-          invoice_id: doc.invoice_id,
-          // Loaded's own link, else the engine's suggested PO shown in the
-          // picker — receiving is the approval that writes the link.
-          linked_purchase_order_id: doc.linked_purchase_order_id ?? suggestedPo?.purchase_order_id ?? null,
-          po_number: null,
-          // Accepted "unlink this order": clears Loaded's existing link (a
-          // null id alone means "don't touch" server-side). Moot when a PO
-          // is linked again — the server unlinks first, then links.
-          unlink_purchase_order: !!doc.po_unlinked && !doc.linked_purchase_order_id,
-          // Split order (adopted state): the reference field rides the
-          // header write-through, and the server stamps cross-reference
-          // notes on the PO + sibling. Never links the PO (Loaded is 1:1).
-          purchase_order_number:
-            doc.split_order && !doc.split_po_suggested && !doc.linked_purchase_order_id
-              ? doc.purchase_order_number ?? null
-              : null,
-          split_po_id:
-            doc.split_order && !doc.split_po_suggested ? doc.split_po_id ?? null : null,
-          split_sibling_invoice_id:
-            doc.split_order && !doc.split_po_suggested
-              ? doc.split_sibling_invoice_id ?? null
-              : null,
-          lines,
-          variant_updates,
-          // Editable header fields — sent so a change persists to Loaded.
-          reference_number: doc.reference_number,
-          issued_at: doc.issued_at,
-          due_at: doc.due_at ?? null,
-          received_at: doc.received_at ?? null,
-          total: doc.total,
-          subtotal: doc.subtotal,
-          tax_amount: doc.tax_amount,
-          linked_supplier_id: doc.linked_supplier_id,
-          unit_cost_includes_tax: !!doc.unit_cost_includes_tax,
-          notes: doc.notes ?? '',
-          receive: true,
-        }),
+        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id }),
       });
+      if (res.status === 409) {
+        const b = await res.json().catch(() => ({}));
+        await refetchOwnDoc();
+        throw new Error(typeof b.detail === 'string' ? b.detail
+          : 'This invoice changed in Loaded since it was reviewed — reopen it to re-review before receiving.');
+      }
       if (!res.ok) {
         const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
         throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
@@ -2292,9 +1368,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       setMessage('Received');
       // The server already marked this invoice's docs received (and bumped
       // their versions) as part of the receive — ADOPT that state rather than
-      // patching it again: the old set_status patch raced the server's bump
-      // and produced a false "updated elsewhere" conflict right after a
-      // successful receive. Fallback patch only if the server didn't mark it.
+      // patching it again (a local set_status patch used to race the server's
+      // bump into a false conflict). Fallback patch only if it didn't mark it.
       if (docUrl) {
         const own = await apiFetch(docUrl).then((r2) => (r2.ok ? r2.json() : null)).catch(() => null);
         if (own?.data) {
@@ -2309,7 +1384,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       // Received from the chat overlay: the job is done — close the modal and
       // let the in-flow card show the received state.
       setExpandedFull(false);
-      // Tell sibling cards: their duplicate/PO checks may have just flipped
+      // Tell sibling cards: their duplicate/PO issues may have just flipped
       // (the server cleared conflicting cached reviews) and twin docs of this
       // invoice are now received.
       if (!embedded && venueId) window.dispatchEvent(new CustomEvent(INVOICE_ACTIONED_EVENT, {
@@ -2320,6 +1395,149 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       setMessage(e instanceof Error ? e.message : 'Failed');
     }
   };
+
+  // ---- Shared renderers (chips + rows read the SAME suggestion objects) --
+  const suggChip = (s: Suggestion | undefined, label?: string) => {
+    if (!s || doneState || viewLoaded) return null;
+    return (
+      <div>
+        <span style={chipStyle} title={s.explanation}>
+          <span>{label ?? `${fmtVal(s.current)} → ${fmtVal(s.proposed)}`}</span>
+          <button type="button" onClick={() => acceptSuggestion(s)}
+            title={`Accept — ${s.explanation}`} aria-label="Accept suggestion"
+            style={{ ...chipBtn, color: '#2e7d4f' }}>✓</button>
+          <button type="button" onClick={() => dismissAction(s.id)}
+            title="Dismiss this suggestion" aria-label="Dismiss suggestion"
+            style={{ ...chipBtn, color: '#c0392b' }}>✕</button>
+        </span>
+      </div>
+    );
+  };
+  const deleteLinks = (s: Suggestion) => {
+    const p = (s.payload || {}) as Record<string, string | undefined>;
+    const links: { label: string; href?: string; onClick?: () => void }[] = [];
+    if (p.duplicate_of_invoice_id) links.push({ label: 'Received invoice in Loaded', href: loadedInvoiceUrl(p.duplicate_of_invoice_id) });
+    if (!p.duplicate_of_invoice_id && p.duplicate_of_purchase_order_id) links.push({ label: 'Received order in Loaded', href: loadedPoUrl(p.duplicate_of_purchase_order_id) });
+    if (p.duplicate_of_file_id) links.push({ label: 'View received copy', onClick: () => openCopy({ fileId: p.duplicate_of_file_id, nameHint: `${doc.reference_number || 'duplicate'}-received` }) });
+    if (p.duplicate_of_invoice_id && !p.duplicate_of_file_id) links.push({ label: '(received without a copy attached)' });
+    return links;
+  };
+  const suggRow = (s: Suggestion) => {
+    const st = stateOf(s.id);
+    const a = lastAction.get(s.id);
+    const byNorm = a?.by === 'norm';
+    const isDelete = s.kind === 'delete_invoice';
+    // Received/deleted with a still-pending row: the user went past it — the
+    // record must read actioned-vs-not, never "still awaiting a decision".
+    const notActioned = st === 'pending' && doneState;
+    const valuePair = s.current != null || s.proposed != null
+      ? ` (${fmtVal(s.current)} → ${fmtVal(s.proposed)})` : '';
+    const links = isDelete ? deleteLinks(s) : [];
+    return (
+      <div key={s.id} style={{ fontSize: '0.68rem', color: st === 'accepted' ? '#2e7d4f' : st === 'dismissed' || notActioned ? '#9ca3af' : '#8a6d3b', display: 'flex', gap: 8, padding: '2px 0', alignItems: 'center' }}>
+        <span>{st === 'accepted' ? '✓' : st === 'dismissed' ? '⊘' : notActioned ? '○' : '●'}</span>
+        <span style={{ flex: 1, ...(st === 'accepted' ? { textDecoration: 'line-through', color: '#9ca3af' } : {}) }}>
+          {s.explanation}{st === 'pending' && !notActioned ? valuePair : ''}
+          {st === 'dismissed' && <span style={{ fontStyle: 'italic' }}> — dismissed</span>}
+          {notActioned && <span style={{ fontStyle: 'italic' }}> — not actioned</span>}
+        </span>
+        {byNorm && st !== 'pending' && (
+          <span title={a?.at ? `by Norm at ${a.at}` : 'by Norm'}
+            style={{ fontSize: '0.58rem', color: '#5a5a8a', background: '#eef1f8', border: '1px solid #ccd3e6', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap' }}>
+            {st === 'accepted' ? 'applied by Norm' : 'dismissed by Norm'}
+          </span>
+        )}
+        {!embedded && links.length > 0 && (
+          <span style={{ display: 'flex', gap: 8, whiteSpace: 'nowrap' }}>
+            {links.map((lk) =>
+              lk.href ? (
+                <a key={lk.label} href={lk.href} target="_blank" rel="noreferrer"
+                  style={{ fontSize: '0.62rem', color: '#2563a8', textDecoration: 'underline' }}>
+                  {lk.label} ↗
+                </a>
+              ) : lk.onClick ? (
+                <button key={lk.label} type="button" onClick={lk.onClick}
+                  style={{ fontSize: '0.62rem', padding: 0, border: 'none', background: 'none', color: '#2563a8', textDecoration: 'underline', cursor: 'pointer' }}>
+                  {lk.label}
+                </button>
+              ) : (
+                <span key={lk.label} style={{ fontSize: '0.62rem', color: '#9ca3af', fontStyle: 'italic' }}>{lk.label}</span>
+              ),
+            )}
+          </span>
+        )}
+        {st !== 'pending' && !doneState && !isDelete && (
+          <button type="button" onClick={() => undoAction(s, s.id)}
+            title={st === 'dismissed' ? 'restore this suggestion' : 'undo this change'}
+            style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #ccc', background: '#fff', color: '#666', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            Undo
+          </button>
+        )}
+        {st === 'pending' && !doneState && (
+          <span style={{ display: 'flex', gap: 4 }}>
+            {!(isDelete && embedded) && (
+              <button type="button" onClick={() => acceptSuggestion(s)} disabled={accepting !== null}
+                style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #b78a2f', background: accepting === s.id ? '#f0e6cc' : '#fff', color: '#8a6d3b', borderRadius: 4, cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap', opacity: accepting !== null && accepting !== s.id ? 0.5 : 1 }}>
+                {accepting === s.id ? 'Applying…' : 'Accept'}
+              </button>
+            )}
+            <button type="button" onClick={() => dismissAction(s.id)} disabled={accepting !== null}
+              title="decline this suggestion without applying it"
+              style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #ccc', background: '#fff', color: '#888', borderRadius: 4, cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+              Dismiss
+            </button>
+          </span>
+        )}
+      </div>
+    );
+  };
+  const issueRow = (i: Issue) => {
+    const st = issueStateOf(i);
+    const open = st === 'open';
+    const color = !i.blocking ? '#8a6d3b' : open ? '#c0392b' : '#9ca3af';
+    return (
+      <div key={i.id} style={{ fontSize: '0.66rem', color, display: 'flex', gap: 6, padding: '1px 0', alignItems: 'baseline' }}>
+        <span>{i.blocking ? (open ? '✗' : '✓') : '•'}</span>
+        <span style={{ flex: 1, ...(st !== 'open' ? { textDecoration: 'line-through' } : {}) }}>
+          {i.message}
+          {st === 'checked' && <span style={{ fontStyle: 'italic', textDecoration: 'none' }}> — checked</span>}
+        </span>
+        {i.line_id && viewMode === 'norm' && doc.lines.some((l) => String(l.id) === String(i.line_id)) && (
+          <button type="button" onClick={() => jumpToLine(String(i.line_id))}
+            style={{ fontSize: '0.6rem', padding: 0, border: 'none', background: 'none', color: '#2563a8', textDecoration: 'underline', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            show line
+          </button>
+        )}
+        {open && i.blocking && !doneState && (
+          <button type="button" onClick={() => dismissAction(i.id)}
+            title="mark this as checked — it stops blocking the receive"
+            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #ccc', background: '#fff', color: '#888', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            I’ve checked this
+          </button>
+        )}
+        {st === 'checked' && !doneState && (
+          <button type="button" onClick={() => undoAction(null, i.id)} title="restore this issue"
+            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #ccc', background: '#fff', color: '#888', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            Undo
+          </button>
+        )}
+      </div>
+    );
+  };
+  const confidenceChip = !dojo && liveConfidence && !draftDeleted ? (
+    <span style={{
+      fontSize: '0.6rem', fontWeight: 700, padding: '1px 8px', borderRadius: 8, whiteSpace: 'nowrap',
+      background: liveConfidence === 'ready' ? '#e7f5ec' : '#fdf6e7',
+      color: liveConfidence === 'ready' ? '#2e7d4f' : '#8a6d3b',
+      border: `1px solid ${liveConfidence === 'ready' ? '#b7e0c6' : '#e6d3a3'}`,
+    }}>
+      {liveConfidence === 'ready' ? 'Ready to receive' : 'Needs review'}
+    </span>
+  ) : null;
+  const reviewSummaryText = !reviewed
+    ? (reviewing ? 'reviewing against the copy…' : 'not yet reviewed')
+    : (liveConfidence === 'ready' ? 'ready to receive' : `needs review · ${blockingOpen.length} blocking`)
+      + (pendingSuggestions.length ? ` · ${pendingSuggestions.length} suggested` : '');
 
   // The document no longer exists (drafts deleted before tombstones were
   // introduced were removed outright) — say so instead of spinning forever.
@@ -2343,11 +1561,46 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
 
   const card = (
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.04)', overflow: 'hidden', ...(overlay ? { width: 'min(1200px, 96vw)', margin: '0 auto' } : {}) }}>
+    {/* Admin X-ray: the whole body renders read-only while a non-Norm view is
+        on (the slider itself is span-based, so it stays clickable inside the
+        disabled fieldset). */}
+    <fieldset disabled={viewLoaded} style={{ border: 'none', margin: 0, padding: 0, minWidth: 0 }}>
       {/* Header — editable form (Loaded-parity) */}
       <div style={{ padding: '0.7rem 0.9rem', background: 'linear-gradient(#faf9f7,#f5f3ef)', borderBottom: '1px solid #eee' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-          <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#3a3a3a' }}>Receive Invoice</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#3a3a3a' }}>Receive Invoice</span>
+            {confidenceChip}
+          </span>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {/* Admin X-ray slider: Norm's editable draft | the verbatim PDF
+                extraction | Loaded's pristine snapshot | the replica (our full
+                resolution, read-only). */}
+            {!embedded && isPlatformAdmin && docLive.loaded_snapshot && (
+              <span role="group" aria-label="Data source"
+                title="Admin: flip every field between Norm's draft, what we extracted from the copy, what Loaded currently holds, and the replica"
+                style={{ display: 'inline-flex', height: 22, border: `1px solid ${viewLoaded ? '#b78a2f' : '#d8d4cc'}`, borderRadius: 4, overflow: 'hidden', fontSize: '0.62rem', userSelect: 'none' }}>
+                {([
+                  ['norm', 'Norm', true],
+                  ['extracted', 'Extracted', !!docLive.extracted_snapshot],
+                  ['loaded', 'Loaded', true],
+                  ['replica', 'Replica', !!docLive.replica],
+                ] as const).map(([mode, label, available]) => (
+                  <span key={mode} role="button" tabIndex={available ? 0 : -1}
+                    onClick={() => { if (available) setViewMode(mode); }}
+                    onKeyDown={(e) => { if (available && (e.key === 'Enter' || e.key === ' ')) setViewMode(mode); }}
+                    title={mode === 'extracted' && !available ? 'No extraction for this invoice (no readable copy)' : mode === 'replica' && !available ? 'No replica — the review has not produced one yet (re-run the replica)' : mode === 'replica' ? "Norm's own full resolution of the copy against the catalogue — the suggestions' source" : undefined}
+                    style={{ display: 'inline-flex', alignItems: 'center', padding: '0 8px', cursor: available ? 'pointer' : 'not-allowed', background: viewMode === mode ? (mode === 'norm' ? '#3a3a3a' : '#b78a2f') : '#fff', color: viewMode === mode ? '#fff' : available ? '#8a8a8a' : '#d0d0d0', whiteSpace: 'nowrap' }}>
+                    {label}
+                  </span>
+                ))}
+              </span>
+            )}
+            {viewLoaded && (
+              <span style={{ fontSize: '0.6rem', color: '#8a6d3b', whiteSpace: 'nowrap' }}>
+                {viewMode === 'extracted' ? "showing the copy's extraction — read-only" : viewMode === 'replica' ? 'showing the replica (our full resolution) — read-only' : "showing Loaded's data — read-only"}
+              </span>
+            )}
             {compact && (
               <button type="button" onClick={() => setExpandedFull((v) => !v)}
                 style={{ fontSize: '0.66rem', padding: '2px 9px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
@@ -2404,7 +1657,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             <strong style={{ color: '#3a3a3a' }}>{doc.supplier_name || '—'}</strong>
             <span style={{ color: '#666' }}>{doc.reference_number || '(no number)'}</span>
             {doc.issued_at && <span style={{ color: '#999' }}>{dateVal(doc.issued_at)}</span>}
-            <span style={{ fontSize: '0.66rem', color: '#8a6d3b' }}>{checkSummary}</span>
+            <span style={{ fontSize: '0.66rem', color: '#8a6d3b' }}>{reviewSummaryText}</span>
             <strong style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{cur(doc.total)}</strong>
           </div>
         )}
@@ -2415,155 +1668,72 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             <label style={fieldCol}>
               <span style={microLabel}>Supplier</span>
-              {/* An unlinked supplier (Loaded's feed didn't match the printed
-                  name to a supplier record) renders AMBER — the fallback
-                  option showing the printed name used to mask it, and Loaded's
-                  server 500s on receiving a supplier-less invoice. */}
-              <select value={doc.linked_supplier_id || ''} disabled={done} onChange={(e) => onSupplier(e.target.value)}
-                style={{ ...inputStyle, width: '100%', ...(!done && !doc.linked_supplier_id && doc.invoice_id ? { border: '1px solid #f0c88a', background: '#fff4e5' } : {}) }}>
+              {/* An unlinked supplier renders AMBER — Loaded's server 500s on
+                  receiving a supplier-less invoice. */}
+              <select value={doc.linked_supplier_id || ''} disabled={doneState} onChange={(e) => onSupplier(e.target.value)}
+                style={{ ...inputStyle, width: '100%', ...(!doneState && !doc.linked_supplier_id && doc.invoice_id ? { border: '1px solid #f0c88a', background: '#fff4e5' } : {}) }}>
                 {!suppliers.some((s) => s.id === doc.linked_supplier_id) && (
                   <option value={doc.linked_supplier_id || ''}>{doc.supplier_name || 'Select supplier'}</option>
                 )}
                 {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-              {!done && !embedded && doc.invoice_id && !doc.linked_supplier_id && (
+              {/* The server's supplier suggestion (the copy resolved to a
+                  different/missing Loaded record) — same object as its row in
+                  the summary list. */}
+              {suggChip(supplierSugg, supplierSugg ? `${fmtVal(supplierSugg.current)} → ${fmtVal(supplierSugg.proposed)}` : undefined)}
+              {/* No Loaded record covers the printed supplier (the
+                  supplier_unresolved issue): create it — two-step confirm. */}
+              {!doneState && !embedded && !supplierSugg && unresolvedSupplierName
+                && issues.some((i) => i.code === 'supplier_unresolved' && issueStateOf(i) === 'open') && (
                 <span style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 2 }}>
-                  {suggestedSupplier ? (
-                    <>
-                      {doc.copy_supplier ? `copy names '${doc.copy_supplier}' — ` : 'not linked to a Loaded supplier — '}
-                      <button type="button" onClick={() => applySupplierSuggestion(suggestedSupplier)}
-                        style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                        use {suggestedSupplier.name}
-                      </button>
-                      {' '}(saved to Loaded on receive)
-                    </>
-                  ) : doc.copy_supplier ? (
-                    <>
-                      copy names ‘{doc.copy_supplier}’ — no matching Loaded supplier; pick one, or{' '}
-                      <button type="button" onClick={() => { void createSupplierAndApply(); }} disabled={creatingSupplier}
-                        style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                        {creatingSupplier ? 'creating…' : confirmSupplier ? `confirm — create '${doc.copy_supplier}'` : 'create it'}
-                      </button>
-                    </>
-                  ) : (
-                    'not linked to a Loaded supplier — pick one before receiving'
-                  )}
-                </span>
-              )}
-              {/* Linked, but the copy names a DIFFERENT business (Gate 12) —
-                  naming variations never reach here. Hidden once a supplier
-                  suggestion was actioned. */}
-              {!done && !embedded && doc.supplier_differs && doc.linked_supplier_id
-                && !(doc.actioned_suggestions || []).some((a) => a.key.startsWith('supplier:') && !a.dismissed) && (
-                <span style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 2 }}>
-                  {suggestedSupplier ? (
-                    <>
-                      copy names ‘{doc.copy_supplier}’ —{' '}
-                      <button type="button" onClick={() => applySupplierSuggestion(suggestedSupplier)}
-                        style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                        use {suggestedSupplier.name}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      copy names ‘{doc.copy_supplier}’ — a different business than the linked supplier;{' '}
-                      <button type="button" onClick={() => { void createSupplierAndApply(); }} disabled={creatingSupplier}
-                        style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                        {creatingSupplier ? 'creating…' : confirmSupplier ? `confirm — create '${doc.copy_supplier}'` : 'create it in Loaded'}
-                      </button>
-                      {' '}or pick the right one
-                    </>
-                  )}
+                  no Loaded supplier matches ‘{unresolvedSupplierName}’ — pick one, or{' '}
+                  <button type="button" onClick={() => { void createSupplierAndApply(); }} disabled={creatingSupplier}
+                    style={{ ...linkBtn, color: '#8a2f2f' }}>
+                    {creatingSupplier ? 'creating…' : confirmSupplier ? `confirm — create '${unresolvedSupplierName}'` : 'create it'}
+                  </button>
                 </span>
               )}
             </label>
             <label style={fieldCol}>
               <span style={microLabel}>Order Number</span>
-              {/* Shows the engine's link_po suggestion IN PLACE when Loaded has
-                  no linked PO: pre-filled + amber "suggested". Picking another
-                  option overrides it; Accept (below) links it now; otherwise it
-                  links on receive (the receive body falls back to it). */}
-              <select value={doc.linked_purchase_order_id || suggestedPo?.purchase_order_id || ''} disabled={done} onChange={(e) => onPo(e.target.value)}
-                title={suggestedPo
-                  ? `Suggested — Norm matched purchase order ${suggestedPo.po_number ?? ''} from the invoice. Accept it below to link now, or it links when you receive.`
-                  : undefined}
-                style={{ ...inputStyle, width: '100%', ...(suggestedPo ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }}>
-                {/* Split order (adopted): the field shows the accepted order
+              <select value={doc.linked_purchase_order_id || ''} disabled={doneState} onChange={(e) => onPo(e.target.value)}
+                style={{ ...inputStyle, width: '100%', ...(poSuggs.length && !doneState ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }}>
+                {/* Split order (reference accepted): the field shows the order
                     REFERENCE — Loaded's 1:1 link stays with the sibling, so
                     the select value remains '' (never a link). */}
                 <option value="">
-                  {doc.split_order && !doc.split_po_suggested && !doc.linked_purchase_order_id && doc.purchase_order_number
+                  {doc.split_po_id && !doc.linked_purchase_order_id && doc.purchase_order_number
                     ? `${doc.purchase_order_number} — split order (reference only)`
                     : 'Not linked'}
                 </option>
-                {/* A linked/suggested PO may be an older, already-received order
-                    that isn't in the open-PO picker list — keep it shown as the
+                {/* A linked PO may be an older, already-received order that
+                    isn't in the open-PO picker list — keep it shown as the
                     current value rather than reading as "Not linked". */}
                 {doc.linked_purchase_order_id && !candidatePos.some((p) => p.id === doc.linked_purchase_order_id) && (
                   <option value={doc.linked_purchase_order_id}>{doc.purchase_order_number || '(linked)'}</option>
-                )}
-                {!doc.linked_purchase_order_id && suggestedPo?.purchase_order_id && !candidatePos.some((p) => p.id === suggestedPo.purchase_order_id) && (
-                  <option value={suggestedPo.purchase_order_id}>{suggestedPo.po_number || '(suggested)'}</option>
                 )}
                 {candidatePos.map((p) => (
                   <option key={p.id} value={p.id}>{(p.order_number || '(linked)')}{p.supplier_name ? ` — ${p.supplier_name}` : ''}</option>
                 ))}
               </select>
-              {suggestedPo && (
+              {/* PO suggestions (link / unlink / keep-split-reference) — one
+                  chip each, the same objects as the summary rows. */}
+              {poSuggs.map((s) => (
+                <Fragment key={s.id}>
+                  {suggChip(s, s.kind === 'link_po'
+                    ? `link order ${fmtVal(s.proposed)}`
+                    : s.kind === 'unlink_po'
+                      ? `remove order ${fmtVal(s.current)}`
+                      : `keep reference ${fmtVal(s.proposed)} (split order)`)}
+                </Fragment>
+              ))}
+              {/* Split order (accepted): where the rest of the order went. */}
+              {doc.split_po_id && !doc.linked_purchase_order_id && doc.split_sibling_invoice_id && (
                 <span style={{ fontSize: '0.6rem', color: '#8a6d3b', marginTop: 2 }}>
-                  copy says {suggestedPo.po_number ?? '?'} — links on Accept or receive
-                </span>
-              )}
-              {/* The review read a buyer PO off the copy but it matched NO
-                  Loaded purchase order (cancelled / never raised / different
-                  number). Show the number so the user can chase it — the raw
-                  reason otherwise only carried the supplier's own ref. */}
-              {!suggestedPo && !doc.linked_purchase_order_id && doc.po_unresolved && doc.copy_po && !done && (
-                <span style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 2 }}
-                  title="the order number printed on the invoice copy doesn't match any purchase order in Loaded — check the PO exists, or pick one manually">
-                  copy says {doc.copy_po} — no matching purchase order found in Loaded
-                </span>
-              )}
-              {/* Split order, PENDING accept (the number came off the copy):
-                  the inline hint mirrors the suggestion row — accepting sets
-                  the order reference, never the 1:1 link. */}
-              {!done && doc.split_order && doc.split_po_suggested && !doc.linked_purchase_order_id && (
-                <span style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
-                  copy says order {doc.split_po_number ?? ''} — part of a split order (also invoiced on{' '}
-                  {doc.split_sibling_invoice_id ? (
-                    <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer"
-                      style={{ color: '#b78a2f' }}>
-                      {doc.split_sibling_reference ?? 'another invoice'}
-                    </a>
-                  ) : (doc.split_sibling_reference ?? 'another invoice')}
-                  {') — '}
-                  <button type="button" onClick={applySplitPoSuggestion}
-                    style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                    set it
-                  </button>
-                </span>
-              )}
-              {/* Split order (second delivery): the order's 1:1 link lives on
-                  the sibling invoice — this card validates against the order
-                  and receives without re-linking. */}
-              {doc.split_order && !doc.split_po_suggested && !doc.linked_purchase_order_id && (
-                <span style={{ fontSize: '0.6rem', color: '#8a6d3b', marginTop: 2 }}>
-                  part of a split order — order {doc.split_po_number ?? ''} also invoiced on{' '}
-                  {doc.split_sibling_invoice_id ? (
-                    <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer"
-                      style={{ color: '#8a6d3b' }}>
-                      {doc.split_sibling_reference ?? 'another invoice'}
-                    </a>
-                  ) : (doc.split_sibling_reference ?? 'another invoice')}
-                  {doc.split_sibling_file_id && (
-                    <>
-                      {' · '}
-                      <button type="button" onClick={() => openCopy({ fileId: doc.split_sibling_file_id!, nameHint: doc.split_sibling_reference || 'split-sibling' })}
-                        style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                        view its copy
-                      </button>
-                    </>
-                  )}
+                  part of a split order — also invoiced on{' '}
+                  <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer" style={{ color: '#8a6d3b' }}>
+                    the sibling invoice
+                  </a>
                 </span>
               )}
             </label>
@@ -2575,55 +1745,46 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             )}
             <label style={fieldCol}>
               <span style={microLabel}>Received Date</span>
-              <input type="date" value={dateVal(doc.received_at)} disabled={done}
+              <input type="date" value={dateVal(doc.received_at)} disabled={doneState}
                 onChange={(e) => patchHeader({ received_at: e.target.value || null })} style={{ ...inputStyle, width: '100%' }} />
             </label>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             <label style={fieldCol}>
               <span style={microLabel}>Invoice Number</span>
-              <input type="text" value={doc.reference_number || ''} disabled={done}
+              <input type="text" value={doc.reference_number || ''} disabled={doneState}
                 onChange={(e) => patchHeader({ reference_number: e.target.value })}
-                style={{ ...inputStyle, width: '100%', ...(!done && invNumSuggestPending ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
-              {!done && invNumSuggestPending && (
-                <span style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
-                  copy says {doc.copy_invoice_number} —{' '}
-                  <button type="button" onClick={applyInvoiceNumberSuggestion}
-                    style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                    use
-                  </button>
-                </span>
-              )}
+                style={{ ...inputStyle, width: '100%', ...(!doneState && headerValueSugg('reference_number') ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+              {suggChip(headerValueSugg('reference_number'))}
             </label>
             <label style={fieldCol}>
               <span style={microLabel}>Invoice Date</span>
-              <input type="date" value={dateVal(doc.issued_at)} disabled={done}
+              <input type="date" value={dateVal(doc.issued_at)} disabled={doneState}
                 onChange={(e) => patchHeader({ issued_at: e.target.value || null })} style={{ ...inputStyle, width: '100%' }} />
+              {suggChip(headerValueSugg('issued_at'))}
             </label>
             <label style={fieldCol}>
               <span style={microLabel}>Due Date</span>
-              <input type="date" value={dateVal(doc.due_at)} disabled={done}
+              <input type="date" value={dateVal(doc.due_at)} disabled={doneState}
                 onChange={(e) => patchHeader({ due_at: e.target.value || null })} style={{ ...inputStyle, width: '100%' }} />
             </label>
             <label style={fieldCol}>
               <span style={microLabel}>Invoice Total</span>
-              <input type="number" step="any" value={doc.total ?? 0} disabled={done}
+              <input type="number" step="any" value={doc.total ?? 0} disabled={doneState}
                 onChange={(e) => patchHeader({ total: parseFloat(e.target.value) || 0 })}
-                style={{ ...inputStyle, width: '100%', fontWeight: 600, ...(!done && totalSuggestPending ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
-              {!done && totalSuggestPending && (
-                <span style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
-                  copy says {cur(doc.copy_total)} —{' '}
-                  <button type="button" onClick={applyTotalSuggestion}
-                    style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                    use
-                  </button>
-                </span>
-              )}
+                style={{ ...inputStyle, width: '100%', fontWeight: 600, ...(!doneState && moneySuggs.length ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+              {/* Header money suggestions (total / subtotal / tax / discount)
+                  live together under the total field. */}
+              {moneySuggs.map((s) => (
+                <Fragment key={s.id}>
+                  {suggChip(s, `${s.field}: ${fmtVal(s.current)} → ${fmtVal(s.proposed)}`)}
+                </Fragment>
+              ))}
             </label>
           </div>
         </div>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: '0.5rem', fontSize: '0.72rem', color: '#555' }}>
-          <input type="checkbox" checked={includesTax} disabled={done}
+          <input type="checkbox" checked={includesTax} disabled={doneState}
             onChange={(e) => patchHeader({ unit_cost_includes_tax: e.target.checked })} />
           Line item costs include tax
         </label>
@@ -2651,35 +1812,28 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           </thead>
           <tbody>
             {doc.lines.map((l, idx) => {
-              const recommended = recommendedFor[l.id];
-              // An ACCEPTED strike (or remove) keeps the row VISIBLE, crossed
-              // out and inert: every suggestion, hint, badge and affordance on
-              // the line is suppressed, it drops out of the totals, and it is
-              // soft-deleted on receive. Undo lives on its ✓ suggestion row.
+              // An accepted strike keeps the row VISIBLE, crossed out and
+              // inert: it drops out of the totals and is soft-deleted on
+              // receive. Restore lives on the row (and on the record's Undo).
               const struck = !!l.struck;
+              const strikeSugg = strikeSuggFor(l.id);
+              const itemSugg = itemSuggFor(l.id);
+              const flash = flashLine === l.id;
               return (
               <Fragment key={l.id}>
-              {/* A SUGGESTED strike (copy_duplicate) renders the row struck-
-                  through as a preview; an ACCEPTED strike renders it greyed and
-                  struck-through with no affordances. */}
-              <tr style={{ borderTop: '1px solid #f3f3f3', ...(struck ? { opacity: 0.5, textDecoration: 'line-through', color: '#999' } : l.copy_duplicate ? { opacity: 0.6, textDecoration: 'line-through', background: '#fffdf5' } : {}) }}>
+              <tr id={`riv-${uid}-${l.id}`}
+                style={{ borderTop: '1px solid #f3f3f3', ...(flash ? { background: '#fdf6e7' } : {}), ...(struck ? { opacity: 0.5, textDecoration: 'line-through', color: '#999' } : {}) }}>
                 <td style={{ padding: '0.4rem 0.6rem', color: '#666' }}>{l.display_code || l.code || '—'}</td>
                 <td style={{ padding: '0.4rem 0.6rem' }}>
                   {l.item_name || l.description}
-                  {!done && !struck && l.copy_duplicate && (
-                    <button type="button"
-                      onClick={() => applyStrikeSuggestion(idx)}
-                      title="$0 duplicate of another line — accept to remove it from the receive"
-                      style={{ marginLeft: 6, fontSize: '0.58rem', color: '#c0392b', background: '#fdecea', border: '1px solid #f5c6c0', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap', fontFamily: 'inherit', fontWeight: 600, cursor: 'pointer', textDecoration: 'none' }}>
-                      $0 duplicate — accept strike
-                    </button>
-                  )}
-                  {!done && !struck && l.copy_missing && !l.copy_duplicate && (
-                    <button type="button"
-                      onClick={() => applyRemoveSuggestion(idx)}
-                      title="This line is not on the attached invoice copy — accept to remove it from the receive"
-                      style={{ marginLeft: 6, fontSize: '0.58rem', color: '#c0392b', background: '#fdecea', border: '1px solid #f5c6c0', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap', fontFamily: 'inherit', fontWeight: 600, cursor: 'pointer', textDecoration: 'none' }}>
-                      not on copy — remove
+                  {/* The server's strike suggestion (the copy doesn't bill
+                      this line) — same object as its summary row. */}
+                  {!struck && suggChip(strikeSugg, 'not billed on the copy — strike')}
+                  {!doneState && struck && viewMode === 'norm' && (
+                    <button type="button" onClick={() => onStrike(idx, false)}
+                      title="restore this line (it will be received again)"
+                      style={{ marginLeft: 6, fontSize: '0.58rem', color: '#666', background: '#fff', border: '1px solid #ccc', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap', fontFamily: 'inherit', cursor: 'pointer', textDecoration: 'none' }}>
+                      restore
                     </button>
                   )}
                   {/* Delivered under a different code than ordered — a substitute.
@@ -2692,46 +1846,24 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       substitute {openSub.has(l.id) ? '▾' : '▸'}
                     </button>
                   )}
-                  {/* (No "≠ copy" badge here: cost/total copy differences are
-                      already explained in Needs Attention, and a badge on the
-                      description that describes the totals only confused.) */}
-                  {/* Stock item not linked in Loaded. The review engine's item
-                      match rides in on the line (matched_item / suggested_name /
-                      suggested_group_id): offer an existing item to LINK, else
-                      CREATE it (with its group). Must be resolved to receive. */}
-                  {!l.linked_item_id && !embedded && !done && !struck && !dojo && (() => {
-                    if (itemForm?.lineId === l.id) return null; // the form below is open
-                    const matched = l.matched_item;
-                    if (reviewing && !matched && !l.suggested_name) {
-                      return <span style={{ ...newBadge, background: '#eef1f8', color: '#556', border: '1px solid #ccd3e6' }}>NEW item — checking Loaded…</span>;
-                    }
-                    if (matched) {
-                      return (
-                        <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 5 }}>
-                          <span title="Norm found a likely existing item — Link to use it, or create a new one" style={{ fontSize: '0.6rem', color: '#2d6a4f', background: '#e7f5ec', border: '1px solid #b7e0c6', borderRadius: 4, padding: '1px 6px' }}>
-                            match: {matched.name}{matched.group ? ` · ${matched.group}` : ''}
-                          </span>
-                          <button type="button" onClick={() => linkItem(l.id, matched.id)} disabled={linkingLine === l.id}
-                            style={{ fontSize: '0.62rem', padding: '2px 9px', border: '1px solid #2d6a4f', borderRadius: 4, background: linkingLine === l.id ? '#dfeee6' : '#fff', color: '#2d6a4f', cursor: linkingLine === l.id ? 'wait' : 'pointer', fontWeight: 700 }}>
-                            {linkingLine === l.id ? 'Linking…' : 'Link'}
-                          </button>
-                          <button type="button" onClick={() => openItemForm(l)}
-                            style={{ fontSize: '0.6rem', padding: '2px 8px', border: '1px solid #ddd', borderRadius: 4, background: '#fff', color: '#888', cursor: 'pointer' }}>
-                            Create new instead
-                          </button>
-                        </span>
-                      );
-                    }
-                    return (
-                      <button type="button" onClick={() => openItemForm(l)}
-                        title="this stock item isn't linked in Loaded — link an existing item or create it before receiving"
-                        style={{ ...newBadge, cursor: 'pointer', font: 'inherit', fontWeight: 700 }}>
-                        NEW item — create
-                      </button>
-                    );
-                  })()}
-                  {!l.linked_item_id && (embedded || done) && !struck && !dojo && (
-                    <span title="this stock item doesn't exist in Loaded" style={newBadge}>NEW item</span>
+                  {/* Stock item not linked in Loaded: the server's match rides
+                      as a linked_item_id suggestion (chip above the badge);
+                      otherwise link an existing item or CREATE it — must be
+                      resolved to receive. */}
+                  {!l.linked_item_id && !struck && !dojo && viewMode === 'norm' && (
+                    itemSugg
+                      ? suggChip(itemSugg, `link to '${fmtVal(itemSugg.proposed)}'`)
+                      : (embedded || doneState)
+                        ? <span title="this stock item doesn't exist in Loaded" style={newBadge}>NEW item</span>
+                        : itemForm?.lineId === l.id
+                          ? null
+                          : (
+                            <button type="button" onClick={() => openItemForm(l)}
+                              title="this stock item isn't linked in Loaded — link an existing item or create it before receiving"
+                              style={{ ...newBadge, cursor: 'pointer', font: 'inherit', fontWeight: 700 }}>
+                              NEW item — link or create
+                            </button>
+                          )
                   )}
                   {itemForm?.lineId === l.id && (
                     <div style={{ marginTop: 5, padding: 7, border: '1px solid #f0c88a', background: '#fff9f0', borderRadius: 5, display: 'flex', flexDirection: 'column', gap: 5, maxWidth: 340 }}>
@@ -2756,7 +1888,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                         {linkMatches.length > 0 && (
                           <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 130, overflowY: 'auto' }}>
                             {linkMatches.map((it) => (
-                              <button key={it.id} type="button" onClick={() => linkItem(itemForm.lineId, it.id)} disabled={linkingLine === itemForm.lineId}
+                              <button key={it.id} type="button" onClick={() => linkItem(itemForm.lineId, it.id)}
                                 style={{ textAlign: 'left', fontSize: '0.66rem', padding: '3px 6px', border: '1px solid #cfe6d8', borderRadius: 4, background: '#fff', color: '#2d6a4f', cursor: 'pointer' }}>
                                 {it.name}{it.code ? ` · ${it.code}` : ''}
                               </button>
@@ -2785,75 +1917,54 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   )}
                 </td>
                 <td style={{ padding: '0.4rem 0.6rem' }}>
-                  <select value={l.linked_unit_id || ''} disabled={done || struck}
+                  {viewMode !== 'norm' ? (
+                    // X-ray modes are read-only — the unit renders as text
+                    // (extracted lines carry no Loaded unit records at all).
+                    <span style={{ fontSize: '0.8rem', color: '#555' }}>{l.unit || '—'}</span>
+                  ) : (
+                  <select value={l.linked_unit_id || ''} disabled={doneState || struck}
                     onChange={(e) => onUnit(idx, e.target.value)}
-                    style={{ ...inputStyle, minWidth: 120, borderColor: struck ? '#e2e2e2' : recommended ? '#b78a2f' : (!l.linked_unit_id ? '#f0c88a' : (l.copy_unit_mismatch ? '#c0392b' : '#d1d5db')), background: struck ? '#fafafa' : recommended && !done ? '#fdf6e7' : (!l.linked_unit_id && !done ? '#fff4e5' : '#fff') }}>
+                    style={{ ...inputStyle, minWidth: 120, borderColor: struck ? '#e2e2e2' : suggFor(l.id, 'unit') ? '#b78a2f' : (!l.linked_unit_id ? '#f0c88a' : '#d1d5db'), background: struck ? '#fafafa' : suggFor(l.id, 'unit') && !doneState ? '#fdf6e7' : (!l.linked_unit_id && !doneState ? '#fff4e5' : '#fff') }}>
                     {!units.some((u) => u.id === l.linked_unit_id) && (
                       <option value={l.linked_unit_id || ''}>{l.unit || 'Select unit'}</option>
                     )}
                     {sortedUnits.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                   </select>
-                  {/* Only a genuine unit mismatch the review found — the copy's
-                      delivered unit (guideline-derived) resolves to a different
-                      Loaded unit than the line currently has. A 2L bottle already
-                      on "2 L" shows nothing. */}
-                  {recommended && !done && !struck && (
-                    <div style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
-                      copy says {l.recommended_unit} —{' '}
-                      <button type="button" onClick={() => applyUnitSuggestion(idx, recommended)}
-                        style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                        use {recommended.name}
-                      </button>
-                    </div>
                   )}
-                  {!l.linked_unit_id && !struck && !dojo && (
-                    <div style={{ fontSize: '0.58rem', color: '#b45309', marginTop: 2 }}>NEW unit — not in Loaded</div>
-                  )}
-                  {/* The copy carries a size but it can't be read — never guess:
-                      ask the user to confirm (the suggestion row's Confirm), or
-                      pick a different unit here. */}
-                  {l.unit_needs_confirmation && !done && !struck
-                    && l.linked_unit_id === l.original_unit_id
-                    && !(doc.actioned_suggestions || []).some((a) => a.key === `confirm-unit:${l.id}`) && (
-                    <div style={{ fontSize: '0.58rem', color: '#c0392b', marginTop: 2 }} title="the unit on the invoice copy is cut off or unreadable — confirm the current unit or pick the right one">
-                      unit unreadable on copy — confirm below
-                    </div>
-                  )}
-                  {/* The copy's DELIVERED unit doesn't resolve to ANY Loaded
-                      unit (e.g. "49.5L", a multipack like "4x6 pack") — offer
-                      to CREATE it in Loaded and use it on the line (local
-                      until receive), exactly like create-item. Also covers a
-                      line with NO unit set at all (linked_unit_id null): the
-                      copy's unit is then a straight suggestion. */}
-                  {!recommended && !struck && l.copy_unit_mismatch && l.recommended_unit && (
-                    <div style={{ fontSize: '0.58rem', color: '#c0392b', marginTop: 2 }} title="the copy's delivered unit doesn't exist in Loaded — accepting creates it, then it's applied to the line on receive">
-                      copy delivered unit “{l.recommended_unit}” —{' '}
-                      {!done && !embedded && l.linked_unit_id === l.original_unit_id ? (
-                        creatingUnitLine === l.id ? (
-                          <span style={{ color: '#8a2f2f' }}>creating unit…</span>
-                        ) : confirmUnitLine === l.id ? (
-                          <span style={{ color: '#8a2f2f' }}>
-                            creates a NEW unit “{l.recommended_unit}” in Loaded —{' '}
+                  {/* The server's unit suggestion (the copy's delivered unit
+                      resolves to a different Loaded unit). */}
+                  {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'unit'))}
+                  {/* No Loaded unit record at all: the receive gate holds until
+                      one is picked — or the named unit is CREATED in Loaded
+                      (two-step confirm, the one write). */}
+                  {!l.linked_unit_id && !struck && !dojo && viewMode === 'norm' && (
+                    <div style={{ fontSize: '0.58rem', color: '#b45309', marginTop: 2 }}>
+                      NEW unit — not in Loaded
+                      {!doneState && !embedded && l.unit?.trim() && (
+                        <>
+                          {' — '}
+                          {creatingUnitLine === l.id ? (
+                            <span style={{ color: '#8a2f2f' }}>creating unit…</span>
+                          ) : confirmUnitLine === l.id ? (
+                            <span style={{ color: '#8a2f2f' }}>
+                              creates a NEW unit “{l.unit}” in Loaded —{' '}
+                              <button type="button" onClick={() => createUnitAndApply(idx)}
+                                style={{ ...linkBtn, color: '#8a2f2f', fontWeight: 700 }}>
+                                create it
+                              </button>
+                              {' · '}
+                              <button type="button" onClick={() => setConfirmUnitLine(null)}
+                                style={{ ...linkBtn, color: '#888' }}>
+                                cancel
+                              </button>
+                            </span>
+                          ) : (
                             <button type="button" onClick={() => createUnitAndApply(idx)}
-                              style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit', fontWeight: 700 }}>
-                              create it
+                              style={{ ...linkBtn, color: '#8a2f2f' }}>
+                              create “{l.unit}”
                             </button>
-                            {' · '}
-                            <button type="button" onClick={() => setConfirmUnitLine(null)}
-                              style={{ border: 'none', background: 'none', color: '#888', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                              cancel
-                            </button>
-                          </span>
-                        ) : (
-                          <button type="button" onClick={() => createUnitAndApply(idx)}
-                            style={{ border: 'none', background: 'none', color: '#8a2f2f', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                            use {l.recommended_unit} (new unit)
-                          </button>
-                        )
-                      ) : l.linked_unit_id ? (
-                        'differs from Loaded'
-                      ) : (
-                        'no unit set in Loaded'
+                          )}
+                        </>
                       )}
                     </div>
                   )}
@@ -2863,43 +1974,23 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 </td>
                 <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>
                   {/* Amber = a qty suggestion is pending (same treatment as the
-                      unit dropdown); clears as soon as the qty matches the copy.
-                      Full `border` shorthand — never mix with borderColor. */}
-                  <input type="number" step="any" value={l.quantity_received ?? 0} disabled={done || struck}
+                      unit dropdown). Full `border` shorthand — never mix with
+                      borderColor. */}
+                  <input type="number" step="any" value={l.quantity_received ?? 0} disabled={doneState || struck}
                     onChange={(e) => onQty(idx, parseFloat(e.target.value) || 0)}
-                    style={{ ...inputStyle, width: 70, textAlign: 'right', ...(!done && !struck && l.copy_quantity_mismatch && l.copy_quantity != null && Math.abs((l.quantity_received ?? 0) - l.copy_quantity) > 0.001 ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
-                  {/* The review DECIDED the copy states a different received qty
-                      (copy_quantity_mismatch) — the component only renders it as a
-                      one-click edit, and hides it once the qty already matches. */}
-                  {!done && !struck && l.copy_quantity_mismatch && l.copy_quantity != null && Math.abs((l.quantity_received ?? 0) - l.copy_quantity) > 0.001 && (
-                    <div style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
-                      copy: {l.copy_quantity} —{' '}
-                      <button type="button" onClick={() => applyQtySuggestion(idx)}
-                        style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                        use
-                      </button>
-                    </div>
-                  )}
+                    style={{ ...inputStyle, width: 70, textAlign: 'right', ...(!doneState && !struck && suggFor(l.id, 'quantity_received') ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+                  {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'quantity_received'))}
                 </td>
                 <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
                   {/* Red ↑ when the invoice cost is above the linked PO's cost. */}
                   {!struck && l.reference_cost != null && (l.unit_cost ?? 0) > l.reference_cost + 0.001 && (
                     <span title={`up from ${cur(l.reference_cost)} on the order`} style={{ color: '#c0392b', marginRight: 3 }}>↑</span>
                   )}
-                  <input type="number" step="any" value={l.unit_cost ?? 0} disabled={done || struck}
+                  <input type="number" step="any" value={l.unit_cost ?? 0} disabled={doneState || struck}
                     onChange={(e) => onCost(idx, parseFloat(e.target.value) || 0)}
-                    style={{ ...inputStyle, width: 80, textAlign: 'right', ...(!done && !struck && l.copy_unit_cost_mismatch && l.copy_unit_price != null && Math.abs((l.unit_cost ?? 0) - l.copy_unit_price) > 0.005 ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
-                  {/* The review DECIDED the copy prices this line differently —
-                      one-click edit, hidden once the cost matches. */}
-                  {!done && !struck && l.copy_unit_cost_mismatch && l.copy_unit_price != null && Math.abs((l.unit_cost ?? 0) - l.copy_unit_price) > 0.005 && (
-                    <div style={{ fontSize: '0.6rem', color: '#b78a2f', marginTop: 2 }}>
-                      copy: {cur(l.copy_unit_price)} —{' '}
-                      <button type="button" onClick={() => applyCostSuggestion(idx)}
-                        style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                        use
-                      </button>
-                    </div>
-                  )}
+                    style={{ ...inputStyle, width: 80, textAlign: 'right', ...(!doneState && !struck && suggFor(l.id, 'unit_cost') ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+                  {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'unit_cost'))}
+                  {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'sale_tax_rate'), 'set the tax rate from the catalogue')}
                 </td>
                 <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', color: '#888', fontVariantNumeric: 'tabular-nums' }}>
                   {cur(lineTax((l.quantity_received ?? 0) * (l.unit_cost ?? 0), l.sale_tax_rate, includesTax))}
@@ -2933,12 +2024,31 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         </table>
       </div>
 
+      {/* Replica X-ray: the resolution log — every decision the replica made,
+          the troubleshooting record. */}
+      {viewMode === 'replica' && (docLive.replica?.resolution_log?.length ?? 0) > 0 && (
+        <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fbfaf8' }}>
+          <div style={{ ...microLabel, marginBottom: 4 }}>Resolution log</div>
+          {docLive.replica!.resolution_log!.map((r, i) => (
+            <div key={`rl-${i}`} style={{ fontFamily: 'ui-monospace, monospace', fontSize: '0.62rem', color: '#666', padding: '1px 0' }}>{r}</div>
+          ))}
+        </div>
+      )}
+
       {/* Split order: PO items that arrived on the SIBLING delivery — they were
           received, just on the other invoice. Read-only; never sent on receive. */}
-      {(doc.ordered_received_elsewhere?.length ?? 0) > 0 && !doc.split_po_suggested && (
+      {(doc.ordered_received_elsewhere?.length ?? 0) > 0 && (
         <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fafafa' }}>
           <div style={{ ...microLabel, marginBottom: 4 }}>
-            Ordered, received on {doc.split_sibling_reference ?? 'another invoice'} ({doc.ordered_received_elsewhere!.length})
+            Ordered, received on the sibling delivery ({doc.ordered_received_elsewhere!.length})
+            {doc.split_sibling_invoice_id && (
+              <>
+                {' · '}
+                <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer" style={{ color: '#8a6d3b' }}>
+                  its invoice ↗
+                </a>
+              </>
+            )}
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', color: '#8a8a8a' }}>
             <thead>
@@ -2968,9 +2078,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       )}
 
       {/* Ordered, not delivered — PO items with NO invoice line at all (neither by
-          code nor as a substitute). An item delivered under a different code shows
-          as its substitute line above, not here. Read-only; never sent on receive. */}
-      {(doc.ordered_not_received?.length ?? 0) > 0 && !doc.split_po_suggested && (
+          code nor as a substitute). Read-only; never sent on receive. */}
+      {(doc.ordered_not_received?.length ?? 0) > 0 && (
         <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fafafa' }}>
           <div style={{ ...microLabel, marginBottom: 4 }}>
             Ordered, not delivered ({doc.ordered_not_received!.length})
@@ -3001,7 +2110,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       )}
 
       {/* Add Item */}
-      {!done && (
+      {!doneState && (
         <div style={{ position: 'relative', padding: '0.4rem 0.9rem', borderTop: '1px solid #f3f3f3' }}>
           <input type="text" placeholder="+ Add item…" value={addQuery}
             onChange={(e) => { setAddQuery(e.target.value); setAddOpen(true); }}
@@ -3021,7 +2130,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         </div>
       )}
 
-      {/* Totals block (bottom, Loaded layout) */}
+      {/* Totals block (bottom, Loaded layout). Display sums only — the stated
+          total is a working value the server reconciles; a real drift rides
+          in as a header_value suggestion, never derived here. */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0.5rem 0.9rem', borderTop: '1px solid #eee' }}>
         <div style={{ minWidth: 220, fontSize: '0.78rem', fontVariantNumeric: 'tabular-nums' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
@@ -3035,46 +2146,23 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               <span>Discount</span><span>−{cur(totals.discount)}</span>
             </div>
           )}
-          {/* Loaded absorbs ≤10c of drift vs the stated total as a Rounding
-              row and keeps the stated total — mirrored exactly here. */}
-          {totals.rounding != null && (
-            <div title="Loaded absorbs differences of 10 cents or less between the line totals and the stated invoice total as rounding"
-              style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
-              <span>Rounding</span><span>{totals.rounding < 0 ? '−' : ''}{cur(Math.abs(totals.rounding))}</span>
-            </div>
-          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #eee', marginTop: 4, paddingTop: 4, fontWeight: 700 }}>
-            <span>Total incl Tax</span><span>{cur(totals.rounding != null ? doc.total ?? totals.incl : totals.incl)}</span>
+            <span>Total incl Tax</span><span>{cur(totals.incl)}</span>
           </div>
-          {totalMismatch && (
-            <div style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 3, textAlign: 'right' }}>
-              differs from the stated invoice total {cur(doc.total)}
-              {!done && !totalSuggestPending && (
-                <>
-                  {' — '}
-                  <button type="button" onClick={applyTotalsRecompute}
-                    style={{ border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline', cursor: 'pointer', padding: 0, font: 'inherit' }}>
-                    use computed
-                  </button>
-                </>
-              )}
-            </div>
-          )}
         </div>
       </div>
 
       {/* Notes */}
       <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee' }}>
         <div style={{ ...microLabel, marginBottom: 3 }}>Notes</div>
-        <textarea value={doc.notes || ''} disabled={done} onChange={(e) => onNotes(e.target.value)}
+        <textarea value={doc.notes || ''} disabled={doneState} onChange={(e) => onNotes(e.target.value)}
           placeholder="Notes on the received goods…" rows={2}
           style={{ ...inputStyle, width: '100%', resize: 'vertical', minHeight: 40 }} />
       </div>
       </>)}
 
-      {/* Dojo banner: run status + every mismatch vs the stored baseline
-          (incl. header/missing/extra-line diffs that have no line row to
-          light up). Replaces suggestions/validation/receive in dojo mode. */}
+      {/* Dojo banner: run status + every mismatch vs the stored baseline.
+          Replaces suggestions/issues/receive in dojo mode. */}
       {dojo && (
         <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: (doc.dojo_diffs?.length ?? 0) > 0 ? 6 : 0 }}>
@@ -3109,176 +2197,92 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         </div>
       )}
 
-      {/* Suggested changes + what needs attention — always visible (no expand),
-          so the user sees non-validations and any fix we made at a glance.
-          Rows come from suggestionRows — ONE derivation shared with the inline
-          affordances — pending (●, Accept) first, then applied (✓, persisted). */}
-      {!dojo && (suggestionRows.length > 0 || (!done && checks.length > 0 && failChecks.length > 0)) && (
+      {/* Suggested changes — every server suggestion with its explanation,
+          pending first; the SAME objects as the inline chips, so the two
+          surfaces can never diverge. The action record renders compactly
+          underneath. */}
+      {!dojo && viewMode === 'norm' && suggestions.length > 0 && (
         <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
-          {suggestionRows.length > 0 && (
-            <div style={{ marginBottom: !done && failChecks.length ? 8 : 0 }}>
-              <div style={{ ...microLabel, color: '#8a6d3b', marginBottom: 3 }}>Suggested changes</div>
-              {suggestionRows.map((row) => {
-                const applied = row.state === 'applied';
-                const dismissed = row.state === 'dismissed';
-                // Received/deleted: a still-pending row was NOT actioned — the
-                // user received past it. Label it so the record reads as
-                // actioned-vs-not, never as still awaiting a decision.
-                const notActioned = row.state === 'pending' && done;
-                const accept = row.engineFix ? () => acceptFix(row.key, row.engineFix!) : row.accept;
-                return (
-                  <div key={row.key} style={{ fontSize: '0.68rem', color: applied ? '#2e7d4f' : dismissed || notActioned ? '#9ca3af' : '#8a6d3b', display: 'flex', gap: 8, padding: '2px 0', alignItems: 'center' }}>
-                    <span>{applied ? '✓' : dismissed ? '⊘' : notActioned ? '○' : '●'}</span>
-                    <span style={{ flex: 1, ...(applied ? { textDecoration: 'line-through', color: '#9ca3af' } : {}), ...(dismissed || notActioned ? { color: '#9ca3af' } : {}) }}>
-                      {row.summary}
-                      {dismissed && !row.key.includes('confirm-unit:') && <span style={{ fontStyle: 'italic' }}> — dismissed</span>}
-                      {notActioned && <span style={{ fontStyle: 'italic' }}> — not actioned</span>}
-                    </span>
-                    {!embedded && row.links && row.links.length > 0 && (
-                      <span style={{ display: 'flex', gap: 8, whiteSpace: 'nowrap' }}>
-                        {row.links.map((lk) =>
-                          lk.href ? (
-                            <a key={lk.label} href={lk.href} target="_blank" rel="noreferrer"
-                              style={{ fontSize: '0.62rem', color: '#2563a8', textDecoration: 'underline' }}>
-                              {lk.label} ↗
-                            </a>
-                          ) : lk.onClick ? (
-                            <button key={lk.label} type="button" onClick={lk.onClick}
-                              style={{ fontSize: '0.62rem', padding: 0, border: 'none', background: 'none', color: '#2563a8', textDecoration: 'underline', cursor: 'pointer' }}>
-                              {lk.label}
-                            </button>
-                          ) : (
-                            <span key={lk.label} style={{ fontSize: '0.62rem', color: '#9ca3af', fontStyle: 'italic' }}>
-                              {lk.label}
-                            </span>
-                          ),
-                        )}
-                      </span>
-                    )}
-                    {(applied || dismissed) && row.undo && !done && !embedded && (
-                      <button type="button" onClick={row.undo}
-                        title={dismissed ? 'restore this suggestion' : 'undo this change'}
-                        style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #ccc', background: '#fff', color: '#666', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                        Undo
-                      </button>
-                    )}
-                    {row.state === 'pending' && !done && !embedded && (
-                      <span style={{ display: 'flex', gap: 4 }}>
-                        {accept && (
-                          <button type="button" onClick={accept} disabled={accepting !== null}
-                            style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #b78a2f', background: accepting === row.key ? '#f0e6cc' : '#fff', color: '#8a6d3b', borderRadius: 4, cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap', opacity: accepting !== null && accepting !== row.key ? 0.5 : 1 }}>
-                            {accepting === row.key ? 'Applying…' : (row.acceptLabel ?? 'Accept')}
-                          </button>
-                        )}
-                        {row.dismiss && (
-                          <button type="button" onClick={row.dismiss} disabled={accepting !== null}
-                            title={row.dismissLabel ? 'confirm and continue' : 'decline this suggestion without applying it'}
-                            style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #ccc', background: '#fff', color: '#888', borderRadius: 4, cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
-                            {row.dismissLabel ?? 'Dismiss'}
-                          </button>
-                        )}
-                      </span>
-                    )}
+          <div style={{ ...microLabel, color: '#8a6d3b', marginBottom: 3 }}>
+            Suggested changes ({pendingSuggestions.length ? `${pendingSuggestions.length} pending` : 'all decided'})
+          </div>
+          {[...suggestions].sort((a, b) => Number(stateOf(a.id) !== 'pending') - Number(stateOf(b.id) !== 'pending')).map(suggRow)}
+          {effectiveActions.length > 0 && (
+            <details style={{ marginTop: 4 }}>
+              <summary style={{ fontSize: '0.62rem', color: '#9ca3af', cursor: 'pointer', userSelect: 'none' }}>
+                {[
+                  recordCounts.norm ? `Norm applied ${recordCounts.norm} change${recordCounts.norm > 1 ? 's' : ''}` : null,
+                  recordCounts.user ? `you applied ${recordCounts.user}` : null,
+                  recordCounts.dismissed ? `dismissed ${recordCounts.dismissed}` : null,
+                ].filter(Boolean).join(' · ') || 'action record'}
+              </summary>
+              <div style={{ marginTop: 3 }}>
+                {actionsList.map((a, i) => (
+                  <div key={`ar-${i}`} style={{ fontSize: '0.6rem', color: '#9ca3af', display: 'flex', gap: 6, padding: '1px 0' }}>
+                    <span style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{a.at ? a.at.replace('T', ' ').slice(0, 16) : '—'}</span>
+                    <span style={{ whiteSpace: 'nowrap', fontWeight: 600 }}>{a.by === 'norm' ? 'Norm' : 'you'} {a.action}</span>
+                    <span style={{ flex: 1 }}>{explanationFor(a.suggestion_id)}</span>
                   </div>
-                );
-              })}
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
+      {/* Issues — the review's findings, grouped Blocking / Notes. Blocking
+          issues gate the Receive button until their clears_when predicate
+          holds against the working values, or the user marks them checked. */}
+      {!dojo && viewMode === 'norm' && !draftDeleted && (issues.length > 0 || reviewing || !reviewed) && (
+        <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
+          {blockingIssues.length > 0 && (
+            <div style={{ marginBottom: noteIssues.length ? 6 : 0 }}>
+              <div style={{ ...microLabel, color: '#c0392b', marginBottom: 3 }}>Needs attention</div>
+              {blockingIssues.map(issueRow)}
             </div>
           )}
-          {/* Hidden once received/deleted: the failures were either fixed by
-              the actioned changes or knowingly accepted at Receive — after
-              that, the actioned-vs-not record above is the story. */}
-          {!done && failChecks.length > 0 && (
+          {noteIssues.length > 0 && (
             <div>
-              <div style={{ ...microLabel, color: '#c0392b', marginBottom: 3 }}>Needs attention</div>
-              {failChecks.map((c) => (
-                <div key={`fc-${c.label}`} style={{ fontSize: '0.68rem', color: '#c0392b', display: 'flex', gap: 6, padding: '1px 0' }}>
-                  <span>✗</span><span>{c.label}</span>
-                </div>
-              ))}
-              {(doc.check_reasons || []).map((r, i) => {
-                // The stale "would be created as NEW" reason once the user's
-                // edits resolved every NEW value — struck through with the
-                // outcome, so what receive will send is unambiguous.
-                const resolved = newValuesResolvedByEdits
-                  && (r.includes('would be created as NEW') || r.includes('not linked in Loaded yet'));
-                return (
-                  <div key={`rn-${i}`} style={{ fontSize: '0.64rem', color: resolved ? '#9ca3af' : '#a04a3d', display: 'flex', gap: 6, padding: '1px 0 1px 14px' }}>
-                    <span>–</span>
-                    <span>
-                      <span style={resolved ? { textDecoration: 'line-through' } : undefined}>{r}</span>
-                      {resolved && (
-                        <span style={{ color: '#2e7d4f', marginLeft: 6 }}>
-                          resolved by your edits — receive writes the values you picked; nothing NEW is created
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
+              <div style={{ ...microLabel, marginBottom: 3 }}>Notes from the review</div>
+              {noteIssues.map(issueRow)}
+            </div>
+          )}
+          {issues.length === 0 && (
+            <div style={{ fontSize: '0.64rem', color: '#9ca3af' }}>
+              {reviewing ? 'Reviewing the invoice against the attached copy…' : 'Not yet reviewed.'}
             </div>
           )}
         </div>
       )}
 
-      {/* Validation — the collapsed strip already shows checkSummary */}
-      {!collapsed && !dojo && (
-      <details style={{ borderTop: '1px solid #eee' }}>
-        <summary style={{ padding: '0.45rem 0.9rem', fontSize: '0.68rem', color: '#666', cursor: 'pointer', userSelect: 'none' }}>
-          Validation ({checkSummary})
-          {!embedded && !done && (
-            <button type="button"
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); resetValidation(); }}
-              disabled={reviewing}
-              title="wipe the cached review, extraction and action log for this invoice and re-run validation from scratch"
-              style={{ marginLeft: 8, fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#8a8a8a', cursor: reviewing ? 'default' : 'pointer', fontFamily: 'inherit' }}>
-              {reviewing ? 'resetting…' : 'reset validation'}
-            </button>
-          )}
-        </summary>
-        <div style={{ padding: '0 0.9rem 0.6rem 0.9rem' }}>
-          {checks.length === 0 ? (
-            <div style={{ fontSize: '0.64rem', color: '#9ca3af' }}>
-              {reviewing ? 'Checking the lines against the attached invoice copy…' : 'No review checks yet.'}
-            </div>
-          ) : (
-            CHECK_SECTIONS.map((sec) => (
-              <div key={sec.title} style={{ marginTop: 6 }}>
-                <div style={{ ...microLabel, marginBottom: 2 }}>{sec.title}</div>
-                {sec.keys.map((key) => {
-                  const c = checkByKey[key];
-                  const resolvedByEdits = (key === 'items_matched' && newValuesResolvedByEdits) || resolvedLocally.has(key);
-                  const state = resolvedByEdits ? 'pass' : c ? c.state : 'skip';
-                  const color = state === 'pass' ? '#2e7d4f' : state === 'fail' ? '#c0392b' : state === 'suggest' ? '#b78a2f' : '#9ca3af';
-                  const icon = state === 'pass' ? '✓' : state === 'fail' ? '✗' : state === 'suggest' ? '●' : '—';
-                  return (
-                    <div key={key} style={{ fontSize: '0.64rem', display: 'flex', gap: 6, color }}>
-                      <span style={{ width: 8 }}>{icon}</span>
-                      <span>
-                        {CHECK_LABEL[key]}
-                        {state === 'suggest' ? ' — suggested change' : ''}
-                        {resolvedByEdits
-                          ? key === 'items_matched'
-                            ? ' — resolved by your edits (nothing NEW will be created)'
-                            : ' — resolved by your edits (applied on receive)'
-                          : ''}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            ))
-          )}
+      {/* Review controls: Re-run replica (recompute + SQUASH local edits and
+          the record — confirmed first) and reset validation (admin escape
+          hatch: wipe every cached artifact incl. the extraction). */}
+      {!dojo && !collapsed && !embedded && !doneState && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.4rem 0.9rem', borderTop: '1px solid #eee' }}>
+          <span style={{ fontSize: '0.62rem', color: '#9ca3af' }}>
+            {reviewing ? 'reviewing…' : reviewed ? `reviewed ${String(docLive.reviewed_at).replace('T', ' ').slice(0, 16)}` : 'not yet reviewed'}
+          </span>
+          <button type="button" onClick={rerunReplica} disabled={reviewing}
+            title="recompute the review from the live Loaded draft and the copy — RESETS your edits and accepted suggestions"
+            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#8a8a8a', cursor: reviewing ? 'default' : 'pointer', fontFamily: 'inherit' }}>
+            {reviewing ? 'running…' : 'Re-run replica'}
+          </button>
+          <button type="button" onClick={() => { void resetValidation(); }} disabled={reviewing}
+            title="wipe the cached review, extraction and action log for this invoice and re-run validation from scratch"
+            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#8a8a8a', cursor: reviewing ? 'default' : 'pointer', fontFamily: 'inherit' }}>
+            reset validation
+          </button>
         </div>
-      </details>
       )}
 
       {/* Footer */}
       {!dojo && (
       <div style={{ padding: '0.6rem 0.9rem', borderTop: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
-        <span style={{ flex: 1, fontSize: '0.72rem', color: status === 'error' ? '#c0392b' : done ? '#2e7d4f' : (!done && (unresolved.length > 0 || supplierBlocking)) ? '#b45309' : '#888' }}>
+        <span style={{ flex: 1, fontSize: '0.72rem', color: status === 'error' ? '#c0392b' : doneState ? '#2e7d4f' : (unresolved.length > 0 || supplierBlocking || blockingOpen.length > 0) ? '#b45309' : '#888' }}>
           {status === 'error' ? `✗ ${message}`
             : draftDeleted ? `✓ Draft deleted from Loaded${doc.deleted_reason ? ` — ${doc.deleted_reason}` : ' — this document was a supplier statement or duplicate.'}`
-            : done ? '✓ Received in Loaded.'
+            : doneState ? '✓ Received in Loaded.'
             : status === 'saving' ? 'Receiving…'
             : noLines
               ? 'Nothing to receive — this draft has no line items. If it isn’t an invoice, accept the delete suggestion instead.'
@@ -3286,13 +2290,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               ? 'No Loaded supplier linked — pick the supplier before receiving.'
             : unresolved.length > 0
               ? `${unresolved.length} line${unresolved.length > 1 ? 's have' : ' has'} a NEW item or unit — link or pick an existing one on the line before receiving.`
-              : suggestionsBlocking
-                ? `${blockingSuggestions.length} suggested change${blockingSuggestions.length > 1 ? 's' : ''} need${blockingSuggestions.length > 1 ? '' : 's'} a decision — Accept or Dismiss each, then receive.`
-                : newValuesResolvedByEdits
-                  ? 'Your edits resolved the NEW values — receive writes the units/items you picked; nothing new is created in Loaded.'
-                  : checkSummary === 'all checks pass'
-                    ? 'All checks passed — ready to receive.'
-                    : 'Review the changes, then accept to update Loaded and receive.'}
+              : blockingOpen.length > 0
+                ? `${blockingOpen.length} blocking issue${blockingOpen.length > 1 ? 's' : ''} need${blockingOpen.length > 1 ? '' : 's'} review — fix each, or mark it checked, then receive.`
+                : deleteSugg && stateOf(deleteSugg.id) === 'pending'
+                  ? 'This looks like a duplicate — review the delete suggestion before receiving.'
+                  : pendingSuggestions.length > 0
+                    ? `${pendingSuggestions.length} suggested change${pendingSuggestions.length > 1 ? 's' : ''} pending — Accept or Dismiss them, or receive as-is.`
+                    : reviewed
+                      ? 'Ready to receive.'
+                      : 'Review the invoice, then accept to update Loaded and receive.'}
         </span>
         {overlay && (
           <button type="button" onClick={() => setExpandedFull(false)}
@@ -3300,8 +2306,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             Close
           </button>
         )}
-        {!done && (
-          <button onClick={accept} disabled={receiveBlocked}
+        {!doneState && (
+          <button onClick={receive} disabled={receiveBlocked}
             title={
               noLines
                 ? 'This draft has no line items — nothing to receive'
@@ -3309,8 +2315,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 ? 'Pick the supplier first — Loaded can’t receive a supplier-less invoice'
                 : unresolved.length > 0
                   ? 'Create the NEW items/units in Loaded first'
-                  : suggestionsBlocking
-                    ? 'Resolve the suggested changes first — Accept or Dismiss each'
+                  : blockingOpen.length > 0
+                    ? 'Blocking issues remain — fix each, or mark it checked'
                     : undefined
             }
             style={{ padding: '0.4rem 1.1rem', fontSize: '0.78rem', fontWeight: 500, border: 'none', borderRadius: 6, cursor: receiveBlocked ? 'not-allowed' : 'pointer', background: '#2e7d4f', color: '#fff', fontFamily: 'inherit', opacity: receiveBlocked ? 0.5 : 1, whiteSpace: 'nowrap' }}>
@@ -3319,6 +2325,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         )}
       </div>
       )}
+    </fieldset>
     </div>
   );
 
@@ -3341,3 +2348,5 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     </>
   );
 }
+
+

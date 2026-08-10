@@ -184,67 +184,62 @@ def _attach_reference_data(
 def _attach_suggestions(
     data: dict, venue_id: str | None, db: Session, config_db: Session
 ) -> None:
-    """Run the review ENGINE and merge its artifact onto the draft (best-effort).
+    """Run the replica review and REPLACE the draft payload (best-effort).
 
-    The same single-invoice review + merge the web ``/invoice-fixes/review``
-    endpoint runs (one shared code path — ``run_review_and_merge``), so the
-    embedded card carries the same checks, copy comparisons, fix suggestions and
-    item-match suggestions as the web editor. Guarded by the draft's own cache
-    (``checks``), so re-opens are free; a failure degrades to the plain mirror
-    rather than failing the block.
+    The same pipeline the web ``/invoice-fixes/review`` endpoint runs
+    (``services/invoice_review.review_invoice``), so the embedded card carries
+    the same suggestions, issues and confidence as the web editor. Guarded by
+    the draft's own cache (``reviewed_at``), so re-opens are free; a failure
+    degrades to the plain mirror rather than failing the block.
     """
-    if not venue_id or data.get("checks"):
+    from app.services.invoice_review import DOC_SCHEMA, review_invoice
+
+    if not venue_id:
+        return
+    if data.get("doc_schema") == DOC_SCHEMA and data.get("reviewed_at"):
         return
     try:
-        from app.routers.invoice_fixes import run_review_and_merge
-
-        run_review_and_merge(data, venue_id, data.get("invoice_id"), db, config_db)
+        fresh = review_invoice(
+            db,
+            config_db,
+            venue_id,
+            str(data.get("invoice_id") or ""),
+            require_valid_po=False,  # interactive card — note, not block
+        )
+        keep = {
+            k: data[k]
+            for k in ("working_document_id", "thread_id", "venue_id")
+            if k in data
+        }
+        data.clear()
+        data.update(fresh)
+        data.update(keep)
     except Exception as exc:  # noqa: BLE001 — suggestions are enhancement
         logger.info("receive_display: review/suggestions failed: %s", exc)
 
 
-# Decodes the engine's packed ``checks`` string for the model's summary — must
-# stay in CHECK_LABELS order (config/consolidators/review_and_receive_invoices).
-_CHECK_STATES = {"p": "pass", "f": "FAIL", "s": "suggested change", "-": "not checked"}
-
-
 def _suggestion_summary(data: dict) -> str | None:
-    """One deterministic text block for the MODEL: checks + suggestions + NEW
-    items. The card shows the human the same thing interactively; this keeps
-    Claude's narration accurate without a second data path or any LLM call."""
+    """One deterministic text block for the MODEL: confidence + issues +
+    suggestions. The card shows the human the same thing interactively; this
+    keeps Claude's narration accurate without a second data path or any LLM
+    call."""
     parts: list[str] = []
-    checks = data.get("checks")
-    if checks:
-        n_pass = checks.count("p")
-        n_fail = checks.count("f")
-        n_sug = checks.count("s")
-        bits = [f"{n_pass} passed"]
-        if n_fail:
-            bits.append(f"{n_fail} failed")
-        if n_sug:
-            bits.append(f"{n_sug} suggested change(s)")
-        parts.append("Review checks: " + ", ".join(bits) + ".")
-    for r in data.get("check_reasons") or []:
-        parts.append(f"- {r}")
-    for s in data.get("suggestions") or []:
-        if s.get("summary"):
-            parts.append(f"- Suggested fix: {s['summary']}")
-    for ln in data.get("lines") or []:
-        if ln.get("linked_item_id"):
-            continue
-        desc = ln.get("description") or ln.get("code") or "?"
-        m = ln.get("matched_item") or {}
-        if m.get("name"):
-            parts.append(
-                f"- NEW item '{desc}': likely matches existing '{m['name']}'"
-                + (f" ({m['group']})" if m.get("group") else "")
-                + " — link it in the card or in Norm."
-            )
-        elif ln.get("suggested_name"):
-            parts.append(
-                f"- NEW item '{desc}': no catalogue match — create as "
-                f"'{ln['suggested_name']}'."
-            )
-        else:
-            parts.append(f"- NEW item '{desc}': must be linked or created in Loaded.")
+    confidence = data.get("confidence")
+    issues = data.get("issues") or []
+    suggestions = data.get("suggestions") or []
+    if confidence:
+        blocking = sum(1 for i in issues if i.get("blocking"))
+        parts.append(
+            f"Review: {'ready to receive' if confidence == 'ready' else 'needs review'}"
+            + (f" — {blocking} blocking issue(s)" if blocking else "")
+            + (f", {len(suggestions)} suggested change(s)" if suggestions else "")
+            + "."
+        )
+    for i in issues:
+        if i.get("message"):
+            flag = "BLOCKING" if i.get("blocking") else "note"
+            parts.append(f"- {flag}: {i['message']}")
+    for s in suggestions:
+        if s.get("explanation"):
+            parts.append(f"- Suggested: {s['explanation']}")
     return "\n".join(parts) if parts else None

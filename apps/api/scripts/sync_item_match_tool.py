@@ -28,10 +28,14 @@ TOOL = {
         "call_api; not bound to any agent."
     ),
     "required_fields": ["lines"],
-    "optional_fields": ["venue", "venue_id"],
+    "optional_fields": ["venue", "venue_id", "supplier_name"],
     "field_descriptions": {
         "lines": "List of {id, description, code, brand, unit} for unlinked lines.",
         "venue": "Venue name (resolved to an id); or pass venue_id directly.",
+        "supplier_name": (
+            "The invoice's supplier — steers charge-line matching "
+            "(a liquor supplier's freight lands on the beverage freight item)."
+        ),
     },
     "read_only": True,
 }

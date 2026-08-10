@@ -72,9 +72,10 @@ class TestMatchStockItemsHandler:
         # result. Cache read (db=None) fails soft; cache write is best-effort.
         seen = {}
 
-        def fake_suggest(venue_id, lines, db, config_db):
+        def fake_suggest(venue_id, lines, db, config_db, supplier_name=None):
             seen["venue_id"] = venue_id
             seen["lines"] = lines
+            seen["supplier_name"] = supplier_name
             return {
                 "L1": {
                     "matched_item": {"id": "i-1", "name": "X"},
@@ -90,7 +91,7 @@ class TestMatchStockItemsHandler:
         out = self._handler()({"venue_id": "v-9", "lines": lines}, None, None)
         assert out["success"] is True
         assert out["data"]["suggestions"]["L1"]["matched_item"]["id"] == "i-1"
-        assert seen == {"venue_id": "v-9", "lines": lines}
+        assert seen == {"venue_id": "v-9", "lines": lines, "supplier_name": None}
 
     def test_cache_hit_skips_the_llm(self, monkeypatch):
         # A cached result is returned without invoking the service at all.
@@ -168,7 +169,11 @@ class TestMatchStockItemsHandler:
             }
         }
         key = _extraction_cache_key(
-            "norm", "match_stock_items", {"venue_id": "v-9", "lines": lines}, {}, ""
+            "norm",
+            "match_stock_items",
+            {"venue_id": "v-9", "lines": lines, "supplier_name": None},
+            {},
+            "",
         )
         _extraction_cache_put(db_session, key, "norm", "match_stock_items", stale)
         db_session.flush()

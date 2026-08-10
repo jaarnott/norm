@@ -1,29 +1,22 @@
-"""Apply user-approved fixes to unreceivable LoadedHub invoices.
+"""The Receive Invoice editor's server surface.
 
-The review_and_receive_invoices engine proposes structured `fixes` (link a
-purchase order; correct a line's unit of measure; delete a statement/duplicate
-draft). The Receive Invoice editor renders them and POSTs ONE accepted fix at a
-time to /invoice-fixes/accept; each is applied against the venue's LoadedHub
-connector.
+The review itself lives in ``services/invoice_review`` (the replica as the
+single suggestion engine); this router wires it to the web editor:
 
-Fix contracts (verified live in the LoadedHub test env, 18 Jul 2026):
+- ``/draft`` opens (or heals) the working document; ``/review`` runs the
+  replica review and squashes the payload onto every twin; ``/receive``
+  builds the receive request server-side from the doc's working values.
+- ``/accept`` applies the few suggestions that are LOADED WRITES rather than
+  local doc edits (delete a duplicate/statement draft; the legacy link_po
+  path). Everything else is a local working-document patch until receive.
+- ``/create-item``, ``/create-unit``, ``/create-supplier`` create catalogue
+  entries so blocked lines become receivable; the reference-data GETs feed
+  the editor's pickers.
 
-- link_po: resolve the referenced PO number to a PO id via
-  GET /1.0/stock/internal/purchase-orders (server-side searchTerm is a no-op,
-  so filter client-side on orderNumber), then PUT the invoice with
-  linkedPurchaseOrderId + purchaseOrderNumber set. Linking does not re-match
-  lines.
-
-- unit: mirrors Loaded's own "update variant?" flow.
-    1. resolve the proposed unit name to a Loaded unit (GET .../units) — id,
-       ratio, stockUnitType. If no confident match exists, the fix fails
-       (the unit must be created in Loaded first).
-    2. PUT the invoice with the line's unit / linkedUnitId / linkedUnitRatio
-       set to the resolved unit.
-    3. resolve the supplier variant (GET .../items/{itemId} → suppliers[]
-       where supplierId == invoice supplier AND stockCode == line code) and
-       PATCH .../item-supplier-variant/{variantId} { unitId } so future
-       invoices match.
+Loaded write contracts verified live in the LoadedHub test env (18 Jul 2026):
+link_po = PUT the invoice with linkedPurchaseOrderId + purchaseOrderNumber
+(no line re-matching); unit changes PUT the invoice line then PATCH the
+supplier variant so future invoices match.
 """
 
 from __future__ import annotations
@@ -65,7 +58,6 @@ from app.services.item_match import (
     _match_stock_items,  # noqa: F401 — kept for tests
     _match_subset,  # noqa: F401 — kept for tests
     _new_item_lines,  # noqa: F401 — kept for tests
-    suggest_item_matches_for_invoice,
 )
 
 logger = logging.getLogger(__name__)
@@ -386,7 +378,8 @@ def _open_docs_for(db: Session, venue_id: str, invoice_id: str):
     ]
     docs.sort(
         key=lambda d: (
-            (d.data or {}).get("checks") is not None,
+            (d.data or {}).get("reviewed_at") is not None
+            or (d.data or {}).get("checks") is not None,
             d.created_at or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc),
         ),
         reverse=True,
@@ -798,203 +791,6 @@ async def list_stock_items(
 # ---------------------------------------------------------------------------
 
 
-class MatchItemsRequest(BaseModel):
-    venue_id: str
-    invoice_id: str
-
-
-class LinkItemRequest(BaseModel):
-    venue_id: str
-    invoice_id: str
-    line_id: str
-    item_id: str
-
-
-@router.post("/invoice-fixes/match-items")
-async def match_stock_items(
-    body: MatchItemsRequest,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """For each NEW (unlinked) item line, suggest an existing catalogue match (to
-    link) or a normalized name + group (to create). Read-only — writes nothing.
-
-    Thin wrapper over the shared LLM function (services/item_match.py) — the same
-    matcher the review engine calls via ``norm.match_stock_items``.
-    """
-    return {
-        "suggestions": suggest_item_matches_for_invoice(
-            body.venue_id, body.invoice_id, db, config_db
-        )
-    }
-
-
-@router.post("/invoice-fixes/link-item")
-async def link_stock_item(
-    body: LinkItemRequest,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """Link an EXISTING Loaded stock item to an unmatched invoice line — without
-    receiving. Registers this supplier's variant (stockCode) on the item when it is
-    missing, so the supplier's future invoices auto-match and the line stops
-    recurring as NEW. NOTE: the add-variant PUT is inferred — verify live.
-    """
-    lh = _Loaded(db, config_db, body.venue_id)
-    inv = lh.invoice(body.invoice_id)
-    line = next(
-        (ln for ln in inv.get("lines") or [] if ln.get("id") == body.line_id), None
-    )
-    if not line:
-        raise HTTPException(404, "invoice line not found")
-    item = lh.get(f"/1.0/stock/internal/items/{body.item_id}")
-    if not isinstance(item, dict) or not item.get("id"):
-        raise HTTPException(404, "stock item not found in Loaded")
-
-    supplier_id = inv.get("linkedSupplierId")
-    code = line.get("code")
-    variants = [v for v in (item.get("suppliers") or []) if isinstance(v, dict)]
-    existing = next(
-        (
-            v
-            for v in variants
-            if v.get("supplierId") == supplier_id
-            and _norm(v.get("stockCode")) == _norm(code)
-        ),
-        None,
-    )
-    # Keep the line's already-resolved unit; else the variant's unit; else the
-    # item's ordering unit — so the linked line ends receivable.
-    unit_id = (
-        line.get("linkedUnitId")
-        or (existing or {}).get("unitId")
-        or item.get("orderingUnitId")
-    )
-    units = lh.get("/1.0/stock/internal/units")
-    unit = next((u for u in (units or []) if u.get("id") == unit_id), None)
-
-    # Register the supplier variant when it doesn't exist yet (INFERRED PUT).
-    registered = False
-    if supplier_id and not existing:
-        variants.append(
-            {
-                "supplierId": supplier_id,
-                "stockCode": code,
-                "unitId": unit_id,
-                "unitCost": (
-                    line.get("unitCostExclTax")
-                    if line.get("unitCostExclTax") is not None
-                    else line.get("unitCost")
-                ),
-                "brandId": line.get("linkedBrandId"),
-                "defaultForSupplier": False,
-                "description": line.get("description"),
-            }
-        )
-        item["suppliers"] = variants
-        lh.request("PUT", f"/1.0/stock/internal/items/{body.item_id}", item)
-        registered = True
-
-    line["linkedItemId"] = body.item_id
-    if unit:
-        line["linkedUnitId"] = unit.get("id")
-        line["unit"] = unit.get("name")
-        line["linkedUnitRatio"] = unit.get("ratio")
-    lh.request("PUT", f"/1.0/stock/internal/invoices/{body.invoice_id}", inv)
-
-    document = _reshape_draft_after_write(db, lh, body.venue_id, body.invoice_id)
-    note = " (registered supplier variant)" if registered else ""
-    return {"message": f"Linked to '{item.get('name')}'{note}", "document": document}
-
-
-class ResolvePoRequest(BaseModel):
-    venue_id: str
-    invoice_id: str
-
-
-def _extract_copy_po(lh: _Loaded, inv: dict, db: Session) -> dict:
-    """Extract the BUYER PO number + supplier order number from the invoice copy.
-
-    Loaded's own `purchaseOrderNumber` field is populated by the supplier feed
-    and often holds the supplier's OWN order number (e.g. Bidfood "O/N"), not
-    the buyer's PO. The buyer's PO — the one that matches a Loaded purchase
-    order — is only on the printed copy (e.g. "Customer Order No"). Read it
-    directly. Best-effort: any failure returns both as None.
-
-    Shared by the `/invoice-fixes/resolve-po` endpoint and the draft auto-link.
-    """
-    file_id = inv.get("fileId")
-    if not file_id:
-        return {"customer_po": None, "supplier_order_number": None}
-    try:
-        b64, ctype = lh.file_base64(file_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("resolve-po file download failed: %s", exc)
-        return {"customer_po": None, "supplier_order_number": None}
-
-    from app.interpreter.llm_interpreter import call_llm
-
-    schema = {
-        "customer_purchase_order_number": (
-            "string or null — the BUYER's / customer's purchase order number: "
-            "the order number the buyer (the venue) raised in their own system. "
-            "Suppliers label it 'Customer Order No', 'Cust Order No', 'Your "
-            "Order', 'Your Ref', 'PO Number', 'Purchase Order', 'Order No'. It "
-            "is the number to match against a purchase order."
-        ),
-        "supplier_order_number": (
-            "string or null — the SUPPLIER's OWN order/reference number "
-            "(labelled 'O/N', 'Our Order', 'Our Ref', 'Sales Order', 'Invoice "
-            "No', 'Delivery No'). NOT the buyer's PO."
-        ),
-    }
-    system_prompt = (
-        "You extract identifiers from a supplier invoice exactly as printed. "
-        "Distinguish the BUYER's purchase order number from the SUPPLIER's own "
-        "order number — they are different. Return ONLY a JSON object matching "
-        "this schema:\n" + json.dumps(schema, indent=1) + "\nUse null when a "
-        "field is not present. Never guess."
-    )
-    documents = [
-        {
-            "type": "document",
-            "source": {"type": "base64", "media_type": ctype, "data": b64},
-        }
-    ]
-    try:
-        parsed, _ = call_llm(
-            system_prompt=system_prompt,
-            user_prompt="Extract the buyer PO number and the supplier order number.",
-            db=db,
-            call_type="extraction",
-            max_tokens=512,
-            documents=documents,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("resolve-po extraction failed: %s", exc)
-        return {"customer_po": None, "supplier_order_number": None}
-    parsed = parsed if isinstance(parsed, dict) else {}
-    return {
-        "customer_po": parsed.get("customer_purchase_order_number"),
-        "supplier_order_number": parsed.get("supplier_order_number"),
-    }
-
-
-@router.post("/invoice-fixes/resolve-po")
-async def resolve_po(
-    body: ResolvePoRequest,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """Extract the CUSTOMER purchase order number from the invoice copy (PDF)."""
-    lh = _Loaded(db, config_db, body.venue_id)
-    inv = lh.invoice(body.invoice_id)
-    return _extract_copy_po(lh, inv, db)
-
-
 @router.get("/invoice-fixes/file")
 async def invoice_file(
     venue_id: str,
@@ -1081,12 +877,41 @@ async def receive_invoice(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Apply the card's edits to a draft invoice and (optionally) receive it."""
-    from app.services.received_invoice import invalidate_conflicting_drafts
+    """Receive an invoice from its working document (the doc-driven path).
+
+    The canonical body is just ``{venue_id, invoice_id}``: the server loads
+    the canonical doc, gates on the reviewed fingerprint (409 when the
+    invoice changed in Loaded since the review), and builds the receive
+    request from the doc's WORKING values — Loaded's draft + accepted
+    suggestions + manual edits (``receive_request_from_doc``). A body that
+    still carries explicit ``lines`` takes the legacy client-built path
+    unchanged (older cards mid-deploy).
+    """
+    from app.services.received_invoice import (
+        invalidate_conflicting_drafts,
+        invoice_fingerprint,
+        receive_request_from_doc,
+    )
 
     lh = _Loaded(db, config_db, body.venue_id)
-    out = _do_receive(lh, body)
-    if body.receive and isinstance(out, dict) and out.get("received"):
+    req = body
+    if not body.lines:
+        docs = _open_docs_for(db, body.venue_id, body.invoice_id)
+        if not docs:
+            raise HTTPException(404, "no open draft for this invoice — open it first")
+        data = docs[0].data or {}
+        want = data.get("reviewed_invoice_fingerprint")
+        if want:
+            live = lh.invoice(body.invoice_id)
+            if invoice_fingerprint(live) != want:
+                raise HTTPException(
+                    409,
+                    "this invoice changed in Loaded since it was reviewed — "
+                    "reopen it to re-review before receiving",
+                )
+        req = receive_request_from_doc(data, body.venue_id, body.invoice_id)
+    out = _do_receive(lh, req)
+    if req.receive and isinstance(out, dict) and out.get("received"):
         # Sibling drafts may now be duplicates (same number, just received) or
         # reference a PO that just got invoiced — mark twins received and clear
         # conflicting cached reviews so their cards re-review, not re-receive.
@@ -1094,8 +919,8 @@ async def receive_invoice(
             db,
             body.venue_id,
             body.invoice_id,
-            reference_number=body.reference_number,
-            po_ids=(body.linked_purchase_order_id, body.po_number),
+            reference_number=req.reference_number,
+            po_ids=(req.linked_purchase_order_id, req.po_number),
         )
     return out
 
@@ -1129,6 +954,9 @@ def _refresh_metadata(doc, detail: dict) -> None:
         if src:
             for f in _META_LINE_FIELDS:
                 ln[f] = src.get(f)
+    # The admin "Loaded view" mirror always shows Loaded's CURRENT truth,
+    # regardless of local edits — refreshed on every open.
+    data["loaded_snapshot"] = fresh.get("loaded_snapshot")
     doc.data = data
     flag_modified(doc, "data")
 
@@ -1357,12 +1185,14 @@ async def create_receive_draft(
             # _refresh_metadata already updated loaded_invoice_fingerprint
             # from the live detail via _META_HEADER_FIELDS.
             d = doc.data
-            if d.get("checks") and d.get("reviewed_invoice_fingerprint") != d.get(
-                "loaded_invoice_fingerprint"
-            ):
-                d["checks"] = None
+            if (d.get("checks") or d.get("reviewed_at")) and d.get(
+                "reviewed_invoice_fingerprint"
+            ) != d.get("loaded_invoice_fingerprint"):
+                d["checks"] = None  # legacy-shape marker
                 d["check_reasons"] = []
                 d["suggestions"] = []
+                d["reviewed_at"] = None  # replica_v1 marker
+                d["issues"] = []
             flag_modified(doc, "data")
             db.commit()
             db.refresh(doc)
@@ -1395,32 +1225,6 @@ async def create_receive_draft(
     db.commit()
     db.refresh(doc)
     return _doc_to_dict(doc)
-
-
-# Fields make_fix_invoice() adds per line that the draft doesn't already carry —
-# the PDF-copy comparison. Merged onto the matching draft line by id.
-_REVIEW_LINE_FIELDS = (
-    "copy_unit",
-    "copy_quantity",
-    "copy_unit_price",
-    "copy_line_total",
-    "recommended_unit",
-    "copy_unit_mismatch",
-    "copy_quantity_mismatch",
-    "copy_unit_cost_mismatch",
-    "copy_duplicate",
-    # The line is on the draft but NOT on the attached copy — drives the
-    # editor's "remove line" suggestion (strike-style).
-    "copy_missing",
-    # The copy carries unit/size info that can't be read — the editor asks
-    # the user to CONFIRM the unit (no proposed value).
-    "unit_needs_confirmation",
-    # Item-match suggestions for NEW lines (the engine's norm.match_stock_items
-    # LLM function): link an existing item, or a normalized create name + group.
-    "matched_item",
-    "suggested_name",
-    "suggested_group_id",
-)
 
 
 @router.post("/invoice-fixes/reset-validation")
@@ -1505,25 +1309,35 @@ async def reset_validation(
     }
 
 
+class ReviewRequest(BaseModel):
+    venue_id: str
+    invoice_id: str
+    # Re-run the replica: recompute the review and SQUASH the working values
+    # back to fresh Loaded data + fresh suggestions, discarding local edits
+    # and accept/dismiss state (the editor confirms before sending this).
+    force: bool = False
+
+
 @router.post("/invoice-fixes/review")
 async def review_receive_draft(
-    body: DraftRequest,
+    body: ReviewRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Run the PDF-copy review for one invoice and cache it into its draft.
+    """Run the replica review for one invoice and cache it into its draft.
 
-    This is the "checks after" half of fast-open: the editor calls it once the
-    draft is showing. It reuses the batch consolidator's exact gates (via a
-    single-invoice mode) so the checklist never drifts, then persists the
-    review's ``copy_*`` line comparisons, ``suggestions`` and packed ``checks``
-    string into the SAME working document. A draft that already carries
-    ``checks`` is returned untouched — the (LLM) PDF extraction runs once per
-    invoice, not once per open.
+    The single review pipeline (``services/invoice_review.review_invoice``):
+    working values from Loaded's draft, the replica sidecar, unified
+    suggestions with explanations, and confidence issues. A draft that
+    already carries a replica_v1 review is returned untouched unless
+    ``force`` — the (LLM) PDF extraction runs once per invoice, not per open.
+    Re-running REPLACES the doc payload wholesale (squash semantics).
     """
-    from app.routers.working_documents import _doc_to_dict
     from sqlalchemy.orm.attributes import flag_modified
+
+    from app.routers.working_documents import _doc_to_dict
+    from app.services.invoice_review import DOC_SCHEMA, review_invoice
 
     docs = _open_docs_for(db, body.venue_id, body.invoice_id)
     if not docs:
@@ -1531,221 +1345,37 @@ async def review_receive_draft(
 
     doc = docs[0]  # canonical: carries a review if any twin does
     data = doc.data or {}
-    if data.get("checks") is not None:
-        # Cached: the review already ran. "" is a real result too (credit note /
-        # no PDF — the review ran and produced no artifact); treating it as
-        # uncached used to re-run the engine on every open.
+    if (
+        data.get("doc_schema") == DOC_SCHEMA
+        and data.get("reviewed_at")
+        and not body.force
+    ):
         return _doc_to_dict(doc)
 
-    run_review_and_merge(data, body.venue_id, body.invoice_id, db, config_db)
+    # require_valid_po=False: the interactive card has a human looking at it —
+    # a PO-less invoice gets a note, not a block (the batch/autopilot default
+    # stays strict).
+    fresh = review_invoice(
+        db, config_db, body.venue_id, body.invoice_id, require_valid_po=False
+    )
+    try:
+        lh = _Loaded(db, config_db, body.venue_id)
+        _attach_po_reference(fresh, lh)
+        attach_item_names(fresh, lh)
+    except Exception as exc:  # noqa: BLE001 — reference data is enhancement
+        logger.info("review PO reference unavailable: %s", exc)
 
-    if data.get("split_po_id") and not data.get("linked_purchase_order_id"):
-        # Split order detected by the review: attach the order's reference
-        # data (QTY ORDERED / ordered-not-delivered) NOW so the editor shows
-        # the split state without a reopen — the open path re-attaches on
-        # every subsequent open anyway. Best-effort.
-        try:
-            _attach_po_reference(data, _Loaded(db, config_db, body.venue_id))
-        except Exception as exc:  # noqa: BLE001 — reference data is enhancement
-            logger.info("split PO reference unavailable: %s", exc)
-
-    doc.data = data
-    doc.version += 1
-    flag_modified(doc, "data")
-    # Twin docs (historic per-thread duplicates) receive the same review state
-    # so every bound card reads one truth — a card PATCHing its own twin used
-    # to get a bare doc back and visibly lose the validation.
-    for twin in docs[1:]:
-        _copy_review_state(data, twin.data or {})
-        twin.version += 1
-        flag_modified(twin, "data")
+    for target in docs:
+        payload = dict(fresh)
+        for k in ("working_document_id", "thread_id", "venue_id"):
+            if k in (target.data or {}):
+                payload[k] = target.data[k]
+        target.data = payload
+        target.version += 1
+        flag_modified(target, "data")
     db.commit()
     db.refresh(doc)
     return _doc_to_dict(doc)
-
-
-# ONE registry for header-level review state: every field the engine card
-# emits that must survive BOTH merge paths — run_review_and_merge (artifact →
-# doc) and _copy_review_state (doc → twin). Register new card fields HERE and
-# nowhere else; a field emitted by the engine but missing from this tuple is a
-# silently dropped feature (it has happened).
-_REVIEW_HEADER_FIELDS = (
-    "checks",
-    "check_reasons",
-    "suggestions",
-    # buyer PO read off the copy + whether it resolved to no Loaded PO
-    "copy_po",
-    "po_unresolved",
-    # copy-printed totals when Loaded's header disagrees (e.g. $0 feed)
-    "copy_total_mismatch",
-    "copy_total",
-    "copy_subtotal",
-    "copy_tax_amount",
-    # the copy's printed invoice number when it disagrees with the draft's
-    # reference — the editor's "Invoice number X → Y" suggestion
-    "copy_invoice_number",
-    # supplier printed on the copy + the matched Loaded record
-    "copy_supplier",
-    "supplier_differs",
-    "matched_supplier_id",
-    "matched_supplier_name",
-    # the linked PO's supplier when it isn't this invoice's supplier — the
-    # editor's "unlink this order" suggestion
-    "po_supplier_mismatch",
-    "po_supplier_name",
-    # the already-received sibling when this draft is a duplicate — the editor
-    # links to it in Loaded and serves its copy for side-by-side comparison
-    # (file id captured off the received feed so the copy can be fetched
-    # without a detail round-trip). The PO variant means the goods were
-    # receipted straight against the order — no invoice document exists.
-    "duplicate_of_invoice_id",
-    "duplicate_of_file_id",
-    "duplicate_of_purchase_order_id",
-    # split-order state: the referenced PO is already linked to a sibling
-    # invoice (second delivery vs doubled-up — see the engine's split branch)
-    "split_order",
-    "split_po_suggested",
-    "split_remove_po",
-    "split_po_id",
-    "split_po_number",
-    "split_sibling_invoice_id",
-    "split_sibling_reference",
-    "split_sibling_file_id",
-)
-
-
-def _ident(v):
-    return v
-
-
-# Per-field normalization applied when merging the engine artifact onto the
-# doc (booleans coerced, list fields defaulted) — display semantics only.
-_REVIEW_HEADER_COERCE = {
-    "check_reasons": lambda v: v or [],
-    "suggestions": lambda v: v or [],
-    "po_unresolved": bool,
-    "copy_total_mismatch": bool,
-    "supplier_differs": bool,
-    "po_supplier_mismatch": bool,
-    "split_order": bool,
-    "split_po_suggested": bool,
-    "split_remove_po": bool,
-}
-
-
-def _copy_review_state(src: dict, dst: dict) -> None:
-    """Copy the review-owned state from one doc payload onto a twin (in place):
-    header review keys + per-line ``_REVIEW_LINE_FIELDS`` matched by line id.
-    Local editor state on the twin (struck, links, log) is untouched."""
-    for k in (
-        *_REVIEW_HEADER_FIELDS,
-        "reviewed_invoice_fingerprint",
-        "loaded_invoice_fingerprint",
-    ):
-        dst[k] = src.get(k)
-    src_by_id = {ln.get("id"): ln for ln in src.get("lines") or [] if ln.get("id")}
-    for ln in dst.get("lines") or []:
-        src_ln = src_by_id.get(ln.get("id"))
-        if src_ln:
-            for f in _REVIEW_LINE_FIELDS:
-                ln[f] = src_ln.get(f)
-
-
-def run_review_and_merge(
-    data: dict, venue_id: str, invoice_id: str, db: Session, config_db: Session
-) -> None:
-    """Run the review ENGINE for one invoice and merge its artifact onto ``data``.
-
-    The single merge code path — used by ``/invoice-fixes/review`` (web) and the
-    embedded builder (``app/mcp/receive_display.py``), so the two surfaces can
-    never drift. Mutates ``data`` in place; caller persists. Raises HTTPException
-    on misconfiguration (the embedded caller wraps best-effort).
-    """
-    import datetime as _dt
-
-    from app.agents.internal_tools import execute_consolidator
-    from app.db.config_models import ConnectorSpec
-    from app.db.models import Venue
-
-    spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == "loadedhub")
-        .first()
-    )
-    tool_def = next(
-        (
-            t
-            for t in (spec.tools if spec else []) or []
-            if t.get("action") == "review_and_receive_invoices"
-        ),
-        None,
-    )
-    if not tool_def or not tool_def.get("consolidator_config"):
-        raise HTTPException(
-            500, "review_and_receive_invoices consolidator not configured"
-        )
-
-    venue = db.query(Venue).filter(Venue.id == venue_id).first()
-    if venue is None:
-        raise HTTPException(404, "venue not found")
-    tz = getattr(venue, "timezone", None) or "Pacific/Auckland"
-    try:
-        from zoneinfo import ZoneInfo
-
-        today = _dt.datetime.now(ZoneInfo(tz)).date().isoformat()
-    except Exception:
-        today = _dt.date.today().isoformat()
-
-    cfg = {**tool_def["consolidator_config"], "action": "review_and_receive_invoices"}
-    review_params = {
-        "venue": venue.name,
-        "invoice_id": invoice_id,
-        "today": today,
-    }
-    # If the USER picked a PO in the editor that Loaded hasn't linked yet (kept
-    # local per the "validate without writeback" rule), pass it so the copy is
-    # validated against it. Auto-resolving a PO from the copy is NOT done here —
-    # the consolidator owns that (it reads the copy's PO number and resolves it).
-    po_override = data.get("linked_purchase_order_id")
-    if po_override:
-        review_params["purchase_order_id"] = po_override
-    result = execute_consolidator(cfg, review_params, db, None)
-    fixes = (result.get("data") or {}).get("fix_invoices") or []
-    fx = fixes[0] if fixes else None
-
-    if fx:
-        by_id = {ln.get("id"): ln for ln in fx.get("lines") or []}
-        for ln in data.get("lines") or []:
-            src = by_id.get(ln.get("id"))
-            if src:
-                for f in _REVIEW_LINE_FIELDS:
-                    ln[f] = src.get(f)
-        # ONE registry drives every header-level review field — see
-        # _REVIEW_HEADER_FIELDS. Adding a card field only there wires both
-        # merge paths (artifact → doc here, doc → twin in _copy_review_state).
-        for k in _REVIEW_HEADER_FIELDS:
-            data[k] = _REVIEW_HEADER_COERCE.get(k, _ident)(fx.get(k))
-    else:
-        # The invoice never reached the copy comparison (e.g. a credit note, or
-        # no PDF attached). Record that the review ran so it isn't retried every
-        # open; the editor renders fine without copy checks.
-        data["suggestions"] = []
-        data["check_reasons"] = []
-        data.setdefault("checks", "")
-
-    # (link_po suggestions that can't be actioned are already withheld by the
-    # consolidator: in single-invoice review it resolves the referenced PO number
-    # itself and only suggests a link when a real Loaded PO matched — a supplier's
-    # own ref that resolves to nothing is never surfaced.)
-
-    # The linked PO's ordered qty / reference cost / order date and the
-    # substitution + un-received flags are attached on every draft open by
-    # _attach_po_reference (matched by stock code), not here — the review is
-    # cached, so anything attached here would never refresh on a re-open.
-    data["reviewed_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
-    # Stamp the invoice version this review ran against: /draft compares it to
-    # the live version on every open and clears the cache only when it moved.
-    data["reviewed_invoice_fingerprint"] = data.get("loaded_invoice_fingerprint")
 
 
 class AddToDojoRequest(BaseModel):
@@ -1757,60 +1387,25 @@ class AddToDojoRequest(BaseModel):
 async def add_to_dojo(
     body: AddToDojoRequest,
     db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("admin:system")),
 ):
     """One click on the invoice card: file this invoice's PDF as a dojo
     sample under its supplier's spec (created empty when the supplier has
-    none) and kick the analysis agent in the background — the training
+    none) and kick the SENSEI in the background — the training
     loop's intake. Returns immediately; the analysis lands on the sample
     (Settings → Supplier Specs) in a minute or two.
     """
-    import base64
     import threading
 
-    from app.db.config_models import SupplierSpecSample
-    from app.db.engine import _ConfigSessionLocal
     from app.services import spec_dojo
 
-    lh = _Loaded(db, config_db, body.venue_id)
-    det = lh.invoice(body.invoice_id)
-    if not det.get("fileId"):
-        raise HTTPException(400, "no invoice copy attached — nothing to add")
-    supplier = det.get("supplierName") or ""
-
-    # The request's config session is read-only; spec/sample writes go through
-    # a dedicated RW session (same pattern as the engine-side internal tools).
-    wcdb = _ConfigSessionLocal()
     try:
-        spec, created = spec_dojo.find_or_create_spec_for_supplier(wcdb, supplier)
-        existing = (
-            wcdb.query(SupplierSpecSample)
-            .filter(
-                SupplierSpecSample.spec_id == spec.id,
-                SupplierSpecSample.source_invoice_id == body.invoice_id,
-            )
-            .first()
+        staged = spec_dojo.stage_invoice_sample(
+            db, body.venue_id, body.invoice_id, draft=False
         )
-        if existing:
-            sample_id = existing.id
-        else:
-            b64, ctype = lh.file_base64(det["fileId"])
-            sample = SupplierSpecSample(
-                spec_id=spec.id,
-                label=f"{det.get('referenceNumber') or body.invoice_id}.pdf",
-                content_type=ctype or "application/pdf",
-                pdf_bytes=base64.b64decode(b64),
-                source_venue_id=body.venue_id,
-                source_invoice_id=body.invoice_id,
-            )
-            wcdb.add(sample)
-            wcdb.commit()
-            wcdb.refresh(sample)
-            sample_id = sample.id
-        spec_id, spec_name = spec.id, spec.name
-    finally:
-        wcdb.close()
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    sample_id = staged["sample_id"]
 
     def _run_analysis() -> None:
         from app.db.engine import SessionLocal, _ConfigSessionLocal as _CSL
@@ -1830,9 +1425,9 @@ async def add_to_dojo(
 
     return {
         "sample_id": sample_id,
-        "spec_id": spec_id,
-        "spec_name": spec_name,
-        "created_spec": created,
-        "already_in_dojo": bool(existing),
+        "spec_id": staged["spec_id"],
+        "spec_name": staged["spec_name"],
+        "created_spec": staged["created_spec"],
+        "already_in_dojo": staged["already_in_dojo"],
         "analysis": "running",
     }

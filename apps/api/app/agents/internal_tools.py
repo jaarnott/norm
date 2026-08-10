@@ -1466,10 +1466,21 @@ def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> 
     from app.services.task_scheduler import apply_schedule
 
     atask_id = params.get("task_id")
-    if not atask_id:
-        return {"success": False, "data": {}, "error": "task_id is required"}
-
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == atask_id).first()
+    if atask_id:
+        task = db.query(AutomatedTask).filter(AutomatedTask.id == atask_id).first()
+    else:
+        # Inside a task's own conversation, resolve implicitly — the same way
+        # update_task_config does. The asymmetry (config updatable without an
+        # id, prompt not) is how a live task ended up with an updated config
+        # and a permanently stale prompt: the model took the reachable path.
+        task = _get_automated_task_for_conversation(thread_id, db)
+        if not task:
+            return {
+                "success": False,
+                "data": {},
+                "error": "task_id is required (this conversation does not "
+                "belong to an automated task)",
+            }
     if not task:
         return {
             "success": False,
@@ -2048,8 +2059,13 @@ def _match_stock_items_tool(params: dict, db: Session, thread_id: str | None) ->
     if not venue_id:
         return {"success": False, "data": {}, "error": "venue not found"}
 
+    supplier_name = params.get("supplier_name") or None
     cache_key = _extraction_cache_key(
-        "norm", "match_stock_items", {"venue_id": venue_id, "lines": lines}, {}, ""
+        "norm",
+        "match_stock_items",
+        {"venue_id": venue_id, "lines": lines, "supplier_name": supplier_name},
+        {},
+        "",
     )
     cached = _extraction_cache_get(db, cache_key)
     config_db = _ConfigSessionLocal()
@@ -2087,7 +2103,9 @@ def _match_stock_items_tool(params: dict, db: Session, thread_id: str | None) ->
         if cached is not None:
             return {"success": True, "data": {"suggestions": cached}}
 
-        suggestions = suggest_item_matches(venue_id, lines, db, config_db)
+        suggestions = suggest_item_matches(
+            venue_id, lines, db, config_db, supplier_name=supplier_name
+        )
     finally:
         config_db.close()
     # Cache only a real result — an empty {} may be a transient LLM failure.
@@ -2143,6 +2161,173 @@ def _match_supplier_tool(params: dict, db: Session, thread_id: str | None) -> di
     if match:
         _extraction_cache_put(db, cache_key, "norm", "match_supplier", {"match": match})
     return {"success": True, "data": {"match": match or None}}
+
+
+@register("norm", "sensei_train_supplier")
+def _sensei_train_supplier(params: dict, db: Session, thread_id: str | None) -> dict:  # noqa: ARG001
+    """The SENSEI: when the review meets a supplier with NO spec prompt, file
+    the invoice into the dojo as the supplier's founding regression sample and
+    run the analysis agent synchronously (1-2 min) so the supplier's first
+    spec exists BEFORE extraction continues. The self-training gate in
+    ``analyse_sample`` decides the outcome: a green fix for a real misread
+    auto-applies; a document the main prompt already reads correctly leaves
+    no spec (``no_spec_needed``); anything murky stays a pending proposal.
+
+    Fail-open like the specs handler — a sensei failure must never sink a
+    review; the engine just extracts with the main prompt this run.
+    Params: ``venue``/``venue_id`` + ``invoice_id`` + ``supplier_name``.
+    """
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.models import Venue
+    from app.services import spec_dojo
+
+    def _out(status: str, **extra) -> dict:
+        return {"success": True, "data": {"status": status, **extra}}
+
+    name = str(params.get("supplier_name") or "").strip()
+    invoice_id = str(params.get("invoice_id") or "").strip()
+    if not name or not invoice_id:
+        return _out("skipped", reason="supplier_name and invoice_id required")
+
+    venue_id = params.get("venue_id")
+    if not venue_id and params.get("venue"):
+        venue_obj = (
+            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
+        )
+        venue_id = venue_obj.id if venue_obj else None
+    if not venue_id:
+        return _out("skipped", reason="venue not found")
+
+    try:
+        wcdb = _ConfigSessionLocal()
+        try:
+            # Once-per-supplier guard: an existing spec with instructions, or
+            # with ANY non-draft sample (including a spec_not_needed
+            # conclusion, which leaves an empty spec WITH a sample), means the
+            # sensei already ruled — never retrain on every review.
+            from app.db.config_models import SupplierSpecSample
+
+            existing = spec_dojo.find_spec_for_supplier(wcdb, name)
+            if existing is not None:
+                if (existing.instructions or "").strip():
+                    return _out(
+                        "skipped",
+                        reason="spec already has instructions",
+                        spec_name=existing.name,
+                    )
+                has_sample = (
+                    wcdb.query(SupplierSpecSample)
+                    .filter(
+                        SupplierSpecSample.spec_id == existing.id,
+                        SupplierSpecSample.draft.isnot(True),
+                    )
+                    .first()
+                    is not None
+                )
+                if has_sample:
+                    return _out(
+                        "skipped",
+                        reason="supplier already has a dojo sample",
+                        spec_name=existing.name,
+                    )
+
+            staged = spec_dojo.stage_invoice_sample(
+                db, str(venue_id), invoice_id, draft=False
+            )
+            if staged["already_in_dojo"]:
+                return _out(
+                    "skipped",
+                    reason="invoice already in the dojo",
+                    spec_name=staged["spec_name"],
+                    sample_id=staged["sample_id"],
+                )
+
+            analysis = spec_dojo.analyse_sample(db, wcdb, staged["sample_id"])
+        finally:
+            wcdb.close()
+
+        status = str(analysis.get("status") or "failed")
+        if status == "applied" and analysis.get("auto_applied"):
+            mapped = "trained"
+        elif analysis.get("spec_not_needed"):
+            mapped = "no_spec_needed"
+        elif status in ("ready", "not_green"):
+            mapped = "pending_review"
+        else:
+            mapped = "failed"
+        return _out(
+            mapped,
+            spec_name=staged["spec_name"],
+            sample_id=staged["sample_id"],
+            auto_applied=bool(analysis.get("auto_applied")),
+            instructions=(
+                str(analysis.get("proposed_instructions") or "")
+                if mapped == "trained"
+                else ""
+            ),
+            error=analysis.get("error"),
+        )
+    except Exception as exc:  # noqa: BLE001 — fail open, the review continues
+        logger.warning("sensei training failed for '%s': %s", name, exc)
+        return _out("failed", reason=str(exc))
+
+
+@register("norm", "review_invoices")
+def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict:  # noqa: ARG001
+    """Batch replica review — the ONE engine behind invoice reviewing.
+
+    The consolidator's whole job funnels through this write action: it names
+    the invoices (or a date window) and the run policy; the SERVICE does the
+    intelligence — extraction, replica, suggestions, confidence — and, under
+    ``mode="autopilot"``, auto-accepts every suggestion (recorded, actor
+    ``norm``) and receives the invoices with no blocking issues through
+    ``do_receive``. Declared in ``allowed_write_actions`` because it can
+    write to Loaded.
+
+    Params: ``venue``/``venue_id``; optional ``invoice_ids`` (or a single
+    ``invoice_id``), ``from_date``/``to_date``, ``mode``
+    (approve_all | approve_fixes | autopilot), ``max_sensei``,
+    ``require_valid_po``.
+    """
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.models import Venue
+    from app.services.invoice_review import review_invoices
+
+    venue_id = params.get("venue_id")
+    if not venue_id and params.get("venue"):
+        venue_obj = (
+            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
+        )
+        venue_id = venue_obj.id if venue_obj else None
+    if not venue_id:
+        return {"success": False, "error": "venue not found"}
+
+    invoice_ids = params.get("invoice_ids")
+    if invoice_ids is not None and not isinstance(invoice_ids, list):
+        return {"success": False, "error": "invoice_ids must be a list"}
+    if invoice_ids is None and params.get("invoice_id"):
+        invoice_ids = [str(params["invoice_id"])]
+
+    try:
+        cdb = _ConfigSessionLocal()
+        try:
+            out = review_invoices(
+                db,
+                cdb,
+                str(venue_id),
+                [str(i) for i in invoice_ids] if invoice_ids is not None else None,
+                from_date=params.get("from_date"),
+                to_date=params.get("to_date"),
+                mode=str(params.get("mode") or "approve_all"),
+                max_sensei=int(params.get("max_sensei") or 0),
+                require_valid_po=params.get("require_valid_po") is not False,
+            )
+        finally:
+            cdb.close()
+        return {"success": True, "data": out}
+    except Exception as exc:  # noqa: BLE001 — the consolidator reports the failure
+        logger.warning("review_invoices failed: %s", exc)
+        return {"success": False, "error": str(exc)}
 
 
 @register("norm", "update_task_config")

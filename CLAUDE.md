@@ -237,7 +237,7 @@ All environments share a single config database for system-level configuration:
 cd apps/api
 uv run ruff check app/           # lint
 uv run ruff format --check app/  # format check
-uv run pytest tests/ -q          # ~690 tests, ~95s
+uv run pytest tests/ -q          # ~1,430 tests, ~4.5 min
 
 cd apps/web
 pnpm lint                        # ESLint (0 errors expected)

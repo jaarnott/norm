@@ -102,6 +102,27 @@ class TestBuildReceivedInvoiceData:
         assert d["lines"] == []
         assert d["invoice_id"] == "x"
 
+    def test_carries_a_pristine_loaded_snapshot(self):
+        # The admin "Norm | Loaded" slider needs an untouched mirror of what
+        # Loaded returned — header + per-line editable fields. Local edits
+        # mutate the main fields; the snapshot is refreshed on every open.
+        d = build_received_invoice_data(DETAIL)
+        snap = d["loaded_snapshot"]
+        assert snap["header"]["total"] == 115.23
+        assert snap["header"]["reference_number"] == d["reference_number"]
+        assert snap["header"]["linked_supplier_id"] == d["linked_supplier_id"]
+        ln = snap["lines"][0]
+        assert ln["id"] == d["lines"][0]["id"]
+        assert ln["quantity_received"] == 15
+        assert ln["unit_cost"] == 5.08
+        assert ln["linked_unit_id"] == "u-each"
+        # A pristine MIRROR, not a reference: mutating the draft's line must
+        # never leak into the snapshot.
+        d["lines"][0]["quantity_received"] = 99
+        d["total"] = 0
+        assert snap["lines"][0]["quantity_received"] == 15
+        assert snap["header"]["total"] == 115.23
+
 
 class TestCredentialHeaderSanitization:
     """User-entered credential values must never reach the wire with stray

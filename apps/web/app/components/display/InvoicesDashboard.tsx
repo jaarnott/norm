@@ -17,8 +17,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch } from '../../lib/api';
+import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
-import ReceiveInvoiceEditor from './ReceiveInvoiceEditor';
+import ReceiveInvoiceEditor, { INVOICE_ACTIONED_EVENT } from './ReceiveInvoiceEditor';
 
 interface OutstandingInvoice {
   id: string;
@@ -48,8 +49,13 @@ function formatDate(iso: string | null): string {
 }
 
 export default function InvoicesDashboard({ data, props }: DisplayBlockProps) {
+  // Shared page venue — only honoured when this dashboard is a PAGE instance
+  // (persistVenue), never when it's embedded in a conversation.
+  const persistVenue = !!props?.persistVenue;
+  const [sharedVenue, setActiveVenue] = useActiveVenue();
+  const rememberedVenue = persistVenue ? sharedVenue : null;
   const [venues, setVenues] = useState<VenueOption[]>([]);
-  const [selectedVenue, setSelectedVenue] = useState<string | null>((props?.activeVenueId as string) || null);
+  const [selectedVenue, setSelectedVenue] = useState<string | null>((props?.activeVenueId as string) || rememberedVenue || null);
   const [invoices, setInvoices] = useState<OutstandingInvoice[]>(() => extractInvoices(data));
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -63,7 +69,12 @@ export default function InvoicesDashboard({ data, props }: DisplayBlockProps) {
       .then((d) => {
         if (d?.venues?.length > 0) {
           setVenues(d.venues);
-          if (!selectedVenue) setSelectedVenue(d.venues[0].id);
+          if (!selectedVenue) {
+            // Prefer the venue the user last picked (if still accessible),
+            // else the first.
+            const remembered = rememberedVenue && d.venues.some((v: VenueOption) => v.id === rememberedVenue) ? rememberedVenue : null;
+            setSelectedVenue(remembered || d.venues[0].id);
+          }
         }
       })
       .catch(() => {});
@@ -83,11 +94,39 @@ export default function InvoicesDashboard({ data, props }: DisplayBlockProps) {
     if (selectedVenue) load(selectedVenue);
   }, [selectedVenue, load]);
 
+  // Silent refetch — refresh the outstanding list WITHOUT the full-page loading
+  // state, so an action elsewhere on the page updates it without a visible reload.
+  const refreshInBackground = useCallback(async (venueId: string) => {
+    try {
+      const res = await apiFetch(`/api/invoice-fixes/outstanding?venue_id=${venueId}`);
+      const d = res.ok ? await res.json() : {};
+      setInvoices(extractInvoices(d));
+    } catch { /* ignore */ }
+  }, []);
+
+  // When an invoice is received or deleted — e.g. accepting a "delete this
+  // statement/duplicate" suggestion inside the editor — it announces itself via
+  // INVOICE_ACTIONED_EVENT. Pull a fresh list in the background so the actioned
+  // invoice drops off the page. The server list is authoritative: a deleted or
+  // received invoice is gone from /outstanding, while a mere draft reset (which
+  // fires the same event) leaves it in place — so we never wrongly remove a row.
+  useEffect(() => {
+    const onActioned = (e: Event) => {
+      if (!selectedVenue) return;
+      const detail = (e as CustomEvent).detail as { venueId?: string } | undefined;
+      if (detail?.venueId && detail.venueId !== selectedVenue) return;
+      refreshInBackground(selectedVenue);
+    };
+    window.addEventListener(INVOICE_ACTIONED_EVENT, onActioned);
+    return () => window.removeEventListener(INVOICE_ACTIONED_EVENT, onActioned);
+  }, [selectedVenue, refreshInBackground]);
+
   const handleVenueChange = useCallback((venueId: string) => {
     setSelectedVenue(venueId);
+    if (persistVenue) setActiveVenue(venueId);
     setExpandedId(null);
     setDraftId(null);
-  }, []);
+  }, [persistVenue, setActiveVenue]);
 
   const sorted = useMemo(
     () => [...invoices].sort((a, b) => new Date(b.issuedAt || 0).getTime() - new Date(a.issuedAt || 0).getTime()),

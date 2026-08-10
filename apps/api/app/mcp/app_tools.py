@@ -675,11 +675,13 @@ def _receive_invoice(
         )
         .all()
     )
-    if not any(
-        (d.external_ref or {}).get("invoice_id") == invoice_id
-        and not (d.data or {}).get("is_deleted")
+    own_docs = [
+        d
         for d in owns
-    ):
+        if (d.external_ref or {}).get("invoice_id") == invoice_id
+        and not (d.data or {}).get("is_deleted")
+    ]
+    if not own_docs:
         # Indistinguishable from any other refusal — never confirm an id exists.
         raise AppToolError("No open invoice draft to receive.")
 
@@ -693,15 +695,28 @@ def _receive_invoice(
         },
     )
 
-    req = ReceiveRequest(
-        venue_id=venue_id,
-        invoice_id=invoice_id,
-        linked_purchase_order_id=inv.get("linked_purchase_order_id"),
-        po_number=inv.get("po_number"),
-        lines=lines,
-        variant_updates=variant_updates,
-        receive=bool(inv.get("receive", True)),
-    )
+    if not lines:
+        # Doc-driven receive (the replica_v1 card): build the request
+        # server-side from the working document's values — the SAME path the
+        # web /invoice-fixes/receive takes, so the embedded surface can never
+        # drop header state again.
+        from app.services.received_invoice import receive_request_from_doc
+
+        open_docs = [d for d in own_docs if not (d.data or {}).get("is_received")]
+        if not open_docs:
+            raise AppToolError("No open invoice draft to receive.")
+        open_docs.sort(key=lambda d: (d.data or {}).get("reviewed_at") is not None)
+        req = receive_request_from_doc(open_docs[-1].data or {}, venue_id, invoice_id)
+    else:
+        req = ReceiveRequest(
+            venue_id=venue_id,
+            invoice_id=invoice_id,
+            linked_purchase_order_id=inv.get("linked_purchase_order_id"),
+            po_number=inv.get("po_number"),
+            lines=lines,
+            variant_updates=variant_updates,
+            receive=bool(inv.get("receive", True)),
+        )
     try:
         lh = LoadedInvoiceClient(db, config_db, venue_id)
         result = do_receive(lh, req)

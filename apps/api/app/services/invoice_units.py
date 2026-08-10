@@ -1,10 +1,9 @@
-"""Unit-of-measure parsing for invoice fixes.
+"""Unit-of-measure parsing for invoice receiving.
 
-Mirrors the `parse_unit` in config/consolidators/review_and_receive_invoices.py
-(the sandboxed consolidator can't import app modules, so the logic is
-duplicated there by design). Kept in sync deliberately; both are covered by
-tests. Used by the invoice-fixes handler to match a proposed delivered unit
-to an existing Loaded unit.
+THE single implementation (the sandboxed consolidator's mirror copy was
+retired with the replica-primary refactor — the engine no longer does unit
+math). Used by the replica's unit resolution and the invoice-fixes handler
+to match a delivered unit to an existing Loaded unit.
 """
 
 from __future__ import annotations

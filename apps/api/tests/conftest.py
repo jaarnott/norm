@@ -118,6 +118,8 @@ def _setup_tables():
             "ALTER TABLE supplier_spec_samples "
             "ADD COLUMN IF NOT EXISTS source_invoice_id VARCHAR",
             "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS analysis JSON",
+            "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS expected_replica JSON",
+            "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS draft BOOLEAN",
         ):
             conn.execute(_sqltext(ddl))
     yield

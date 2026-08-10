@@ -443,46 +443,53 @@ class TestDeleteTombstones:
 
 
 class TestReviewTwinHealing:
-    """/invoice-fixes/review lands the review on ALL open twin docs (historic
-    per-thread duplicates), bumps versions, and treats checks="" as cached —
-    a card bound to a non-canonical twin used to PATCH and get a bare doc
-    back, visibly losing the validation."""
+    """/invoice-fixes/review lands the fresh replica_v1 payload on ALL open
+    twin docs (historic per-thread duplicates) and bumps every version — a
+    card bound to a non-canonical twin used to PATCH and get a bare doc back,
+    visibly losing the validation. Re-review is a SQUASH: the payload replaces
+    the doc wholesale (local edits deliberately discarded)."""
 
     def _twin(self, db_session, venue, inv, **data):
         return _doc(db_session, venue, inv, **data)
 
+    @staticmethod
+    def _payload():
+        return {
+            "doc_schema": "replica_v1",
+            "reference_number": "R-1",
+            "lines": [{"id": "l-1", "description": "X", "quantity_received": 4}],
+            "suggestions": [{"id": "line_value:quantity_received:l-1"}],
+            "issues": [],
+            "suggestion_actions": [],
+            "confidence": "ready",
+            "reviewed_at": "2026-08-10T00:00:00+00:00",
+            "reviewed_invoice_fingerprint": "fp",
+        }
+
     def test_review_populates_every_twin_and_bumps_versions(
         self, client, db_session, admin_user, admin_headers, monkeypatch, venue
     ):
-        import app.routers.invoice_fixes as IF
-
         inv = f"inv-{uuid.uuid4().hex[:10]}"
         a = self._twin(
-            db_session,
-            venue,
-            inv,
-            checks=None,
-            lines=[{"id": "l-1", "description": "X"}],
+            db_session, venue, inv, lines=[{"id": "l-1", "description": "X"}]
         )
         b = self._twin(
             db_session,
             venue,
             inv,
-            checks=None,
             lines=[{"id": "l-1", "description": "X", "struck": True}],
         )
         va, vb = a.version, b.version
 
-        def fake_review(data, venue_id, invoice_id, db, config_db):
-            data["checks"] = "ppp"
-            data["check_reasons"] = ["r"]
-            data["suggestions"] = [{"type": "link_po"}]
-            data["reviewed_invoice_fingerprint"] = "fp"
-            for ln in data.get("lines") or []:
-                ln["copy_quantity"] = 4
-                ln["matched_item"] = {"id": "i-1", "name": "M"}
+        monkeypatch.setattr(
+            "app.services.invoice_review.review_invoice",
+            lambda *args, **kwargs: dict(self._payload()),
+        )
+        import app.routers.invoice_fixes as IF
 
-        monkeypatch.setattr(IF, "run_review_and_merge", fake_review)
+        monkeypatch.setattr(IF, "_attach_po_reference", lambda *a, **k: None)
+        monkeypatch.setattr(IF, "attach_item_names", lambda *a, **k: None)
+        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: object())
         resp = client.post(
             "/api/invoice-fixes/review",
             json={"venue_id": venue.id, "invoice_id": inv},
@@ -492,33 +499,52 @@ class TestReviewTwinHealing:
         db_session.refresh(a)
         db_session.refresh(b)
         for d in (a, b):
-            assert d.data["checks"] == "ppp"
-            assert d.data["suggestions"] == [{"type": "link_po"}]
-            assert d.data["lines"][0]["copy_quantity"] == 4
-            assert d.data["lines"][0]["matched_item"]["name"] == "M"
-        # local state on the twin untouched by the review copy
-        assert b.data["lines"][0].get("struck") is True
+            assert d.data["doc_schema"] == "replica_v1"
+            assert d.data["suggestions"] == [{"id": "line_value:quantity_received:l-1"}]
+            assert d.data["lines"][0]["quantity_received"] == 4
+        # Squash semantics: the twin's local struck state is deliberately
+        # replaced by the fresh payload (re-review resets edits).
+        assert b.data["lines"][0].get("struck") is None
         assert a.version == va + 1 and b.version == vb + 1
 
-    def test_empty_checks_string_is_cached(
+    def test_reviewed_doc_is_cached_unless_forced(
         self, client, db_session, admin_user, admin_headers, monkeypatch, venue
     ):
+        inv = f"inv-{uuid.uuid4().hex[:10]}"
+        self._twin(
+            db_session,
+            venue,
+            inv,
+            doc_schema="replica_v1",
+            reviewed_at="2026-08-10T00:00:00+00:00",
+        )
+
+        calls = []
+
+        def fake_review(*args, **kwargs):
+            calls.append(1)
+            return dict(self._payload())
+
+        monkeypatch.setattr("app.services.invoice_review.review_invoice", fake_review)
         import app.routers.invoice_fixes as IF
 
-        inv = f"inv-{uuid.uuid4().hex[:10]}"
-        self._twin(db_session, venue, inv, checks="")  # review ran, no artifact
-
-        def boom(*a, **k):
-            raise AssertionError("engine must not re-run for checks=''")
-
-        monkeypatch.setattr(IF, "run_review_and_merge", boom)
+        monkeypatch.setattr(IF, "_attach_po_reference", lambda *a, **k: None)
+        monkeypatch.setattr(IF, "attach_item_names", lambda *a, **k: None)
+        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: object())
         resp = client.post(
             "/api/invoice-fixes/review",
             json={"venue_id": venue.id, "invoice_id": inv},
             headers=admin_headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["data"]["checks"] == ""
+        assert calls == []  # cached — the pipeline must not re-run
+        resp = client.post(
+            "/api/invoice-fixes/review",
+            json={"venue_id": venue.id, "invoice_id": inv, "force": True},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        assert calls == [1]  # force = re-run (the squash path)
 
 
 class TestLineIdAddressedOps:

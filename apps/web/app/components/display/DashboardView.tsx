@@ -11,6 +11,7 @@ import ChartConfigPanel from './dashboard/ChartConfigPanel';
 import DrillDownPanel from './dashboard/DrillDownPanel';
 import DashboardPicker from './dashboard/DashboardPicker';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
+import { useActiveVenue } from '../../hooks/useActiveVenue';
 
 // Lazy imports for embeddable components (avoids circular deps with DisplayBlockRenderer)
 import dynamic from 'next/dynamic';
@@ -51,6 +52,11 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   const [inspectedChartId, setInspectedChartId] = useState<string | null>(null);
   const [drillDown, setDrillDown] = useState<{ title: string; rows: Record<string, unknown>[] } | null>(null);
   const [venues, setVenues] = useState<{ id: string; name: string }[]>([]);
+  // '' means "All Venues" here — a dashboard-only view we don't persist. The
+  // shared page venue is only honoured when this is a PAGE instance.
+  const persistVenue = !!props?.persistVenue;
+  const [sharedVenue, setActiveVenue] = useActiveVenue();
+  const rememberedVenue = persistVenue ? sharedVenue : null;
   const [selectedVenue, setSelectedVenue] = useState<string>('');
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const [showPicker, setShowPicker] = useState(false);
@@ -85,6 +91,11 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       .then(d => {
         if (d?.venues?.length) {
           setVenues(d.venues);
+          // Open on the venue the user last picked elsewhere, if they still have
+          // access; otherwise leave it on "All Venues".
+          if (rememberedVenue && d.venues.some((v: { id: string }) => v.id === rememberedVenue)) {
+            setSelectedVenue(rememberedVenue);
+          }
         }
       })
       .catch(() => {});
@@ -145,6 +156,14 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       handleRefresh();
     }
   }, [dashboard, loading, handleRefresh]);
+
+  // Re-run when the chosen venue changes after the first load — covers both a
+  // manual pick and the programmatic seed from the remembered venue once venues
+  // finish loading. Skipped before the initial refresh so it never double-fires.
+  useEffect(() => {
+    if (initialRefreshDone.current) handleRefresh({ venue_id: selectedVenue });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedVenue]);
 
   // Auto-refresh — handleRefresh in deps so interval always uses the latest venue selection
   useEffect(() => {
@@ -211,7 +230,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
           {venues.length > 0 && (
             <select
               value={selectedVenue}
-              onChange={e => { setSelectedVenue(e.target.value); handleRefresh({ venue_id: e.target.value }); }}
+              onChange={e => { setSelectedVenue(e.target.value); if (e.target.value && persistVenue) setActiveVenue(e.target.value); }}
               style={{ padding: '4px 8px', fontSize: '0.75rem', border: '1px solid #e2ddd7', borderRadius: 6, fontFamily: 'inherit' }}
             >
               <option value="">All Venues</option>

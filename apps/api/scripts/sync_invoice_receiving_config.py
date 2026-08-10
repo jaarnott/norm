@@ -27,7 +27,6 @@ _CONSOLIDATORS_DIR = (
 )
 FUNCTION_CODE_PATH = _CONSOLIDATORS_DIR / "review_and_receive_invoices.py"
 RECONCILE_FUNCTION_CODE_PATH = _CONSOLIDATORS_DIR / "reconcile_received_invoices.py"
-PREPARE_FUNCTION_CODE_PATH = _CONSOLIDATORS_DIR / "prepare_receive_invoice.py"
 
 # All stock endpoints verified against the live LoadedHub app (16 Jul 2026):
 # the web UI drives api.loadedhub.com/1.0/stock/... and the OAuth connector
@@ -100,21 +99,13 @@ SPEC_TOOLS = [
         "required_fields": ["file_id"],
         "response_format": "binary",
     },
-    {
-        "action": "receive_invoice",
-        "method": "PUT",
-        "description": (
-            "[consolidator-only] Mark a supplier invoice as received in Loaded. "
-            "Callable only from review_and_receive_invoices via its "
-            "allowed_write_actions declaration — never bind this to an agent."
-        ),
-        "path_template": "//api.loadedhub.com/1.0/stock/internal/invoices/{{ invoice_id }}",
-        "request_body_template": "{{ invoice | tojson }}",
-        "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
-        "required_fields": ["invoice_id", "invoice"],
-        "success_status_codes": [200],
-    },
 ]
+
+# Spec tools no longer used by any consolidator — pruned from the config DB at
+# sync time. receive_invoice was the old engine's raw PUT write-through; every
+# receive now goes through the service's do_receive (via norm.review_invoices
+# under autopilot, or the card's receive endpoint).
+RETIRED_ACTIONS = {"receive_invoice"}
 
 # Phase 2 — reconcile received invoices against supplier statements.
 # Endpoints verified live in the test env on 17 Jul 2026 (statement create/update
@@ -241,23 +232,20 @@ RECONCILE_CONSOLIDATOR_TOOL = {
 CONSOLIDATOR_TOOL = {
     "action": "review_and_receive_invoices",
     "method": "GET",  # deliberate: internal/consolidator dispatch — the loop
-    # auto-executes it; the deterministic gates in function_code (not the LLM)
-    # decide every write, gated by the caller's per-user run mode.
+    # auto-executes it; the run mode (not the LLM) decides every write.
     "description": (
-        "Reviews outstanding draft supplier invoices and receives any that pass "
-        "every deterministic check: invoice copy attached (hard "
-        "stop without one), linked to a purchase order from the same supplier "
-        "(PO lines/prices are NOT compared — invoices may differ from the PO), "
-        "every stock item, brand and unit already exists in Loaded (nothing "
-        "the receive screen would tag NEW), invoice totals consistent, "
-        "and every line verified against the attached invoice copy "
-        "(quantities, unit costs, units and totals; totals within $0.02; every "
-        "line on the copy must be on the invoice; the copy's guideline-derived "
-        "delivered unit of measure must agree with Loaded's unit — a mismatch "
-        "reports the recommended unit to fix in Loaded). What is written is "
-        "governed by the caller's run mode (approve_all receives nothing). "
-        "Invoices failing a check are never modified — every check that can "
-        "run is reported, with the specific reasons."
+        "Reviews outstanding draft supplier invoices against Norm's own "
+        "reading of each attached invoice copy (the replica): every "
+        "replica↔Loaded difference becomes a suggested change with a short "
+        "explanation on the invoice's card, and confidence issues (unreadable "
+        "copy, unresolvable unit or supplier, duplicate, totals that don't "
+        "reconcile, missing purchase order) flag the invoice for a human. "
+        "What is written is governed by the caller's run mode: approve_all "
+        "receives nothing; approve_fixes receives invoices that are ready "
+        "with nothing to change; autopilot auto-accepts every suggestion "
+        "(each recorded) and receives every invoice with no blocking issues. "
+        "Flagged invoices are never modified — every issue is reported with "
+        "its specific reason."
     ),
     "required_fields": [],
     "optional_fields": ["from_date", "to_date"],
@@ -273,12 +261,15 @@ CONSOLIDATOR_TOOL = {
     "max_result_chars": 60_000,
     "consolidator_config": {
         # function_code injected from FUNCTION_CODE_PATH at sync time.
-        # 120: an 18-invoice run measured 72 calls BEFORE variant-lookup
-        # matching; the engine's own fetch budget adds up to 20 get_stock_item
-        # calls, and overflowing the executor cap raises and kills the whole
-        # run — so keep real headroom (hard cap 200).
-        "max_api_calls": 120,
-        "allowed_write_actions": ["receive_invoice"],
+        # The consolidator is orchestration-only: one norm.review_invoices
+        # call does all the work server-side (extraction, replica,
+        # suggestions, sensei, receives) — none of that counts against the
+        # sandbox call budget any more.
+        "max_api_calls": 10,
+        # review_invoices is the ONE write-capable action: under autopilot it
+        # receives invoices (via do_receive) and the sensei writes new
+        # supplier specs — engine-invoked, never agent-invoked.
+        "allowed_write_actions": ["review_invoices"],
     },
     # FAN-OUT: one received_invoice working document + one COMPACT editable
     # Receive Invoice card per fix_invoice (each card payload IS a complete doc
@@ -297,21 +288,23 @@ CONSOLIDATOR_TOOL = {
     "suppress_display_early_exit": True,
 }
 
-# The single-invoice "open one and receive it" tool. Unlike the batch review
-# (which renders the read-only-until-you-act fix cards), this materialises a
-# `received_invoice` WORKING DOCUMENT from the shaped invoice and renders the
-# editable receive_invoice_editor over it — the same editor the Invoices page
-# inline-expands, dual-surface (web chat + Claude via receive_display.py).
+# The single-invoice "open one and receive it" tool. SAME function_code as the
+# batch review — passing invoice_id puts the engine in single-invoice mode
+# (present-only, full replica review), so the chat card carries the same
+# suggestions and confidence as the batch cards and the web editor. The old
+# separate prepare_receive_invoice consolidator (a hand-synced no-validation
+# mirror) is retired.
 PREPARE_RECEIVE_TOOL = {
     "action": "receive_loadedhub_invoice",
     "method": "GET",  # read/consolidator dispatch; the write is the user's click
     "description": (
         "Open ONE outstanding supplier invoice as an editable Receive Invoice "
-        "card so the user can check the units, quantities, costs and linked "
-        "purchase order and then receive it into Loaded with a click. Pass the "
-        "invoice_id (from list_stock_invoices / the outstanding list). This "
-        "prepares a draft only — it never receives the invoice itself; the user "
-        "does that from the card."
+        "card — fully reviewed against Norm's reading of the invoice copy, "
+        "with suggested changes and confidence issues — so the user can check "
+        "it and receive it into Loaded with a click. Pass the invoice_id "
+        "(from list_stock_invoices / the outstanding list). This prepares a "
+        "draft only — it never receives the invoice itself; the user does "
+        "that from the card."
     ),
     "required_fields": ["invoice_id"],
     "field_descriptions": {
@@ -319,14 +312,17 @@ PREPARE_RECEIVE_TOOL = {
     },
     "field_schema": {},
     "consolidator_config": {
-        # function_code injected from PREPARE_FUNCTION_CODE_PATH at sync time
+        # function_code injected from FUNCTION_CODE_PATH at sync time (the
+        # review engine; invoice_id triggers its single-invoice mode).
         "max_api_calls": 10,
+        "allowed_write_actions": ["review_invoices"],
     },
-    # Materialise a working document from the shaped result, then render the
+    # Materialise a working document from the review's card, then render the
     # editor over it — the tool loop keys off this config (tool_loop.py:509).
     "working_document": {
         "doc_type": "received_invoice",
         "sync_mode": "submit",
+        "items_path": "fix_invoices",
         "ref_fields": ["invoice_id"],
     },
     "display_component": "receive_invoice_editor",
@@ -365,14 +361,14 @@ PLAYBOOK = {
         "receive the ones that fully reconcile line-by-line against their purchase "
         "order and the attached supplier invoice PDF."
     ),
-    "instructions": """Goal: review the venue's outstanding supplier invoices. What gets received automatically is decided by the tool's deterministic checks AND the user's run mode — you never decide what gets received.
+    "instructions": """Goal: review the venue's outstanding supplier invoices. Norm reads each attached invoice copy itself (the replica) and turns every difference from Loaded's draft into a suggested change; blocking confidence issues flag an invoice for the user. What gets received automatically is decided by that review AND the user's run mode — you never decide what gets received.
 
 RUN MODE — DO THIS FIRST, before running the review. This workflow honours a per-user run mode, and you must NOT run the review until it is set:
 0. Call get_workflow_mode with workflow="review_and_receive_invoices".
    - If it returns mode "unset": DO NOT run the review. Ask the user to choose their default mode and STOP for their answer:
      • **approve all** — Norm changes nothing without your OK (everything is presented on cards to approve);
      • **approve fixes** — Norm auto-receives the exact matches; anything needing a fix waits on a card for you;
-     • **autopilot** — Norm also auto-applies the fixes it can resolve confidently and receives them; anything ambiguous still waits for you.
+     • **autopilot** — Norm applies every suggested change from its own reading of the invoice copy (each change is recorded on the card) and receives every invoice with no blocking issues; anything it can't be confident about still waits for you.
      When they answer, call set_workflow_mode with workflow="review_and_receive_invoices" and their choice, confirm it briefly, THEN continue to step 1.
    - If it returns a set mode: go straight to step 1 (the review runs in that mode automatically). The user can change it any time by asking — call set_workflow_mode.
 
@@ -470,7 +466,8 @@ def main() -> None:
     prepare_receive = dict(PREPARE_RECEIVE_TOOL)
     prepare_receive["consolidator_config"] = {
         **PREPARE_RECEIVE_TOOL["consolidator_config"],
-        "function_code": PREPARE_FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
+        # Same engine as the batch review — invoice_id selects single mode.
+        "function_code": FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
     }
     desired_tools = {
         t["action"]: t
@@ -495,6 +492,11 @@ def main() -> None:
             raise SystemExit("loadedhub ConnectorSpec not found in config DB")
 
         tools = list(spec.tools or [])
+        retired = [t for t in tools if t.get("action") in RETIRED_ACTIONS]
+        if retired:
+            tools = [t for t in tools if t.get("action") not in RETIRED_ACTIONS]
+            for t in retired:
+                changes.append(f"spec tool retired: {t.get('action')}")
         by_action = {t.get("action"): i for i, t in enumerate(tools)}
         for action, tool in desired_tools.items():
             if action in by_action:

@@ -16,6 +16,7 @@ import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, set
 import { PanelLeft as PanelLeftIcon, ArrowLeft, Menu, Settings, LogOut } from 'lucide-react';
 import { AGENTS } from '../components/layout/Sidebar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
+import { useActiveVenue } from '../hooks/useActiveVenue';
 import type { Thread, WidgetAction, VenueDetail } from '../types';
 
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null };
@@ -34,7 +35,10 @@ export default function Home() {
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [activePage, setActivePage] = useState<string | null>(null);
   const [venues, setVenues] = useState<VenueDetail[]>([]);
-  const [activeVenueId, setActiveVenueId] = useState<string | null>(null);
+  // Shared, persisted "which venue am I looking at" for the functional pages.
+  // Page-scoped only — never passed into sendMessage, so conversations keep
+  // their own venue independent of this.
+  const [activeVenueId, setActiveVenue] = useActiveVenue();
   const [quotaExceeded, setQuotaExceeded] = useState<{ used: number; quota: number } | null>(null);
   // The connector whose reconnect panel is currently shown in the content area.
   // Set when a page load fails on a dead token (via the norm:connector-auth
@@ -130,9 +134,11 @@ export default function Home() {
       .then(data => {
         if (data?.venues) {
           setVenues(data.venues);
-          // Auto-select first venue if none selected
-          if (!activeVenueId && data.venues.length > 0) {
-            setActiveVenueId(data.venues[0].id);
+          // Keep the remembered venue if the user still has access to it;
+          // otherwise fall back to the first. Covers a stale stored venue and
+          // a different account signing in on the same browser.
+          if (data.venues.length > 0 && !data.venues.some((v: VenueDetail) => v.id === activeVenueId)) {
+            setActiveVenue(data.venues[0].id);
           }
         }
       })
@@ -716,7 +722,7 @@ export default function Home() {
       const content = connectPanel ? connectPanel : mobileView === 'detail' && activePage ? (() => {
         const pageConfig = FUNCTIONAL_PAGES.find(p => p.id === activePage);
         if (!pageConfig) return null;
-        return <FunctionalPage config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} />;
+        return <FunctionalPage config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} onVenueChange={setActiveVenue} />;
       })() : selectedThread ? (
         <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} loading={loading} openThread={openThread || null} />
       ) : (
@@ -967,6 +973,7 @@ export default function Home() {
               loading={loading}
               onWidgetAction={handleWidgetAction}
               activeVenueId={activeVenueId}
+              onVenueChange={setActiveVenue}
             />
           );
         })() : selectedThread ? (

@@ -1,87 +1,41 @@
 """Supplier Spec Dojo — run the CURRENT extraction prompts against stored
 sample invoices and diff the result against an admin-accepted baseline.
 
-Faithful replay of the production Layer-6 extraction: the schema and the main
-prompt come from the DEPLOYED review engine (the ``review_and_receive_invoices``
-consolidator in the config DB, falling back to the repo copy), the supplier
-spec's instructions are appended exactly the way the engine wraps them, and the
-LLM call uses the same envelope as ``function_executor._extract_uncached``.
+Faithful replay of the production extraction: the schema, the main prompt and
+the instruction composer are the SHARED ones in
+``app.services.invoice_extraction`` (the same module the live review path
+uses), so a dojo run exercises exactly what production runs.
 Deliberately NO DocumentExtraction cache — every dojo run is a fresh read.
 """
 
 from __future__ import annotations
 
-import ast
 import json
 import logging
-import pathlib
 import re
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.config_models import ConnectorSpec, SupplierInvoiceSpec
+from app.db.config_models import SupplierInvoiceSpec
+from app.services.invoice_extraction import (
+    BUILTIN_MAIN_PROMPT,
+    MAIN_PROMPT_NAME,
+    PDF_SCHEMA,
+    compose_pdf_instructions,
+    extraction_system_prompt,
+    find_spec_for_supplier,
+    main_prompt,
+)
+
+__all__ = ["MAIN_PROMPT_NAME", "find_spec_for_supplier"]  # re-exported for callers
 
 logger = logging.getLogger(__name__)
 
-MAIN_PROMPT_NAME = "Main prompt"
-
-_REPO_CONSOLIDATOR = (
-    pathlib.Path(__file__).resolve().parents[2]
-    / "config"
-    / "consolidators"
-    / "review_and_receive_invoices.py"
-)
-
-
-def _engine_source(config_db: Session) -> str:
-    """The deployed engine's source — the consolidator function_code from the
-    config DB (what production actually runs), else the repo copy."""
-    spec = (
-        config_db.query(ConnectorSpec)
-        # The review consolidator rides on the LOADEDHUB connector spec (same
-        # row run_review_and_merge reads) — querying the wrong connector here
-        # silently falls back to the repo copy, defeating "test what is
-        # deployed".
-        .filter(ConnectorSpec.connector_name == "loadedhub")
-        .first()
-    )
-    for tool in (spec.tools if spec else None) or []:
-        if (
-            isinstance(tool, dict)
-            and tool.get("action") == "review_and_receive_invoices"
-        ):
-            code = ((tool.get("consolidator_config") or {}).get("function_code")) or ""
-            if "PDF_SCHEMA" in code:
-                return code
-    try:
-        return _REPO_CONSOLIDATOR.read_text()
-    except OSError:
-        return ""
-
 
 def dojo_schema(config_db: Session) -> dict:
-    """PDF_SCHEMA as the deployed engine defines it."""
-    src = _engine_source(config_db)
-    m = re.search(r"^PDF_SCHEMA = (\{.*?^\})", src, re.S | re.M)
-    if not m:
-        raise RuntimeError("PDF_SCHEMA not found in the review engine source")
-    return ast.literal_eval(m.group(1))
-
-
-def _builtin_main_prompt(src: str) -> str:
-    m = re.search(r"_BUILTIN_MAIN_PROMPT = \(\n(.*?)\n\s*\)\n", src, re.S)
-    if not m:
-        return ""
-    lit = "".join(
-        line.strip() + "\n"
-        for line in m.group(1).splitlines()
-        if line.strip().startswith('"')
-    )
-    try:
-        return ast.literal_eval("(" + lit + ")")
-    except (ValueError, SyntaxError):
-        return ""
+    """The extraction schema (shared with the live path)."""
+    return PDF_SCHEMA
 
 
 def compose_instructions(
@@ -89,8 +43,8 @@ def compose_instructions(
     spec: SupplierInvoiceSpec,
     override_instructions: str | None = None,
 ) -> str:
-    """Main prompt (admin row, else the engine's built-in) + this spec's notes,
-    wrapped exactly like the engine's ``_pdf_instructions``.
+    """Main prompt (admin row, else the built-in) + this spec's notes, wrapped
+    exactly like the live path (the shared composer).
 
     ``override_instructions`` substitutes CANDIDATE text without touching
     stored config: the spec's notes for a supplier row, the main prompt itself
@@ -98,26 +52,17 @@ def compose_instructions(
     test-before-commit primitive.
     """
     is_main = spec.name == MAIN_PROMPT_NAME
-    main_row = (
-        config_db.query(SupplierInvoiceSpec)
-        .filter(
-            SupplierInvoiceSpec.name == MAIN_PROMPT_NAME,
-            SupplierInvoiceSpec.enabled.is_(True),
-        )
-        .first()
-    )
-    main = (main_row.instructions or "").strip() if main_row else ""
     if is_main and override_instructions is not None:
-        main = override_instructions.strip()
-    if not main:
-        main = _builtin_main_prompt(_engine_source(config_db))
-    if not main:
-        raise RuntimeError("no main extraction prompt available")
+        main = override_instructions.strip() or BUILTIN_MAIN_PROMPT
+    else:
+        main = main_prompt(config_db)
     notes = (spec.instructions or "").strip()
     if not is_main and override_instructions is not None:
         notes = override_instructions.strip()
     if notes and not is_main:
-        return main + "\n\nSupplier-specific notes for " + spec.name + ":\n" + notes
+        return compose_pdf_instructions(
+            config_db, spec_notes=notes, spec_name=spec.name, main_override=main
+        )
     return main
 
 
@@ -136,17 +81,8 @@ def run_extraction(
 
     from app.interpreter.llm_interpreter import call_llm
 
-    schema_text = json.dumps(dojo_schema(config_db), indent=1)
-    system_prompt = (
-        "You extract structured data from a document exactly as printed. "
-        "Return ONLY a JSON object matching this schema (no markdown, no "
-        f"commentary):\n{schema_text}\n"
-        "Rules: copy amounts, quantities and identifiers exactly as they "
-        "appear in the document; use null for any field that is not "
-        "present or not legible; never guess or compute values."
-    )
     parsed, _ = call_llm(
-        system_prompt=system_prompt,
+        system_prompt=extraction_system_prompt(),
         user_prompt=compose_instructions(config_db, spec, override_instructions),
         db=db,
         call_type="extraction",
@@ -286,33 +222,8 @@ def compare_extractions(expected: dict, current: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def find_spec_for_supplier(
-    config_db: Session, supplier_name: str
-) -> SupplierInvoiceSpec | None:
-    """The spec row matching a supplier NAME — the server-side port of the
-    engine's ``_supplier_notes`` rule: normalized name/alias equality or
-    substring, candidates under 3 normalized chars skipped, the reserved Main
-    prompt row excluded, first match wins."""
-
-    def _n(v: object) -> str:
-        return "".join(ch for ch in str(v or "").lower() if ch.isalnum())
-
-    sname = _n(supplier_name)
-    if not sname:
-        return None
-    for sp in (
-        config_db.query(SupplierInvoiceSpec)
-        .filter(SupplierInvoiceSpec.enabled.is_(True))
-        .order_by(SupplierInvoiceSpec.name)
-        .all()
-    ):
-        if sp.name == MAIN_PROMPT_NAME:
-            continue
-        for candidate in [sp.name] + list(sp.aliases or []):
-            c = _n(candidate)
-            if len(c) >= 3 and (c == sname or c in sname):
-                return sp
-    return None
+# find_spec_for_supplier lives in invoice_extraction (the live path composes
+# supplier notes with it too) and is re-exported here for existing callers.
 
 
 def find_or_create_spec_for_supplier(
@@ -331,6 +242,72 @@ def find_or_create_spec_for_supplier(
     config_db.commit()
     config_db.refresh(spec)
     return spec, True
+
+
+def stage_invoice_sample(
+    db: Session, venue_id: str, invoice_id: str, *, draft: bool
+) -> dict:
+    """File a Loaded invoice as a dojo sample — the shared engine behind
+    Add-to-Dojo (permanent) and the Dojo page's triage staging (draft).
+
+    Resolves/creates the supplier's spec, fetches the invoice copy, and
+    creates the ``SupplierSpecSample`` with its source ids. Idempotent on
+    ``(spec_id, source_invoice_id)``: an existing sample is reused, and an
+    existing DRAFT is promoted when ``draft=False`` is requested. Opens its
+    own RW config session (request config sessions are read-only)."""
+    from app.db.config_models import SupplierSpecSample
+    from app.db.engine import _ConfigSessionLocal
+    from app.services.received_invoice import LoadedInvoiceClient
+
+    wcdb = _ConfigSessionLocal()
+    try:
+        lh = LoadedInvoiceClient(db, wcdb, venue_id)
+        det = lh.invoice(invoice_id)
+        if not det.get("fileId"):
+            raise RuntimeError("no invoice copy attached — nothing to add")
+        supplier = det.get("supplierName") or ""
+        spec, created = find_or_create_spec_for_supplier(wcdb, supplier)
+        existing = (
+            wcdb.query(SupplierSpecSample)
+            .filter(
+                SupplierSpecSample.spec_id == spec.id,
+                SupplierSpecSample.source_invoice_id == invoice_id,
+            )
+            .first()
+        )
+        was_draft = bool(existing.draft) if existing else False
+        if existing:
+            if was_draft and not draft:
+                existing.draft = False
+                wcdb.commit()
+            sample_id = existing.id
+        else:
+            import base64
+
+            b64, ctype = lh.file_base64(det["fileId"])
+            sample = SupplierSpecSample(
+                spec_id=spec.id,
+                label=f"{det.get('referenceNumber') or invoice_id}.pdf",
+                content_type=ctype or "application/pdf",
+                pdf_bytes=base64.b64decode(b64),
+                source_venue_id=venue_id,
+                source_invoice_id=invoice_id,
+                draft=draft,
+            )
+            wcdb.add(sample)
+            wcdb.commit()
+            wcdb.refresh(sample)
+            sample_id = sample.id
+        return {
+            "sample_id": sample_id,
+            "spec_id": spec.id,
+            "spec_name": spec.name,
+            "created_spec": created,
+            "already_in_dojo": bool(existing) and not was_draft,
+            "was_draft": was_draft,
+        }
+    finally:
+        wcdb.close()
 
 
 # ---------------------------------------------------------------------------
@@ -432,15 +409,6 @@ def _extract_with_main_override(db, config_db, own_spec, sample, main_text):
 
     from app.interpreter.llm_interpreter import call_llm
 
-    schema_text = json.dumps(dojo_schema(config_db), indent=1)
-    system_prompt = (
-        "You extract structured data from a document exactly as printed. "
-        "Return ONLY a JSON object matching this schema (no markdown, no "
-        f"commentary):\n{schema_text}\n"
-        "Rules: copy amounts, quantities and identifiers exactly as they "
-        "appear in the document; use null for any field that is not "
-        "present or not legible; never guess or compute values."
-    )
     main = (main_text or "").strip()
     notes = (own_spec.instructions or "").strip()
     user = main + (
@@ -449,7 +417,7 @@ def _extract_with_main_override(db, config_db, own_spec, sample, main_text):
         else ""
     )
     parsed, _ = call_llm(
-        system_prompt=system_prompt,
+        system_prompt=extraction_system_prompt(),
         user_prompt=user,
         db=db,
         call_type="extraction",
@@ -502,6 +470,15 @@ _DOCTRINE = (
     "'Bidvest Food Service'). If an existing spec already covers this same "
     "printed layout, the fix is an ALIAS on that spec (alias_of) — never a "
     "near-duplicate spec to maintain twice.\n"
+    "- No needless specs: FIRST compare your corrected values with the "
+    "CURRENT EXTRACTION RESULT in the context. If the current prompts "
+    "already read this document correctly, return EMPTY "
+    "proposed_instructions — spec notes exist to fix misreads, never to "
+    "describe layouts that already parse correctly. The corrected values "
+    "alone become the regression baseline.\n"
+    "- The document is the ONLY truth: every ground-truth value must be read "
+    "off the paper itself. A line the copy marks 'Not available' / quantity "
+    "0 stays quantity 0 with line total 0.\n"
 )
 
 
@@ -557,42 +534,12 @@ def _analysis_context(
                 "DIFFS of the current extraction vs that baseline:\n"
                 + json.dumps(run["diffs"], indent=1)
             )
-    # The Loaded draft: the supplier feed's own structured reading of the same
-    # invoice — units/qty/costs as entered by the supplier's system.
-    if sample.source_venue_id and sample.source_invoice_id:
-        try:
-            from app.services.received_invoice import LoadedInvoiceClient
-
-            lh = LoadedInvoiceClient(db, config_db, sample.source_venue_id)
-            det = lh.invoice(sample.source_invoice_id)
-            slim = {
-                "supplierName": det.get("supplierName"),
-                "referenceNumber": det.get("referenceNumber"),
-                "subtotal": det.get("subtotal"),
-                "taxAmount": det.get("taxAmount"),
-                "total": det.get("total"),
-                "lines": [
-                    {
-                        "code": ln.get("code"),
-                        "description": ln.get("description"),
-                        "unit": ln.get("unit"),
-                        "quantityReceived": ln.get("quantityReceived"),
-                        "unitCostExclTax": ln.get(
-                            "unitCostExclTax", ln.get("unitCost")
-                        ),
-                        "totalCostExclTax": ln.get("totalCostExclTax"),
-                    }
-                    for ln in det.get("lines") or []
-                ],
-            }
-            parts.append(
-                "LOADED DRAFT for the SAME invoice (the supplier feed's own "
-                "structured reading — an independent reference; its units can "
-                "themselves be wrong, but agreement is strong evidence):\n"
-                + json.dumps(slim, indent=1)
-            )
-        except Exception as exc:  # noqa: BLE001 — reference data is optional
-            logger.warning("analysis: Loaded draft fetch failed: %s", exc)
+    # DELIBERATELY NO Loaded draft here. Loaded has no supplier integration —
+    # its lines are Loaded's OWN text-recognition of the same paper, a
+    # competing (worse) OCR, not independent evidence. Including it
+    # contaminated a ground truth once (pink ling, 09 Aug 2026: Loaded read
+    # qty 0.5 where the copy printed 'Not available'/0, and the agent
+    # followed it). The document is the only truth the sensei may read.
     return "\n\n".join(parts)
 
 
@@ -626,13 +573,164 @@ _ANALYSIS_SCHEMA = {
 }
 
 
+def _ground_truth_violations(gt: dict) -> list[str]:
+    """The document's own arithmetic, enforced on the agent's ground truth.
+
+    A wrong truth born from mis-reading (or from trusting anything but the
+    paper) usually breaks the printed arithmetic — pink ling (09 Aug 2026):
+    qty 0.5 × 21.75 = 10.88 against a printed line total of 0.00. Checks are
+    skipped when an operand is missing; violations make a proposal not_green
+    (and therefore never auto-applied)."""
+
+    def _num(v: object) -> float | None:
+        try:
+            return float(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    out: list[str] = []
+    if not isinstance(gt, dict):
+        return out
+    line_sum = 0.0
+    line_sum_complete = True
+    for i, ln in enumerate(gt.get("lines") or []):
+        if not isinstance(ln, dict):
+            continue
+        qty = _num(ln.get("quantity"))
+        price = _num(ln.get("unit_price_ex_tax"))
+        total = _num(ln.get("line_total_ex_tax"))
+        if total is None:
+            line_sum_complete = False
+        else:
+            line_sum += total
+        if qty is not None and price is not None and total is not None:
+            if abs(qty * price - total) > 0.011:
+                out.append(
+                    f"line {i + 1} '{ln.get('description')}': "
+                    f"{qty} x {price} = {round(qty * price, 2)} but "
+                    f"line_total_ex_tax is {total}"
+                )
+    subtotal = _num(gt.get("subtotal_ex_tax"))
+    tax = _num(gt.get("tax_amount"))
+    total_incl = _num(gt.get("total_incl_tax"))
+    if line_sum_complete and (gt.get("lines") or []) and subtotal is not None:
+        if abs(line_sum - subtotal) > 0.02:
+            out.append(
+                f"line totals sum to {round(line_sum, 2)} but "
+                f"subtotal_ex_tax is {subtotal}"
+            )
+    if subtotal is not None and tax is not None and total_incl is not None:
+        if abs(subtotal + tax - total_incl) > 0.02:
+            out.append(
+                f"subtotal {subtotal} + tax {tax} = {round(subtotal + tax, 2)} "
+                f"but total_incl_tax is {total_incl}"
+            )
+    return out
+
+
+def apply_analysis_proposal(
+    config_db: Session,
+    sample,
+    *,
+    apply_spec: bool = True,
+    save_expected: bool = True,
+) -> dict:
+    """Apply a stored analysis proposal: write the spec text, baseline the
+    agent's ground truth, and record the candidate extraction as the sample's
+    last run (no re-spend). An ``alias_of`` proposal merges instead of
+    duplicating. Shared by the admin Apply endpoint and the self-training
+    auto-apply. Raises ``ValueError`` for the not-applicable cases."""
+    import datetime as _dt
+
+    from app.db.config_models import SupplierSpecSample
+
+    analysis = sample.analysis or {}
+    if analysis.get("status") not in ("ready", "not_green"):
+        raise ValueError("no analysis proposal to apply — run Analyse first")
+    spec = (
+        config_db.query(SupplierInvoiceSpec)
+        .filter(SupplierInvoiceSpec.id == sample.spec_id)
+        .first()
+    )
+    if not spec:
+        raise ValueError("spec not found")
+    proposed = str(analysis.get("proposed_instructions") or "")
+    alias_name = str(analysis.get("alias_of") or "").strip()
+    target = None
+    if alias_name:
+        target = next(
+            (
+                r
+                for r in config_db.query(SupplierInvoiceSpec).all()
+                if r.name.lower() == alias_name.lower()
+                and r.id != spec.id
+                and r.name != MAIN_PROMPT_NAME
+            ),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"alias target spec '{alias_name}' no longer exists")
+    host = target or spec
+    if apply_spec:
+        if target is not None:
+            merged = list(target.aliases or [])
+            for cand in [spec.name, *(spec.aliases or [])]:
+                if (
+                    cand
+                    and cand.lower() != target.name.lower()
+                    and all(cand.lower() != a.lower() for a in merged)
+                ):
+                    merged.append(cand)
+            target.aliases = merged
+        if proposed.strip():
+            host.instructions = proposed
+    if target is not None:
+        for row in (
+            config_db.query(SupplierSpecSample)
+            .filter(SupplierSpecSample.spec_id == spec.id)
+            .all()
+        ):
+            row.spec_id = target.id
+        # The auto-created row is now redundant — but never delete one that
+        # carries its own instructions (an admin wrote those).
+        if not (spec.instructions or "").strip():
+            config_db.delete(spec)
+    # Baseline the agent's ground truth ONLY when no expected values are
+    # stored yet — an admin-corrected baseline outranks the agent's, and the
+    # candidate is re-diffed against the STORED baseline so the pass/fail
+    # chip reflects the admin's values, never the agent's say-so.
+    if (
+        save_expected
+        and isinstance(analysis.get("ground_truth"), dict)
+        and not sample.expected
+    ):
+        sample.expected = analysis["ground_truth"]
+    own = (analysis.get("candidate_results") or {}).get("own") or {}
+    if isinstance(own.get("extraction"), dict) and sample.expected:
+        diffs = compare_extractions(sample.expected, own["extraction"])
+        sample.last_run = {
+            **(sample.last_run or {}),
+            "extraction": own["extraction"],
+            "diffs": diffs,
+        }
+        sample.last_status = "pass" if not diffs else "fail"
+        sample.last_run_at = _dt.datetime.now(_dt.timezone.utc)
+    sample.analysis = dict(analysis, status="applied")
+    config_db.commit()
+    config_db.refresh(sample)
+    return {
+        "spec_instructions": host.instructions,
+        "alias_added_to": target.name if target is not None else None,
+    }
+
+
 def analyse_sample(
     db: Session,
     config_db: Session,
     sample_id: str,
     feedback: str | None = None,
 ) -> dict:
-    """The capable-agent loop: context → analysis → candidate verification →
+    """The SENSEI loop: context → analysis → candidate verification →
     one refinement → stored proposal. Mutates sample.analysis; returns it.
 
     Green (this sample's candidate extraction matches the agent's ground
@@ -695,7 +793,10 @@ def analyse_sample(
         }
     )
 
-    # Ensure there is a current-prompt extraction to critique.
+    # Ensure there is a current-prompt extraction to critique. This is often
+    # the sample's FIRST stored run (add-to-dojo kicks analyse in the
+    # background), so it must carry the replica keys like every other run —
+    # a run without them renders as "no invoice view" in the panel.
     run = sample.last_run or {}
     if not run.get("extraction"):
         extraction = run_extraction(
@@ -706,7 +807,16 @@ def analyse_sample(
             if sample.expected is not None
             else []
         )
-        sample.last_run = {"extraction": extraction, "diffs": diffs}
+        replica, replica_diffs, replica_compare = replica_stage(
+            db, config_db, sample, extraction
+        )
+        sample.last_run = {
+            "extraction": extraction,
+            "diffs": diffs,
+            "replica": replica,
+            "replica_diffs": replica_diffs,
+            "replica_compare": replica_compare,
+        }
         sample.last_status = (
             "new" if sample.expected is None else ("pass" if not diffs else "fail")
         )
@@ -877,7 +987,13 @@ def analyse_sample(
     try:
         proposal = _ask()
         own_diffs, results = _verify(proposal)
-        if own_diffs or results["siblings"]["failed"] or results["siblings"]["errors"]:
+        gt_violations = _ground_truth_violations(proposal["ground_truth"])
+        if (
+            own_diffs
+            or results["siblings"]["failed"]
+            or results["siblings"]["errors"]
+            or gt_violations
+        ):
             # ONE refinement round with the concrete failures as feedback —
             # the iteration the single-shot extractor never gets.
             feedback = (
@@ -889,16 +1005,40 @@ def analyse_sample(
                 + json.dumps(own_diffs, indent=1)
                 + "\nSibling baseline results:\n"
                 + json.dumps(results["siblings"], indent=1)
+                + (
+                    "\nYOUR GROUND TRUTH VIOLATES THE DOCUMENT'S OWN "
+                    "ARITHMETIC (re-read those lines off the paper — a "
+                    "'Not available'/0-quantity line has line total 0):\n"
+                    + "\n".join("- " + v for v in gt_violations)
+                    if gt_violations
+                    else ""
+                )
                 + "\nRevise: fix the proposal (or your ground truth if IT was "
                 "wrong) and return the full JSON again."
             )
             proposal = _ask(feedback)
             own_diffs, results = _verify(proposal)
+            gt_violations = _ground_truth_violations(proposal["ground_truth"])
         green = (
             not own_diffs
             and not results["siblings"]["failed"]
             and not results["siblings"]["errors"]
+            # An arithmetically impossible truth can never be green — and
+            # therefore can never baseline itself or auto-apply.
+            and not gt_violations
         )
+        # No needless specs (deterministic belt for the doctrine rule): when
+        # the CURRENT prompts already read this document correctly, the
+        # proposal is values-only — spec text would be churn to maintain.
+        cur_run = sample.last_run or {}
+        current_ok = bool(cur_run.get("extraction")) and not compare_extractions(
+            proposal["ground_truth"], cur_run["extraction"]
+        )
+        spec_not_needed = bool(
+            current_ok and not str(proposal.get("alias_of") or "").strip()
+        )
+        if spec_not_needed:
+            proposal["proposed_instructions"] = ""
         # A green proposal's ground truth becomes the sample's stored expected
         # values when the baseline is still AGENT-OWNED: empty, or exactly the
         # previous proposal's ground truth (i.e. auto-populated and untouched)
@@ -916,18 +1056,19 @@ def analyse_sample(
                 sample.last_run = {**run_now, "diffs": diffs_now}
                 sample.last_status = "pass" if not diffs_now else "fail"
         alias_target = _resolve_alias_target(proposal.get("alias_of"))
-        return _store(
+        proposed_text = str(proposal.get("proposed_instructions") or "")
+        stored = _store(
             {
                 "status": "ready" if green else "not_green",
                 "green": green,
                 "rationale": proposal.get("rationale"),
                 "layout_facts": proposal.get("layout_facts") or [],
-                "proposed_instructions": str(
-                    proposal.get("proposed_instructions") or ""
-                ),
+                "proposed_instructions": proposed_text,
                 # Canonical target name — Apply adds the alias there instead
                 # of keeping a duplicate spec.
                 "alias_of": alias_target.name if alias_target else None,
+                "spec_not_needed": spec_not_needed,
+                "ground_truth_violations": gt_violations,
                 "ground_truth": proposal["ground_truth"],
                 "candidate_results": results,
                 "thread": thread,
@@ -935,6 +1076,30 @@ def analyse_sample(
                 "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             }
         )
+        # Self-training v1 — auto-apply ONLY the provably-safe case: green,
+        # no alias (never touch another spec's prompt), real text to write,
+        # and the target spec has NO existing prompt (a brand-new supplier,
+        # so there is nothing the change could break).
+        if (
+            green
+            and alias_target is None
+            and proposed_text.strip()
+            and not (spec.instructions or "").strip()
+        ):
+            try:
+                apply_analysis_proposal(
+                    config_db, sample, apply_spec=True, save_expected=True
+                )
+                stored = _store(
+                    dict(
+                        sample.analysis or stored,
+                        auto_applied=True,
+                        applied_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — proposal stays reviewable
+                logger.warning("auto-apply failed for sample %s: %s", sample.id, exc)
+        return stored
     except Exception as exc:  # noqa: BLE001 — a failed analysis must record, not crash
         logger.warning("dojo analysis failed for sample %s: %s", sample_id, exc)
         return _store(
@@ -945,3 +1110,371 @@ def analyse_sample(
                 "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# Replica: OUR extraction resolved into a full working document, scored
+# against what Loaded actually resolved for the same invoice.
+# ---------------------------------------------------------------------------
+
+_REPLICA_HEADER_FIELDS = (
+    "linked_supplier_id",
+    "linked_purchase_order_id",
+    "issued_at",
+    "subtotal",
+    "tax_amount",
+    "total",
+)
+
+# Header fields compared by calendar day: Loaded returns '2026-08-07' on some
+# venues and a full ISO datetime on others, the extraction always a bare date.
+_DATE_HEADER_FIELDS = ("issued_at",)
+
+
+def _date_part(v: Any) -> Any:
+    if isinstance(v, str) and len(v) >= 10 and v[4:5] == "-":
+        return v[:10]
+    return v
+
+
+_REPLICA_LINE_FIELDS = (
+    "linked_item_id",
+    "linked_unit_id",
+    "quantity_received",
+    "unit_cost",
+    "sale_tax_rate",
+)
+
+
+def compare_replica(
+    replica: dict, loaded_doc: dict, expected_replica: dict | None = None
+) -> list[dict]:
+    """Score the replica against Loaded's own resolution of the same invoice.
+
+    Same diff shape as ``compare_extractions`` ({field, line, description,
+    expected, actual}) so every existing renderer consumes it. Lines pair by
+    exact normalized code, then description substring (the shared
+    ``plain_match``). ``expected_replica`` is an admin-blessed replica: where
+    the current replica agrees with the blessing, the diff is suppressed —
+    the adjudication path for invoices Loaded itself resolved wrongly.
+    """
+    from app.services.invoice_line_match import plain_match
+
+    def _differ(a: Any, b: Any) -> bool:
+        if a is None and b is None:
+            return False
+        try:
+            return abs(float(a) - float(b)) > 0.011
+        except (TypeError, ValueError):
+            return a != b
+
+    blessed = expected_replica or {}
+    blessed_lines = {
+        _norm_key(bl.get("code"), bl.get("description")): bl
+        for bl in blessed.get("lines") or []
+    }
+
+    diffs: list[dict] = []
+    for f in _REPLICA_HEADER_FIELDS:
+        exp, act = loaded_doc.get(f), replica.get(f)
+        bl_v = blessed.get(f)
+        if f in _DATE_HEADER_FIELDS:
+            exp, act, bl_v = _date_part(exp), _date_part(act), _date_part(bl_v)
+        if not _differ(exp, act):
+            continue
+        if f in blessed and not _differ(bl_v, act):
+            continue  # admin blessed the replica's header value
+        diffs.append(
+            {
+                "field": f,
+                "line": None,
+                "description": None,
+                "expected": exp,
+                "actual": act,
+            }
+        )
+
+    loaded_lines = [
+        dict(ln) for ln in loaded_doc.get("lines") or [] if isinstance(ln, dict)
+    ]
+    unclaimed = list(loaded_lines)
+    for i, rl in enumerate(replica.get("lines") or []):
+        # Strongest pairing first: the resolved ITEM — Loaded's line text is
+        # often the item name while the copy prints the pack description
+        # (live: 'Oysters Half Shell - Pacific Premium' vs 'MARKET OYSTERS'),
+        # so text pairing alone mis-scores correct resolutions.
+        match = None
+        if rl.get("linked_item_id"):
+            by_item = [
+                ln
+                for ln in unclaimed
+                if ln.get("linked_item_id") == rl.get("linked_item_id")
+            ]
+            if len(by_item) == 1:
+                match = by_item[0]
+        if match is None:
+            match = plain_match(rl, unclaimed)
+        key = _norm_key(rl.get("code"), rl.get("description"))
+        bl = blessed_lines.get(key, {})
+        if match is None:
+            if bl:
+                continue  # blessed as a line Loaded doesn't carry
+            diffs.append(
+                {
+                    "field": "line_extra",
+                    "line": i + 1,
+                    "description": rl.get("description"),
+                    "expected": None,
+                    "actual": rl.get("description"),
+                }
+            )
+            continue
+        unclaimed.remove(match)
+        for f in _REPLICA_LINE_FIELDS:
+            exp, act = match.get(f), rl.get(f)
+            if not _differ(exp, act):
+                continue
+            if f in bl and not _differ(bl.get(f), act):
+                continue  # admin blessed the replica's value for this line
+            diffs.append(
+                {
+                    "field": f,
+                    "line": i + 1,
+                    "description": rl.get("description"),
+                    "expected": exp,
+                    "actual": act,
+                }
+            )
+    for ln in unclaimed:
+        diffs.append(
+            {
+                "field": "line_missing",
+                "line": None,
+                "description": ln.get("description"),
+                "expected": ln.get("description"),
+                "actual": None,
+            }
+        )
+    return diffs
+
+
+def _norm_key(code: Any, description: Any) -> str:
+    n = "".join(ch for ch in str(code or "").lower() if ch.isalnum())
+    if n:
+        return f"c:{n}"
+    return "d:" + "".join(ch for ch in str(description or "").lower() if ch.isalnum())
+
+
+def prefetch_replica_reference(db: Session, config_db: Session, venue_id: str) -> dict:
+    """One venue's replica reference data, fetched ONCE for a batch run —
+    exactly the kwargs ``build_replica`` would otherwise fetch per sample
+    (catalogue + units + suppliers + tax + the 400-day received feed).
+    Best-effort: anything that fails is simply omitted and the builder
+    self-fetches it per sample as before."""
+    out: dict = {}
+    try:
+        from app.services.invoice_replica import _received_feed, sales_tax_rates
+        from app.services.item_match import _fetch_raw_stock_items
+        from app.services.received_invoice import LoadedInvoiceClient
+
+        lh = LoadedInvoiceClient(db, config_db, venue_id)
+        units = lh.get("/1.0/stock/internal/units")
+        suppliers = lh.get("/1.0/stock/internal/suppliers")
+        out = {
+            "catalogue": _fetch_raw_stock_items(venue_id, db, config_db),
+            "units": units if isinstance(units, list) else [],
+            "suppliers": suppliers if isinstance(suppliers, list) else [],
+            "tax_rates": sales_tax_rates(lh),
+            "received_feed": _received_feed(lh),
+        }
+    except Exception as exc:  # noqa: BLE001 — prefetch is an optimization only
+        logger.info("replica reference prefetch failed for %s: %s", venue_id, exc)
+    return {k: v for k, v in out.items() if v}
+
+
+def replica_stage(
+    db: Session,
+    config_db: Session,
+    sample,
+    extraction: dict,
+    reference: dict | None = None,
+) -> tuple[dict | None, list[dict], dict | None]:
+    """Build + score the replica for one dojo sample — returns
+    (replica, scorecard diffs, display-ready compare rows).
+
+    Requires the sample's source venue (add-to-dojo intake); hand-uploaded
+    samples return (None, []) — the panel explains why. Best-effort: an
+    exception records an error replica rather than failing the run.
+    ``reference`` is a venue's prefetched build_replica kwargs (batch runs).
+    """
+    if not (sample.source_venue_id and sample.source_invoice_id):
+        return None, [], None
+    if not isinstance(extraction, dict):
+        return None, [], None
+    try:
+        from app.services.invoice_replica import build_replica
+        from app.services.received_invoice import (
+            LoadedInvoiceClient,
+            build_received_invoice_data,
+        )
+
+        lh = LoadedInvoiceClient(db, config_db, sample.source_venue_id)
+        replica = build_replica(
+            db,
+            config_db,
+            sample.source_venue_id,
+            extraction,
+            lh=lh,
+            own_invoice_id=sample.source_invoice_id,
+            **(reference or {}),
+        )
+        detail = lh.invoice(sample.source_invoice_id)
+        loaded_doc = build_received_invoice_data(
+            detail if isinstance(detail, dict) else {}
+        )
+        diffs = compare_replica(
+            replica, loaded_doc, getattr(sample, "expected_replica", None)
+        )
+        compare = replica_compare_rows(replica, loaded_doc)
+        return replica, diffs, compare
+    except Exception as exc:  # noqa: BLE001 — the replica must never break a run
+        logger.warning("replica stage failed for sample %s: %s", sample.id, exc)
+        return {"replica": True, "error": str(exc), "lines": []}, [], None
+
+
+_COMPARE_LINE_KEYS = (
+    "code",
+    "description",
+    "item_name",
+    "linked_item_id",
+    "unit",
+    "linked_unit_id",
+    "quantity_received",
+    "unit_cost",
+    "total_cost",
+    "sale_tax_rate",
+    "matched_by",
+)
+
+
+def replica_compare_rows(replica: dict, loaded_doc: dict) -> dict:
+    """Display-ready replica-vs-Loaded comparison for the dojo UI.
+
+    Same pairing tiers as ``compare_replica`` (resolved item id first, then
+    the shared ``plain_match``): one row per pairing, each side slimmed to
+    the display keys, with the differing fields named per row. Unpaired
+    lines render as one-sided rows.
+    """
+    from app.services.invoice_line_match import plain_match
+
+    def _differ(a: Any, b: Any) -> bool:
+        if a is None and b is None:
+            return False
+        try:
+            return abs(float(a) - float(b)) > 0.011
+        except (TypeError, ValueError):
+            return a != b
+
+    def _slim(ln: dict | None) -> dict | None:
+        if not isinstance(ln, dict):
+            return None
+        return {k: ln.get(k) for k in _COMPARE_LINE_KEYS}
+
+    header = []
+    for f in _REPLICA_HEADER_FIELDS:
+        rep_v, load_v = replica.get(f), loaded_doc.get(f)
+        if f in _DATE_HEADER_FIELDS:
+            differs = _differ(_date_part(load_v), _date_part(rep_v))
+        else:
+            differs = _differ(load_v, rep_v)
+        header.append(
+            {
+                "field": f,
+                "replica": rep_v,
+                "loaded": load_v,
+                "differs": differs,
+            }
+        )
+    # Names beside the ids where either side knows them.
+    header.insert(
+        0,
+        {
+            "field": "supplier_name",
+            "replica": replica.get("supplier_name"),
+            "loaded": loaded_doc.get("supplier_name"),
+            "differs": _differ(
+                loaded_doc.get("linked_supplier_id"), replica.get("linked_supplier_id")
+            ),
+        },
+    )
+    # The invoice NUMBER, display-only (the engine's invoice-number gate owns
+    # enforcement) — the invoice-styled render needs it, and a mismatch is
+    # worth seeing in the diff view.
+    header.insert(
+        1,
+        {
+            "field": "reference_number",
+            "replica": replica.get("reference_number"),
+            "loaded": loaded_doc.get("reference_number"),
+            "differs": _norm_text(replica.get("reference_number"))
+            != _norm_text(loaded_doc.get("reference_number")),
+        },
+    )
+    # The order-number REFERENCE, display-only (never scored: Loaded's field
+    # often holds the supplier's own ref, so a diff here is information, not
+    # an error). Compared with the PO-number normalization so 'po#1521145'
+    # vs '1521145' doesn't flag.
+    from app.services.received_invoice import _po_key
+
+    po_idx = next(
+        (
+            n + 1
+            for n, h in enumerate(header)
+            if h["field"] == "linked_purchase_order_id"
+        ),
+        len(header),
+    )
+    header.insert(
+        po_idx,
+        {
+            "field": "purchase_order_number",
+            "replica": replica.get("purchase_order_number"),
+            "loaded": loaded_doc.get("purchase_order_number"),
+            "differs": _po_key(replica.get("purchase_order_number"))
+            != _po_key(loaded_doc.get("purchase_order_number")),
+        },
+    )
+
+    loaded_lines = [
+        dict(ln) for ln in loaded_doc.get("lines") or [] if isinstance(ln, dict)
+    ]
+    unclaimed = list(loaded_lines)
+    rows = []
+    for rl in replica.get("lines") or []:
+        match = None
+        if rl.get("linked_item_id"):
+            by_item = [
+                ln
+                for ln in unclaimed
+                if ln.get("linked_item_id") == rl.get("linked_item_id")
+            ]
+            if len(by_item) == 1:
+                match = by_item[0]
+        if match is None:
+            match = plain_match(rl, unclaimed)
+        if match is not None:
+            unclaimed.remove(match)
+        rows.append(
+            {
+                "replica": _slim(rl),
+                "loaded": _slim(match),
+                "diff_fields": [
+                    f
+                    for f in _REPLICA_LINE_FIELDS
+                    if match is not None and _differ(match.get(f), rl.get(f))
+                ],
+            }
+        )
+    for ln in unclaimed:
+        rows.append({"replica": None, "loaded": _slim(ln), "diff_fields": []})
+    return {"header": header, "lines": rows}

@@ -140,7 +140,10 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
       init,
     );
   }
-  // Accept & Receive — the one invoice write. Same contract the web editor POSTs.
+  // Accept & Receive — the one invoice write. The editor sends only
+  // {venue_id, invoice_id}; a lines-less invoice makes the API's
+  // _receive_invoice take the doc-driven path (the server builds the receive
+  // request from the working document, exactly like the web endpoint).
   if (/\/api\/invoice-fixes\/receive$/.test(url) && (init?.method || '').toUpperCase() === 'POST') {
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     try {
@@ -148,11 +151,7 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
         venue_id: body.venue_id,
         invoice: {
           invoice_id: body.invoice_id,
-          linked_purchase_order_id: body.linked_purchase_order_id,
-          po_number: body.po_number,
-          lines: body.lines ?? [],
-          variant_updates: body.variant_updates ?? [],
-          receive: body.receive ?? true,
+          receive: true,
         },
       });
       const p = (toolPayload(reply) ?? {}) as { submitted?: boolean; detail?: unknown };
