@@ -400,3 +400,240 @@ class TestAutomatedConversationKeepsItsIdentity:
         # thread_id is the 4th positional arg of handle_message
         assert agent.handle_message.call_args.args[3] == conv.id
         assert agent.handle_message.call_args.kwargs["automated_task"]["id"] == task.id
+
+
+class TestTemporalGrounding:
+    """A scheduled run replays one persistent conversation. Without dates and
+    an explicit "now", the model has read a two-day-old "I've emailed the
+    report" as current and skipped its own send as a duplicate (live incident,
+    Aug 2026: two daily reconciliation emails silently not sent)."""
+
+    def test_task_context_carries_now_last_run_and_the_rule(self, db_session):
+        task = _make_task(db_session)
+        task.last_run_at = datetime(2026, 8, 7, 21, 0, tzinfo=timezone.utc)
+        ctx = task_scheduler._build_task_context(task, {"venue": "La Zeppa"})
+        assert ctx["venue"] == "La Zeppa"
+        assert ctx["current_datetime_utc"].startswith("20")
+        assert ctx["previous_run_at_utc"].startswith("2026-08-07")
+        assert "PREVIOUS runs" in ctx["scheduled_run_rule"]
+        assert "this" in ctx["scheduled_run_rule"].lower()
+
+    def test_no_last_run_omits_previous_run_key(self, db_session):
+        task = _make_task(db_session)
+        ctx = task_scheduler._build_task_context(task, {})
+        assert "previous_run_at_utc" not in ctx
+        assert "current_datetime_utc" in ctx
+
+    def test_history_from_previous_days_is_date_prefixed(self):
+        # Context-builder behaviour asserted here (tests/test_context_builder.py
+        # belongs to other in-flight work): messages from earlier days carry a
+        # [YYYY-MM-DD] prefix; today's messages and the new turn stay bare.
+        from types import SimpleNamespace
+
+        from app.agents.context_builder import build_conversation_messages
+
+        now = datetime.now(timezone.utc)
+        msgs = [
+            SimpleNamespace(
+                role="user",
+                content="run the task",
+                created_at=now - timedelta(days=2),
+            ),
+            SimpleNamespace(
+                role="assistant",
+                content="I've emailed the report to dianna@cbhg.co.nz",
+                created_at=now - timedelta(days=2),
+            ),
+            SimpleNamespace(
+                role="user", content="thanks", created_at=now - timedelta(minutes=6)
+            ),
+            SimpleNamespace(
+                role="assistant",
+                content="Anything else?",
+                created_at=now - timedelta(minutes=5),
+            ),
+        ]
+        out = build_conversation_messages(
+            msgs, "run today's reconciliation", date_history=True
+        )
+        old_day = (now - timedelta(days=2)).date().isoformat()
+        assert out[0]["content"] == f"[{old_day}] run the task"
+        assert out[1]["content"].startswith(f"[{old_day}] I've emailed")
+        assert out[2]["content"] == "thanks"  # today: no prefix
+        assert out[3]["content"] == "Anything else?"  # today: no prefix
+        assert out[-1]["content"] == "run today's reconciliation"  # new turn bare
+
+
+class TestUpdateTaskImplicitResolution:
+    """update_task_config could always resolve the task from the conversation;
+    update_automated_task (the only prompt-writing path) could not — so a live
+    task got an updated config and a permanently stale prompt. The prompt path
+    must be reachable the same way."""
+
+    def _tool(self):
+        from app.agents.internal_tools import get_handler
+
+        h = get_handler("norm", "update_automated_task")
+        assert h is not None
+        return h
+
+    def test_resolves_task_from_conversation_thread(self, db_session, admin_user):
+        from app.db.models import Thread
+
+        task = _make_task(db_session)
+        conv = Thread(
+            user_id=admin_user.id,
+            domain="procurement",
+            intent="procurement.automated_task_conversation",
+            status="in_progress",
+            raw_prompt="conversation",
+        )
+        db_session.add(conv)
+        db_session.flush()
+        task.conversation_thread_id = conv.id
+        db_session.flush()
+
+        out = self._tool()(
+            {"prompt": "NEW PROMPT — all suppliers"}, db_session, conv.id
+        )
+        assert out["success"] is True, out
+        db_session.refresh(task)
+        assert task.prompt == "NEW PROMPT — all suppliers"
+
+    def test_unrelated_thread_still_requires_task_id(self, db_session, admin_user):
+        from app.db.models import Thread
+
+        conv = Thread(
+            user_id=admin_user.id,
+            domain="procurement",
+            intent="procurement.query",
+            status="in_progress",
+            raw_prompt="chat",
+        )
+        db_session.add(conv)
+        db_session.flush()
+        out = self._tool()({"prompt": "X"}, db_session, conv.id)
+        assert out["success"] is False
+        assert "task_id" in out["error"]
+
+    def test_scheduled_run_receives_its_own_task_identity(self, db_session, admin_user):
+        # execute_task_now must pass automated_task= (id included) so a run can
+        # address itself with update_automated_task instead of only offering to.
+        task = _make_task(db_session, schedule_type="daily")
+        task.created_by = admin_user.id
+        db_session.flush()
+
+        agent = MagicMock()
+        agent.get_tool_definitions.return_value = ("system prompt", [])
+        agent.build_context.return_value = {}
+        with (
+            patch("app.agents.registry.get_agent", return_value=agent),
+            patch(
+                "app.agents.tool_loop.run_tool_loop",
+                return_value={"message": "ok", "tool_calls": []},
+            ),
+            patch(
+                "app.agents.context_builder.build_conversation_messages",
+                return_value=[],
+            ),
+        ):
+            task_scheduler.execute_task_now(task.id, mode="live", db=db_session)
+
+        at = agent.get_tool_definitions.call_args.kwargs["automated_task"]
+        assert at["id"] == task.id
+        assert at["title"] == "Scheduled Task"
+        assert at["prompt"] == "Do the thing"
+
+
+class TestEmailFlagOnRunSummary:
+    """The run's conversation summary line reports emails from email_logs —
+    the model's own claims are not evidence (a run once claimed a send that
+    never happened)."""
+
+    def _post(self, db_session, admin_user, *, email_rows, prompt):
+        from app.db.models import AutomatedTaskRun, Message, Thread
+
+        task = _make_task(db_session, schedule_type="daily")
+        task.prompt = prompt
+        conv = Thread(
+            user_id=admin_user.id,
+            domain="procurement",
+            intent="procurement.automated_task_conversation",
+            status="in_progress",
+            raw_prompt="conversation",
+        )
+        exec_thread = Thread(
+            user_id=admin_user.id,
+            domain="procurement",
+            intent="procurement.automated_task",
+            status="completed",
+            raw_prompt="run",
+        )
+        db_session.add_all([conv, exec_thread])
+        db_session.flush()
+        task.conversation_thread_id = conv.id
+        run = AutomatedTaskRun(
+            automated_task_id=task.id,
+            thread_id=exec_thread.id,
+            status="success",
+            mode="live",
+            started_at=datetime.now(timezone.utc),
+            tool_calls_count=3,
+        )
+        db_session.add(run)
+        db_session.flush()
+        for status, to in email_rows:
+            from app.db.models import EmailLog
+
+            db_session.add(
+                EmailLog(
+                    thread_id=exec_thread.id,
+                    sender_type="system",
+                    sender_email="norm@bettercallnorm.com",
+                    to_addresses=to,
+                    subject="report",
+                    status=status,
+                )
+            )
+        db_session.flush()
+        task_scheduler._post_run_to_conversation(task, run, db_session, "body")
+        row = (
+            db_session.query(Message)
+            .filter(Message.thread_id == conv.id, Message.role == "assistant")
+            .first()
+        )
+        return row.content
+
+    def test_sent_email_shows_recipients(self, db_session, admin_user):
+        content = self._post(
+            db_session,
+            admin_user,
+            email_rows=[("sent", ["dianna@cbhg.co.nz"])],
+            prompt="Reconcile and email the report",
+        )
+        assert "✉ emailed dianna@cbhg.co.nz" in content
+
+    def test_email_task_with_no_send_is_flagged(self, db_session, admin_user):
+        content = self._post(
+            db_session,
+            admin_user,
+            email_rows=[],
+            prompt="Reconcile and email the report",
+        )
+        assert "no email sent" in content
+
+    def test_non_email_task_stays_clean(self, db_session, admin_user):
+        content = self._post(
+            db_session, admin_user, email_rows=[], prompt="Reconcile invoices"
+        )
+        assert "no email sent" not in content
+        assert "✉" not in content
+
+    def test_failed_send_does_not_count_as_sent(self, db_session, admin_user):
+        content = self._post(
+            db_session,
+            admin_user,
+            email_rows=[("failed", ["dianna@cbhg.co.nz"])],
+            prompt="Reconcile and email the report",
+        )
+        assert "no email sent" in content

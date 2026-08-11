@@ -211,6 +211,8 @@ def _ensure_conversation_task(automated_task, db) -> str:
 
 def _build_task_context(automated_task, agent_context: dict) -> dict:
     """Build context dict for an automated task run, merging agent context with task extras."""
+    from datetime import datetime, timezone
+
     ctx = dict(agent_context)
 
     config = automated_task.task_config or {}
@@ -223,6 +225,26 @@ def _build_task_context(automated_task, agent_context: dict) -> dict:
     overrides = automated_task.overrides_next_run
     if overrides:
         ctx["one_time_override"] = overrides
+
+    # Temporal grounding. The conversation history replayed to the model spans
+    # every previous run; without an explicit "now" the model has read a
+    # two-day-old "I've emailed the report" as CURRENT and skipped its own
+    # send as a duplicate (live incident, Aug 2026). State the time, and the
+    # rule that history's work belongs to history.
+    ctx["current_datetime_utc"] = datetime.now(timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    if automated_task.last_run_at:
+        ctx["previous_run_at_utc"] = automated_task.last_run_at.isoformat(
+            timespec="seconds"
+        )
+    ctx["scheduled_run_rule"] = (
+        "This is a fresh scheduled run. Tool calls, emails and reports that "
+        "appear in the conversation history were produced by PREVIOUS runs on "
+        "earlier dates — they never count for this run. Any email or report "
+        "this task promises must be produced by tool calls made NOW, in this "
+        "run."
+    )
 
     return ctx
 
@@ -267,6 +289,28 @@ def _post_run_to_conversation(
         headline.append(f"{round(run.duration_ms / 1000)}s")
     if run.tool_calls_count:
         headline.append(f"{run.tool_calls_count} tool calls")
+
+    # Whether THIS run actually emailed anyone — checked against email_logs,
+    # not the model's claims. A run once reported "already emailed" while
+    # sending nothing (it was reading a previous day's send in its history);
+    # this makes that failure visible at a glance in the conversation.
+    try:
+        from app.db.models import EmailLog
+
+        sends = (
+            db.query(EmailLog)
+            .filter(EmailLog.thread_id == run.thread_id, EmailLog.status == "sent")
+            .all()
+        )
+        if sends:
+            recipients = sorted(
+                {addr for s in sends for addr in (s.to_addresses or [])}
+            )
+            headline.append(f"✉ emailed {', '.join(recipients)}")
+        elif "email" in (automated_task.prompt or "").lower():
+            headline.append("no email sent")
+    except Exception:  # noqa: BLE001 — the flag must never break run logging
+        logger.exception("email-flag lookup failed for run %s", str(run.id)[:12])
 
     instruction = (automated_task.prompt or "").strip()
     content = (
@@ -329,11 +373,29 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             if not agent:
                 raise ValueError(f"Agent not found: {task.agent_slug}")
 
+            # automated_task= gives the run the task-awareness system block
+            # (its own id included) — without it a scheduled run cannot even
+            # address itself with update_automated_task. Same dict shape the
+            # supervisor builds for in-conversation turns.
+            schedule_desc = task.schedule_type or "manual"
+            sched_cfg = task.schedule_config or {}
+            if sched_cfg.get("hour") is not None:
+                schedule_desc += (
+                    f" at {int(sched_cfg['hour']):02d}:"
+                    f"{int(sched_cfg.get('minute') or 0):02d}"
+                )
             system_prompt, anthropic_tools = agent.get_tool_definitions(
                 db,
                 user_id=task.created_by,
                 config_db=config_db,
                 tool_filter=task.tool_filter,
+                automated_task={
+                    "id": task.id,
+                    "title": task.title,
+                    "prompt": task.prompt,
+                    "status": task.status,
+                    "schedule": schedule_desc,
+                },
             )
             if not system_prompt:
                 system_prompt = f"You are the {task.agent_slug} agent for Norm."
@@ -366,6 +428,10 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 context=at_context,
                 thread=conv_thread,
                 db=db,
+                # Previous runs' messages carry their dates — without them the
+                # model reads an old "I've emailed the report" as current and
+                # skips this run's own send as a "duplicate".
+                date_history=True,
             )
 
             # Create execution Thread for run isolation (tool calls + details)
