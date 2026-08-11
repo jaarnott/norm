@@ -612,16 +612,16 @@ class TestReplicaIssues:
         doc = _build(ext, received_feed=[])
         assert doc["discount_amount"] == 5.5
 
-    def test_copy_unit_not_in_loaded_offers_replica_named_create(self):
+    def test_copy_unit_not_in_loaded_marks_line_for_create(self):
         # The copy confidently names a pack the venue has no unit for: the
-        # variant default is kept (receivable → non-blocking) and the issue
-        # carries the REPLICA's unit name for the editor's create offer.
+        # variant default is kept (receivable), and the replica line carries the
+        # copy's unit name so the review layer can raise a create_unit SUGGESTION
+        # (no longer a non-blocking "note" issue).
         line = dict(EXTRACTION["lines"][0], unit_of_measure="9x123ml")
         doc = _build(dict(EXTRACTION, lines=[line]), received_feed=[])
-        issue = next(i for i in doc["issues"] if i["code"] == "unit_not_in_loaded")
-        assert issue["blocking"] is False
-        assert issue["data"]["unit_name"] == "9x123ml"
+        assert doc["lines"][0]["unit_create_name"] == "9x123ml"
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"  # variant kept
+        assert not any(i["code"] == "unit_not_in_loaded" for i in doc["issues"])
 
     def test_unit_missing_carries_confident_copy_name(self):
         ext = dict(

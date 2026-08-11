@@ -85,7 +85,8 @@ interface DojoDiff {
 interface Suggestion {
   id: string;
   kind: 'line_value' | 'add_line' | 'strike' | 'header_value' | 'supplier'
-    | 'link_po' | 'unlink_po' | 'split_reference' | 'delete_invoice' | string;
+    | 'link_po' | 'unlink_po' | 'split_reference' | 'delete_invoice'
+    | 'create_unit' | string;
   field?: string | null;
   line_id?: string | null;
   current?: unknown;
@@ -917,6 +918,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       void acceptFix(s);
       return;
     }
+    if (s.kind === 'create_unit') {
+      // A Loaded write: create the copy's delivered unit and link it. The name
+      // rides in the suggestion payload (no issue backs it); the ✓ is the
+      // confirm, so createUnitAndApply skips its own two-step when given a name.
+      const name = (s.payload?.unit_name as string | undefined)
+        || (typeof s.proposed === 'string' ? s.proposed : undefined);
+      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
+      if (idx >= 0 && name) void createUnitAndApply(idx, name);
+      return;
+    }
     const folded = foldSuggestion(docRef.current, s);
     if (!folded) return;
     const [log, logOp] = recordOp(folded.entry);
@@ -1008,7 +1019,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     return stateOf(i.id) === 'pending' ? 'open' : 'checked';
   };
   const blockingIssues = issues.filter((i) => i.blocking);
-  const noteIssues = issues.filter((i) => !i.blocking);
   const blockingOpen = blockingIssues.filter((i) => issueStateOf(i) === 'open');
   const liveConfidence: 'ready' | 'needs_review' | null =
     reviewed ? (blockingOpen.length ? 'needs_review' : 'ready') : null;
@@ -1254,28 +1264,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     applyLocalLink(lineId, itemId, cat?.name ?? null);
   };
 
-  // The REPLICA read a delivered unit off the copy that doesn't exist in
-  // Loaded (unit_not_in_loaded / unit_missing with a unit_name): offer to
-  // create THAT name — never a bare unlinked unit string Loaded's OCR left
-  // behind. The create is the ONE write, two-step confirm; the line takes it
-  // as a plain local edit (landing on the line + supplier variant at receive).
+  // A BLOCKING unit_missing issue carries the copy's confidently-read unit name
+  // (never a bare unlinked string Loaded's OCR left behind): offer to create it
+  // inline to clear the blocker. The "doesn't exist in Loaded" case is now a
+  // create_unit SUGGESTION instead — accepted via createUnitAndApply(idx, name).
   const replicaUnitName = (lineId: string): string | null => {
     for (const i of issues) {
-      if (
-        String(i.line_id ?? '') === String(lineId) &&
-        (i.code === 'unit_not_in_loaded' || i.code === 'unit_missing')
-      ) {
+      if (String(i.line_id ?? '') === String(lineId) && i.code === 'unit_missing') {
         const n = i.data?.unit_name;
         if (typeof n === 'string' && n.trim()) return n.trim();
       }
     }
     return null;
   };
-  const createUnitAndApply = async (idx: number) => {
+  // explicitName (from an accepted create_unit suggestion) skips the inline
+  // two-step confirm — accepting the suggestion IS the confirmation.
+  const createUnitAndApply = async (idx: number, explicitName: string | null = null) => {
     const l = doc.lines[idx];
-    const name = l ? replicaUnitName(String(l.id)) : null;
+    const name = explicitName ?? (l ? replicaUnitName(String(l.id)) : null);
     if (!name || !venueId || embedded || creatingUnitLine) return;
-    if (confirmUnitLine !== l.id) {
+    if (!explicitName && confirmUnitLine !== l.id) {
       setConfirmUnitLine(l.id);
       return;
     }
@@ -1665,6 +1673,13 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         on (the slider itself is span-based, so it stays clickable inside the
         disabled fieldset). */}
     <fieldset disabled={viewLoaded} style={{ border: 'none', margin: 0, padding: 0, minWidth: 0 }}>
+      {/* A credit note stays receivable, but the consequence is surfaced as a
+          visible banner (not a review "note"): receiving it reverses stock. */}
+      {isCredit && !dojo && (
+        <div style={{ padding: '5px 10px', background: '#fdecea', color: '#a4322a', borderBottom: '1px solid #f0c2bc', fontSize: '0.66rem', fontWeight: 600 }}>
+          Credit note — receiving this reverses stock and cost (quantities are negative).
+        </div>
+      )}
       {/* Header — editable form (Loaded-parity) */}
       <div style={{ padding: '0.7rem 0.9rem', background: 'linear-gradient(#faf9f7,#f5f3ef)', borderBottom: '1px solid #eee' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
@@ -2422,21 +2437,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         </div>
       )}
 
-      {/* Issues — the review's findings, grouped Blocking / Notes. Blocking
-          issues gate the Receive button until their clears_when predicate
-          holds against the working values, or the user marks them checked. */}
+      {/* Issues — every finding is now either a suggestion or a blocker, so
+          there is no "notes" bucket. Blocking issues gate the Receive button
+          until their clears_when predicate holds against the working values, or
+          the user marks them checked. */}
       {!dojo && viewMode === 'norm' && !draftDeleted && (issues.length > 0 || reviewing || !reviewed) && (
         <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
           {blockingIssues.length > 0 && (
-            <div style={{ marginBottom: noteIssues.length ? 6 : 0 }}>
+            <div>
               <div style={{ ...microLabel, color: '#c0392b', marginBottom: 3 }}>Needs attention</div>
               {blockingIssues.map(issueRow)}
-            </div>
-          )}
-          {noteIssues.length > 0 && (
-            <div>
-              <div style={{ ...microLabel, marginBottom: 3 }}>Notes from the review</div>
-              {noteIssues.map(issueRow)}
             </div>
           )}
           {issues.length === 0 && (

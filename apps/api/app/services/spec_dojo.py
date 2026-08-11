@@ -156,6 +156,7 @@ _HEADER_FIELDS = (
     "invoice_date",
     "purchase_order_number",
     "subtotal_ex_tax",
+    "discount_amount",
     "tax_amount",
     "total_incl_tax",
 )
@@ -408,11 +409,12 @@ def candidate_run(
                     s.content_type,
                     override_instructions=instructions,
                 )
-            if s.expected is not None:
-                diffs = compare_extractions(s.expected, extraction)
-                status = "pass" if not diffs else "fail"
-            else:
-                diffs, status = [], "new"
+            diffs = (
+                compare_extractions(s.expected, extraction)
+                if s.expected is not None
+                else []
+            )
+            status = _sample_status(s.expected, diffs, extraction)
             results.append(
                 {
                     "id": s.id,
@@ -654,6 +656,7 @@ def _ground_truth_violations(gt: dict) -> list[str]:
     subtotal = _num(gt.get("subtotal_ex_tax"))
     tax = _num(gt.get("tax_amount"))
     total_incl = _num(gt.get("total_incl_tax"))
+    discount = _num(gt.get("discount_amount")) or 0.0
     if line_sum_complete and (gt.get("lines") or []) and subtotal is not None:
         if abs(line_sum - subtotal) > 0.02:
             out.append(
@@ -661,12 +664,33 @@ def _ground_truth_violations(gt: dict) -> list[str]:
                 f"subtotal_ex_tax is {subtotal}"
             )
     if subtotal is not None and tax is not None and total_incl is not None:
-        if abs(subtotal + tax - total_incl) > 0.02:
+        # Mirror the receive-flow identity (invoice_replica): a document-level
+        # discount is subtracted from the subtotal+tax to reach the total.
+        expected_total = subtotal + tax - discount
+        if abs(expected_total - total_incl) > 0.02:
+            disc_note = f" - discount {discount}" if discount else ""
             out.append(
-                f"subtotal {subtotal} + tax {tax} = {round(subtotal + tax, 2)} "
-                f"but total_incl_tax is {total_incl}"
+                f"subtotal {subtotal} + tax {tax}{disc_note} = "
+                f"{round(expected_total, 2)} but total_incl_tax is {total_incl}"
             )
     return out
+
+
+def _sample_status(expected: dict | None, diffs: list, extraction: dict | None) -> str:
+    """The verdict for a dojo sample run.
+
+    A sample passes only if it BOTH matches its stored baseline AND its own
+    printed arithmetic reconciles. A non-reconciling extraction is never a clean
+    pass — even when it equals a baseline that was itself captured from bad
+    numbers (which is how a broken invoice used to slip through as "PASS").
+    """
+    if expected is None:
+        return "new"
+    if diffs:
+        return "fail"
+    if _ground_truth_violations(extraction if isinstance(extraction, dict) else {}):
+        return "fail"
+    return "pass"
 
 
 def apply_analysis_proposal(
@@ -754,7 +778,7 @@ def apply_analysis_proposal(
             "extraction": own["extraction"],
             "diffs": diffs,
         }
-        sample.last_status = "pass" if not diffs else "fail"
+        sample.last_status = _sample_status(sample.expected, diffs, own["extraction"])
         sample.last_run_at = _dt.datetime.now(_dt.timezone.utc)
     sample.analysis = dict(analysis, status="applied")
     config_db.commit()
@@ -857,10 +881,9 @@ def analyse_sample(
             "replica": replica,
             "replica_diffs": replica_diffs,
             "replica_compare": replica_compare,
+            "reconcile_violations": _ground_truth_violations(extraction),
         }
-        sample.last_status = (
-            "new" if sample.expected is None else ("pass" if not diffs else "fail")
-        )
+        sample.last_status = _sample_status(sample.expected, diffs, extraction)
         sample.last_run_at = _dt.datetime.now(_dt.timezone.utc)
         config_db.commit()
 
@@ -1095,7 +1118,9 @@ def analyse_sample(
             if run_now.get("extraction"):
                 diffs_now = compare_extractions(sample.expected, run_now["extraction"])
                 sample.last_run = {**run_now, "diffs": diffs_now}
-                sample.last_status = "pass" if not diffs_now else "fail"
+                sample.last_status = _sample_status(
+                    sample.expected, diffs_now, run_now["extraction"]
+                )
         alias_target = _resolve_alias_target(proposal.get("alias_of"))
         proposed_text = str(proposal.get("proposed_instructions") or "")
         stored = _store(

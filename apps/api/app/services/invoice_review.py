@@ -308,6 +308,25 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
                 "tax_amount": rl.get("tax_amount"),
             },
         )
+    # The copy's delivered unit isn't in Loaded yet. It has no directly-applyable
+    # value (the unit must be created first), so it is a `create_unit` suggestion
+    # carrying the name in `payload` — accepting it creates the unit in Loaded and
+    # links it. Not a note: the user actions it from Suggested Changes, or leaves
+    # the current variant default.
+    if rl.get("unit_create_name"):
+        _sugg(
+            suggestions,
+            "create_unit",
+            field="unit",
+            line_id=lid,
+            current=ln.get("unit"),
+            proposed=rl.get("unit_create_name"),
+            explanation=(
+                f"the copy's delivered unit '{rl.get('unit_create_name')}' doesn't "
+                f"exist in Loaded — create it, or keep '{ln.get('unit')}'"
+            ),
+            payload={"unit_name": rl.get("unit_create_name")},
+        )
 
 
 # Header values worth suggesting. subtotal is deliberately ABSENT: it is

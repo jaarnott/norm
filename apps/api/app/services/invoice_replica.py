@@ -423,6 +423,9 @@ def build_replica(
             "(quantities are negative)"
         )
         warnings.append(msg)
+        # Non-blocking on purpose: a clean credit note is immediately receivable
+        # (it reverses stock). It's surfaced as a header BANNER on the card, not
+        # as an item in the review list, so there's no "notes" bucket.
         _issue(
             "credit_note",
             msg,
@@ -653,6 +656,10 @@ def build_replica(
             else None
         )
         unit_rec = None
+        # The copy's confidently-read delivered unit that isn't in Loaded yet —
+        # carried onto the replica line so the review layer can offer a
+        # "create this unit" suggestion (never a bare OCR string).
+        unit_create_name = None
         # The copy's derived unit is "confidently delivered" under the
         # engine's _delivered_unit rule: a multipack or a parseable size,
         # never a bare packaging word — and never when the extraction marked
@@ -685,19 +692,11 @@ def build_replica(
                         f"has no such unit — kept variant default "
                         f"'{unit_rec.get('name')}' (unit would need creating)"
                     )
-                    # Structured marker so the editor can offer "create the
-                    # unit" ONLY for a unit WE read off the copy — never for
-                    # a bare unlinked unit string Loaded's OCR left behind.
-                    _issue(
-                        "unit_not_in_loaded",
-                        f"line {i + 1} '{el.get('description')}': the copy's "
-                        f"delivered unit '{derived}' doesn't exist in Loaded — "
-                        f"create it, or keep the variant default "
-                        f"'{unit_rec.get('name')}'",
-                        blocking=False,
-                        line_id=f"rep-{i}",
-                        data={"unit_name": str(derived)},
-                    )
+                    # Marker (not an issue): the review layer turns this into a
+                    # `create_unit` SUGGESTION the user can accept, rather than a
+                    # non-blocking note. Only set for a unit WE read off the copy
+                    # — never a bare unlinked string Loaded's OCR left behind.
+                    unit_create_name = str(derived)
         if unit_rec is None:
             unit_rec = _resolve_unit_record(derived or el.get("unit"), units)
         rate = None
@@ -760,6 +759,9 @@ def build_replica(
                 "unit_unrecognisable": el.get("unit_unrecognisable"),
                 "suggested_name": r.get("suggested_name"),
                 "suggested_group_id": r.get("suggested_group_id"),
+                # The copy's delivered unit that isn't in Loaded — drives a
+                # `create_unit` suggestion in review; None on normal lines.
+                "unit_create_name": unit_create_name,
             }
         )
         if item is None:
@@ -918,7 +920,7 @@ def build_replica(
                         _issue(
                             "po_split_order",
                             msg,
-                            blocking=False,
+                            blocking=True,
                             data={
                                 "po_id": r.get("id"),
                                 "sibling_invoice_id": other,

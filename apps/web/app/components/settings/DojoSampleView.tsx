@@ -31,6 +31,7 @@ export interface ExtractionDoc {
   purchase_order_number?: string | null;
   lines?: ExtractionLine[];
   subtotal_ex_tax?: number | string | null;
+  discount_amount?: number | string | null;
   tax_amount?: number | string | null;
   total_incl_tax?: number | string | null;
 }
@@ -51,6 +52,7 @@ const HEADER_FIELDS: { key: keyof ExtractionDoc; label: string }[] = [
   { key: 'invoice_date', label: 'Invoice date' },
   { key: 'purchase_order_number', label: 'PO number' },
   { key: 'subtotal_ex_tax', label: 'Subtotal ex tax' },
+  { key: 'discount_amount', label: 'Discount' },
   { key: 'tax_amount', label: 'Tax' },
   { key: 'total_incl_tax', label: 'Total incl tax' },
 ];
@@ -178,9 +180,15 @@ export default function DojoSampleView({
         : { bg: '#fee2e2', fg: '#991b1b', label: `CURRENT PROMPT — ${n} mismatch${n === 1 ? '' : 'es'} vs expected` };
       return <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: p.bg, color: p.fg }}>{p.label}</span>;
     }
+    // A fail with no field mismatches is a reconciliation failure: the numbers
+    // match the baseline but the document's own arithmetic doesn't add up
+    // (subtotal/lines/discount/tax vs total), so it must not read as a pass.
+    const failLabel = diffs.length > 0
+      ? `FAIL — ${diffs.length} mismatch${diffs.length === 1 ? '' : 'es'}`
+      : "FAIL — totals don't reconcile";
     const map: Record<string, { bg: string; fg: string; label: string }> = {
       pass: { bg: '#d1fae5', fg: '#065f46', label: 'PASS — extracted matches expected' },
-      fail: { bg: '#fee2e2', fg: '#991b1b', label: `FAIL — ${diffs.length} mismatch${diffs.length === 1 ? '' : 'es'}` },
+      fail: { bg: '#fee2e2', fg: '#991b1b', label: failLabel },
       error: { bg: '#fee2e2', fg: '#991b1b', label: 'ERROR — last run failed' },
       new: { bg: '#fdf6e7', fg: '#8a6d3b', label: 'NO BASELINE — set the expected values' },
     };
