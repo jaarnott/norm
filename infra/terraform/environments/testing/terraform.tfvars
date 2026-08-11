@@ -12,7 +12,9 @@ db_disk_size        = 10
 # Cloud Run — the API keeps one warm instance because scheduled tasks execute in
 # a background thread after /internal/run-due-tasks returns; with min=0 the
 # instance can be torn down mid-run. Web can still scale to zero.
-cloudrun_api_min    = 1
+# Cost cut 2026-08: no warm instance — testing only needs to wake for CI's
+# E2E run and the occasional manual poke; ~$80/mo of idle burn otherwise.
+cloudrun_api_min    = 0
 cloudrun_api_max    = 2
 cloudrun_web_min    = 0
 cloudrun_web_max    = 2

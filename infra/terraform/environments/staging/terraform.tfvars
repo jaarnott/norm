@@ -3,22 +3,23 @@ project_id  = "norm-staging"
 region      = "australia-southeast1"
 domain      = "staging.bettercallnorm.com"
 
-# Database — small, mirrors prod schema
-db_tier             = "db-custom-1-3840"
+# Cost cut 2026-08 (billing outage postmortem): staging was running a
+# PRODUCTION-tier DB (db-custom-1-3840, ~$70/mo) and an always-on 2 vCPU API
+# (~$165/mo) for an environment nobody visits. Micro DB + scale-to-zero API —
+# staging exists to smoke the deploy path, not to hold capacity. Scheduled
+# tasks may be torn down mid-run here with min=0; that is acceptable in
+# staging. (Phase 2 decision: delete staging entirely.)
+db_tier             = "db-f1-micro"
 db_ha_enabled       = false
-db_backup_retention = 7
+db_backup_retention = 3
 db_disk_size        = 50
 
-# Cloud Run — scale to zero when idle
-# The API keeps one warm instance because scheduled tasks execute in a
-# background thread after /internal/run-due-tasks returns; with min=0 the
-# instance can be torn down mid-run. Web can still scale to zero.
-cloudrun_api_min    = 1
-cloudrun_api_max    = 3
+cloudrun_api_min    = 0
+cloudrun_api_max    = 2
 cloudrun_web_min    = 0
-cloudrun_web_max    = 3
-cloudrun_api_cpu    = "2"
-cloudrun_api_memory = "2Gi"
+cloudrun_web_max    = 2
+cloudrun_api_cpu    = "1"
+cloudrun_api_memory = "1Gi"
 cloudrun_web_cpu    = "1"
 cloudrun_web_memory = "512Mi"
 
