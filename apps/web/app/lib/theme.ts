@@ -22,6 +22,7 @@ export const colors = {
   time_attendance: '#8b7ec8', // Purple
   marketing: '#e07c5a',      // Coral orange
   reports: '#7bc4a0',        // Green
+  executive_chef: '#b5654d', // Terracotta (kitchen)
   home: '#888',              // Neutral gray
   unknown: '#d4c4a8',        // Warm beige (unassigned)
 

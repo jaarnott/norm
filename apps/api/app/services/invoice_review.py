@@ -39,6 +39,12 @@ from app.services.invoice_extraction import (
     pdf_instructions_for,
 )
 from app.services.autopilot_metrics import record_receive_outcome
+from app.services.invoice_po_reference import (
+    attach_po_reference,
+    enrich_loaded_snapshot,
+    loaded_reference,
+    seed_working_from_loaded,
+)
 from app.services.invoice_replica import build_replica
 from app.services.received_invoice import (
     LoadedInvoiceClient,
@@ -258,17 +264,24 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
                 "unit_ratio": rl.get("unit_ratio"),
             },
         )
-    if rl.get("linked_item_id") and not ln.get("linked_item_id"):
+    if rl.get("linked_item_id") and rl["linked_item_id"] != ln.get("linked_item_id"):
+        # Both halves matter. Unlinked → the plain "link this item". LINKED to
+        # something else → a real disagreement: the draft now opens on Loaded's
+        # own code match (seed_working_from_loaded), so this is the only place
+        # a wrong code match can be challenged. Silence here would let Loaded's
+        # catalogue-order pick stand unchallenged on every line.
+        linked_to = ln.get("item_name") if ln.get("linked_item_id") else None
         _sugg(
             suggestions,
             "line_value",
             field="linked_item_id",
             line_id=lid,
-            current=None,
+            current=linked_to,
             proposed=rl.get("item_name") or rl.get("linked_item_id"),
             explanation=(
                 f"'{desc}' matches catalogue item "
                 f"'{rl.get('item_name')}' ({rl.get('matched_by')})"
+                + (f" — Loaded has '{linked_to}'" if linked_to else "")
             ),
             apply={
                 "linked_item_id": rl.get("linked_item_id"),
@@ -306,6 +319,91 @@ _HEADER_VALUE_FIELDS = (
     ("discount_amount", "discount"),
     ("total", "total"),
 )
+
+
+def order_item_suggestions(
+    data: dict, suggestions: list[dict], catalogue: list[dict] | None
+) -> None:
+    """Let the purchase order decide, when the supplier's code cannot.
+
+    Angus Meats sells canoe-cut marrow, 1-inch marrow and plain bones under
+    ONE code (BONES) and prints "Beef Bones" on every line. Loaded's matcher
+    takes the first of the three in catalogue order — BONES (STOCK) — so a
+    delivery against an order for 6 kg canoe cut and 14 kg 1-inch booked
+    20.58 kg to a third item (1010951, received 10 Aug 2026). The copy cannot
+    break the tie either: it says the same words on both lines. The ORDER is
+    the only evidence of which cut was bought.
+
+    So: only where the code is genuinely AMBIGUOUS (more than one catalogue
+    item carries it for this supplier), and only when the linked order names
+    one of those candidates. An unambiguous code is never second-guessed, and
+    the Loaded mirror is untouched — the X-ray keeps showing Loaded's own
+    match, which is the whole point of it.
+
+    Where several order rows qualify, each line takes the unclaimed one whose
+    ordered quantity is nearest what arrived (6.43 → the 6, 14.15 → the 14),
+    and a row is claimed once. This REPLACES any item suggestion the replica
+    made for that line: one proposal per line, and against an ambiguous code
+    the order beats a description-based match.
+    """
+    from app.services.invoice_po_reference import candidates_for_code, order_rows_for
+
+    rows = order_rows_for(data)
+    if not rows or not catalogue:
+        return
+    supplier_id = data.get("linked_supplier_id")
+    claimed: set[int] = set()
+
+    for ln in data.get("lines") or []:
+        if not isinstance(ln, dict) or ln.get("struck"):
+            continue
+        candidates = candidates_for_code(catalogue, supplier_id, ln.get("code"))
+        if len(candidates) < 2:
+            continue
+        ids = {str(c.get("id")): c for c in candidates}
+        qty = _f(ln.get("quantity_received"))
+        options = [
+            pl for pl in rows if id(pl) not in claimed and str(pl.get("itemId")) in ids
+        ]
+        if not options:
+            continue
+        if qty is not None:
+            options.sort(
+                key=lambda pl: abs((_f(pl.get("quantityOrdered")) or 0.0) - qty)
+            )
+        row = options[0]
+        claimed.add(id(row))
+        item = ids[str(row.get("itemId"))]
+        if str(item.get("id")) == str(ln.get("linked_item_id") or ""):
+            continue
+
+        lid = str(ln.get("id"))
+        # One linked_item_id proposal per line — the order supersedes the
+        # replica's, which read the same ambiguous words we did.
+        suggestions[:] = [
+            s
+            for s in suggestions
+            if not (s.get("field") == "linked_item_id" and s.get("line_id") == lid)
+        ]
+        _sugg(
+            suggestions,
+            "line_value",
+            field="linked_item_id",
+            line_id=lid,
+            current=ln.get("item_name"),
+            proposed=item.get("name"),
+            explanation=(
+                f"code '{ln.get('code')}' covers {len(candidates)} catalogue "
+                f"items — the order for this delivery is "
+                f"'{row.get('itemName')}' ({row.get('quantityOrdered')} "
+                f"{row.get('unitName') or ''}".rstrip()
+                + f"), Loaded matched '{ln.get('item_name')}'"
+            ),
+            apply={
+                "linked_item_id": item.get("id"),
+                "item_name": item.get("name"),
+            },
+        )
 
 
 def build_suggestions(
@@ -758,6 +856,34 @@ def review_invoice(
     if detail is None:
         detail = lh.invoice(invoice_id)
     data = build_received_invoice_data(detail)
+    # Open where Loaded's SCREEN opens, not where its API does: Loaded resolves
+    # an unlinked line's stock item and unit in the browser from the supplier
+    # code, so those resolved values ARE Loaded's position. Seeding them here —
+    # before a single suggestion is computed — is what makes a suggestion mean
+    # "the copy disagrees with Loaded" instead of "Loaded's payload is raw".
+    # Safe on this path: the review replaces the payload wholesale anyway.
+    # Three independent best-effort steps, each guarded on its own: a failed
+    # order fetch must not cost us the mirror, and vice versa.
+    catalogue = (reference or {}).get("catalogue")
+    units = (reference or {}).get("units")
+    try:
+        if not catalogue:
+            catalogue, units = loaded_reference(venue_id, db, lh, config_db=config_db)
+        seed_working_from_loaded(data, catalogue=catalogue, units=units)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("loaded resolution unavailable for %s: %s", invoice_id, exc)
+    try:
+        # The order's rows — reference data for the suggestions below (which
+        # order row does this line satisfy) and for the mirror's ordered
+        # quantities. The router refreshes it after us; running it here keeps
+        # the batch/autopilot path from depending on that.
+        attach_po_reference(data, lh)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("order reference unavailable for %s: %s", invoice_id, exc)
+    try:
+        enrich_loaded_snapshot(data, catalogue=catalogue, units=units)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("loaded mirror unavailable for %s: %s", invoice_id, exc)
     data["doc_schema"] = DOC_SCHEMA
     data["suggestions"] = []
     data["issues"] = []
@@ -830,6 +956,8 @@ def review_invoice(
                 or (isinstance(data.get("total"), (int, float)) and data["total"] < 0)
             )
             suggestions, extra_issues, pairs = build_suggestions(data, replica)
+            # Last word on an ambiguous supplier code: the order.
+            order_item_suggestions(data, suggestions, catalogue)
             data["suggestions"] = suggestions
             data["issues"] = _finalise_issues(
                 replica.get("issues") or [],

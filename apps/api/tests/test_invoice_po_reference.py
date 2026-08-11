@@ -13,7 +13,11 @@ import pytest
 
 from app.db.models import Venue
 from app.services.invoice_po_reference import (
+    candidates_for_code,
+    claim_row_by_item,
     enrich_loaded_snapshot,
+    order_rows_for,
+    seed_working_from_loaded,
     fetch_po_reference,
     project_po_reference,
 )
@@ -348,119 +352,348 @@ class TestPatchRecomputes:
 
 
 class TestLoadedMirror:
-    """The Loaded X-ray must show what Loaded's SCREEN shows, not what its API
-    returns. Loaded sends no item/unit names and a null quantityOrdered — its
-    screen resolves them against the linked order (verified live on Angus
-    Meats 1010821: PO line BONES → "BONES (STOCK)" / "Kilo" / 10)."""
+    """The Loaded X-ray must show what Loaded's SCREEN shows.
 
-    @staticmethod
-    def _doc_with_snapshot(**over):
-        data = _doc(**over)
-        # Loaded's raw payload: supplier text, raw unit, no ordered qty. The
-        # BONES line is genuinely unlinked in Loaded.
-        data["loaded_snapshot"] = {
-            "header": {"linked_purchase_order_id": "po-1", "total": 949.17},
-            "lines": [
+    Loaded's API returns no resolved names — even ``/invoices/{id}/initial``,
+    which is what the screen loads, gives `description: "Beef Bones"`,
+    `linkedItemId: null`. The screen resolves the stock item in the browser
+    from the CATALOGUE by supplier code (``resolve_loaded_line``, ported from
+    mercury's ``i9e``). The purchase order supplies only the ordered quantity.
+    """
+
+    SUP = "sup-angus"
+    # The live Angus Meats catalogue: THREE items carry code BONES for this
+    # supplier. Order matters — Loaded takes the first and stops.
+    CATALOGUE = [
+        {
+            "id": "item-bones",
+            "name": "BONES (STOCK)",
+            "suppliers": [
                 {
-                    "id": "ld-1",
-                    "code": None,
-                    "description": "Noisy Hazy Pale Ale",
-                    "unit": "Kilo",
-                    "linked_unit_id": "u-kilo",
-                    "linked_item_id": "item-hazy",
-                    "item_name": None,
-                },
-                {
-                    "id": "ld-2",
-                    "code": "RICK#-DEEKB",
-                    "description": "Beef Bones",
-                    "unit": "KG",
-                    "linked_unit_id": None,
-                    "linked_item_id": None,
-                    "item_name": None,
-                },
+                    "supplierId": SUP,
+                    "stockCode": "BONES",
+                    "unitId": "u-kilo",
+                    "defaultForSupplier": False,
+                }
             ],
-        }
-        data["lines"] = [
-            {
-                "id": "ld-1",
-                "code": None,
-                "description": "Noisy Hazy Pale Ale",
-                "linked_item_id": "item-hazy",
-                "item_name": "NOISY HAZY PALE ALE",
+        },
+        {
+            "id": "item-marrow-1inch",
+            "name": "BONE MARROW 1 INCH",
+            "suppliers": [
+                {
+                    "supplierId": SUP,
+                    "stockCode": "BONES",
+                    "unitId": "u-kilo",
+                    "defaultForSupplier": True,
+                }
+            ],
+        },
+        {
+            "id": "item-marrow-canoe",
+            "name": "BONE MARROW - CANOE CUT",
+            "suppliers": [
+                {
+                    "supplierId": SUP,
+                    "stockCode": "BONES",
+                    "unitId": "u-kilo",
+                    "defaultForSupplier": False,
+                }
+            ],
+        },
+    ]
+    UNITS = [{"id": "u-kilo", "name": "Kilo"}]
+
+    def _doc_1010951(self, **over):
+        """Angus Meats 1010951: two invoice lines, same code, neither linked;
+        the PO's BONES row points at BONE MARROW 1 INCH, qty 14."""
+        data = {
+            "linked_purchase_order_id": "po-1",
+            "linked_supplier_id": self.SUP,
+            "po_reference": {
+                "po_id": "po-1",
+                "order_date": "2026-08-10",
+                "lines": [
+                    {
+                        "itemCode": None,
+                        "itemName": "BONE MARROW - CANOE CUT",
+                        "unitName": "Kilo",
+                        "quantityOrdered": 6,
+                        "unitCost": 6.39,
+                        "itemId": "item-marrow-canoe",
+                    },
+                    {
+                        "itemCode": "BONES",
+                        "itemName": "BONE MARROW 1 INCH",
+                        "unitName": "Kilo",
+                        "quantityOrdered": 14,
+                        "unitCost": 6.39,
+                        "itemId": "item-marrow-1inch",
+                    },
+                ],
+                "sibling_qty": {},
             },
-            {"id": "ld-2", "code": "RICK#-DEEKB", "linked_item_id": None},
-        ]
+            "lines": [
+                {"id": "ld-1", "code": "BONES", "description": "Beef Bones"},
+                {"id": "ld-2", "code": "BONES", "description": "Beef Bones"},
+            ],
+            "loaded_snapshot": {
+                "header": {
+                    "linked_purchase_order_id": "po-1",
+                    "linked_supplier_id": self.SUP,
+                },
+                "lines": [
+                    {
+                        "id": "ld-1",
+                        "code": "BONES",
+                        "description": "Beef Bones",
+                        "unit": "KG",
+                        "linked_unit_id": None,
+                        "linked_item_id": None,
+                        "quantity_received": 6.43,
+                    },
+                    {
+                        "id": "ld-2",
+                        "code": "BONES",
+                        "description": "Beef Bones",
+                        "unit": "KG",
+                        "linked_unit_id": None,
+                        "linked_item_id": None,
+                        "quantity_received": 14.15,
+                    },
+                ],
+            },
+        }
+        data.update(over)
         return data
 
-    def test_resolves_name_unit_and_ordered_qty_from_the_order(self):
-        data = self._doc_with_snapshot()
-        enrich_loaded_snapshot(data)
-        bones = data["loaded_snapshot"]["lines"][1]
-        # the unlinked line resolves through the PO, exactly as Loaded's screen
-        assert bones["item_name"] == "Rick# Ginger Beer"
-        assert bones["unit_name"] == "50 L"
-        assert bones["quantity_ordered"] == 2
-        assert bones["item_is_new"] is False
-        assert bones["unit_is_new"] is False
-
-    def test_linked_line_keeps_loadeds_own_unit_label(self):
-        data = self._doc_with_snapshot()
-        enrich_loaded_snapshot(data)
-        hazy = data["loaded_snapshot"]["lines"][0]
-        assert hazy["item_name"] == "NOISY HAZY PALE ALE"  # borrowed by id
-        assert hazy["unit_name"] is None  # raw `unit` is already the label
-        assert hazy["quantity_ordered"] == 2
-
-    def test_unresolvable_line_is_marked_new(self):
-        data = self._doc_with_snapshot()
-        data["loaded_snapshot"]["lines"][1].update(
-            {"code": "NOT-ON-THE-ORDER", "unit": "CTN"}
+    def _enrich(self, data, catalogue=None, units=None):
+        enrich_loaded_snapshot(
+            data,
+            catalogue=self.CATALOGUE if catalogue is None else catalogue,
+            units=self.UNITS if units is None else units,
         )
-        enrich_loaded_snapshot(data)
-        bones = data["loaded_snapshot"]["lines"][1]
-        assert bones["item_name"] is None and bones["item_is_new"] is True
-        assert bones["unit_is_new"] is True
-        assert bones["quantity_ordered"] is None
+        return data["loaded_snapshot"]["lines"]
+
+    def test_catalogue_order_wins_over_the_po_and_over_a_later_default(self):
+        # THE case (Angus Meats 1010951). The PO says BONE MARROW 1 INCH and
+        # that item is defaultForSupplier — Loaded still shows BONES (STOCK),
+        # because it takes the FIRST catalogue item carrying the code.
+        lines = self._enrich(self._doc_1010951())
+        assert [ln["item_name"] for ln in lines] == ["BONES (STOCK)"] * 2
+        assert all(ln["item_is_new"] is False for ln in lines)
+
+    def test_matching_needs_no_purchase_order(self):
+        data = self._doc_1010951()
+        data.pop("po_reference")
+        data["linked_purchase_order_id"] = None
+        data["loaded_snapshot"]["header"]["linked_purchase_order_id"] = None
+        lines = self._enrich(data)
+        assert [ln["item_name"] for ln in lines] == ["BONES (STOCK)"] * 2
+        assert [ln["quantity_ordered"] for ln in lines] == [None, None]
+
+    def test_default_for_supplier_breaks_ties_inside_one_item(self):
+        # The flag governs ORDERING, and Loaded only consults it among the
+        # variants of the item it already picked — never across items.
+        catalogue = [
+            {
+                "id": "item-one",
+                "name": "ONE ITEM, TWO VARIANTS",
+                "suppliers": [
+                    {"supplierId": self.SUP, "stockCode": "BONES", "unitId": "u-x"},
+                    {
+                        "supplierId": self.SUP,
+                        "stockCode": "BONES",
+                        "unitId": "u-kilo",
+                        "defaultForSupplier": True,
+                    },
+                ],
+            }
+        ]
+        lines = self._enrich(self._doc_1010951(), catalogue=catalogue)
+        assert lines[0]["item_name"] == "ONE ITEM, TWO VARIANTS"
+        assert lines[0]["unit_name"] == "Kilo"  # the default variant's unit
+
+    def test_ordered_quantity_is_claimed_by_the_first_line_only(self):
+        # Loaded shows 14 then 0 — one order row cannot be delivered twice.
+        lines = self._enrich(self._doc_1010951())
+        assert [ln["quantity_ordered"] for ln in lines] == [14, None]
+
+    def test_no_catalogue_never_guesses(self):
+        lines = self._enrich(self._doc_1010951(), catalogue=[], units=[])
+        assert [ln["item_name"] for ln in lines] == [None, None]
+        assert all(ln["item_is_new"] is False for ln in lines)  # unknown, not NEW
+
+    def test_unresolvable_code_is_marked_new(self):
+        data = self._doc_1010951()
+        for ln in data["loaded_snapshot"]["lines"]:
+            ln["code"] = "NOT-IN-CATALOGUE"
+        lines = self._enrich(data)
+        assert lines[0]["item_name"] is None and lines[0]["item_is_new"] is True
+        assert lines[0]["unit_is_new"] is True  # "KG" with nothing behind it
+
+    def test_a_linked_line_shows_its_linked_item(self):
+        data = self._doc_1010951()
+        data["loaded_snapshot"]["lines"][0]["linked_item_id"] = "item-marrow-canoe"
+        lines = self._enrich(data)
+        assert lines[0]["item_name"] == "BONE MARROW - CANOE CUT"
+        assert lines[1]["item_name"] == "BONES (STOCK)"  # still code-resolved
 
     def test_user_edits_never_leak_into_the_mirror(self):
-        # The whole point of the mirror: the user links the item in the
-        # working doc, and Loaded's column still shows Loaded's truth.
-        data = self._doc_with_snapshot()
-        data["lines"][1].update(
-            {"linked_item_id": "item-ginger", "item_name": "USER PICKED THIS"}
-        )
-        enrich_loaded_snapshot(data)
-        bones = data["loaded_snapshot"]["lines"][1]
-        assert bones["item_name"] == "Rick# Ginger Beer"  # from the PO, not the edit
-        assert bones["linked_item_id"] is None  # snapshot ids untouched
-
-    def test_a_relinked_working_line_cannot_rename_the_mirror(self):
-        data = self._doc_with_snapshot()
-        # the working line now points at a DIFFERENT item than the snapshot
+        # The whole point: the working doc is Norm's proposal, the mirror is
+        # Loaded's truth.
+        data = self._doc_1010951()
         data["lines"][0].update(
-            {"linked_item_id": "item-other", "item_name": "SOMETHING ELSE"}
+            {"linked_item_id": "item-marrow-canoe", "item_name": "USER PICKED THIS"}
         )
-        enrich_loaded_snapshot(data)
-        # The borrow is refused (ids no longer agree) and the mirror falls back
-        # to the ORDER's name for the item the snapshot itself links.
-        assert data["loaded_snapshot"]["lines"][0]["item_name"] == "Noisy Hazy Pale Ale"
-
-    def test_rows_from_another_order_are_never_used(self):
-        data = self._doc_with_snapshot()
-        data["loaded_snapshot"]["header"]["linked_purchase_order_id"] = "po-OTHER"
-        enrich_loaded_snapshot(data)
-        for ln in data["loaded_snapshot"]["lines"]:
-            assert ln["quantity_ordered"] is None
+        lines = self._enrich(data)
+        assert lines[0]["item_name"] == "BONES (STOCK)"
+        assert lines[0]["linked_item_id"] is None
 
     def test_pure_and_idempotent(self):
-        data = self._doc_with_snapshot()
-        enrich_loaded_snapshot(data)
-        first = [dict(ln) for ln in data["loaded_snapshot"]["lines"]]
-        enrich_loaded_snapshot(data)
-        assert data["loaded_snapshot"]["lines"] == first
+        data = self._doc_1010951()
+        first = [dict(ln) for ln in self._enrich(data)]
+        assert self._enrich(data) == first
 
     def test_no_snapshot_is_a_no_op(self):
         data = _doc()
-        enrich_loaded_snapshot(data)  # must not raise
+        enrich_loaded_snapshot(data, catalogue=self.CATALOGUE)
         assert "loaded_snapshot" not in data
+
+
+class TestSeedWorkingFromLoaded:
+    """The draft must OPEN where Loaded's screen opens.
+
+    Loaded's API line is unresolved (`linkedItemId` null, unit the supplier's
+    raw text); its screen resolves both from the supplier code, and that is
+    what a human sees and receives there. Seeding the working line from the
+    raw payload instead made every code-matched line raise a "link this item"
+    suggestion for a link Loaded already agrees with.
+    """
+
+    SUP = TestLoadedMirror.SUP
+    CATALOGUE = TestLoadedMirror.CATALOGUE
+    UNITS = [{"id": "u-kilo", "name": "Kilo", "ratio": 1}]
+
+    def _doc(self, **line_over):
+        ln = {
+            "id": "ld-1",
+            "code": "BONES",
+            "description": "Beef Bones",
+            "unit": "KG",
+            "linked_unit_id": None,
+            "linked_item_id": None,
+            "quantity_received": 6.43,
+        }
+        ln.update(line_over)
+        return {"linked_supplier_id": self.SUP, "lines": [ln]}
+
+    def _seed(self, data):
+        seed_working_from_loaded(data, catalogue=self.CATALOGUE, units=self.UNITS)
+        return data["lines"][0]
+
+    def test_unlinked_line_takes_loadeds_own_resolution(self):
+        ln = self._seed(self._doc())
+        assert ln["linked_item_id"] == "item-bones"
+        assert ln["item_name"] == "BONES (STOCK)"
+        assert ln["item_name_for"] == "item-bones"  # no refetch needed
+        assert ln["linked_unit_id"] == "u-kilo"
+        assert ln["unit"] == "Kilo"
+        assert ln["unit_ratio"] == 1
+
+    def test_the_printed_description_is_never_touched(self):
+        # The replica's pairing, item matching and create-item prefill all key
+        # off the supplier's printed text.
+        assert self._seed(self._doc())["description"] == "Beef Bones"
+
+    def test_an_existing_link_is_never_overwritten(self):
+        # Loaded's own link, or the user's — either way it wins. A dismissed
+        # suggestion must not come back as a seed.
+        ln = self._seed(self._doc(linked_item_id="item-marrow-canoe"))
+        assert ln["linked_item_id"] == "item-marrow-canoe"
+        assert ln["item_name"] == "BONE MARROW - CANOE CUT"  # named, not relinked
+        assert ln["linked_unit_id"] == "u-kilo"  # its variant's unit still fills in
+
+    def test_an_existing_unit_link_is_never_overwritten(self):
+        ln = self._seed(self._doc(linked_unit_id="u-5l", unit="5L"))
+        assert (ln["linked_unit_id"], ln["unit"]) == ("u-5l", "5L")
+        assert ln["linked_item_id"] == "item-bones"  # the item still resolves
+
+    def test_no_catalogue_seeds_nothing(self):
+        data = self._doc()
+        seed_working_from_loaded(data, catalogue=[], units=self.UNITS)
+        assert data["lines"][0]["linked_item_id"] is None
+        assert data["lines"][0]["unit"] == "KG"
+
+    def test_unresolvable_code_is_left_alone(self):
+        ln = self._seed(self._doc(code="NOT-IN-CATALOGUE"))
+        assert ln["linked_item_id"] is None and ln["unit"] == "KG"
+
+    def test_no_supplier_means_no_matching(self):
+        # resolve_loaded_line keys on (supplierId, stockCode) — without the
+        # supplier there is nothing to match on, and guessing would be wrong.
+        data = self._doc()
+        data["linked_supplier_id"] = None
+        seed_working_from_loaded(data, catalogue=self.CATALOGUE, units=self.UNITS)
+        assert data["lines"][0]["linked_item_id"] is None
+
+    def test_idempotent(self):
+        data = self._doc()
+        first = dict(self._seed(data))
+        assert self._seed(data) == first
+
+
+class TestOrderRowPairing:
+    """Loaded pairs an invoice line to an order row by LINKED STOCK ITEM.
+
+    Verified against seven human-received invoices at Bessie & Royals: every
+    paired line and row shared an ``itemId``, the line carried the row's
+    ordered quantity (SI-396252: ordered 25, delivered 33.1), and freight —
+    not on the order — carried none.
+    """
+
+    ROWS = [
+        {"itemId": "item-a", "itemCode": "AAA", "quantityOrdered": 6},
+        {"itemId": "item-b", "itemCode": "BBB", "quantityOrdered": 14},
+    ]
+
+    def test_claims_by_item_and_only_once(self):
+        claimed: set[int] = set()
+        first = claim_row_by_item(self.ROWS, claimed, "item-b")
+        assert first["quantityOrdered"] == 14
+        # A second line linked to the SAME item cannot deliver the row twice.
+        assert claim_row_by_item(self.ROWS, claimed, "item-b") is None
+        assert claim_row_by_item(self.ROWS, claimed, "item-a")["quantityOrdered"] == 6
+
+    def test_no_link_no_row(self):
+        # Freight: on the invoice, never on the order.
+        assert claim_row_by_item(self.ROWS, set(), None) is None
+        assert claim_row_by_item(self.ROWS, set(), "item-nope") is None
+
+    def test_rows_only_for_the_currently_linked_order(self):
+        data = _doc()
+        assert len(order_rows_for(data)) == 2
+        data["linked_purchase_order_id"] = "po-OTHER"  # PO picker moved on
+        assert order_rows_for(data) == []
+
+
+class TestCandidatesForCode:
+    def test_every_item_carrying_the_code_in_catalogue_order(self):
+        got = candidates_for_code(
+            TestLoadedMirror.CATALOGUE, TestLoadedMirror.SUP, "BONES"
+        )
+        assert [i["name"] for i in got] == [
+            "BONES (STOCK)",
+            "BONE MARROW 1 INCH",
+            "BONE MARROW - CANOE CUT",
+        ]
+
+    def test_another_supplier_or_code_matches_nothing(self):
+        assert (
+            candidates_for_code(TestLoadedMirror.CATALOGUE, "sup-other", "BONES") == []
+        )
+        assert (
+            candidates_for_code(TestLoadedMirror.CATALOGUE, TestLoadedMirror.SUP, "X")
+            == []
+        )
+        assert candidates_for_code(TestLoadedMirror.CATALOGUE, None, "BONES") == []

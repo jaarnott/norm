@@ -306,6 +306,75 @@ def resolve_po_id(
     return None
 
 
+def reconcile_order_rows(lh: LoadedInvoiceClient, inv: dict, po_id: str) -> int:
+    """Write the delivery back onto the linked purchase order's rows.
+
+    Loaded seeds every order row with ``quantityReceived = quantityOrdered``
+    at creation and never corrects it from the invoice — a human receive does,
+    editing the rows on the receive screen (SI-396252: ordered 25, the row now
+    reads the delivered 33.1). Norm wrote nothing, which left two marks:
+
+    - the order claimed goods that never arrived, and
+    - any row Loaded's screen could not pair with an invoice line was rendered
+      from the ROW's own numbers, showing money against a line with nothing
+      received. Its builder is ``(quantityReceived ?? quantityOrdered) *
+      unitCost`` — 6 × 6.39 = the phantom $38.34 on Angus Meats 1010951.
+
+    So, per row, pairing by linked stock item and claiming each row once (the
+    same rule that stamps ``quantityOrdered`` on the line, so the two can never
+    disagree):
+
+    - delivered → the quantity and ex-tax unit cost that actually arrived;
+    - nothing delivered against it → ``quantityReceived`` and ``unitCost`` 0,
+      which is Loaded's own marker for a row that did not arrive (live: PO
+      1520999's Riesling row, ordered 1 at 68.64, received 0 at 0).
+
+    ``quantityOrdered`` / ``unitCostOrdered`` are never touched: that is the
+    order's history and the only record of what was asked for.
+
+    Returns the number of rows changed (0 = nothing written).
+    """
+    from app.services.invoice_po_reference import claim_row_by_item
+
+    po = lh.get(f"/1.0/stock/internal/purchase-orders/{po_id}")
+    if not isinstance(po, dict):
+        return 0
+    rows = [r for r in po.get("lines") or [] if isinstance(r, dict)]
+    if not rows:
+        return 0
+
+    claimed: set[int] = set()
+    delivered: dict[int, dict] = {}
+    for ln in inv.get("lines") or []:
+        if not isinstance(ln, dict) or ln.get("deletedAt"):
+            continue
+        row = claim_row_by_item(rows, claimed, ln.get("linkedItemId"))
+        if row is not None:
+            delivered[id(row)] = ln
+
+    changed = 0
+    for row in rows:
+        ln = delivered.get(id(row))
+        if ln is not None:
+            qty = ln.get("quantityReceived")
+            cost = ln.get("unitCostExclTax")
+            if cost is None:
+                cost = ln.get("unitCost")
+        else:
+            qty = cost = 0
+        if qty is None:
+            continue  # nothing to say about this row
+        if row.get("quantityReceived") == qty and row.get("unitCost") == cost:
+            continue
+        row["quantityReceived"] = qty
+        row["unitCost"] = cost
+        changed += 1
+
+    if changed:
+        lh.request("PUT", f"/1.0/stock/internal/purchase-orders/{po_id}", po)
+    return changed
+
+
 def _apply_item_descriptions(
     lh: LoadedInvoiceClient, inv: dict, body: ReceiveRequest
 ) -> None:
@@ -520,6 +589,11 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         "linked_unit_id": ("linkedUnitId",),
         "unit_ratio": ("linkedUnitRatio",),
         "quantity_received": ("quantityReceived",),
+        # The order row this delivery satisfies (paired by linked stock item,
+        # in receive_request_from_doc). Loaded stamps it on every human
+        # receive; without it the order rows stay unmatched on the invoice
+        # screen and keep their pre-seeded received = ordered.
+        "quantity_ordered": ("quantityOrdered",),
         "unit_cost": ("unitCost", "unitCostExclTax"),
         "total_cost": ("totalCost", "totalCostExclTax"),
         # Lines ADDED in the editor (e.g. an accepted add_line suggestion)
@@ -657,6 +731,28 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
     except RuntimeError as exc:
         raise HTTPException(502, f"Loaded rejected the invoice: {exc}") from exc
 
+    # Write the delivery back onto the order's rows (best-effort, isolated —
+    # Loaded has already accepted the receive, so a failure here must log, not
+    # turn a landed receive into a 502).
+    #
+    # Skipped where zeroing an unpaired row would destroy something true:
+    # a SPLIT order (the sibling invoice delivers the other half) and a CREDIT
+    # NOTE (it reverses stock; it does not describe what arrived).
+    rows_reconciled = 0
+    order_id = inv.get("linkedPurchaseOrderId")
+    if (
+        body.receive
+        and order_id
+        and not body.split_po_id
+        and not body.split_sibling_invoice_id
+        # Loaded's own rule for a credit note: total < 0.
+        and not (isinstance(inv.get("total"), (int, float)) and inv["total"] < 0)
+    ):
+        try:
+            rows_reconciled = reconcile_order_rows(lh, inv, order_id)
+        except Exception as exc:  # noqa: BLE001 — the receive already landed
+            logger.info("order reconciliation failed for %s: %s", order_id, exc)
+
     # Split-order cross-reference notes (best-effort, isolated — a note
     # failure never fails the receive): Loaded's 1:1 link can't record the
     # second delivery, so stamp the PO and the sibling invoice instead.
@@ -750,6 +846,7 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         "po_link_skipped": po_link_skipped,
         "split_notes": split_notes,
         "variant_updates": variant_results,
+        "order_rows_reconciled": rows_reconciled,
     }
 
 
@@ -1062,12 +1159,32 @@ def receive_request_from_doc(
     ``struck`` → deletedAt. ``variant_updates`` are derived HERE (the
     ``original_unit_id`` each line was born with exists exactly for this) —
     the client no longer computes them.
+
+    ``quantity_ordered`` is derived here too, and deliberately not taken from
+    the projection — see the comment below.
     """
+    from app.services.invoice_po_reference import claim_row_by_item, order_rows_for
+
     lines = []
     variant_updates = []
+    # What Loaded itself writes when a human receives against an order: the
+    # invoice line carries the order row's ordered quantity, paired by LINKED
+    # STOCK ITEM, and the row is then reconciled to what actually arrived.
+    # Send nothing and Loaded shows "Quantity Ordered 0.000" on our lines and
+    # re-lists every order row underneath as undelivered, carrying the order's
+    # own cost (Angus Meats 1010951, 10 Aug 2026).
+    #
+    # Deliberately NOT project_po_reference's quantity_ordered: that one falls
+    # back to matching by CODE for the editor's benefit, and a code-derived
+    # number would tell Loaded a row is satisfied that Loaded — which pairs by
+    # item alone — still considers outstanding. The projection stays
+    # display-only; this is the stricter, sendable derivation.
+    order_rows = order_rows_for(data)
+    claimed: set[int] = set()
     for ln in data.get("lines") or []:
         if not isinstance(ln, dict):
             continue
+        row = claim_row_by_item(order_rows, claimed, ln.get("linked_item_id"))
         qty, cost = ln.get("quantity_received"), ln.get("unit_cost")
         try:
             total = round(float(qty) * float(cost), 4)
@@ -1087,6 +1204,7 @@ def receive_request_from_doc(
                 "linked_unit_id": ln.get("linked_unit_id"),
                 "unit_ratio": ln.get("unit_ratio"),
                 "quantity_received": qty,
+                "quantity_ordered": (row or {}).get("quantityOrdered"),
                 "unit_cost": cost,
                 "sale_tax_rate": ln.get("sale_tax_rate"),
                 "total_cost": total,

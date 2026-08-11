@@ -288,12 +288,16 @@ class TestLinkedLineDescription:
         return lh.writes[-1][2]
 
     def test_linked_line_takes_the_item_name(self):
-        lh = self._Lh({"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}})
+        lh = self._Lh(
+            {"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}}
+        )
         out = self._receive(lh, [{"id": "ln-1", "linked_item_id": "item-rose"}])
         assert out["lines"][0]["description"] == "ROSABEL PAYS D'OC ROSE"
 
     def test_unlinked_line_keeps_the_suppliers_text(self):
-        lh = self._Lh({"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}})
+        lh = self._Lh(
+            {"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}}
+        )
         out = self._receive(lh, [{"id": "ln-2"}])
         assert out["lines"][1]["description"] == "Unlinked supplier text"
 
@@ -301,7 +305,13 @@ class TestLinkedLineDescription:
         lh = self._Lh()
         out = self._receive(
             lh,
-            [{"id": "ln-1", "linked_item_id": "item-rose", "item_name": "ROSABEL PAYS D'OC ROSE"}],
+            [
+                {
+                    "id": "ln-1",
+                    "linked_item_id": "item-rose",
+                    "item_name": "ROSABEL PAYS D'OC ROSE",
+                }
+            ],
         )
         assert out["lines"][0]["description"] == "ROSABEL PAYS D'OC ROSE"
         assert not [g for g in lh.gets if "items/" in g]  # no lookup needed
@@ -315,13 +325,213 @@ class TestLinkedLineDescription:
         lh = self._Lh({"item-new": {"id": "item-new", "name": "FREIGHT - FOOD"}})
         out = self._receive(
             lh,
-            [{"id": "rep-9", "code": "FGT", "description": "Courier chg", "linked_item_id": "item-new"}],
+            [
+                {
+                    "id": "rep-9",
+                    "code": "FGT",
+                    "description": "Courier chg",
+                    "linked_item_id": "item-new",
+                }
+            ],
         )
         added = out["lines"][-1]
         assert added["description"] == "FREIGHT - FOOD"
 
     def test_struck_lines_are_left_alone(self):
-        lh = self._Lh({"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}})
-        out = self._receive(lh, [{"id": "ln-1", "linked_item_id": "item-rose", "struck": True}])
+        lh = self._Lh(
+            {"item-rose": {"id": "item-rose", "name": "ROSABEL PAYS D'OC ROSE"}}
+        )
+        out = self._receive(
+            lh, [{"id": "ln-1", "linked_item_id": "item-rose", "struck": True}]
+        )
         # soft-deleted: not part of the received invoice, so not renamed
         assert out["lines"][0]["description"] == "Rosabel Dry Rose 2024 6x 750ml"
+
+
+class TestOrderRowReconciliation:
+    """Loaded seeds every order row with received = ordered and never corrects
+    it from the invoice; a human receive does (SI-396252: ordered 25, the row
+    reads the delivered 33.1). Norm wrote nothing, so orders claimed goods that
+    never arrived — and any row Loaded's screen could not pair with a line was
+    drawn from the ROW's own numbers, showing money against nothing received
+    (Angus Meats 1010951: 6 × 6.39 = a phantom $38.34).
+    """
+
+    ITEM_A = "item-a"
+    ITEM_B = "item-b"
+
+    class _Lh:
+        """Records writes; serves one invoice and one purchase order."""
+
+        def __init__(self, inv, po, po_fails=False):
+            self.inv, self.po, self.po_fails = inv, po, po_fails
+            self.gets: list[str] = []
+            self.writes: list[tuple] = []
+
+        def get(self, path):
+            self.gets.append(path)
+            if "purchase-orders" in path:
+                if self.po_fails:
+                    raise RuntimeError("Loaded 500")
+                return self.po
+            return None
+
+        def invoice(self, invoice_id):  # noqa: ARG002
+            return self.inv
+
+        def request(self, method, path, body=None):
+            if "purchase-orders" in path and self.po_fails:
+                raise RuntimeError("Loaded 500")
+            self.writes.append((method, path, body))
+            return {**(body or {}), "isReceived": True}
+
+    def _po(self, **over):
+        po = {
+            "id": "po-1",
+            "lines": [
+                {
+                    "id": "row-a",
+                    "itemId": self.ITEM_A,
+                    "itemName": "ORDERED AND DELIVERED",
+                    "quantityOrdered": 6,
+                    "quantityReceived": 6,  # Loaded's pre-seeded value
+                    "unitCost": 6.39,
+                    "unitCostOrdered": 6.39,
+                },
+                {
+                    "id": "row-b",
+                    "itemId": self.ITEM_B,
+                    "itemName": "ORDERED, NEVER ARRIVED",
+                    "quantityOrdered": 4,
+                    "quantityReceived": 4,
+                    "unitCost": 10.0,
+                    "unitCostOrdered": 10.0,
+                },
+            ],
+        }
+        po.update(over)
+        return po
+
+    def _inv(self, **over):
+        inv = {
+            "id": "inv-1",
+            "total": 41.09,
+            "linkedSupplierId": "sup-1",
+            "linkedPurchaseOrderId": "po-1",
+            "lines": [
+                {
+                    "id": "ln-1",
+                    "code": "AAA",
+                    "description": "ORDERED AND DELIVERED",
+                    "linkedItemId": self.ITEM_A,
+                    "unit": "Kilo",
+                    "linkedUnitId": "u-kilo",
+                    "quantityReceived": 6.43,
+                    "unitCostExclTax": 6.39,
+                }
+            ],
+        }
+        inv.update(over)
+        return inv
+
+    def _receive(self, lh, **kw):
+        from app.services.received_invoice import ReceiveRequest, do_receive
+
+        body = ReceiveRequest(venue_id="v-1", invoice_id="inv-1", lines=[], **kw)
+        return do_receive(lh, body)
+
+    def _po_write(self, lh):
+        return next(
+            (w[2] for w in lh.writes if "purchase-orders" in w[1]),
+            None,
+        )
+
+    def test_delivered_rows_take_what_arrived_and_missing_rows_go_to_zero(self):
+        lh = self._Lh(self._inv(), self._po())
+        out = self._receive(lh)
+        assert out["order_rows_reconciled"] == 2
+        rows = {r["id"]: r for r in self._po_write(lh)["lines"]}
+        assert rows["row-a"]["quantityReceived"] == 6.43  # 6.43 kg really came
+        assert rows["row-a"]["unitCost"] == 6.39
+        assert rows["row-b"]["quantityReceived"] == 0  # nothing arrived
+        assert rows["row-b"]["unitCost"] == 0
+        # The order's own history is never rewritten.
+        assert rows["row-a"]["quantityOrdered"] == 6
+        assert rows["row-b"]["quantityOrdered"] == 4
+        assert rows["row-b"]["unitCostOrdered"] == 10.0
+
+    def test_one_row_per_line(self):
+        # Two lines on the same item (a split delivery of one order row) must
+        # not both claim it — the row records the FIRST, never twice.
+        inv = self._inv()
+        inv["lines"].append({**inv["lines"][0], "id": "ln-2", "quantityReceived": 2.0})
+        lh = self._Lh(inv, self._po())
+        self._receive(lh)
+        rows = {r["id"]: r for r in self._po_write(lh)["lines"]}
+        assert rows["row-a"]["quantityReceived"] == 6.43
+
+    def test_a_struck_line_delivers_nothing(self):
+        # Struck = soft-deleted in Loaded, so it is not part of the received
+        # invoice and its order row got nothing.
+        inv = self._inv()
+        inv["lines"][0]["deletedAt"] = "2026-08-11T00:00:00Z"
+        inv["lines"].append(
+            {
+                "id": "ln-2",
+                "code": "BBB",
+                "description": "ORDERED, NEVER ARRIVED",
+                "linkedItemId": self.ITEM_B,
+                "unit": "Kilo",
+                "linkedUnitId": "u-kilo",
+                "quantityReceived": 4.0,
+                "unitCostExclTax": 10.0,
+            }
+        )
+        lh = self._Lh(inv, self._po())
+        self._receive(lh)
+        rows = {r["id"]: r for r in self._po_write(lh)["lines"]}
+        assert rows["row-a"]["quantityReceived"] == 0
+        assert rows["row-b"]["quantityReceived"] == 4.0
+
+    def test_nothing_written_when_the_order_already_agrees(self):
+        inv = self._inv()
+        inv["lines"][0]["quantityReceived"] = 6
+        po = self._po()
+        po["lines"][1].update({"quantityReceived": 0, "unitCost": 0})
+        lh = self._Lh(inv, po)
+        assert self._receive(lh)["order_rows_reconciled"] == 0
+        assert self._po_write(lh) is None  # no pointless write
+
+    def test_split_orders_are_left_alone(self):
+        # The sibling invoice delivers the other half; zeroing "unpaired" rows
+        # here would erase its delivery. (The split path still stamps its
+        # cross-reference NOTE on the order — that must not touch the rows.)
+        lh = self._Lh(self._inv(), self._po())
+        out = self._receive(lh, split_po_id="po-1", split_sibling_invoice_id="inv-2")
+        assert out["order_rows_reconciled"] == 0
+        rows = {r["id"]: r for r in (self._po_write(lh) or self._po())["lines"]}
+        assert rows["row-a"]["quantityReceived"] == 6  # untouched
+        assert rows["row-b"]["quantityReceived"] == 4
+
+    def test_credit_notes_are_left_alone(self):
+        # A credit reverses stock; it does not describe what arrived.
+        lh = self._Lh(self._inv(total=-41.09), self._po())
+        self._receive(lh)
+        assert self._po_write(lh) is None
+
+    def test_not_receiving_touches_no_order(self):
+        lh = self._Lh(self._inv(), self._po())
+        self._receive(lh, receive=False)
+        assert self._po_write(lh) is None
+
+    def test_no_linked_order_is_a_no_op(self):
+        lh = self._Lh(self._inv(linkedPurchaseOrderId=None), self._po())
+        assert self._receive(lh)["order_rows_reconciled"] == 0
+
+    def test_a_failed_order_write_never_fails_the_receive(self):
+        # Loaded has already accepted the invoice at this point — a bookkeeping
+        # failure must not turn a landed receive into a 502.
+        lh = self._Lh(self._inv(), self._po(), po_fails=True)
+        out = self._receive(lh)
+        assert out["received"] is True and out["order_rows_reconciled"] == 0
+        assert any("invoices/inv-1" in w[1] for w in lh.writes)

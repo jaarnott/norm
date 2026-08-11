@@ -38,7 +38,11 @@ from app.db.models import User
 # Kept under the old private names here so the endpoints and tests below (and
 # test_invoice_fixes_handler.py) are untouched by the move.
 from app.services.autopilot_metrics import record_receive_outcome
-from app.services.invoice_po_reference import enrich_loaded_snapshot
+from app.services.invoice_po_reference import (
+    enrich_loaded_snapshot as _enrich_snapshot,
+    loaded_reference as _loaded_reference,
+    seed_working_from_loaded as _seed_working,
+)
 from app.services.received_invoice import (
     LoadedInvoiceClient as _Loaded,
     ReceiveRequest,
@@ -389,6 +393,31 @@ def _open_docs_for(db: Session, venue_id: str, invoice_id: str):
     return docs
 
 
+# The Loaded mirror resolves stock items the way Loaded's own screen does —
+# from the CATALOGUE, by supplier code. Every draft open rebuilds the snapshot,
+# so the catalogue is needed on each of them; a short in-process cache keeps
+# that from becoming a component-api call per open (the catalogue is ~750 items
+# and changes rarely).
+def enrich_loaded_snapshot(
+    data: dict, lh, venue_id: str, db: Session, *, seed_working: bool = False
+) -> None:
+    """Resolve the Loaded mirror's lines, best-effort.
+
+    Without a catalogue nothing is guessed — the mirror keeps the supplier's
+    raw text rather than showing a wrong item (which is exactly what resolving
+    via the purchase order used to do).
+
+    ``seed_working`` additionally starts the WORKING lines on Loaded's own
+    resolution (see ``seed_working_from_loaded``). Pass it only where ``data``
+    was just rebuilt from Loaded — never on a draft carrying user edits, or a
+    dismissed link would quietly come back on the next open.
+    """
+    catalogue, units = _loaded_reference(venue_id, db, lh)
+    if seed_working:
+        _seed_working(data, catalogue=catalogue, units=units)
+    _enrich_snapshot(data, catalogue=catalogue, units=units)
+
+
 def _reshape_draft_after_write(
     db: Session, lh, venue_id: str, invoice_id: str
 ) -> dict | None:
@@ -422,7 +451,7 @@ def _reshape_draft_after_write(
             # /review); the draft only mirrors Loaded's own linked PO.
             _attach_po_reference(fresh, lh)
             attach_item_names(fresh, lh)
-            enrich_loaded_snapshot(fresh)
+            enrich_loaded_snapshot(fresh, lh, venue_id, db, seed_working=True)
             fresh["checks"] = None
             fresh["suggestions"] = []
             fresh["check_reasons"] = []
@@ -1039,7 +1068,7 @@ async def create_receive_draft(
             _refresh_metadata(doc, detail)
             _attach_po_reference(doc.data, lh)
             attach_item_names(doc.data, lh)
-            enrich_loaded_snapshot(doc.data)
+            enrich_loaded_snapshot(doc.data, lh, body.venue_id, db)
             # Fingerprint gate: the review is cached per invoice STATE. If
             # the invoice changed in Loaded since the review ran (its content
             # fingerprint moved — Loaded has no revision field), clear the
@@ -1071,7 +1100,7 @@ async def create_receive_draft(
         # consolidator's job, run in /invoice-fixes/review.
         _attach_po_reference(data, lh)
         attach_item_names(data, lh)
-        enrich_loaded_snapshot(data)
+        enrich_loaded_snapshot(data, lh, body.venue_id, db, seed_working=True)
     except Exception as exc:  # noqa: BLE001 — reference data is enhancement
         logger.info("draft PO reference unavailable: %s", exc)
     doc = WorkingDocument(
@@ -1158,7 +1187,7 @@ async def reset_validation(
                 fresh[k] = doc.data[k]
         _attach_po_reference(fresh, lh)
         attach_item_names(fresh, lh)
-        enrich_loaded_snapshot(fresh)
+        enrich_loaded_snapshot(fresh, lh, body.venue_id, db, seed_working=True)
         doc.data = fresh
         doc.version += 1
         flag_modified(doc, "data")
@@ -1227,7 +1256,7 @@ async def review_receive_draft(
         lh = _Loaded(db, config_db, body.venue_id)
         _attach_po_reference(fresh, lh)
         attach_item_names(fresh, lh)
-        enrich_loaded_snapshot(fresh)
+        enrich_loaded_snapshot(fresh, lh, body.venue_id, db)
     except Exception as exc:  # noqa: BLE001 — reference data is enhancement
         logger.info("review PO reference unavailable: %s", exc)
 

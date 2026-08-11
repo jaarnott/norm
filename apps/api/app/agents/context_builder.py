@@ -8,6 +8,7 @@ on the Thread record and updated incrementally as the conversation grows.
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from app.agents.context_budget import estimate_tokens
 
@@ -150,6 +151,7 @@ def build_conversation_messages(
     context: dict | None = None,
     thread=None,
     db=None,
+    date_history: bool = False,
 ) -> list[dict]:
     """Build Anthropic messages list with capped history + LLM summary of older messages.
 
@@ -170,6 +172,11 @@ def build_conversation_messages(
     older, recent = _split_history(sorted_msgs)
     if older:
         summary = _get_or_create_summary(older, thread, db)
+        last_d = getattr(older[-1], "created_at", None)
+        if last_d is not None and "[Earlier conversation" not in summary:
+            summary = (
+                f"[Earlier conversation up to {last_d.date().isoformat()}]\n" + summary
+            )
         result.append({"role": "user", "content": summary})
         result.append(
             {
@@ -187,8 +194,20 @@ def build_conversation_messages(
     if recent and recent[-1].role == "user" and recent[-1].content == new_message:
         recent = recent[:-1]
 
+    # date_history: date-anchor messages from previous days. Scheduled tasks
+    # replay ONE persistent conversation, and an undated "I've emailed today's
+    # report" from two days ago reads as current — runs then skip their own
+    # work as "already done" (live incident: daily reconciliation emails
+    # silently not sent). Opt-in: interactive chats keep bare content.
+    today = datetime.now(timezone.utc).date()
     for msg in recent:
-        result.append({"role": msg.role, "content": msg.content})
+        msg_content = msg.content
+        created = getattr(msg, "created_at", None)
+        if date_history and created is not None:
+            c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+            if c.date() != today:
+                msg_content = f"[{c.date().isoformat()}] {msg_content}"
+        result.append({"role": msg.role, "content": msg_content})
 
     # Append the new user message with optional context
     content = new_message

@@ -202,4 +202,28 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
       defaultParams: () => ({ agent_slug: 'reports' }),
     },
   },
+  // Executive Chef
+  {
+    id: 'dashboard-executive_chef',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    agent: 'executive_chef',
+    component: 'dashboard_view',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { agent_slug: 'executive_chef' },
+  },
+  // Recipes and Menus pages are registered with their editor components
+  // (recipe_editor / menu_editor) once those exist.
+  {
+    id: 'tasks-executive_chef',
+    label: 'Tasks',
+    icon: Timer,
+    agent: 'executive_chef',
+    component: 'automated_task_board',
+    loadAction: {
+      connector: 'norm',
+      action: 'list_automated_tasks',
+      defaultParams: () => ({ agent_slug: 'executive_chef' }),
+    },
+  },
 ];

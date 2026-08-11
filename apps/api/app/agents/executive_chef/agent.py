@@ -1,0 +1,106 @@
+"""Executive Chef domain agent — recipes and menus in Loaded, recipe extraction."""
+
+import logging
+
+from sqlalchemy.orm import Session
+
+from app.agents.base import BaseDomainAgent
+from app.agents.executive_chef.context import build_executive_chef_context
+
+logger = logging.getLogger(__name__)
+
+
+class ExecutiveChefAgent(BaseDomainAgent):
+    @property
+    def domain(self) -> str:
+        return "executive_chef"
+
+    def build_context(self, db: Session, user_id: str | None = None) -> dict:
+        return build_executive_chef_context(db, user_id)
+
+    def handle_message(
+        self,
+        message: str,
+        db: Session,
+        user_id: str | None = None,
+        thread_id: str | None = None,
+        venue_id: str | None = None,
+        venue_name: str | None = None,
+        venue_timezone: str | None = None,
+        config_db: Session | None = None,
+        page_context: dict | None = None,
+        playbook=None,
+        automated_task: dict | None = None,
+    ) -> dict:
+        system_prompt, anthropic_tools = self.get_tool_definitions(
+            db,
+            active_venue_name=venue_name,
+            venue_timezone=venue_timezone,
+            user_id=user_id,
+            config_db=config_db,
+            page_context=page_context,
+            playbook=playbook,
+            automated_task=automated_task,
+        )
+        if anthropic_tools:
+            return self.handle_message_with_tools(
+                message,
+                db,
+                user_id,
+                thread_id,
+                venue_id=venue_id,
+                venue_name=venue_name,
+                venue_timezone=venue_timezone,
+                config_db=config_db,
+                page_context=page_context,
+                playbook=playbook,
+                automated_task=automated_task,
+            )
+
+        # No tools bound
+        from app.db.models import Thread, Message
+
+        thread = Thread(
+            user_id=user_id,
+            venue_id=venue_id,
+            domain=self.domain,
+            intent="executive_chef.no_tools",
+            status="completed",
+            raw_prompt=message,
+            extracted_fields={},
+            missing_fields=[],
+        )
+        db.add(thread)
+        db.flush()
+        reply = (
+            "The Executive Chef agent needs connector tools to be configured. "
+            "Please connect LoadedHub (and the Cook Brothers App for recipe "
+            "writes) in Settings."
+        )
+        db.add(Message(thread_id=thread.id, role="user", content=message))
+        db.add(Message(thread_id=thread.id, role="assistant", content=reply))
+        db.commit()
+        db.refresh(thread)
+        return {
+            "id": thread.id,
+            "domain": self.domain,
+            "intent": thread.intent,
+            "title": None,
+            "message": message,
+            "status": "completed",
+            "created_at": thread.created_at.isoformat(),
+            "updated_at": thread.updated_at.isoformat(),
+            "conversation": [
+                {"role": "user", "text": message},
+                {"role": "assistant", "text": reply},
+            ],
+        }
+
+    def handle_followup(
+        self,
+        message: str,
+        extracted: dict,
+        open_task: dict,
+        db: Session,
+    ) -> dict:
+        return open_task

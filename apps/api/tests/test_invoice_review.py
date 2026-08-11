@@ -133,13 +133,13 @@ def EXTRACTION(**over):
     return ext
 
 
-def _review(detail=None, extraction=None, reference=None, **kw):
+def _review(detail=None, extraction=None, reference=None, lh=None, **kw):
     return review_invoice(
         None,
         None,
         "v-1",
         "inv-1",
-        lh=object(),
+        lh=lh if lh is not None else object(),
         detail=detail if detail is not None else DETAIL(),
         extraction=extraction if extraction is not None else EXTRACTION(),
         reference=reference if reference is not None else REFERENCE(),
@@ -213,15 +213,55 @@ class TestLineSuggestions:
             "unit_ratio": 1,
         }
 
-    def test_missing_item_link_is_filled_from_catalogue(self):
+    def test_an_unlinked_line_adopts_loadeds_own_code_match(self):
+        # Loaded's API says linkedItemId null; its SCREEN resolves the item
+        # from the supplier code and shows SALMON FILLET. The draft therefore
+        # opens there too — and raises NO suggestion, because there is nothing
+        # to disagree about (Angus Meats 1010951: two BONES lines were each
+        # proposing the very item Loaded already displays).
         det = DETAIL()
         det["lines"][0]["linkedItemId"] = None
         data = _review(detail=det)
-        s = next(s for s in data["suggestions"] if s["field"] == "linked_item_id")
-        assert s["apply"]["linked_item_id"] == "item-salmon"
-        assert "SALMON FILLET" in s["explanation"]
-        # item_unmatched never fires — the replica matched the line.
+        ln = data["lines"][0]
+        assert ln["linked_item_id"] == "item-salmon"
+        assert ln["item_name"] == "SALMON FILLET"
+        assert not [s for s in data["suggestions"] if s["field"] == "linked_item_id"]
         assert "item_unmatched" not in _issue_codes(data)
+        assert data["confidence"] == "ready"
+        # The mirror keeps Loaded's literal payload: unlinked, resolved for
+        # display only. Seeding the working line must never edit it.
+        assert data["loaded_snapshot"]["lines"][0]["linked_item_id"] is None
+        assert data["loaded_snapshot"]["lines"][0]["item_name"] == "SALMON FILLET"
+
+    def test_the_printed_description_survives_the_seed(self):
+        # The replica's pairing, item matching and create-item prefill all key
+        # off the supplier's printed text — the resolved name rides on
+        # item_name, exactly as attach_item_names does it.
+        det = DETAIL()
+        det["lines"][0].update({"linkedItemId": None, "description": "Salmon Fil SKIN"})
+        data = _review(detail=det)
+        assert data["lines"][0]["description"] == "Salmon Fil SKIN"
+
+    def test_a_different_match_is_a_suggestion_against_loadeds(self):
+        # Loaded links the line to the wrong item; the copy resolves to
+        # another. Before the draft opened on Loaded's resolution this case
+        # was SILENT (the suggestion only fired for unlinked lines), which
+        # would have let every bad code match through unchallenged.
+        det = DETAIL()
+        det["lines"][0]["linkedItemId"] = "item-freight"
+        data = _review(detail=det)
+        s = next(s for s in data["suggestions"] if s["field"] == "linked_item_id")
+        assert s["current"] == "FREIGHT - FOOD"
+        assert s["apply"]["linked_item_id"] == "item-salmon"
+        assert "Loaded has 'FREIGHT - FOOD'" in s["explanation"]
+
+    def test_an_unresolvable_code_still_asks_to_link(self):
+        det = DETAIL()
+        det["lines"][0].update({"linkedItemId": None, "code": "NOT-A-CODE"})
+        data = _review(detail=det)
+        s = next(s for s in data["suggestions"] if s["field"] == "linked_item_id")
+        assert s["current"] is None
+        assert s["apply"]["linked_item_id"] == "item-salmon"
 
     def test_apply_suggestion_recomputes_line_total(self):
         det = DETAIL()
@@ -772,3 +812,192 @@ class TestCreditNote:
         assert req.lines[0]["total_cost"] == round(-4.95 * 44.4, 4)
         assert req.subtotal == round(-4.95 * 44.4, 4)  # derived from the lines
         assert req.total == -252.75
+
+
+class TestOrderBreaksAmbiguousCode:
+    """One supplier code, three cuts, one printed description.
+
+    Angus Meats sells BONES (STOCK), BONE MARROW 1 INCH and BONE MARROW -
+    CANOE CUT under code BONES and prints "Beef Bones" on every line. Loaded's
+    matcher takes the first in catalogue order, so a delivery against an order
+    for 6 kg canoe cut + 14 kg 1-inch booked 20.58 kg to a third item
+    (1010951, received 10 Aug 2026). The copy cannot break the tie — it says
+    the same words on both lines — so the ORDER decides.
+    """
+
+    SUP = "sup-akaroa"
+    CATALOGUE = [
+        {
+            "id": "item-bones",
+            "name": "BONES (STOCK)",
+            "globalSalesTaxSortOrder": 1,
+            "suppliers": [
+                {"supplierId": SUP, "stockCode": "BONES", "unitId": "u-kilo"}
+            ],
+        },
+        {
+            "id": "item-1inch",
+            "name": "BONE MARROW 1 INCH",
+            "globalSalesTaxSortOrder": 1,
+            "suppliers": [
+                {
+                    "supplierId": SUP,
+                    "stockCode": "BONES",
+                    "unitId": "u-kilo",
+                    "defaultForSupplier": True,
+                }
+            ],
+        },
+        {
+            "id": "item-canoe",
+            "name": "BONE MARROW - CANOE CUT",
+            "globalSalesTaxSortOrder": 1,
+            "suppliers": [
+                {"supplierId": SUP, "stockCode": "BONES", "unitId": "u-kilo"}
+            ],
+        },
+    ]
+    PO = {
+        "createdAt": "2026-08-10T09:39:54Z",
+        "lines": [
+            {
+                "itemId": "item-canoe",
+                "itemName": "BONE MARROW - CANOE CUT",
+                "itemCode": None,
+                "unitName": "Kilo",
+                "quantityOrdered": 6,
+                "unitCost": 6.39,
+            },
+            {
+                "itemId": "item-1inch",
+                "itemName": "BONE MARROW 1 INCH",
+                "itemCode": "BONES",
+                "unitName": "Kilo",
+                "quantityOrdered": 14,
+                "unitCost": 6.39,
+            },
+        ],
+    }
+
+    class _Lh:
+        def __init__(self, po):
+            self.po = po
+
+        def get(self, path):  # noqa: ARG002
+            return self.po
+
+        def invoice(self, invoice_id):
+            raise KeyError(invoice_id)
+
+    def _line(self, lid, qty):
+        return {
+            "id": lid,
+            "code": "BONES",
+            "description": "Beef Bones",
+            "unit": "KG",
+            "linkedUnitId": None,
+            "quantityReceived": qty,
+            "unitCostExclTax": 6.39,
+            "totalCostExclTax": round(qty * 6.39, 4),
+            "saleTaxRate": 0.15,
+            "linkedItemId": None,
+            "itemType": "Default",
+        }
+
+    def _copy_line(self, qty):
+        return {
+            "code": "BONES",
+            "description": "Beef Bones",
+            "quantity": qty,
+            "unit": "Kilo",
+            "unit_of_measure": "Kilo",
+            "unit_price_ex_tax": 6.39,
+            "line_total_ex_tax": round(qty * 6.39, 4),
+        }
+
+    def _run(self, po=None, **det_over):
+        det = DETAIL(lines=[self._line("ld-1", 6.43), self._line("ld-2", 14.15)])
+        det.update(det_over)
+        ext = EXTRACTION(lines=[self._copy_line(6.43), self._copy_line(14.15)])
+        return _review(
+            detail=det,
+            extraction=ext,
+            reference=REFERENCE(catalogue=self.CATALOGUE),
+            lh=self._Lh(self.PO if po is None else po),
+        )
+
+    def _item_suggs(self, data):
+        return [s for s in data["suggestions"] if s["field"] == "linked_item_id"]
+
+    def test_each_line_takes_the_order_row_nearest_its_quantity(self):
+        data = self._run()
+        by_line = {s["line_id"]: s for s in self._item_suggs(data)}
+        assert set(by_line) == {"ld-1", "ld-2"}
+        # 6.43 arrived against the 6 ordered, 14.15 against the 14 — never
+        # both against the same row.
+        assert by_line["ld-1"]["apply"]["linked_item_id"] == "item-canoe"
+        assert by_line["ld-2"]["apply"]["linked_item_id"] == "item-1inch"
+        # and it says why, naming what Loaded picked
+        assert "3 catalogue items" in by_line["ld-1"]["explanation"]
+        assert "BONES (STOCK)" in by_line["ld-1"]["explanation"]
+        assert by_line["ld-1"]["current"] == "BONES (STOCK)"
+
+    def test_exactly_one_item_proposal_per_line(self):
+        # The replica read the same ambiguous words; the order supersedes it.
+        assert len(self._item_suggs(self._run())) == 2
+
+    def test_accepting_links_the_ordered_items(self):
+        data = self._run()
+        for s in list(self._item_suggs(data)):
+            apply_suggestion(data, s)
+        assert [ln["linked_item_id"] for ln in data["lines"]] == [
+            "item-canoe",
+            "item-1inch",
+        ]
+        assert [ln["item_name"] for ln in data["lines"]] == [
+            "BONE MARROW - CANOE CUT",
+            "BONE MARROW 1 INCH",
+        ]
+
+    def test_the_mirror_still_shows_loadeds_own_match(self):
+        # The X-ray is Loaded's truth, not Norm's opinion — it must keep
+        # resolving by catalogue order however good the order's evidence is.
+        snap = self._run()["loaded_snapshot"]["lines"]
+        assert [ln["item_name"] for ln in snap] == ["BONES (STOCK)"] * 2
+
+    def test_no_order_no_second_guessing(self):
+        data = self._run(po=None, linkedPurchaseOrderId=None)
+        assert self._item_suggs(data) == []
+
+    def test_an_unambiguous_code_is_never_second_guessed(self):
+        # The stock salmon invoice: PBO0.7 belongs to one item only, so the
+        # order has no standing to rename it.
+        data = _review(
+            reference=REFERENCE(),
+            lh=self._Lh(
+                {
+                    "createdAt": "2026-08-07",
+                    "lines": [
+                        {
+                            "itemId": "item-freight",
+                            "itemName": "FREIGHT - FOOD",
+                            "itemCode": "PBO0.7",
+                            "quantityOrdered": 4.95,
+                        }
+                    ],
+                }
+            ),
+        )
+        assert [s for s in data["suggestions"] if s["field"] == "linked_item_id"] == []
+
+    def test_receive_sends_quantity_ordered_only_for_the_items_on_the_order(self):
+        data = self._run()
+        # As Loaded resolved it, both lines point at an item the order never
+        # names — so nothing is claimed and Loaded is told nothing.
+        req = receive_request_from_doc(data, "v-1", "inv-1")
+        assert [ln["quantity_ordered"] for ln in req.lines] == [None, None]
+        # Accept the order's items and the rows pair up, one each.
+        for s in list(self._item_suggs(data)):
+            apply_suggestion(data, s)
+        req = receive_request_from_doc(data, "v-1", "inv-1")
+        assert [ln["quantity_ordered"] for ln in req.lines] == [6, 14]
