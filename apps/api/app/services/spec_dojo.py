@@ -18,6 +18,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.db.config_models import SupplierInvoiceSpec
+from app.services.roster_health import regressions, roster_issues
+from app.services.supplier_identity import alias_conflict, norm
 from app.services.invoice_extraction import (
     BUILTIN_MAIN_PROMPT,
     MAIN_PROMPT_NAME,
@@ -268,12 +270,36 @@ def compare_extractions(expected: dict, current: dict) -> list[dict]:
 # supplier notes with it too) and is re-exported here for existing callers.
 
 
+def _loaded_supplier_aliases(lh, detail: dict) -> list[str]:
+    """This account's other spellings for the invoice's supplier, best-effort.
+
+    Loaded holds them per supplier record and the venue maintains them, so
+    they are the authority on 'is this the same business'. Identity hints
+    only — never fatal, and never written back into a global spec.
+    """
+    sid = detail.get("linkedSupplierId") or detail.get("supplierId")
+    if not sid:
+        return []
+    try:
+        rows = lh.get(f"/1.0/stock/internal/suppliers/{sid}/aliases")
+        return [str(a["name"]) for a in rows if isinstance(a, dict) and a.get("name")]
+    except Exception:  # noqa: BLE001 — hints only
+        return []
+
+
 def find_or_create_spec_for_supplier(
-    config_db: Session, supplier_name: str
+    config_db: Session, supplier_name: str, *also_known_as: object
 ) -> tuple[SupplierInvoiceSpec, bool]:
     """Match, else create an empty spec row for the supplier (Add-to-Dojo on
-    a supplier with no spec yet). Returns (spec, created)."""
-    spec = find_spec_for_supplier(config_db, supplier_name)
+    a supplier with no spec yet). Returns (spec, created).
+
+    ``also_known_as`` carries the account's other spellings for this supplier
+    (its Loaded aliases). Passing them is what stops a second spec being born
+    for a business that already has one: a duplicate row created HERE is the
+    real source of near-duplicate specs, because the sensei only gets to
+    propose ``alias_of`` after the row already exists.
+    """
+    spec = find_spec_for_supplier(config_db, supplier_name, *also_known_as)
     if spec:
         return spec, False
     name = (supplier_name or "").strip()
@@ -308,7 +334,9 @@ def stage_invoice_sample(
         if not det.get("fileId"):
             raise RuntimeError("no invoice copy attached — nothing to add")
         supplier = det.get("supplierName") or ""
-        spec, created = find_or_create_spec_for_supplier(wcdb, supplier)
+        spec, created = find_or_create_spec_for_supplier(
+            wcdb, supplier, *_loaded_supplier_aliases(lh, det)
+        )
         existing = (
             wcdb.query(SupplierSpecSample)
             .filter(
@@ -512,7 +540,23 @@ _DOCTRINE = (
     "IDENTICAL documents under different Loaded names (e.g. 'Bidfood' vs "
     "'Bidvest Food Service'). If an existing spec already covers this same "
     "printed layout, the fix is an ALIAS on that spec (alias_of) — never a "
-    "near-duplicate spec to maintain twice.\n"
+    "near-duplicate spec to maintain twice. Prefer alias_of whenever it is "
+    "defensible: a spec row is created automatically from whatever the "
+    "account happened to type, so a near-duplicate is the DEFAULT failure, "
+    "not a rare one. Two rows for one business means every future invoice is "
+    "a coin toss.\n"
+    "- A spec is named for a BUSINESS, not for one account's spelling. Specs "
+    "are shared by every Norm venue, while each Loaded account types the "
+    "supplier its own way ('SERVICE FOODS LTD', 'SERVICE FOODS - AUCKLAND "
+    "FOODSERVICE'). Local spellings belong in Loaded, where the venue "
+    "maintains them; the spec keeps ONE canonical name. If the spec you are "
+    "analysing is named after a branch or a local spelling, propose the "
+    "business name in canonical_name.\n"
+    "- An alias must name the SAME BUSINESS as the spec carrying it. If the "
+    "roster shows an alias that names a different business (a food "
+    "distributor listed under a wine importer), report it in wrong_aliases. "
+    "One such alias silently routes every one of that supplier's invoices "
+    "through the wrong prompt.\n"
     "- No needless specs: FIRST compare your corrected values with the "
     "CURRENT EXTRACTION RESULT in the context. If the current prompts "
     "already read this document correctly, return EMPTY "
@@ -613,7 +657,72 @@ _ANALYSIS_SCHEMA = {
         "spec, not a duplicate spec. null when this supplier's layout is "
         "genuinely its own."
     ),
+    "canonical_name": (
+        "string or null — the BUSINESS's proper name, when the spec this "
+        "sample sits on is named after a branch or one account's spelling "
+        "('Trents Wholesale Limited Trents Dunedin Branch' -> 'Trents "
+        "Wholesale'). Renames that spec. null when the name is already the "
+        "business name. Never a local/branch spelling."
+    ),
+    "wrong_aliases": (
+        "array of objects {spec, alias} — aliases in the roster that name a "
+        "DIFFERENT business from the spec carrying them, and so route that "
+        "supplier's invoices through the wrong prompt. Empty array when the "
+        "roster is clean. Only report ones you are confident about: name the "
+        "spec and the alias exactly as they appear."
+    ),
 }
+
+
+def _clean_rename(config_db: Session, spec, proposed: object) -> str | None:
+    """A canonical-name proposal, or None when it must not be acted on.
+
+    Dropped when it names the spec already, when it collides with another
+    spec's identity, or when the row is the reserved Main prompt (the engine
+    finds that one by name). Validated at PROPOSE time so the card never
+    offers a rename that Apply would refuse.
+    """
+    name = str(proposed or "").strip()
+    if not name or spec.name == MAIN_PROMPT_NAME:
+        return None
+    if norm(name) == norm(spec.name):
+        return None
+    rows = config_db.query(SupplierInvoiceSpec).all()
+    if alias_conflict(rows, name, spec_id=spec.id):
+        return None
+    return name
+
+
+def _clean_wrong_aliases(config_db: Session, proposed: object) -> list[dict]:
+    """Misfiled aliases the sensei reported, kept only where they really exist.
+
+    An alias naming a different business from the spec carrying it routes
+    every one of that supplier's invoices through the wrong prompt — the
+    Eurovintage/Service Foods fault. The sensei can now see and report it, but
+    only exact, currently-present (spec, alias) pairs survive to the card: the
+    model must not be able to invent a deletion.
+    """
+    out: list[dict] = []
+    if not isinstance(proposed, list):
+        return out
+    rows = config_db.query(SupplierInvoiceSpec).all()
+    for item in proposed:
+        if not isinstance(item, dict):
+            continue
+        want_spec, want_alias = norm(item.get("spec")), norm(item.get("alias"))
+        if not want_spec or not want_alias:
+            continue
+        for row in rows:
+            if norm(row.name) != want_spec or row.name == MAIN_PROMPT_NAME:
+                continue
+            match = next(
+                (a for a in (row.aliases or []) if norm(a) == want_alias), None
+            )
+            if match is not None and not any(
+                d["spec_id"] == row.id and d["alias"] == match for d in out
+            ):
+                out.append({"spec_id": row.id, "spec": row.name, "alias": match})
+    return out
 
 
 def _ground_truth_violations(gt: dict) -> list[str]:
@@ -693,6 +802,41 @@ def _sample_status(expected: dict | None, diffs: list, extraction: dict | None) 
     return "pass"
 
 
+def _roster_snapshot(config_db: Session) -> tuple[list, list]:
+    """Detached copies of every spec and sample.
+
+    Plain objects, not ORM rows: the gate compares the roster before and after
+    a mutation, and ORM rows change underneath you — a "before" snapshot made
+    of live rows would silently become the "after" one.
+    """
+    from types import SimpleNamespace
+
+    from app.db.config_models import SupplierSpecSample
+
+    specs = [
+        SimpleNamespace(
+            id=s.id,
+            name=s.name,
+            aliases=list(s.aliases or []),
+            instructions=s.instructions or "",
+            enabled=bool(s.enabled),
+        )
+        for s in config_db.query(SupplierInvoiceSpec).all()
+    ]
+    samples = [
+        SimpleNamespace(
+            id=s.id,
+            spec_id=s.spec_id,
+            label=s.label,
+            expected=s.expected,
+            last_run=s.last_run,
+            analysis=s.analysis,
+        )
+        for s in config_db.query(SupplierSpecSample).all()
+    ]
+    return specs, samples
+
+
 def apply_analysis_proposal(
     config_db: Session,
     sample,
@@ -704,11 +848,25 @@ def apply_analysis_proposal(
     agent's ground truth, and record the candidate extraction as the sample's
     last run (no re-spend). An ``alias_of`` proposal merges instead of
     duplicating. Shared by the admin Apply endpoint and the self-training
-    auto-apply. Raises ``ValueError`` for the not-applicable cases."""
+    auto-apply. Raises ``ValueError`` for the not-applicable cases.
+
+    Every roster write in the system funnels through here, so this is where the
+    gate lives: the roster is measured before, mutated, measured again, and the
+    whole change is rolled back if it INTRODUCED an error-severity incoherence.
+    That check is what would have refused 'Service Foods' landing on the
+    Eurovintage spec on 10 Aug 2026 — before the write, not months after.
+    """
     import datetime as _dt
 
     from app.db.config_models import SupplierSpecSample
 
+    before = roster_issues(
+        *_roster_snapshot(config_db), main_prompt_name=MAIN_PROMPT_NAME
+    )
+    # Every mutation below runs inside a SAVEPOINT so a refused change can be
+    # undone without touching anything else pending in the caller's session.
+    # (A plain rollback here would throw away work this function never made.)
+    savepoint = config_db.begin_nested()
     analysis = sample.analysis or {}
     if analysis.get("status") not in ("ready", "not_green"):
         raise ValueError("no analysis proposal to apply — run Analyse first")
@@ -722,7 +880,7 @@ def apply_analysis_proposal(
     proposed = str(analysis.get("proposed_instructions") or "")
     alias_name = str(analysis.get("alias_of") or "").strip()
     target = None
-    if alias_name:
+    if alias_name and norm(alias_name) != norm(spec.name):
         target = next(
             (
                 r
@@ -735,18 +893,56 @@ def apply_analysis_proposal(
         )
         if target is None:
             raise ValueError(f"alias target spec '{alias_name}' no longer exists")
+    # An alias_of naming the spec this sample ALREADY sits on is not an error
+    # — it is the state a successful apply leaves behind. Re-applying (a
+    # double click, or a retry after the move) used to raise "alias target
+    # spec 'X' no longer exists", which is both alarming and untrue.
     host = target or spec
     if apply_spec:
+        # Clean the roster BEFORE writing to it, so a rename or an alias move
+        # can't collide with a stale entry that is itself being removed.
+        for bad in analysis.get("wrong_aliases") or []:
+            row = (
+                config_db.query(SupplierInvoiceSpec)
+                .filter(SupplierInvoiceSpec.id == bad.get("spec_id"))
+                .first()
+            )
+            if row is not None:
+                row.aliases = [
+                    a for a in (row.aliases or []) if norm(a) != norm(bad.get("alias"))
+                ]
         if target is not None:
+            # The merge that created the fault this guard exists for: it used
+            # to copy the source spec's name AND all of its aliases onto the
+            # target, unvalidated. Two rules now. Only the source spec's NAME
+            # moves — its aliases are other accounts' local spellings, which
+            # belong in Loaded, not multiplied across a global row. And an
+            # alias already claimed by a THIRD spec is refused outright, so a
+            # single bad adjudication can no longer make every future invoice
+            # for that business a coin toss.
             merged = list(target.aliases or [])
-            for cand in [spec.name, *(spec.aliases or [])]:
-                if (
-                    cand
-                    and cand.lower() != target.name.lower()
-                    and all(cand.lower() != a.lower() for a in merged)
-                ):
-                    merged.append(cand)
+            cand = spec.name
+            if (
+                norm(cand) != norm(target.name)
+                and all(norm(cand) != norm(a) for a in merged)
+                and not alias_conflict(
+                    [
+                        r
+                        for r in config_db.query(SupplierInvoiceSpec).all()
+                        if r.id != spec.id
+                    ],
+                    cand,
+                    spec_id=target.id,
+                )
+            ):
+                merged.append(cand)
             target.aliases = merged
+        rename = str(analysis.get("canonical_name") or "").strip()
+        if rename and host.name != MAIN_PROMPT_NAME:
+            if not alias_conflict(
+                config_db.query(SupplierInvoiceSpec).all(), rename, spec_id=host.id
+            ):
+                host.name = rename
         if proposed.strip():
             host.instructions = proposed
     if target is not None:
@@ -781,6 +977,24 @@ def apply_analysis_proposal(
         sample.last_status = _sample_status(sample.expected, diffs, own["extraction"])
         sample.last_run_at = _dt.datetime.now(_dt.timezone.utc)
     sample.analysis = dict(analysis, status="applied")
+
+    # The gate. Measured against the session's PENDING state (autoflush makes
+    # the mutations above visible to these queries), so a refusal costs a
+    # rollback and nothing reaches the database. Only error-severity findings
+    # block: a repair that leaves a spec temporarily sample-less raises a
+    # hygiene warning, and refusing that would trap the roster in its broken
+    # state — the gate asks "does this make it worse", never "is it perfect".
+    blocked = regressions(
+        before,
+        roster_issues(*_roster_snapshot(config_db), main_prompt_name=MAIN_PROMPT_NAME),
+    )
+    if blocked:
+        savepoint.rollback()
+        raise ValueError(
+            "this change would break the spec roster — "
+            + "; ".join(f"{i.where}: {i.problem}" for i in blocked)
+        )
+    savepoint.commit()
     config_db.commit()
     config_db.refresh(sample)
     return {
@@ -1133,6 +1347,12 @@ def analyse_sample(
                 # Canonical target name — Apply adds the alias there instead
                 # of keeping a duplicate spec.
                 "alias_of": alias_target.name if alias_target else None,
+                "canonical_name": _clean_rename(
+                    config_db, spec, proposal.get("canonical_name")
+                ),
+                "wrong_aliases": _clean_wrong_aliases(
+                    config_db, proposal.get("wrong_aliases")
+                ),
                 "spec_not_needed": spec_not_needed,
                 "ground_truth_violations": gt_violations,
                 "ground_truth": proposal["ground_truth"],

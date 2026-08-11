@@ -129,9 +129,13 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
     hasExpectedReplica: !!data.expected_replica,
   });
 
-  const loadAnalysisIfPending = async (sampleId: string, status?: string | null) => {
+  // Always ask — the endpoint answers {analysis: null} when there is none.
+  // This used to be gated on a status the caller had to supply, and the
+  // outstanding-invoice rows have no status to supply: a draft sample with a
+  // ready proposal was therefore unreachable from the only page that lists
+  // it. The sensei's answer existed on the server and nothing ever fetched it.
+  const loadAnalysis = async (sampleId: string) => {
     if (analysisView?.sampleId !== sampleId) setAnalysisView(null);
-    if (!status || !['ready', 'not_green', 'failed'].includes(status)) return;
     try {
       const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/analysis`);
       const data = await res.json().catch(() => ({}));
@@ -152,9 +156,9 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const openSample = async (sampleId: string, key: string, draft: boolean, analysisStatus?: string | null) => {
+  const openSample = async (sampleId: string, key: string, draft: boolean) => {
     setOpen({ key, sampleId, draft, phase: 'running', note: 'Loading the stored run…' });
-    loadAnalysisIfPending(sampleId, analysisStatus);
+    loadAnalysis(sampleId);
     try {
       const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/last-run`);
       const data = await res.json().catch(() => ({}));
@@ -377,7 +381,7 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
           </div>
           {overview!.pending_review.map((s) => (
             <div key={s.id}>
-              <div onClick={() => (open?.key === s.id ? setOpen(null) : openSample(s.id, s.id, false, s.analysis_status))}
+              <div onClick={() => (open?.key === s.id ? setOpen(null) : openSample(s.id, s.id, false))}
                 style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderBottom: '1px solid #f4f4f4', fontSize: '0.78rem', cursor: 'pointer', background: open?.key === s.id ? '#faf8f4' : undefined }}>
                 <StatusBadge status={s.last_status} />
                 {s.analysis_status === 'running' && <span style={chip('#dbeafe', '#1d4ed8', '#bfdbfe')}>sensei analysing…</span>}

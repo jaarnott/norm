@@ -4,8 +4,8 @@ All reference data injected (no network): the keyword overrides exist for
 exactly this and for dojo batch caching. The LLM matcher is a stub.
 """
 
+from app.services.supplier_identity import resolve_supplier
 from app.services.invoice_replica import (
-    _resolve_supplier,
     _resolve_unit_record,
     build_replica,
 )
@@ -202,17 +202,8 @@ class TestDeterministicResolution:
 
     def test_supplier_ambiguity_returns_none(self):
         sups = SUPPLIERS + [{"id": "sup-b", "name": "Akaroa Salmon South"}]
-        s, by = _resolve_supplier("Akaroa", sups, {}, {})
+        s, by = resolve_supplier(["Akaroa"], sups)
         assert s is None  # two containment hits → ambiguous
-
-    def test_supplier_spec_alias_hop(self):
-        s, by = _resolve_supplier(
-            "Ellesmere Butchery Ltd",
-            [{"id": "sup-t", "name": "Tamar Farming Company"}],
-            {},
-            {"ellesmerebutcheryltd": "tamarfarmingcompany"},
-        )
-        assert s and s["id"] == "sup-t" and by == "spec_alias"
 
     def test_invoice_date_carried_as_issued_at(self):
         # The extraction keeps dates as printed; the replica stores ISO.

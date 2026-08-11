@@ -39,6 +39,12 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.services import invoice_line_match as line_match
+from app.services.supplier_identity import (
+    alias_candidates,
+    match_spec,
+    norm as _identity_norm,
+    resolve_supplier,
+)
 from app.services.invoice_units import (
     _unit_norm,
     is_multipack,
@@ -53,7 +59,7 @@ _APP_HOST = "https://loadedhub.com"
 
 
 def _norm(text: object) -> str:
-    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+    return _identity_norm(text)
 
 
 # The extraction keeps dates AS PRINTED ('7 Aug 2026', '05.08.2026',
@@ -251,57 +257,6 @@ def _resolve_unit_record(name: object, units: list[dict]) -> dict | None:
     return None
 
 
-def _resolve_supplier(
-    supplier_name: object,
-    suppliers: list[dict],
-    aliases_by_id: dict[str, list[str]],
-    spec_aliases: dict[str, str],
-) -> tuple[dict | None, str | None]:
-    """Printed supplier name → the venue's supplier record.
-
-    Deterministic tiers (the supplier-matching convention: normalized
-    containment, both sides ≥3 chars): exact name/alias equality first, then
-    unique containment. ``spec_aliases`` maps a SupplierInvoiceSpec alias →
-    canonical spec name for an extra equality hop. Ambiguity → None (the
-    caller may fall back to the LLM matcher)."""
-    target = _norm(supplier_name)
-    if len(target) < 3:
-        return None, None
-    live = [
-        s
-        for s in suppliers
-        if isinstance(s, dict)
-        and s.get("id")
-        and not (s.get("removedAt") or s.get("datestampDeleted"))
-    ]
-
-    def names_for(s: dict) -> list[str]:
-        return [_norm(s.get("name"))] + [
-            _norm(a) for a in aliases_by_id.get(str(s.get("id")), [])
-        ]
-
-    for s in live:
-        if target in [n for n in names_for(s) if n]:
-            return s, "exact"
-    # Spec-alias hop: the printed name is a known alias of a spec whose
-    # canonical name matches a supplier exactly.
-    canon = spec_aliases.get(target)
-    if canon:
-        for s in live:
-            if canon in [n for n in names_for(s) if n]:
-                return s, "spec_alias"
-    hits = []
-    for s in live:
-        for n in names_for(s):
-            if len(n) >= 3 and (n in target or target in n):
-                hits.append(s)
-                break
-    ids = {s.get("id") for s in hits}
-    if len(ids) == 1:
-        return hits[0], "containment"
-    return None, None
-
-
 def _sibling_doubled_up(
     lh, sibling_invoice_id: str, replica_lines: list[dict], extraction: dict
 ) -> tuple[bool, str]:
@@ -366,6 +321,7 @@ def build_replica(
     own_invoice_id: str | None = None,
     received_feed: list | None = None,
     loaded_total: object = None,
+    loaded_supplier_name: object = None,
 ) -> dict:
     """Extraction result → a complete ``received_invoice``-shaped document.
 
@@ -469,30 +425,23 @@ def build_replica(
             )
 
     # ---- Supplier ----
+    # Ordered by authority: the copy first, then whatever Loaded itself
+    # records. Loaded's name earns its place because an invoice raised from a
+    # purchase order carries the supplier a HUMAN chose at order time — the
+    # one piece of supplier evidence on the page that isn't OCR.
     supplier_printed = extraction.get("supplier_name")
+    hints = [supplier_printed, loaded_supplier_name]
     if aliases_by_id is None:
         aliases_by_id = {}
-        # Aliases are per-supplier; fetch only for containment candidates to
-        # keep the call count flat (usually 0-1 fetches). The ≥3 guard
-        # matches _resolve_supplier's own floor — an empty/short printed name
-        # is `in` every name and would fire pointless fetches.
-        printed_key = _norm(supplier_printed)
-        cands = (
-            [
-                s
-                for s in suppliers
-                if isinstance(s, dict)
-                and s.get("id")
-                and _norm(s.get("name"))
-                and (
-                    _norm(s.get("name")) in printed_key
-                    or printed_key in _norm(s.get("name"))
-                )
-            ]
-            if len(printed_key) >= 3
-            else []
-        )
-        for s in cands[:3]:
+        # Loaded's per-supplier aliases are the account's own spellings of one
+        # business — the authority on identity here. They used to be fetched
+        # only for suppliers already matching the printed name by containment,
+        # which needs the answer in order to ask the question: 'SERVICE FOODS
+        # LTD' shares no containment with 'SERVICE FOODS AUCKLAND', so the
+        # list holding 'SERVICE FOODS LTD' verbatim was never read and the
+        # invoice resolved to nothing. Shared identity WORDS survive a
+        # different tail, so they pick the candidates instead.
+        for s in alias_candidates(hints, suppliers, limit=3):
             try:
                 rows = lh.get(f"/1.0/stock/internal/suppliers/{s['id']}/aliases")
                 aliases_by_id[str(s["id"])] = [
@@ -501,24 +450,31 @@ def build_replica(
             except Exception:  # noqa: BLE001 — aliases are hints
                 pass
 
-    spec_aliases: dict[str, str] = {}
-    try:
-        from app.db.config_models import SupplierInvoiceSpec
+    supplier, sup_by = resolve_supplier(hints, suppliers, aliases_by_id)
+    if supplier is None:
+        # Last deterministic hop: a spec's alias list is a global statement
+        # that several names mean ONE business ('Ellesmere Butchery' is Tamar
+        # Farming Company). If the printed name lands on a spec, every name
+        # that spec knows becomes a hint. Tried only after direct evidence
+        # fails, so a spec can never overrule the account's own records.
+        try:
+            from app.db.config_models import SupplierInvoiceSpec
+            from app.services.invoice_extraction import MAIN_PROMPT_NAME
 
-        for sp in (
-            config_db.query(SupplierInvoiceSpec)
-            .filter(SupplierInvoiceSpec.enabled.is_(True))
-            .all()
-        ):
-            for a in sp.aliases or []:
-                if len(_norm(a)) >= 3:
-                    spec_aliases[_norm(a)] = _norm(sp.name)
-    except Exception:  # noqa: BLE001 — hints only
-        pass
-
-    supplier, sup_by = _resolve_supplier(
-        supplier_printed, suppliers, aliases_by_id, spec_aliases
-    )
+            spec, _how = match_spec(
+                config_db.query(SupplierInvoiceSpec)
+                .filter(SupplierInvoiceSpec.enabled.is_(True))
+                .all(),
+                hints,
+                main_prompt_name=MAIN_PROMPT_NAME,
+            )
+            if spec is not None:
+                supplier, _ = resolve_supplier(
+                    [spec.name, *(spec.aliases or [])], suppliers, aliases_by_id
+                )
+                sup_by = "spec_alias" if supplier else None
+        except Exception:  # noqa: BLE001 — hints only
+            pass
     if supplier is None and supplier_printed:
         try:
             from app.services.item_match import suggest_supplier_match

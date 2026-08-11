@@ -20,6 +20,13 @@ export interface DojoAnalysis {
   // Same layout as an existing spec: Apply adds this supplier as an alias on
   // that spec (and moves the sample there) instead of keeping a duplicate.
   alias_of?: string | null;
+  // Roster hygiene. A spec is named for a BUSINESS and shared by every venue,
+  // but rows are auto-created from whatever one account typed — so the sensei
+  // can propose the canonical name, and can report aliases sitting on a spec
+  // that names a different business (which silently routes that supplier's
+  // invoices through the wrong prompt).
+  canonical_name?: string | null;
+  wrong_aliases?: { spec_id: string; spec: string; alias: string }[];
   // Self-training: a green new-supplier proposal (no existing prompt text)
   // was applied automatically by the analysis itself.
   auto_applied?: boolean;
@@ -137,6 +144,23 @@ export default function SenseiProposalCard({
           and moves this sample there. No new spec is created.
         </div>
       )}
+      {a.canonical_name && (
+        <div style={{ fontSize: '0.72rem', color: '#065f46', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+          Rename this spec to <strong>{a.canonical_name}</strong> — specs are shared by every venue, so they
+          are named for the business, not for one account&rsquo;s spelling of it.
+        </div>
+      )}
+      {(a.wrong_aliases?.length ?? 0) > 0 && (
+        <div style={{ fontSize: '0.72rem', color: '#991b1b', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+          Misfiled {a.wrong_aliases!.length === 1 ? 'alias' : 'aliases'} to remove — each one routes that
+          supplier&rsquo;s invoices through the wrong prompt:
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {a.wrong_aliases!.map((w) => (
+              <li key={`${w.spec_id}:${w.alias}`}><strong>{w.alias}</strong> on the {w.spec} spec</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {(a.proposed_instructions ?? '').trim() ? (
         <div style={{ marginBottom: 8 }}>
           <div style={{ ...labelStyle, marginBottom: 2 }}>
@@ -222,7 +246,8 @@ export default function SenseiProposalCard({
         // when it went green — so offering "Apply spec update" is a
         // misleading no-op. (A not-green one keeps "Apply anyway": it can
         // still baseline the corrected values.)
-        const hasChange = !!(a.proposed_instructions ?? '').trim() || !!a.alias_of;
+        const hasChange = !!(a.proposed_instructions ?? '').trim() || !!a.alias_of
+          || !!a.canonical_name || (a.wrong_aliases?.length ?? 0) > 0;
         const applyable = hasChange || a.status !== 'ready';
         return (
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>

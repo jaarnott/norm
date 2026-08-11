@@ -17,6 +17,7 @@ from app.auth.dependencies import require_permission
 from app.db.config_models import SupplierInvoiceSpec
 from app.db.engine import get_config_db, get_config_db_rw
 from app.db.models import User
+from app.services.supplier_identity import alias_conflict, norm
 
 logger = logging.getLogger(__name__)
 
@@ -38,22 +39,45 @@ class SpecUpdate(BaseModel):
 
 
 def _norm(text: object) -> str:
-    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+    return norm(text)
 
 
-def _validate(name: str | None, aliases: list[str] | None) -> None:
+def _validate(
+    name: str | None,
+    aliases: list[str] | None,
+    config_db: Session | None = None,
+    spec_id: str | None = None,
+) -> None:
     if name is not None and not name.strip():
         raise HTTPException(422, "name must not be empty")
-    if aliases is not None:
-        for a in aliases:
-            if not str(a).strip():
-                raise HTTPException(422, "aliases must not contain empty entries")
-            if len(_norm(a)) < 3:
-                # A 1-2 character alias would substring-match half the supplier
-                # list — the engine ignores those, so reject them at entry.
-                raise HTTPException(
-                    422, f"alias '{a}' is too short to match safely (min 3 characters)"
-                )
+    if aliases is None:
+        return
+    for a in aliases:
+        if not str(a).strip():
+            raise HTTPException(422, "aliases must not contain empty entries")
+        if len(_norm(a)) < 3:
+            # A 1-2 character alias would substring-match half the supplier
+            # list — the engine ignores those, so reject them at entry.
+            raise HTTPException(
+                422, f"alias '{a}' is too short to match safely (min 3 characters)"
+            )
+    if config_db is None:
+        return
+    # An alias is an identity claim on a GLOBAL row, so two specs claiming one
+    # string is never right — it leaves match order deciding which layout a
+    # document gets. 'Service Foods' sat on both the Service Foods spec (its
+    # name) and the Eurovintage spec (an alias), and alphabetical order handed
+    # a food-service invoice to a wine wholesaler's prompt (11 Aug 2026).
+    rows = config_db.query(SupplierInvoiceSpec).all()
+    for a in aliases:
+        owner = alias_conflict(rows, a, spec_id=spec_id)
+        if owner:
+            raise HTTPException(
+                409,
+                f"alias '{a}' already belongs to the '{owner}' spec — "
+                "one name, one spec. Remove it there first, or add this "
+                "supplier's sample to that spec instead.",
+            )
 
 
 def _to_dict(s: SupplierInvoiceSpec) -> dict:
@@ -91,7 +115,7 @@ async def create_spec(
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
 ):
-    _validate(body.name, body.aliases)
+    _validate(body.name, body.aliases, config_db)
     existing = (
         config_db.query(SupplierInvoiceSpec)
         .filter(SupplierInvoiceSpec.name == body.name.strip())
@@ -126,7 +150,7 @@ async def update_spec(
     if not spec:
         raise HTTPException(404, "spec not found")
     fields = body.model_dump(exclude_unset=True)
-    _validate(fields.get("name"), fields.get("aliases"))
+    _validate(fields.get("name"), fields.get("aliases"), config_db, spec_id)
     if "name" in fields:
         fields["name"] = fields["name"].strip()
     if spec.name == MAIN_PROMPT_NAME and fields.get("name", spec.name) != spec.name:

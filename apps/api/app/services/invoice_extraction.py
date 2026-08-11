@@ -37,6 +37,7 @@ from app.connectors.function_executor import (
     _extraction_cache_put,
 )
 from app.db.config_models import SupplierInvoiceSpec
+from app.services.supplier_identity import match_spec, norm
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ BUILTIN_MAIN_PROMPT = (
 
 
 def _norm(text: object) -> str:
-    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+    return norm(text)
 
 
 def main_prompt(config_db: Session) -> str:
@@ -195,27 +196,27 @@ def main_prompt(config_db: Session) -> str:
 
 
 def find_spec_for_supplier(
-    config_db: Session, supplier_name: object
+    config_db: Session, *supplier_names: object
 ) -> SupplierInvoiceSpec | None:
-    """The spec row matching a supplier NAME: normalized name/alias equality
-    or substring, candidates under 3 normalized chars skipped, the reserved
-    Main prompt row excluded, first match wins."""
-    sname = _norm(supplier_name)
-    if not sname:
-        return None
-    for sp in (
+    """The layout spec for a supplier, by every name we know it under.
+
+    Takes any number of identity hints — the name printed on the copy, the
+    name Loaded records, that supplier's Loaded aliases — because a global
+    spec is keyed to ONE canonical business name and the account's local
+    spellings are what vary.
+
+    Precedence and ambiguity live in ``supplier_identity.match_spec``; this
+    only supplies the rows. Ambiguous → None, which means the generic prompt
+    plus a sensei pass rather than a confidently wrong spec.
+    """
+    spec, _how = match_spec(
         config_db.query(SupplierInvoiceSpec)
         .filter(SupplierInvoiceSpec.enabled.is_(True))
-        .order_by(SupplierInvoiceSpec.name)
-        .all()
-    ):
-        if sp.name == MAIN_PROMPT_NAME:
-            continue
-        for candidate in [sp.name] + list(sp.aliases or []):
-            c = _norm(candidate)
-            if len(c) >= 3 and (c == sname or c in sname):
-                return sp
-    return None
+        .all(),
+        supplier_names,
+        main_prompt_name=MAIN_PROMPT_NAME,
+    )
+    return spec
 
 
 def compose_pdf_instructions(
@@ -273,8 +274,13 @@ def pdf_instructions_for(
     loaded_aliases: tuple | list = (),
 ) -> str:
     """Compose the live extraction instructions for an invoice: resolves the
-    matching supplier spec's notes and delegates to the composer."""
-    spec = find_spec_for_supplier(config_db, loaded_supplier)
+    matching supplier spec's notes and delegates to the composer.
+
+    Loaded's aliases for this supplier are identity hints too, not just prompt
+    context: they are the ACCOUNT's spellings of one business, so a global
+    spec named for any one of them still matches.
+    """
+    spec = find_spec_for_supplier(config_db, loaded_supplier, *loaded_aliases)
     return compose_pdf_instructions(
         config_db,
         loaded_supplier=loaded_supplier,
