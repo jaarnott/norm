@@ -696,6 +696,7 @@ def _receive_invoice(
         },
     )
 
+    received_doc = None
     if not lines:
         # Doc-driven receive (the replica_v1 card): build the request
         # server-side from the working document's values — the SAME path the
@@ -707,7 +708,10 @@ def _receive_invoice(
         if not open_docs:
             raise AppToolError("No open invoice draft to receive.")
         open_docs.sort(key=lambda d: (d.data or {}).get("reviewed_at") is not None)
-        req = receive_request_from_doc(open_docs[-1].data or {}, venue_id, invoice_id)
+        # Hold on to the doc that is ACTUALLY received — the outcome recorder
+        # below must describe this twin, not one it re-resolved differently.
+        received_doc = open_docs[-1]
+        req = receive_request_from_doc(received_doc.data or {}, venue_id, invoice_id)
     else:
         req = ReceiveRequest(
             venue_id=venue_id,
@@ -735,5 +739,19 @@ def _receive_invoice(
             venue_id,
             invoice_id,
             po_ids=(req.linked_purchase_order_id, req.po_number),
+        )
+        # Would autopilot have produced this same result? Best-effort.
+        from app.services.autopilot_metrics import record_receive_outcome
+
+        record_receive_outcome(
+            db,
+            venue_id=venue_id,
+            invoice_id=invoice_id,
+            data=(received_doc.data or {}) if received_doc is not None else {},
+            mode="mcp_card",
+            actor="user",
+            user_id=principal.user_id,
+            working_document_id=received_doc.id if received_doc is not None else None,
+            thread_id=received_doc.thread_id if received_doc is not None else None,
         )
     return {"submitted": True, "detail": result}

@@ -37,6 +37,7 @@ from app.db.models import User
 # service so the web router and the MCP submit tool share ONE implementation.
 # Kept under the old private names here so the endpoints and tests below (and
 # test_invoice_fixes_handler.py) are untouched by the move.
+from app.services.autopilot_metrics import record_receive_outcome
 from app.services.invoice_po_reference import enrich_loaded_snapshot
 from app.services.received_invoice import (
     LoadedInvoiceClient as _Loaded,
@@ -897,6 +898,11 @@ async def receive_invoice(
 
     lh = _Loaded(db, config_db, body.venue_id)
     req = body
+    # Hoisted so the outcome recorder below can see the doc that was actually
+    # received. The legacy client-built path leaves them empty — deliberately:
+    # with no working document there is nothing honest to record.
+    docs: list = []
+    data: dict = {}
     if not body.lines:
         docs = _open_docs_for(db, body.venue_id, body.invoice_id)
         if not docs:
@@ -923,6 +929,19 @@ async def receive_invoice(
             body.invoice_id,
             reference_number=req.reference_number,
             po_ids=(req.linked_purchase_order_id, req.po_number),
+        )
+        # Would autopilot have produced this same result? Best-effort and
+        # isolated — Loaded has already accepted the receive by now.
+        record_receive_outcome(
+            db,
+            venue_id=body.venue_id,
+            invoice_id=body.invoice_id,
+            data=data,
+            mode="interactive",
+            actor="user",
+            user_id=user.id,
+            working_document_id=docs[0].id if docs else None,
+            thread_id=docs[0].thread_id if docs else None,
         )
     return out
 
@@ -1230,29 +1249,24 @@ class AddToDojoRequest(BaseModel):
     invoice_id: str
 
 
-@router.post("/invoice-fixes/add-to-dojo")
-async def add_to_dojo(
-    body: AddToDojoRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_permission("admin:system")),
-):
-    """One click on the invoice card: file this invoice's PDF as a dojo
-    sample under its supplier's spec (created empty when the supplier has
-    none) and kick the SENSEI in the background — the training
-    loop's intake. Returns immediately; the analysis lands on the sample
-    (Settings → Supplier Specs) in a minute or two.
+def _stage_and_analyse(
+    db: Session, venue_id: str, invoice_id: str, *, draft: bool, analyse: bool = True
+) -> dict:
+    """File an invoice's PDF as a dojo sample and (optionally) kick the sensei.
+
+    Shared by Add-to-dojo (admin, permanent, analysed) and Cannot-receive (any
+    user, staged as a DRAFT so untrusted intake stays out of regression until
+    an admin promotes it, and NOT analysed — an unattended Opus pass per press
+    is real money). Raises RuntimeError when the invoice has no copy attached.
     """
     import threading
 
     from app.services import spec_dojo
 
-    try:
-        staged = spec_dojo.stage_invoice_sample(
-            db, body.venue_id, body.invoice_id, draft=False
-        )
-    except RuntimeError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    staged = spec_dojo.stage_invoice_sample(db, venue_id, invoice_id, draft=draft)
     sample_id = staged["sample_id"]
+    if not analyse:
+        return staged
 
     def _run_analysis() -> None:
         from app.db.engine import SessionLocal, _ConfigSessionLocal as _CSL
@@ -1269,9 +1283,91 @@ async def add_to_dojo(
     threading.Thread(
         target=_run_analysis, daemon=True, name=f"dojo-analysis-{sample_id[:8]}"
     ).start()
+    return staged
 
+
+class CannotReceiveRequest(BaseModel):
+    venue_id: str
+    invoice_id: str
+    reason: str | None = None
+
+
+@router.post("/invoice-fixes/cannot-receive")
+async def cannot_receive(
+    body: CannotReceiveRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """ "Norm can't do this one" — file it for training and record the verdict.
+
+    Deliberately NOT admin-only (unlike add-to-dojo): the person who hits the
+    problem is the one who should flag it, which is also what gives the
+    autopilot report its coverage. The sample lands as a DRAFT for an admin to
+    triage; the invoice is left untouched in Loaded and its working document
+    stays open, because "couldn't receive today, received fine tomorrow" is a
+    real and useful sequence.
+    """
+    docs = _open_docs_for(db, body.venue_id, body.invoice_id)
+    data = (docs[0].data or {}) if docs else {}
+
+    staged: dict = {}
+    stage_error: str | None = None
+    try:
+        staged = _stage_and_analyse(
+            db, body.venue_id, body.invoice_id, draft=True, analyse=False
+        )
+    except RuntimeError as exc:
+        # No PDF attached — it cannot be staged, but the human's verdict is
+        # the measurement and losing it would defeat the feature.
+        stage_error = str(exc)
+
+    record_receive_outcome(
+        db,
+        venue_id=body.venue_id,
+        invoice_id=body.invoice_id,
+        data=data,
+        mode="interactive",
+        actor="user",
+        user_id=user.id,
+        working_document_id=docs[0].id if docs else None,
+        thread_id=docs[0].thread_id if docs else None,
+        received=False,
+        outcome_override="dojo",
+        dojo={
+            "sample_id": staged.get("sample_id"),
+            "spec_id": staged.get("spec_id"),
+            "spec_name": staged.get("spec_name"),
+            "reason": body.reason,
+            "staged": bool(staged),
+            "error": stage_error,
+        },
+    )
     return {
-        "sample_id": sample_id,
+        "staged": bool(staged),
+        "sample_id": staged.get("sample_id"),
+        "spec_name": staged.get("spec_name"),
+        "reason": stage_error,
+    }
+
+
+@router.post("/invoice-fixes/add-to-dojo")
+async def add_to_dojo(
+    body: AddToDojoRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """One click on the invoice card: file this invoice's PDF as a dojo
+    sample under its supplier's spec (created empty when the supplier has
+    none) and kick the SENSEI in the background — the training
+    loop's intake. Returns immediately; the analysis lands on the sample
+    (Settings → Supplier Specs) in a minute or two.
+    """
+    try:
+        staged = _stage_and_analyse(db, body.venue_id, body.invoice_id, draft=False)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "sample_id": staged["sample_id"],
         "spec_id": staged["spec_id"],
         "spec_name": staged["spec_name"],
         "created_spec": staged["created_spec"],

@@ -7,6 +7,7 @@ import ReceiveInvoiceEditor from '../display/ReceiveInvoiceEditor';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
 import InvoicePdfPane from './InvoicePdfPane';
 import SenseiProposalCard, { type DojoAnalysis } from './SenseiProposalCard';
+import AutopilotReportPanel from './AutopilotReportPanel';
 import DojoTriagePanel from './DojoTriagePanel';
 
 // Per-supplier invoice-extraction instructions + name aliases, matched by the
@@ -100,6 +101,7 @@ export default function SupplierSpecsPanel() {
   const [runningSample, setRunningSample] = useState<string | null>(null);
   const [dojoView, setDojoView] = useState<DojoView | null>(null);
   const [showDojo, setShowDojo] = useState(false);
+  const [showReport, setShowReport] = useState(false);
   // Sample view tab: the extraction compare vs the resolved replica.
   const [dojoRunning, setDojoRunning] = useState(false);
   const [dojoSummary, setDojoSummary] = useState<Record<string, DojoSummaryRow>>({});
@@ -672,6 +674,19 @@ export default function SupplierSpecsPanel() {
           Review outstanding invoices from every venue side-by-side with what Norm
           extracts, let the sensei tune supplier specs, then promote keepers into
           regression testing.
+        </div>
+      </div>
+      {/* The measurement half: every human receive is evidence for (or
+          against) letting autopilot run unattended. */}
+      <div onClick={() => setShowReport(true)}
+        style={{ border: '1px solid #cfe0d6', borderLeft: '4px solid #2e7d4f', borderRadius: 8, background: '#f8fdfa', padding: '12px 16px', marginBottom: 14, cursor: 'pointer' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <strong style={{ fontSize: '0.9rem', color: '#1e1c18' }}>📊 Autopilot readiness</strong>
+          <span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: '#2e7d4f' }}>Open →</span>
+        </div>
+        <div style={{ fontSize: '0.74rem', color: '#6b655c', marginTop: 4 }}>
+          How often accepting Norm&rsquo;s suggestions was enough to receive an invoice
+          with no hand edits — per supplier, plus what Norm keeps missing.
         </div>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10 }}>

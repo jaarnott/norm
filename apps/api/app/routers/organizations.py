@@ -408,6 +408,7 @@ async def delete_venue(
     from app.db.models import (
         AutomatedTask,
         EmailLog,
+        InvoiceAutopilotOutcome,
         HiringCriteria,
         HrSetup,
         Job,
@@ -451,6 +452,9 @@ async def delete_venue(
         HiringCriteria,
         AutomatedTask,
         WorkingDocument,
+        # How well Norm did on this venue's invoices is evidence about NORM,
+        # not about the venue — it stays useful after the venue is gone.
+        InvoiceAutopilotOutcome,
         # A memory's venue_id is a tag, not ownership — "Mr Murdochs is
         # closed" is an org fact that happens to be narrow. Deleting the venue
         # should not delete what the org learned, so drop the tag and keep the

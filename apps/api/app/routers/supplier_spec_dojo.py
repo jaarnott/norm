@@ -784,3 +784,140 @@ def _slim_analysis(analysis: dict | None) -> dict | None:
             slim["siblings"] = sib
         out["candidate_results"] = slim
     return out
+
+
+@router.get("/autopilot-confidence")
+async def autopilot_confidence(
+    days: int = 30,
+    venue_id: str | None = None,
+    supplier_name: str | None = None,
+    actor: str = "user",
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """Would autopilot have been right? The evidence, per supplier.
+
+    Every human receive is a free experiment in the counterfactual "accept all
+    suggestions, then receive". ``actor`` defaults to **user** on purpose:
+    Norm's own receives are self-fulfilling (autopilot accepted everything a
+    moment before receiving), so counting them would make the number say
+    nothing. They are reported separately, as volume.
+    """
+    from datetime import timedelta
+
+    from app.db.models import InvoiceAutopilotOutcome, Venue
+
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 365)))
+    q = db.query(InvoiceAutopilotOutcome).filter(
+        InvoiceAutopilotOutcome.created_at >= since
+    )
+    if venue_id:
+        q = q.filter(InvoiceAutopilotOutcome.venue_id == venue_id)
+    if supplier_name:
+        q = q.filter(InvoiceAutopilotOutcome.supplier_name == supplier_name)
+    rows = q.order_by(InvoiceAutopilotOutcome.created_at.desc()).all()
+
+    human = [r for r in rows if r.actor == "user"]
+    norm_rows = [r for r in rows if r.actor == "norm"]
+    scope = human if actor == "user" else (norm_rows if actor == "norm" else rows)
+
+    def _tally(rs: list) -> dict:
+        t = {
+            k: 0 for k in ("clean", "no_suggestions", "edited", "not_reviewed", "dojo")
+        }
+        for r in rs:
+            if r.outcome in t:
+                t[r.outcome] += 1
+        t["attempts"] = len(rs)
+        return t
+
+    totals = _tally(scope)
+    # not_reviewed is in no denominator: we cannot say what autopilot would
+    # have done with an invoice nobody ever reviewed.
+    rated = (
+        totals["clean"] + totals["no_suggestions"] + totals["edited"] + totals["dojo"]
+    )
+    # suggestion_quality asks the narrower question — when Norm had something
+    # to say, was it right? — so zero-suggestion invoices leave BOTH sides.
+    with_sugg = [
+        r for r in scope if r.suggestion_count > 0 and r.outcome != "not_reviewed"
+    ]
+    clean_with_sugg = sum(1 for r in with_sugg if r.outcome == "clean")
+
+    def _rate(n: int, d: int) -> float | None:
+        return round(n / d, 4) if d else None
+
+    by_supplier: dict[str, dict] = {}
+    for r in scope:
+        key = r.supplier_name or "(no supplier)"
+        s = by_supplier.setdefault(
+            key,
+            {
+                "supplier_name": key,
+                "attempts": 0,
+                "clean": 0,
+                "no_suggestions": 0,
+                "edited": 0,
+                "dojo": 0,
+                "not_reviewed": 0,
+                "suggestions": 0,
+            },
+        )
+        s["attempts"] += 1
+        if r.outcome in s:
+            s[r.outcome] += 1
+        s["suggestions"] += r.suggestion_count or 0
+    for s in by_supplier.values():
+        d = s["clean"] + s["no_suggestions"] + s["edited"] + s["dojo"]
+        s["autopilot_ready"] = _rate(s["clean"] + s["no_suggestions"], d)
+        s["avg_suggestions"] = (
+            round(s["suggestions"] / s["attempts"], 2) if s["attempts"] else 0
+        )
+
+    # What Norm keeps missing — the training backlog, normalised so the same
+    # field on different lines aggregates ('line:<uuid>.unit_cost').
+    missed: dict[str, int] = {}
+    for r in scope:
+        for f in (r.detail or {}).get("manual_fields") or []:
+            key = f.split(".", 1)[-1] if str(f).startswith("line:") else str(f)
+            key = f"line.{key}" if str(f).startswith("line:") else key
+            missed[key] = missed.get(key, 0) + 1
+
+    venues = {v.id: v.name for v in db.query(Venue).all()}
+    return {
+        "window": {"days": days, "actor": actor, "since": since.isoformat()},
+        "totals": totals,
+        "rates": {
+            "autopilot_ready": _rate(totals["clean"] + totals["no_suggestions"], rated),
+            "suggestion_quality": _rate(clean_with_sugg, len(with_sugg)),
+            "dojo": _rate(totals["dojo"], rated),
+        },
+        # Volume only — never mixed into the rates above.
+        "autopilot": _tally(norm_rows),
+        "suppliers": sorted(by_supplier.values(), key=lambda s: -s["attempts"]),
+        "top_missed_fields": [
+            {"field": k, "count": v}
+            for k, v in sorted(missed.items(), key=lambda kv: -kv[1])[:12]
+        ],
+        "recent": [
+            {
+                "id": r.id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "venue_name": venues.get(r.venue_id),
+                "supplier_name": r.supplier_name,
+                "reference_number": r.reference_number,
+                "outcome": r.outcome,
+                "mode": r.mode,
+                "actor": r.actor,
+                "suggestion_count": r.suggestion_count,
+                "accepted_count": r.accepted_count,
+                "dismissed_count": r.dismissed_count,
+                "pending_count": r.pending_count,
+                "manual_edit_count": r.manual_edit_count,
+                "manual_fields": (r.detail or {}).get("manual_fields") or [],
+                "issues_waved_count": r.issues_waved_count,
+            }
+            for r in scope[: max(1, min(limit, 200))]
+        ],
+    }

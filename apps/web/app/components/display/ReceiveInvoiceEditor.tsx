@@ -488,6 +488,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // Per-mount uid so line anchors never collide across sibling cards.
   const uid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const isPlatformAdmin = getStoredUser()?.role === 'admin';
+  const [cannotState, setCannotState] = useState<'sending' | 'filed' | null>(null);
   const [dojoAdd, setDojoAdd] = useState<'idle' | 'adding' | 'added' | 'error'>('idle');
   const addToDojo = async () => {
     if (embedded || !venueId || !doc.invoice_id || dojoAdd === 'adding') return;
@@ -808,6 +809,107 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     return [log, { op: 'update_header', fields: { suggestion_actions: log } }];
   };
 
+  // The ONE place a suggestion becomes ops. Single-accept and Accept-all MUST
+  // apply identically: the autopilot metric reads the action log, not which
+  // button was pressed, so a divergence here would describe an invoice that
+  // never existed. Pure — folds against a given state and returns the next.
+  const foldSuggestion = (
+    state: DocData,
+    s: Suggestion,
+  ): { ops: Record<string, unknown>[]; entry: SuggestionAction; next: DocData } | null => {
+    const at = nowIso();
+    if (s.kind === 'add_line') {
+      const payload = { ...(s.payload || {}) } as Record<string, unknown>;
+      if (!Object.keys(payload).length) return null;
+      return {
+        ops: [{ op: 'add_line', fields: payload }],
+        entry: {
+          suggestion_id: s.id, action: 'accepted', by: 'user', at,
+          before: { added_line_id: payload.id ?? null }, after: { added: true },
+        },
+        next: { ...state, lines: [...state.lines, payload as unknown as Line] },
+      };
+    }
+    const apply = s.apply;
+    if (!apply || !Object.keys(apply).length) return null;
+    if (s.line_id) {
+      const idx = state.lines.findIndex((l) => String(l.id) === String(s.line_id));
+      const ln = state.lines[idx];
+      if (!ln) return null;
+      const fields: Record<string, unknown> = { ...apply };
+      // Total follows qty × cost — the ONLY client math (the receive
+      // recomputes anyway; this keeps the display honest).
+      if ('quantity_received' in apply || 'unit_cost' in apply) {
+        const q = Number(fields.quantity_received ?? ln.quantity_received);
+        const c = Number(fields.unit_cost ?? ln.unit_cost);
+        if (Number.isFinite(q) && Number.isFinite(c)) fields.total_cost = round4(q * c);
+      }
+      const before: Record<string, unknown> = {};
+      for (const k of Object.keys(fields)) before[k] = (ln as unknown as Record<string, unknown>)[k] ?? null;
+      return {
+        ops: [{ op: 'update_line', line_id: ln.id, index: idx, fields }],
+        entry: { suggestion_id: s.id, action: 'accepted', by: 'user', at, before, after: apply },
+        next: { ...state, lines: state.lines.map((l, i) => (i === idx ? { ...l, ...(fields as Partial<Line>) } : l)) },
+      };
+    }
+    const before: Record<string, unknown> = {};
+    for (const k of Object.keys(apply)) before[k] = (state as unknown as Record<string, unknown>)[k] ?? null;
+    return {
+      ops: [{ op: 'update_header', fields: apply }],
+      entry: { suggestion_id: s.id, action: 'accepted', by: 'user', at, before, after: apply },
+      next: { ...state, ...(apply as Partial<DocData>) },
+    };
+  };
+
+  // Accept every pending suggestion in ONE patch. Not a loop over
+  // acceptSuggestion: each call reads docRef.current and sends
+  // versionRef.current, and docRef only refreshes after a render — so N calls
+  // in a tick would build N action logs from stale state (last write wins,
+  // losing all but one) and 409 on the 2nd..Nth PATCH.
+  const acceptAllSuggestions = () => {
+    if (doneState) return;
+    // delete_invoice is a destructive Loaded write; autopilot skips it too.
+    const batch = pendingSuggestions.filter((s) => s.kind !== 'delete_invoice');
+    if (!batch.length) return;
+    let state = docRef.current;
+    const ops: Record<string, unknown>[] = [];
+    const entries: SuggestionAction[] = [];
+    for (const s of batch) {
+      const folded = foldSuggestion(state, s);
+      if (!folded) continue;
+      ops.push(...folded.ops);
+      entries.push(folded.entry);
+      state = folded.next;
+    }
+    if (!entries.length) return;
+    const log = [...(docRef.current.suggestion_actions || []), ...entries];
+    const nextState = state;
+    setDoc(() => ({ ...nextState, suggestion_actions: log }));
+    if (workingDocId) patchDoc([...ops, { op: 'update_header', fields: { suggestion_actions: log } }]);
+  };
+
+  // "Norm can't do this one": file the invoice into the training dojo and
+  // record the verdict. Never receives, never edits the draft — the invoice
+  // stays exactly as it is, and receiving it later is still fine.
+  const cannotReceive = async () => {
+    if (cannotState || !venueId || !doc.invoice_id) return;
+    setCannotState('sending');
+    try {
+      const res = await apiFetch('/api/invoice-fixes/cannot-receive', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id }),
+      });
+      if (!res.ok) throw new Error(`Error ${res.status}`);
+      setCannotState('filed');
+      setMessage('Filed for training — an admin will review it in the Dojo');
+      setStatus('idle');
+    } catch (e) {
+      setCannotState(null);
+      setMessage(e instanceof Error ? e.message : 'Could not file this invoice');
+      setStatus('error');
+    }
+  };
+
   const acceptSuggestion = (s: Suggestion) => {
     if (doneState) return;
     if (s.kind === 'delete_invoice') {
@@ -815,67 +917,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       void acceptFix(s);
       return;
     }
-    if (s.kind === 'add_line') {
-      const payload = { ...(s.payload || {}) } as Record<string, unknown>;
-      if (!Object.keys(payload).length) return;
-      const entry: SuggestionAction = {
-        suggestion_id: s.id, action: 'accepted', by: 'user', at: nowIso(),
-        before: { added_line_id: payload.id ?? null }, after: { added: true },
-      };
-      const [log, logOp] = recordOp(entry);
-      setDoc((prev) => ({
-        ...prev,
-        suggestion_actions: log,
-        lines: [...prev.lines, payload as unknown as Line],
-      }));
-      if (workingDocId) patchDoc([{ op: 'add_line', fields: payload }, logOp]);
-      return;
-    }
-    const apply = s.apply;
-    if (!apply || !Object.keys(apply).length) return;
-    if (s.line_id) {
-      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
-      const ln = docRef.current.lines[idx];
-      if (!ln) return;
-      const fields: Record<string, unknown> = { ...apply };
-      // Total follows qty × cost — the ONLY client math (the receive
-      // recomputes anyway; this keeps the display honest).
-      if ('quantity_received' in apply || 'unit_cost' in apply) {
-        const q = Number(fields.quantity_received ?? ln.quantity_received);
-        const c = Number(fields.unit_cost ?? ln.unit_cost);
-        if (Number.isFinite(q) && Number.isFinite(c)) {
-          fields.total_cost = round4(q * c);
-        }
-      }
-      // An accepted item link also settles the PO reference — but that is
-      // derived state the SERVER recomputes on this very patch and returns;
-      // undo therefore restores only what the user actually changed.
-      const before: Record<string, unknown> = {};
-      for (const k of Object.keys(fields)) before[k] = (ln as unknown as Record<string, unknown>)[k] ?? null;
-      const entry: SuggestionAction = {
-        suggestion_id: s.id, action: 'accepted', by: 'user', at: nowIso(), before, after: apply,
-      };
-      const [log, logOp] = recordOp(entry);
-      setDoc((prev) => ({
-        ...prev,
-        suggestion_actions: log,
-        lines: prev.lines.map((l, i) => (i === idx ? { ...l, ...(fields as Partial<Line>) } : l)),
-      }));
-      if (workingDocId) patchDoc([
-        { op: 'update_line', line_id: ln.id, index: idx, fields },
-        logOp,
-      ]);
-      return;
-    }
-    // Header apply.
-    const before: Record<string, unknown> = {};
-    for (const k of Object.keys(apply)) before[k] = (docRef.current as unknown as Record<string, unknown>)[k] ?? null;
-    const entry: SuggestionAction = {
-      suggestion_id: s.id, action: 'accepted', by: 'user', at: nowIso(), before, after: apply,
-    };
-    const [log, logOp] = recordOp(entry);
-    setDoc((prev) => ({ ...prev, ...(apply as Partial<DocData>), suggestion_actions: log }));
-    if (workingDocId) patchDoc([{ op: 'update_header', fields: apply }, logOp]);
+    const folded = foldSuggestion(docRef.current, s);
+    if (!folded) return;
+    const [log, logOp] = recordOp(folded.entry);
+    const nextState = folded.next;
+    setDoc(() => ({ ...nextState, suggestion_actions: log }));
+    if (workingDocId) patchDoc([...folded.ops, logOp]);
   };
 
   // Dismiss: record-only ("declined without applying"). Also how a blocking
@@ -982,6 +1029,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     .map((f) => headerValueSugg(f))
     .filter((s): s is Suggestion => !!s);
   const deleteSugg = suggestions.find((s) => s.kind === 'delete_invoice');
+  // What "Accept all" would actually apply — delete_invoice is excluded, so
+  // the count must never promise it.
+  const acceptAllCount = pendingSuggestions.filter((s) => s.kind !== 'delete_invoice').length;
 
   const jumpToLine = (lineId: string) => {
     const el = document.getElementById(`riv-${uid}-${lineId}`);
@@ -2046,7 +2096,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   })()}
                 </td>
                 <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', color: '#888', fontVariantNumeric: 'tabular-nums' }}>
-                  {l.quantity_ordered ?? '—'}
+                  {/* Loaded prints a literal 0 where nothing on the order is
+                      left to claim (a second line sharing a code); every other
+                      view says "—", which is the honest reading of "no order
+                      row for this line". */}
+                  {l.quantity_ordered ?? (viewMode === 'loaded' ? 0 : '—')}
                 </td>
                 <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>
                   {/* Amber = a qty suggestion is pending (same treatment as the
@@ -2096,6 +2150,23 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               </Fragment>
               );
             })}
+            {/* Loaded lists un-delivered order rows INLINE, in the same table,
+                received 0 — so the X-ray does too. Every other view keeps them
+                in the "Ordered, not delivered" section below (they are not
+                invoice lines and are never sent on receive). */}
+            {viewMode === 'loaded' && (doc.ordered_not_received || []).map((o, i) => (
+              <tr key={`onr-inline-${o.code || i}-${i}`} style={{ borderTop: '1px solid #f3f3f3', color: '#9a9a9a' }}>
+                <td style={{ padding: '0.4rem 0.6rem' }}>{o.code || '—'}</td>
+                <td style={{ padding: '0.4rem 0.6rem' }}>{o.description || '—'}</td>
+                <td style={{ padding: '0.4rem 0.6rem' }}>—</td>
+                <td style={{ padding: '0.4rem 0.6rem' }}>{o.unit || '—'}</td>
+                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.quantity_ordered ?? '—'}</td>
+                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>0</td>
+                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.unit_cost != null ? cur(o.unit_cost) : '—'}</td>
+                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>—</td>
+                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{cur(0)}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -2154,8 +2225,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       )}
 
       {/* Ordered, not delivered — PO items with NO invoice line at all (neither by
-          code nor as a substitute). Read-only; never sent on receive. */}
-      {(doc.ordered_not_received?.length ?? 0) > 0 && (
+          code nor as a substitute). Read-only; never sent on receive. The Loaded
+          X-ray shows these inline instead, the way Loaded's own screen does. */}
+      {viewMode !== 'loaded' && (doc.ordered_not_received?.length ?? 0) > 0 && (
         <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fafafa' }}>
           <div style={{ ...microLabel, marginBottom: 4 }}>
             Ordered, not delivered ({doc.ordered_not_received!.length})
@@ -2296,10 +2368,35 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           pending first; the SAME objects as the inline chips, so the two
           surfaces can never diverge. The action record renders compactly
           underneath. */}
-      {!dojo && viewMode === 'norm' && suggestions.length > 0 && (
+      {!dojo && viewMode === 'norm' && (suggestions.length > 0 || (reviewed && !doneState)) && (
         <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
-          <div style={{ ...microLabel, color: '#8a6d3b', marginBottom: 3 }}>
-            Suggested changes ({pendingSuggestions.length ? `${pendingSuggestions.length} pending` : 'all decided'})
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+            <div style={{ ...microLabel, color: '#8a6d3b' }}>
+              {suggestions.length === 0
+                ? 'No changes suggested'
+                : `Suggested changes (${pendingSuggestions.length ? `${pendingSuggestions.length} pending` : 'all decided'})`}
+            </div>
+            {!doneState && !embedded && (
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                {acceptAllCount > 0 && (
+                  <button type="button" onClick={acceptAllSuggestions} disabled={accepting !== null}
+                    title={deleteSugg && stateOf(deleteSugg.id) === 'pending'
+                      ? 'accepts every change EXCEPT deleting the draft — that one stays a deliberate click'
+                      : 'accept every pending change at once'}
+                    style={{ fontSize: '0.66rem', padding: '3px 10px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+                    Accept all ({acceptAllCount})
+                  </button>
+                )}
+                {/* The measurement half of the loop: this invoice defeated
+                    Norm, so file it for training rather than fixing it by
+                    hand and leaving no trace. */}
+                <button type="button" onClick={cannotReceive} disabled={cannotState === 'sending' || cannotState === 'filed'}
+                  title="Norm can't get this invoice right — file it for training. Nothing is received."
+                  style={{ fontSize: '0.66rem', padding: '3px 10px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: cannotState === 'filed' ? '#2e7d4f' : '#777', cursor: cannotState ? 'default' : 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+                  {cannotState === 'sending' ? 'Filing…' : cannotState === 'filed' ? '✓ Filed for training' : "Can't receive"}
+                </button>
+              </div>
+            )}
           </div>
           {[...suggestions].sort((a, b) => Number(stateOf(a.id) !== 'pending') - Number(stateOf(b.id) !== 'pending')).map(suggRow)}
           {effectiveActions.length > 0 && (

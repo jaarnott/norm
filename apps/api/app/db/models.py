@@ -988,3 +988,92 @@ class MemorySignal(Base):
         String, ForeignKey("memories.id", ondelete="SET NULL"), nullable=True
     )
     created_at = Column(DateTime(timezone=True), default=_now)
+
+
+class InvoiceAutopilotOutcome(Base):
+    """One row per receive attempt: would autopilot have got this invoice right?
+
+    Autopilot means "accept every suggestion, then receive". So every human
+    receive is a free experiment in that counterfactual — provided we record
+    whether the human did anything autopilot would NOT have done. A row is
+    therefore the answer to one question, not an audit log:
+
+      clean          every suggestion accepted, nothing dismissed or left
+                     pending, no hand edits          → autopilot: right
+      no_suggestions reviewed, Norm had nothing to say, no hand edits
+                                                     → autopilot: right
+      edited         a suggestion was dismissed or ignored, OR the human
+                     typed a value themselves        → autopilot: WRONG
+      not_reviewed   never reviewed (legacy/reset)   → unknown, no rate
+      dojo           "Cannot receive" — filed for training
+
+    Two traps this shape exists to avoid. Autopilot's OWN receives are
+    self-fulfilling (it accepted everything a line earlier, so every such row
+    is clean by construction) — hence ``actor``, and a report that defaults to
+    humans only. And "Norm had nothing to say" is not the same as "nobody ever
+    reviewed it", which is why those are separate outcomes rather than one
+    flattering bucket.
+
+    Deliberately holds no money and no before/after values — only field NAMES
+    in ``detail.manual_fields``. The working document and Loaded already hold
+    the truth; a second copy would drift and invite being trusted.
+    """
+
+    __tablename__ = "invoice_autopilot_outcomes"
+    __table_args__ = (
+        # Loaded receives an invoice once, so a second row with the same
+        # outcome is always a retry — make double-counting impossible rather
+        # than hope the pre-check wins the race.
+        UniqueConstraint(
+            "venue_id", "invoice_id", "outcome", name="uq_autopilot_outcome"
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=True, index=True
+    )
+    #: Nullable so the measurement outlives a deleted venue — deleting a
+    #: venue is not a reason to erase the evidence of how well Norm did.
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True, index=True)
+    #: Loaded's invoice id — a foreign system's key, so no FK (same rule as
+    #: E2ETestRun.test_id).
+    invoice_id = Column(String, nullable=False, index=True)
+    reference_number = Column(String, nullable=True)
+    #: The report's grouping key. No FK: supplier specs live in the config DB.
+    supplier_name = Column(String, nullable=True, index=True)
+    linked_supplier_id = Column(String, nullable=True)
+
+    #: clean | no_suggestions | edited | not_reviewed | dojo
+    outcome = Column(String, nullable=False)
+    received = Column(Boolean, nullable=False, default=False)
+    #: interactive | mcp_card | autopilot | approve_fixes
+    mode = Column(String, nullable=False)
+    #: user | norm — norm rows are excluded from the readiness rates.
+    actor = Column(String, nullable=False)
+
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    working_document_id = Column(
+        String, ForeignKey("working_documents.id", ondelete="SET NULL"), nullable=True
+    )
+    thread_id = Column(
+        String, ForeignKey("threads.id", ondelete="SET NULL"), nullable=True
+    )
+
+    #: delete_invoice is excluded from every count — autopilot skips it too.
+    suggestion_count = Column(Integer, nullable=False, default=0)
+    accepted_count = Column(Integer, nullable=False, default=0)
+    dismissed_count = Column(Integer, nullable=False, default=0)
+    pending_count = Column(Integer, nullable=False, default=0)
+    manual_edit_count = Column(Integer, nullable=False, default=0)
+    blocking_issue_count = Column(Integer, nullable=False, default=0)
+    #: Blocking issues a human waved through ("I've checked this") — autopilot
+    #: would have STOPPED, a different and milder failure than being wrong.
+    issues_waved_count = Column(Integer, nullable=False, default=0)
+    #: ready | needs_review, as of the receive.
+    confidence = Column(String, nullable=True)
+
+    #: manual_fields, suggestion_kinds, dismissed/pending ids, baseline_fresh,
+    #: is_credit_note, reviewed_at, and the dojo block.
+    detail = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now, index=True)

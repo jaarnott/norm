@@ -38,6 +38,7 @@ from app.services.invoice_extraction import (
     find_spec_for_supplier,
     pdf_instructions_for,
 )
+from app.services.autopilot_metrics import record_receive_outcome
 from app.services.invoice_replica import build_replica
 from app.services.received_invoice import (
     LoadedInvoiceClient,
@@ -1089,6 +1090,17 @@ def review_invoices(
                 data["is_received"] = True
                 data["status"] = "received"
                 received.append({**verdict, "outcome": "received"})
+                # Norm's own receives are self-fulfilling (auto_accept_all ran
+                # a moment ago), so they measure VOLUME, not correctness — the
+                # report keeps actor="norm" out of its readiness rates.
+                record_receive_outcome(
+                    db,
+                    venue_id=venue_id,
+                    invoice_id=iid,
+                    data=data,
+                    mode=mode,
+                    actor="norm",
+                )
                 invalidate_conflicting_drafts(
                     db,
                     venue_id,
