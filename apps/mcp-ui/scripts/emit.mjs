@@ -19,6 +19,8 @@ const SOURCES = [
   'apps/web/app/components/display/RosterEditor.tsx',
   'apps/web/app/components/display/PurchaseOrderEditor.tsx',
   'apps/web/app/components/display/ReceiveInvoiceEditor.tsx',
+  'apps/web/app/components/display/MenuEditor.tsx',
+  'apps/web/app/hooks/useActiveVenue.ts',
   'apps/web/app/components/display/roster/shared.ts',
   'apps/web/app/components/display/roster/WeekGrid.tsx',
   'apps/web/app/components/display/roster/DayTimeline.tsx',

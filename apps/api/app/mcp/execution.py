@@ -277,7 +277,7 @@ class NormMcpContext(McpContext):
         # model's context, and applying it to the app's copy is what once left
         # a week-long roster with nothing to draw). Wrap it as a display block.
         if structured is not None:
-            structured = self._as_display_block(tool, structured)
+            structured = self._as_display_block(tool, structured, venue_id)
         return tools_call_result(payload, structured=structured)
 
     def _call_app_tool(self, tool: McpTool, params: dict) -> dict:
@@ -424,7 +424,9 @@ class NormMcpContext(McpContext):
         # gets its component.
         return tools_call_result(payload)
 
-    def _as_display_block(self, tool: McpTool, data: dict) -> dict:
+    def _as_display_block(
+        self, tool: McpTool, data: dict, venue_id: str | None = None
+    ) -> dict:
         """Wrap a payload for the display-block app, or pass it through.
 
         Norm's components take the raw payload untouched (that is what
@@ -454,6 +456,12 @@ class NormMcpContext(McpContext):
         props = {"embedded": True, "connector_name": tool.connector}
         if window:
             props["window"] = window
+        # The venue this card was opened for — components that must call a tool
+        # back (the menu editor: recipe options + Save) need it, since the
+        # embedded surface has no venue picker. Read-only cards ignore it.
+        if venue_id:
+            props["activeVenueId"] = venue_id
+            props["venue_id"] = venue_id
         return {"component": component, "data": body, "props": props}
 
     def _audit(

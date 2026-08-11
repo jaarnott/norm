@@ -22,6 +22,7 @@ import GenericTable from '../../web/app/components/display/GenericTable';
 import RosterEditor from '../../web/app/components/display/RosterEditor';
 import PurchaseOrderEditor from '../../web/app/components/display/PurchaseOrderEditor';
 import ReceiveInvoiceEditor from '../../web/app/components/display/ReceiveInvoiceEditor';
+import MenuEditor from '../../web/app/components/display/MenuEditor';
 import WorkflowResult from './WorkflowResult';
 
 // Structurally DisplayBlockProps, declared locally so we don't import
@@ -48,6 +49,10 @@ export const REGISTRY: Record<string, ComponentType<BlockProps>> = {
   // through norm__update_invoice_document, and Accept & Receive submits through
   // norm__receive_invoice — the user's click is the approval.
   receive_invoice_editor: ReceiveInvoiceEditor as ComponentType<BlockProps>,
+  // The menu editor: reads the menu list + recipe options through
+  // norm__menu_component_api (mcp:menus:read), edits locally, and Save writes
+  // back to Loaded through norm__save_menu — the user's click is the approval.
+  menu_editor: MenuEditor as ComponentType<BlockProps>,
   // Status card for playbook outcomes that aren't a draft we can edit
   // (running / completed / pending approval).
   workflow_result: WorkflowResult,

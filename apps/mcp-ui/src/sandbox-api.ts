@@ -189,8 +189,32 @@ export async function callComponentApi(
     };
   }
 
+  // Menu save (create/update) -> norm__save_menu. The editor sends the whole
+  // MenuModel as params; is_new picks POST vs PUT. Same {data, status_code,
+  // error} contract the web path returns.
+  if (actionName === 'create_menu' || actionName === 'update_menu') {
+    const reply = await window.NormApp.callTool('norm__save_menu', {
+      venue_id: venueId,
+      menu: params,
+      is_new: actionName === 'create_menu',
+    });
+    if (isErrorReply(reply)) {
+      const p = toolPayload(reply);
+      throw new Error(String((p as { error?: string })?.error ?? 'Menu could not be saved'));
+    }
+    const p = toolPayload(reply) ?? {};
+    return {
+      data: (p as { detail?: unknown }).detail,
+      status_code: Number((p as { status_code?: number }).status_code ?? 0),
+      error: (p as { saved?: boolean }).saved === false ? true : undefined,
+    };
+  }
+
   // Reads: the bridge pages large lists; reassemble before handing to the
-  // component, which expects the full array in one go.
+  // component, which expects the full array in one go. The menu editor's reads
+  // route to a menus-scoped bridge (mcp:menus:read) — MCP scope projection is
+  // all-of, so they can't share the orders-scoped norm__component_api.
+  const readTool = componentKey === 'menu_editor' ? 'norm__menu_component_api' : 'norm__component_api';
   const all: unknown[] = [];
   let page = 0;
   let totalPages = 1;
@@ -198,7 +222,7 @@ export async function callComponentApi(
   let single: unknown = null;
   let sawList = false;
   do {
-    const reply = await window.NormApp.callTool('norm__component_api', {
+    const reply = await window.NormApp.callTool(readTool, {
       venue_id: venueId,
       component_key: componentKey,
       action_name: actionName,

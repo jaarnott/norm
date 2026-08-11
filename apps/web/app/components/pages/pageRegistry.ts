@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, Clock, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, Clock, type LucideIcon } from 'lucide-react';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -212,8 +212,17 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
     componentProps: { agent_slug: 'executive_chef' },
   },
-  // Recipes and Menus pages are registered with their editor components
-  // (recipe_editor / menu_editor) once those exist.
+  {
+    // Self-loading: MenuEditor fetches the menu list + recipe options itself via
+    // callComponentApi('menu_editor', ...), so no connector loadAction.
+    id: 'menus',
+    label: 'Menus',
+    icon: BookOpen,
+    agent: 'executive_chef',
+    component: 'menu_editor',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  // The Recipes page is registered once the recipe_editor component exists.
   {
     id: 'tasks-executive_chef',
     label: 'Tasks',

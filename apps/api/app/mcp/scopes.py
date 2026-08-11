@@ -52,7 +52,9 @@ ALLOWED_ACCESS_LEVELS = frozenset({ACCESS_READ, ACCESS_DRAFT, ACCESS_WRITE})
 # from an embedded app, with consent text saying exactly what fires). A write
 # scope NOT listed here fails validate_scope_vocabulary at import — deliberate
 # friction so a new write is never added by pattern.
-_WRITE_SCOPES = frozenset({"mcp:orders:submit", "mcp:invoices:receive"})
+_WRITE_SCOPES = frozenset(
+    {"mcp:orders:submit", "mcp:invoices:receive", "mcp:menus:write"}
+)
 
 
 @dataclass(frozen=True)
@@ -166,6 +168,26 @@ MCP_SCOPES: dict[str, McpScope] = {
         "the stock received, links the purchase order and may update the "
         "supplier's unit on matched items. Claude cannot trigger this itself — "
         "only your click receives the invoice, exactly as shown.",
+        access_level=ACCESS_WRITE,
+        requires=frozenset({"orders:read", "orders:write"}),
+    ),
+    # Menus — a venue's menus (sections, dishes, sell prices, linked recipes).
+    # There is no stock/menu org scope, so these gate on orders:read/write (the
+    # closest procurement-domain permission), mirroring how invoices reuse them.
+    "mcp:menus:read": McpScope(
+        name="mcp:menus:read",
+        label="View menus",
+        description="See your venues' menus — their sections, dishes, linked "
+        "recipes and sell prices.",
+        access_level=ACCESS_READ,
+        requires=frozenset({"orders:read"}),
+    ),
+    "mcp:menus:write": McpScope(
+        name="mcp:menus:write",
+        label="Save menus you approve",
+        description="Lets YOU save an edited menu back to Loaded by pressing "
+        "Save inside the embedded menu editor. Claude cannot trigger this "
+        "itself — only your click saves the menu, exactly as shown.",
         access_level=ACCESS_WRITE,
         requires=frozenset({"orders:read", "orders:write"}),
     ),

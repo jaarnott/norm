@@ -62,6 +62,18 @@ COMPONENT_API_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
 # norm__place_stock_order, never through the read bridge.
 SUBMIT_COMPONENT = ("purchase_order_editor", "create_orders_batch")
 
+# The menu editor's reference reads, reached through norm__menu_component_api
+# (scope mcp:menus:read) — a separate bridge from the orders one because MCP
+# scope projection is all-of, so an orders-scoped tool can't serve a menus-only
+# connection. The menu save action is NOT here; it is reachable only through
+# norm__save_menu.
+MENU_COMPONENT_API_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("menu_editor", "list_menus"),
+        ("menu_editor", "list_recipes"),
+    }
+)
+
 # Document kinds the ORDER scope may open. A draft scope authorizes one kind
 # of document, not every document that happens to hang off the same thread:
 # mcp:orders:draft must not be a way to edit a roster. That is not
@@ -254,6 +266,63 @@ def app_tool_defs(mcp_ui_enabled: bool) -> list[dict]:
             },
         },
         {
+            "name": "norm__menu_component_api",
+            "method": "GET",
+            "access": ACCESS_READ,
+            "scopes": frozenset({"mcp:menus:read"}),
+            "description": (
+                "Read-only reference data for Norm's embedded menu editor (the "
+                "menu list and recipe options). Large results are paged: pass "
+                "page (0-based) and read total_pages from the response. Used by "
+                "the menu editor; you rarely need it yourself."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "venue_id": {
+                        "type": "string",
+                        "description": "Venue id the app was opened for.",
+                    },
+                    "component_key": {"type": "string"},
+                    "action_name": {"type": "string"},
+                    "params": {"type": "object"},
+                    "page": {"type": "integer", "minimum": 0},
+                },
+                "required": ["venue_id", "component_key", "action_name"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "norm__save_menu",
+            "method": "POST",
+            "access": ACCESS_WRITE,
+            "scopes": frozenset({"mcp:menus:write"}),
+            "description": (
+                "Save a menu to Loaded (create a new one or update an existing "
+                "one). ONLY call this when the user has pressed Save in the "
+                "embedded menu editor — never on your own initiative. The menu "
+                "is written exactly as passed."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "venue_id": {"type": "string"},
+                    "menu": {
+                        "type": "object",
+                        "description": "The full MenuModel the editor built "
+                        "(id, name, groups[] -> lines[]).",
+                    },
+                    "is_new": {
+                        "type": "boolean",
+                        "description": "true to create a new menu (POST), false "
+                        "to update the existing one (PUT).",
+                    },
+                },
+                "required": ["venue_id", "menu"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "norm__place_stock_order",
             "method": "POST",
             "access": ACCESS_WRITE,
@@ -408,10 +477,16 @@ def execute_app_tool(
         return _update_invoice_document(params, principal, db)
     if name == "norm__component_api":
         return _component_api(params, principal, db, config_db)
+    if name == "norm__menu_component_api":
+        return _component_api(
+            params, principal, db, config_db, allowlist=MENU_COMPONENT_API_ALLOWLIST
+        )
     if name == "norm__place_stock_order":
         return _place_stock_order(params, principal, db, config_db)
     if name == "norm__receive_invoice":
         return _receive_invoice(params, principal, db, config_db)
+    if name == "norm__save_menu":
+        return _save_menu(params, principal, db, config_db)
     raise AppToolError(f"Unknown app tool: {name}")
 
 
@@ -536,13 +611,17 @@ def _slim_stock_items(data):
 
 
 def _component_api(
-    params: dict, principal: McpPrincipal, db: Session, config_db: Session
+    params: dict,
+    principal: McpPrincipal,
+    db: Session,
+    config_db: Session,
+    allowlist: frozenset[tuple[str, str]] = COMPONENT_API_ALLOWLIST,
 ) -> dict:
     from app.services.component_api import ComponentApiError, execute_component_action
 
     component_key = str(params.get("component_key") or "")
     action_name = str(params.get("action_name") or "")
-    if (component_key, action_name) not in COMPONENT_API_ALLOWLIST:
+    if (component_key, action_name) not in allowlist:
         raise AppToolError(
             f"{component_key}/{action_name} is not available on this surface."
         )
@@ -576,6 +655,63 @@ def _component_api(
             "status_code": result.get("status_code"),
         }
     return {"data": data, "status_code": result.get("status_code")}
+
+
+def _save_menu(
+    params: dict, principal: McpPrincipal, db: Session, config_db: Session
+) -> dict:
+    """Save a menu to Loaded — the menu editor's Save button.
+
+    Create (POST) or update (PUT) through the same menu_editor component-API
+    actions the web editor uses; the user's click is the approval.
+    """
+    from app.services.component_api import ComponentApiError, execute_component_action
+
+    venue_id = str(params.get("venue_id") or "")
+    _authorize_venue_id(principal, venue_id, db)
+
+    menu = params.get("menu")
+    if not isinstance(menu, dict) or not str(menu.get("name") or "").strip():
+        raise AppToolError("menu must be an object with a name.")
+    groups = menu.get("groups") or []
+    if not isinstance(groups, list) or len(groups) > 100:
+        raise AppToolError("menu.groups must be a list of at most 100 sections.")
+    total_lines = sum(
+        len(g.get("lines") or []) for g in groups if isinstance(g, dict)
+    )
+    if total_lines > 1000:
+        raise AppToolError("Too many menu lines in one save (max 1000).")
+
+    is_new = bool(params.get("is_new"))
+    action = "create_menu" if is_new else "update_menu"
+    logger.info(
+        "mcp_save_menu",
+        extra={
+            "venue_id": venue_id,
+            "is_new": is_new,
+            "sections": len(groups),
+            "lines": total_lines,
+            "user_id": principal.user_id,
+        },
+    )
+    try:
+        result = execute_component_action(
+            "menu_editor", action, menu, venue_id, db, config_db
+        )
+    except ComponentApiError as e:
+        raise AppToolError(str(e)) from e
+
+    if result.get("error"):
+        return {
+            "saved": False,
+            "status_code": result.get("status_code"),
+            "detail": result.get("data"),
+        }
+    return {
+        "saved": True,
+        "status_code": result.get("status_code"),
+        "detail": result.get("data"),
+    }
 
 
 def _place_stock_order(

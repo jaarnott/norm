@@ -117,6 +117,10 @@ TOOL_COMPONENT: dict[tuple[str, str], str] = {
     # be the enabled one — MCP curation decides which, and a binding that only
     # covered the raw action would silently drop the UI the day it was swapped.
     ("loadedhub", "get_roster_for_period"): "roster_editor",
+    # get_menu hands the raw MenuModel to the menu editor, opened on that one
+    # menu. Interactive here: recipe options and Save route back through
+    # norm__menu_component_api / norm__save_menu (the venue rides in as a prop).
+    ("loadedhub", "get_menu"): "menu_editor",
 }
 
 # Bespoke apps for a connector tool, keyed by (connector, action). Empty: the

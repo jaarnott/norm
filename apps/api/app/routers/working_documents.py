@@ -449,6 +449,70 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
                 data.update(fields)
         return data
 
+    # --- Menu operations (a MenuModel: groups[] -> lines[]) ---
+    # The menu editor's lines are nested under sections (groups), so they need
+    # their own ops rather than the top-level order line ops below. Addressed by
+    # id (group_id / line_id); new groups and lines carry a client-generated id.
+    if op_type in (
+        "add_menu_group",
+        "update_menu_group",
+        "remove_menu_group",
+        "add_menu_line",
+        "update_menu_line",
+        "remove_menu_line",
+    ):
+        if not isinstance(data, dict):
+            return data
+        groups = data.get("groups")
+        if not isinstance(groups, list):
+            groups = []
+
+        def _find_group(gid):
+            return next(
+                (g for g in groups if isinstance(g, dict) and g.get("id") == gid),
+                None,
+            )
+
+        if op_type == "add_menu_group":
+            group = dict(op.get("group", {}))
+            group.setdefault("lines", [])
+            groups.append(group)
+        elif op_type == "update_menu_group":
+            g = _find_group(op.get("group_id"))
+            if g is not None:
+                g.update(op.get("fields", {}))
+        elif op_type == "remove_menu_group":
+            gid = op.get("group_id")
+            groups = [g for g in groups if g.get("id") != gid]
+        elif op_type == "add_menu_line":
+            g = _find_group(op.get("group_id"))
+            if g is not None:
+                g.setdefault("lines", []).append(dict(op.get("line", {})))
+        elif op_type == "update_menu_line":
+            g = _find_group(op.get("group_id"))
+            if g is not None:
+                ln = next(
+                    (
+                        line
+                        for line in g.get("lines", [])
+                        if isinstance(line, dict) and line.get("id") == op.get("line_id")
+                    ),
+                    None,
+                )
+                if ln is not None:
+                    ln.update(op.get("fields", {}))
+        elif op_type == "remove_menu_line":
+            g = _find_group(op.get("group_id"))
+            if g is not None:
+                g["lines"] = [
+                    line
+                    for line in g.get("lines", [])
+                    if line.get("id") != op.get("line_id")
+                ]
+
+        data["groups"] = groups
+        return data
+
     # --- Order operations (lines-based documents) ---
     if op_type in ("update_line", "add_line", "remove_line"):
         if not isinstance(data, dict):
