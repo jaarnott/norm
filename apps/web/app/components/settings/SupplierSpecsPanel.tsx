@@ -660,6 +660,10 @@ export default function SupplierSpecsPanel() {
     return <DojoTriagePanel onBack={() => { setShowDojo(false); loadSummary(); }} />;
   }
 
+  if (showReport) {
+    return <AutopilotReportPanel onBack={() => setShowReport(false)} />;
+  }
+
   return (
     <div style={{ maxWidth: 860 }}>
       {/* The Dojo: triage every venue's outstanding invoices before they

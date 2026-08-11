@@ -86,7 +86,7 @@ interface Suggestion {
   id: string;
   kind: 'line_value' | 'add_line' | 'strike' | 'header_value' | 'supplier'
     | 'link_po' | 'unlink_po' | 'split_reference' | 'delete_invoice'
-    | 'create_unit' | string;
+    | 'create_unit' | 'create_item' | 'create_brand' | string;
   field?: string | null;
   line_id?: string | null;
   current?: unknown;
@@ -161,6 +161,9 @@ interface DocData {
   ordered_not_received?: OrderedNotReceived[];
   // Split order: PO items that arrived on the SIBLING delivery.
   ordered_received_elsewhere?: OrderedNotReceived[];
+  // The cached raw rows of ONE order — the projection's only input. The review
+  // caches the order it suggests linking, so accepting is instant.
+  po_reference?: { po_id?: string | null };
   // ---- The replica_v1 review contract ----
   doc_schema?: string;
   reviewed_at?: string | null;
@@ -475,6 +478,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const [creatingItem, setCreatingItem] = useState(false);
   // Line whose (unlinked) unit name is being CREATED in Loaded (create-unit).
   const [creatingUnitLine, setCreatingUnitLine] = useState<string | null>(null);
+  // Line whose (unlinked) BRAND is being created in Loaded (create-brand).
+  const [creatingBrandLine, setCreatingBrandLine] = useState<string | null>(null);
   // Second confirmation before creating a unit (like create-item's form): the
   // first click ARMS this line; only the explicit confirm click writes.
   const [confirmUnitLine, setConfirmUnitLine] = useState<string | null>(null);
@@ -749,20 +754,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     setLine(idx, { struck }, [{ op: 'update_line', index: idx, fields: { struck } }]);
   };
 
-  const onPo = async (poId: string) => {
-    const po = pos.find((p) => p.id === poId);
-    setDoc((prev) => ({
-      ...prev,
-      linked_purchase_order_id: poId || null,
-      purchase_order_number: po?.order_number ?? prev.purchase_order_number,
-    }));
-    if (!workingDocId) return;
-    await patchDoc([{ op: 'update_header', fields: { linked_purchase_order_id: poId || null, purchase_order_number: po?.order_number } }]);
-    // A DIFFERENT order means the cached reference rows no longer apply — the
-    // server drops the projection rather than show another order's numbers.
-    // Re-open the draft (it re-fetches and re-projects) so the new order's
-    // ordered quantities appear without waiting for a reopen.
-    if (!poId || embedded || !venueId || !docRef.current.invoice_id) return;
+  // Linking an order writes only its ID; the order's ROWS live in Loaded, and
+  // the projection built from them (order date, per-line quantity ordered,
+  // "ordered, not delivered") is server-owned — a different order means the
+  // cached rows no longer apply, so the server drops the projection rather
+  // than show another order's numbers. Re-opening the draft re-fetches and
+  // re-projects. EVERY path that changes the link must call this, not just the
+  // dropdown: accepting Norm's own "link it" suggestion left the number in the
+  // header with no order date and "—" in every Qty Ordered cell.
+  const refreshOrderReference = async () => {
+    if (embedded || !venueId || !workingDocId || !docRef.current.invoice_id) return;
     try {
       const res = await apiFetch('/api/invoice-fixes/draft', {
         method: 'POST',
@@ -773,6 +774,29 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       if (fresh?.data) setDoc((prev) => ({ ...prev, ...(fresh.data as DocData) }));
       if (typeof fresh?.version === 'number') setVersion(fresh.version);
     } catch { /* reference data is an enhancement — the next open re-attaches */ }
+  };
+  // The suggestion kinds that move the order link, and so need the re-project.
+  const PO_LINK_KINDS = ['link_po', 'unlink_po', 'split_reference'];
+  // True when the doc already carries the rows of the order this suggestion
+  // links to — the review pre-caches exactly that order, so the projection
+  // recomputes on the accept patch and there is nothing to fetch.
+  const ordersCached = (s: Suggestion) => {
+    const apply = (s.apply || {}) as Record<string, unknown>;
+    const target = (apply.linked_purchase_order_id ?? apply.split_po_id) as string | undefined;
+    if (!target) return false;
+    return String(docRef.current.po_reference?.po_id ?? '') === String(target);
+  };
+
+  const onPo = async (poId: string) => {
+    const po = pos.find((p) => p.id === poId);
+    setDoc((prev) => ({
+      ...prev,
+      linked_purchase_order_id: poId || null,
+      purchase_order_number: po?.order_number ?? prev.purchase_order_number,
+    }));
+    if (!workingDocId) return;
+    await patchDoc([{ op: 'update_header', fields: { linked_purchase_order_id: poId || null, purchase_order_number: po?.order_number } }]);
+    if (poId) await refreshOrderReference();
   };
 
   // Header field edits (invoice #, dates, total, supplier, tax toggle) — merge
@@ -867,11 +891,25 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // versionRef.current, and docRef only refreshes after a render — so N calls
   // in a tick would build N action logs from stale state (last write wins,
   // losing all but one) and 409 on the 2nd..Nth PATCH.
-  const acceptAllSuggestions = () => {
+  const acceptAllSuggestions = async () => {
     if (doneState) return;
     // delete_invoice is a destructive Loaded write; autopilot skips it too.
     const batch = pendingSuggestions.filter((s) => s.kind !== 'delete_invoice');
     if (!batch.length) return;
+    // create_unit has no applyable value — the unit must be CREATED in Loaded
+    // first — so foldSuggestion returns null for it. Folding it into the batch
+    // would silently drop it while the button counted it ("Accept all (5)"
+    // accepting three). It runs after the batch instead, through the same
+    // single-accept path, sequentially: each is a Loaded write, and patchDoc
+    // serializes on its own queue so the version can't go stale.
+    // Units BEFORE items: Loaded refuses to create a stock item without a
+    // resolved unit, so an item creation on a NEW-unit line only works once
+    // its unit exists.
+    const creates = [
+      ...batch.filter((s) => s.kind === 'create_unit'),
+      ...batch.filter((s) => s.kind === 'create_item'),
+      ...batch.filter((s) => s.kind === 'create_brand'),
+    ];
     let state = docRef.current;
     const ops: Record<string, unknown>[] = [];
     const entries: SuggestionAction[] = [];
@@ -882,11 +920,31 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       entries.push(folded.entry);
       state = folded.next;
     }
-    if (!entries.length) return;
-    const log = [...(docRef.current.suggestion_actions || []), ...entries];
-    const nextState = state;
-    setDoc(() => ({ ...nextState, suggestion_actions: log }));
-    if (workingDocId) patchDoc([...ops, { op: 'update_header', fields: { suggestion_actions: log } }]);
+    if (entries.length) {
+      const log = [...(docRef.current.suggestion_actions || []), ...entries];
+      const nextState = state;
+      setDoc(() => ({ ...nextState, suggestion_actions: log }));
+      if (workingDocId) {
+        await patchDoc([...ops, { op: 'update_header', fields: { suggestion_actions: log } }]);
+      }
+      if (batch.some((s) => PO_LINK_KINDS.includes(s.kind))) await refreshOrderReference();
+    }
+    for (const s of creates) {
+      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
+      if (idx < 0) continue;
+      if (s.kind === 'create_unit') {
+        const name = (s.payload?.unit_name as string | undefined)
+          || (typeof s.proposed === 'string' ? s.proposed : undefined);
+        if (name) await createUnitAndApply(idx, name, s);
+      } else if (s.kind === 'create_brand') {
+        const p = (s.payload || {}) as Record<string, string | undefined>;
+        await createBrandAndApply(String(s.line_id), p.brand_name || String(s.proposed ?? ''), s);
+      } else {
+        const p = (s.payload || {}) as Record<string, string | undefined>;
+        const name = p.name || (typeof s.proposed === 'string' ? s.proposed : '');
+        await createItemAndApply(String(s.line_id), name, p.group_id || '', s);
+      }
+    }
   };
 
   // "Norm can't do this one": file the invoice into the training dojo and
@@ -925,7 +983,24 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const name = (s.payload?.unit_name as string | undefined)
         || (typeof s.proposed === 'string' ? s.proposed : undefined);
       const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
-      if (idx >= 0 && name) void createUnitAndApply(idx, name);
+      if (idx >= 0 && name) void createUnitAndApply(idx, name, s);
+      return;
+    }
+    if (s.kind === 'create_brand') {
+      // A Loaded write: create the brand Loaded named but has no record for.
+      const p = (s.payload || {}) as Record<string, string | undefined>;
+      const name = p.brand_name || (typeof s.proposed === 'string' ? s.proposed : '');
+      void createBrandAndApply(String(s.line_id), name, s);
+      return;
+    }
+    if (s.kind === 'create_item') {
+      // A Loaded write: create the stock item (+ its supplier variant) and
+      // link the line. Name and stock group ride in the payload; the line's
+      // unit must already be resolved (Loaded requires it), which is why
+      // Accept all does the unit creations first.
+      const p = (s.payload || {}) as Record<string, string | undefined>;
+      const name = p.name || (typeof s.proposed === 'string' ? s.proposed : '');
+      void createItemAndApply(String(s.line_id), name, p.group_id || '', s);
       return;
     }
     const folded = foldSuggestion(docRef.current, s);
@@ -933,7 +1008,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const [log, logOp] = recordOp(folded.entry);
     const nextState = folded.next;
     setDoc(() => ({ ...nextState, suggestion_actions: log }));
-    if (workingDocId) patchDoc([...folded.ops, logOp]);
+    if (workingDocId) {
+      const patched = patchDoc([...folded.ops, logOp]);
+      // The review pre-caches the rows of the order it suggests, so the
+      // projection recomputes on this very patch — no wait, no re-analysis.
+      // Only fetch when the accepted order ISN'T the cached one.
+      if (PO_LINK_KINDS.includes(s.kind) && !ordersCached(s)) {
+        void patched.then(refreshOrderReference);
+      }
+    }
   };
 
   // Dismiss: record-only ("declined without applying"). Also how a blocking
@@ -1029,8 +1112,21 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     pendingSuggestions.find((s) => s.kind === 'line_value' && String(s.line_id) === String(lineId) && s.field === field);
   const strikeSuggFor = (lineId: string) =>
     pendingSuggestions.find((s) => s.kind === 'strike' && String(s.line_id) === String(lineId));
+  // Like the unit column: a swap to an item Loaded already has (line_value),
+  // or "it isn't in the catalogue — create it" (create_item, a Loaded write).
   const itemSuggFor = (lineId: string) =>
-    pendingSuggestions.find((s) => s.kind === 'line_value' && String(s.line_id) === String(lineId) && s.field === 'linked_item_id');
+    pendingSuggestions.find((s) => (s.kind === 'line_value' || s.kind === 'create_item')
+      && String(s.line_id) === String(lineId) && s.field === 'linked_item_id');
+  // The unit column carries TWO kinds: a plain swap to a unit Loaded already
+  // has (line_value), and "the copy's delivered unit doesn't exist in Loaded —
+  // create it" (create_unit, which is a Loaded write). Both are line-level
+  // proposals and belong on the line, not only in the summary list; ✓ routes
+  // to the same handler either way.
+  const brandSuggFor = (lineId: string) =>
+    pendingSuggestions.find((s) => s.kind === 'create_brand' && String(s.line_id) === String(lineId));
+  const unitSuggFor = (lineId: string) =>
+    pendingSuggestions.find((s) => (s.kind === 'line_value' || s.kind === 'create_unit')
+      && String(s.line_id) === String(lineId) && s.field === 'unit');
   const headerValueSugg = (field: string) =>
     pendingSuggestions.find((s) => s.kind === 'header_value' && s.field === field);
   const supplierSugg = pendingSuggestions.find((s) => s.kind === 'supplier');
@@ -1056,7 +1152,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // blocked until each is explicitly created in Loaded. A struck line is
   // excluded from the receive entirely, so it never gates it.
   const unresolved = useMemo(
-    () => doc.lines.filter((l) => !l.struck && (!l.linked_item_id || !l.linked_unit_id)),
+    // Mirrors do_receive's own guard, brand included: Loaded refuses a line
+    // naming a brand it has no record for, and finding that out on submit as
+    // a 400 is worse than a greyed button that says why.
+    () => doc.lines.filter((l) => !l.struck && (!l.linked_item_id || !l.linked_unit_id
+      || (!!l.brand && !l.linked_brand_id))),
     [doc.lines],
   );
   // No linked supplier: Loaded rejects the receive outright (500), so block
@@ -1247,11 +1347,43 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // response carries it back recomputed, and the merge at patchDoc paints it.
   // Never patch those fields from here — two writers is exactly how the list
   // drifted empty on undo (INV-958).
-  const applyLocalLink = (lineId: string, itemId: string, itemName: string | null) => {
+  const applyLocalLink = (
+    lineId: string,
+    itemId: string,
+    itemName: string | null,
+    sugg: Suggestion | null = null,
+  ) => {
     const idx = docRef.current.lines.findIndex((l) => l.id === lineId);
     if (idx < 0) return;
     const fields: Partial<Line> = { linked_item_id: itemId, item_name: itemName };
-    setLine(idx, fields, [{ op: 'update_line', line_id: lineId, index: idx, fields }]);
+    const ops: Record<string, unknown>[] = [
+      { op: 'update_line', line_id: lineId, index: idx, fields },
+    ];
+    // Driven by an accepted suggestion: record it in the SAME patch, or the
+    // suggestion stays pending forever and the click looks like it did
+    // nothing — the create_unit bug, exactly (11 Aug 2026).
+    let log: SuggestionAction[] | null = null;
+    if (sugg) {
+      const prev = docRef.current.lines[idx];
+      const [nextLog, logOp] = recordOp({
+        suggestion_id: sugg.id,
+        action: 'accepted',
+        by: 'user',
+        at: nowIso(),
+        before: {
+          linked_item_id: prev?.linked_item_id ?? null,
+          item_name: prev?.item_name ?? null,
+        },
+        after: { ...fields },
+      });
+      log = nextLog;
+      ops.push(logOp);
+    }
+    setDoc((prev) => {
+      const lines = prev.lines.map((l, i) => (i === idx ? { ...l, ...fields } : l));
+      return log ? { ...prev, lines, suggestion_actions: log } : { ...prev, lines };
+    });
+    if (workingDocId) patchDoc(ops);
     setItemForm(null);
     setLinkQuery('');
   };
@@ -1279,7 +1411,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   };
   // explicitName (from an accepted create_unit suggestion) skips the inline
   // two-step confirm — accepting the suggestion IS the confirmation.
-  const createUnitAndApply = async (idx: number, explicitName: string | null = null) => {
+  const createUnitAndApply = async (
+    idx: number,
+    explicitName: string | null = null,
+    sugg: Suggestion | null = null,
+  ) => {
     const l = doc.lines[idx];
     const name = explicitName ?? (l ? replicaUnitName(String(l.id)) : null);
     if (!name || !venueId || embedded || creatingUnitLine) return;
@@ -1304,8 +1440,39 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const rec: Unit = { id: out.unit_id, name: out.unit_name ?? name, ratio: out.unit_ratio ?? undefined };
       // Into the dropdown before the line takes it.
       setUnits((prev) => (prev.some((u) => u.id === rec.id) ? prev : [...prev, rec]));
-      setLine(idx, { linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null },
-        [{ op: 'update_line', line_id: l.id, index: idx, fields: { linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null } }]);
+      const fields = { linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null };
+      const ops: Record<string, unknown>[] = [
+        { op: 'update_line', line_id: l.id, index: idx, fields },
+      ];
+      // Record the accept in the SAME patch as the line. Without this the
+      // suggestion stayed pending forever: the unit landed, the chip never
+      // cleared, and every further click created the unit again (eleven
+      // create-unit POSTs in 90 seconds, 11 Aug 2026). Undo needs the
+      // before/after too, and the autopilot metric reads this log — an
+      // unrecorded accept reads as a silent rejection.
+      let log: SuggestionAction[] | null = null;
+      if (sugg) {
+        const prev = docRef.current.lines[idx];
+        const [nextLog, logOp] = recordOp({
+          suggestion_id: sugg.id,
+          action: 'accepted',
+          by: 'user',
+          at: nowIso(),
+          before: {
+            linked_unit_id: prev?.linked_unit_id ?? null,
+            unit: prev?.unit ?? null,
+            unit_ratio: prev?.unit_ratio ?? null,
+          },
+          after: { ...fields },
+        });
+        log = nextLog;
+        ops.push(logOp);
+      }
+      setDoc((prev) => {
+        const lines = prev.lines.map((x, i) => (i === idx ? { ...x, ...fields } : x));
+        return log ? { ...prev, lines, suggestion_actions: log } : { ...prev, lines };
+      });
+      if (workingDocId) patchDoc(ops);
     } catch (e) {
       setStatus('error');
       setMessage(e instanceof Error ? e.message : 'Could not create the unit in Loaded');
@@ -1356,12 +1523,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
 
   // Explicitly create a NEW stock item (+ its supplier variant) in Loaded and
   // link the line — a deliberate, controlled action, never silent on receive.
-  const createItem = async () => {
-    if (!itemForm || !venueId || embedded) return;
-    const line = doc.lines.find((l) => l.id === itemForm.lineId);
+  // ONE implementation for both entry points: the inline form and an accepted
+  // `create_item` suggestion (which carries the replica's name + stock group).
+  // Loaded needs the line's UNIT to create the item, so the unit is resolved
+  // first — that is why Accept all runs unit creations ahead of item ones.
+  const createItemAndApply = async (
+    lineId: string,
+    name: string,
+    groupId: string,
+    sugg: Suggestion | null = null,
+  ) => {
+    if (!venueId || embedded || creatingItem) return;
+    const line = docRef.current.lines.find((l) => l.id === lineId);
     if (!line?.linked_unit_id) {
       setStatus('error');
       setMessage('Resolve this line’s unit before creating the stock item.');
+      return;
+    }
+    if (!name || !groupId) {
+      setStatus('error');
+      setMessage('A name and a stock group are required to create the item.');
       return;
     }
     setCreatingItem(true);
@@ -1372,9 +1553,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         body: JSON.stringify({
           venue_id: venueId,
           invoice_id: doc.invoice_id,
-          line_id: itemForm.lineId,
-          name: itemForm.name,
-          group_id: itemForm.groupId,
+          line_id: lineId,
+          name,
+          group_id: groupId,
           unit_id: line.linked_unit_id,
           brand_id: line.linked_brand_id ?? null,
         }),
@@ -1387,7 +1568,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       // links locally and lands in Loaded on receive.
       const out = await res.json();
       if (out?.item_id) {
-        applyLocalLink(itemForm.lineId, out.item_id, out.item_name ?? itemForm.name);
+        applyLocalLink(lineId, out.item_id, out.item_name ?? name, sugg);
       }
       setItemForm(null);
     } catch (e) {
@@ -1395,6 +1576,71 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       setMessage(e instanceof Error ? e.message : 'Could not create the stock item');
     } finally {
       setCreatingItem(false);
+    }
+  };
+  const createItem = () => {
+    if (!itemForm) return;
+    void createItemAndApply(itemForm.lineId, itemForm.name, itemForm.groupId);
+  };
+
+  // Loaded names a brand on the line but has no record for it, and refuses to
+  // receive the line until it does. Resolve-first server-side, so a repeated
+  // click returns the existing record instead of duplicating it.
+  const createBrandAndApply = async (
+    lineId: string,
+    name: string,
+    sugg: Suggestion | null = null,
+  ) => {
+    if (!venueId || embedded || !name || creatingBrandLine) return;
+    const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(lineId));
+    if (idx < 0) return;
+    setCreatingBrandLine(lineId);
+    setMessage('');
+    try {
+      const res = await apiFetch('/api/invoice-fixes/create-brand', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, name }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+      }
+      const out = await res.json();
+      if (!out?.brand_id) throw new Error('Loaded did not return the created brand');
+      const fields: Partial<Line> = {
+        linked_brand_id: out.brand_id,
+        brand: out.brand_name ?? name,
+      };
+      const ops: Record<string, unknown>[] = [
+        { op: 'update_line', line_id: lineId, index: idx, fields },
+      ];
+      let log: SuggestionAction[] | null = null;
+      if (sugg) {
+        const prev = docRef.current.lines[idx];
+        const [nextLog, logOp] = recordOp({
+          suggestion_id: sugg.id,
+          action: 'accepted',
+          by: 'user',
+          at: nowIso(),
+          before: {
+            linked_brand_id: prev?.linked_brand_id ?? null,
+            brand: prev?.brand ?? null,
+          },
+          after: { ...fields },
+        });
+        log = nextLog;
+        ops.push(logOp);
+      }
+      setDoc((prev) => {
+        const lines = prev.lines.map((l, i) => (i === idx ? { ...l, ...fields } : l));
+        return log ? { ...prev, lines, suggestion_actions: log } : { ...prev, lines };
+      });
+      if (workingDocId) patchDoc(ops);
+    } catch (e) {
+      setStatus('error');
+      setMessage(e instanceof Error ? e.message : 'Could not create the brand');
+    } finally {
+      setCreatingBrandLine(null);
     }
   };
 
@@ -1980,22 +2226,29 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       substitute {openSub.has(l.id) ? '▾' : '▸'}
                     </button>
                   )}
-                  {/* Stock item not linked in Loaded: the server's match rides
-                      as a linked_item_id suggestion (chip above the badge);
-                      otherwise link an existing item or CREATE it — must be
-                      resolved to receive. */}
-                  {!l.linked_item_id && !struck && !dojo && viewMode === 'norm' && (
-                    itemSugg
-                      ? suggChip(itemSugg, `link to '${fmtVal(itemSugg.proposed)}'`)
-                      : (embedded || doneState || itemForm?.lineId === l.id)
-                        ? null
-                        : (
-                          <button type="button" onClick={() => openItemForm(l)}
-                            title="this stock item isn't linked in Loaded — link an existing item or create it before receiving"
-                            style={{ ...newBadge, cursor: 'pointer', font: 'inherit', fontWeight: 700 }}>
-                            link or create
-                          </button>
-                        )
+                  {/* The server's item suggestion. NOT gated on "unlinked":
+                      the draft now opens on Loaded's own code match, so the
+                      common case is a line that IS linked and the copy (or
+                      the order) names a different item — one supplier code
+                      covering several cuts. Gating this on !linked_item_id
+                      left those suggestions visible only in the summary. */}
+                  {!struck && !dojo && viewMode === 'norm' && itemSugg && suggChip(
+                    itemSugg,
+                    itemSugg.kind === 'create_item'
+                      ? `create '${fmtVal(itemSugg.proposed)}'`
+                      : itemSugg.current
+                        ? `${fmtVal(itemSugg.current)} → ${fmtVal(itemSugg.proposed)}`
+                        : `link to '${fmtVal(itemSugg.proposed)}'`,
+                  )}
+                  {/* No stock item at all — link an existing one or CREATE it;
+                      must be resolved before receiving. */}
+                  {!l.linked_item_id && !struck && !dojo && viewMode === 'norm'
+                    && !itemSugg && !(embedded || doneState || itemForm?.lineId === l.id) && (
+                      <button type="button" onClick={() => openItemForm(l)}
+                        title="this stock item isn't linked in Loaded — link an existing item or create it before receiving"
+                        style={{ ...newBadge, cursor: 'pointer', font: 'inherit', fontWeight: 700 }}>
+                        link or create
+                      </button>
                   )}
                   {itemForm?.lineId === l.id && (
                     <div style={{ marginTop: 5, padding: 7, border: '1px solid #f0c88a', background: '#fff9f0', borderRadius: 5, display: 'flex', flexDirection: 'column', gap: 5, maxWidth: 340 }}>
@@ -2045,7 +2298,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 <td style={{ padding: '0.4rem 0.6rem', color: l.brand ? '#555' : '#b0b0b0' }}>
                   {l.brand || 'Not Set'}
                   {l.brand && !l.linked_brand_id && !struck && (
-                    <span title="this brand doesn't exist in Loaded — it would be created as NEW on receive" style={newBadge}>NEW</span>
+                    <span title="Loaded has no record for this brand and won't receive the line until it does" style={newBadge}>NEW</span>
+                  )}
+                  {!struck && viewMode === 'norm' && suggChip(
+                    brandSuggFor(l.id), `create '${fmtVal(l.brand)}'`,
                   )}
                 </td>
                 <td style={{ padding: '0.4rem 0.6rem' }}>
@@ -2061,7 +2317,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   ) : (
                   <select value={l.linked_unit_id || ''} disabled={doneState || struck}
                     onChange={(e) => onUnit(idx, e.target.value)}
-                    style={{ ...inputStyle, minWidth: 120, borderColor: struck ? '#e2e2e2' : suggFor(l.id, 'unit') ? '#b78a2f' : (!l.linked_unit_id ? '#f0c88a' : '#d1d5db'), background: struck ? '#fafafa' : suggFor(l.id, 'unit') && !doneState ? '#fdf6e7' : (!l.linked_unit_id && !doneState ? '#fff4e5' : '#fff') }}>
+                    style={{ ...inputStyle, minWidth: 120, borderColor: struck ? '#e2e2e2' : unitSuggFor(l.id) ? '#b78a2f' : (!l.linked_unit_id ? '#f0c88a' : '#d1d5db'), background: struck ? '#fafafa' : unitSuggFor(l.id) && !doneState ? '#fdf6e7' : (!l.linked_unit_id && !doneState ? '#fff4e5' : '#fff') }}>
                     {/* The unresolved state lives INSIDE the dropdown: an
                         unlinked unit string renders as the selected option,
                         marked NEW — picking a real unit replaces it. */}
@@ -2075,7 +2331,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   )}
                   {/* The server's unit suggestion (the copy's delivered unit
                       resolves to a different Loaded unit). */}
-                  {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'unit'))}
+                  {!struck && viewMode === 'norm' && suggChip(unitSuggFor(l.id))}
                   {/* Create-in-Loaded is offered ONLY for a unit the REPLICA
                       read off the copy (unit_not_in_loaded / unit_missing
                       with a unit_name) — never for a bare unlinked string
@@ -2490,8 +2746,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               ? 'Nothing to receive — this draft has no line items. If it isn’t an invoice, accept the delete suggestion instead.'
             : supplierBlocking
               ? 'No Loaded supplier linked — pick the supplier before receiving.'
+            // Deliberately silent: the NEW badge sits on each line that needs
+            // resolving, and the disabled button says why on hover. The branch
+            // stays so the cascade can't fall through to "Ready to receive."
+            // beside a receive that is blocked.
             : unresolved.length > 0
-              ? `${unresolved.length} line${unresolved.length > 1 ? 's have' : ' has'} a NEW item or unit — link or pick an existing one on the line before receiving.`
+              ? ''
               : blockingOpen.length > 0
                 ? `${blockingOpen.length} blocking issue${blockingOpen.length > 1 ? 's' : ''} need${blockingOpen.length > 1 ? '' : 's'} review — fix each, or mark it checked, then receive.`
                 : deleteSugg && stateOf(deleteSugg.id) === 'pending'

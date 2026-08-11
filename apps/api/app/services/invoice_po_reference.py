@@ -53,13 +53,25 @@ def po_id_for(data: dict) -> str | None:
     return data.get("linked_purchase_order_id") or data.get("split_po_id")
 
 
-def fetch_po_reference(data: dict, lh) -> None:
-    """Cache the linked order's raw rows on the doc (the ONLY network part).
+def fetch_po_reference(
+    data: dict,
+    lh,
+    po_id: str | None = None,
+    sibling_invoice_id: str | None = None,
+) -> None:
+    """Cache an order's raw rows on the doc (the ONLY network part).
 
     Stores ``data["po_reference"] = {po_id, order_date, lines, sibling_qty}``.
     Best-effort: a bad fetch leaves the last-known-good reference in place.
+
+    ``po_id`` defaults to the order this invoice is reconciled against. Pass it
+    explicitly to cache an order the doc is NOT linked to yet — the one the
+    review is about to SUGGEST linking. The projection stays dark while the
+    link is absent (it refuses to reconcile against an order the doc doesn't
+    point at), and lights up the instant the user accepts, with no round trip
+    and nothing to re-analyse.
     """
-    po_id = po_id_for(data)
+    po_id = po_id or po_id_for(data)
     if not po_id:
         data.pop("po_reference", None)
         return
@@ -71,14 +83,21 @@ def fetch_po_reference(data: dict, lh) -> None:
     # Split order: rows missing from THIS invoice may have been received on
     # the SIBLING delivery. Fetch its quantities so the projection can
     # partition them without a network call of its own.
+    #
+    # ``sibling_invoice_id`` is passed when pre-caching a SUGGESTED split: the
+    # doc carries no split fields until the reference is accepted, and without
+    # the sibling's quantities every row it delivered would read "ordered, not
+    # delivered" — claiming three items never arrived when they arrived on the
+    # other invoice.
+    sib_id = sibling_invoice_id or (
+        data.get("split_sibling_invoice_id")
+        if data.get("split_po_id") and not data.get("linked_purchase_order_id")
+        else None
+    )
     sibling_qty: dict[str, object] = {}
-    if (
-        data.get("split_po_id")
-        and not data.get("linked_purchase_order_id")
-        and data.get("split_sibling_invoice_id")
-    ):
+    if sib_id:
         try:
-            sib = lh.invoice(data["split_sibling_invoice_id"])
+            sib = lh.invoice(sib_id)
             for sl in (sib or {}).get("lines") or []:
                 if not isinstance(sl, dict) or sl.get("deletedAt"):
                     continue

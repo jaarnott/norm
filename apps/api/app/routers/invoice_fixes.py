@@ -607,6 +607,63 @@ async def create_stock_unit(
     }
 
 
+class CreateBrandRequest(BaseModel):
+    venue_id: str
+    name: str
+
+
+@router.post("/invoice-fixes/create-brand")
+async def create_stock_brand(
+    body: CreateBrandRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """The Loaded brand record for a brand name the catalogue lacks.
+
+    Loaded refuses to receive a line that names a brand it has no record for
+    (its own client blocks on it, and ``do_receive`` guards the same way), and
+    the brand text comes from LOADED's line — we deliberately do not extract
+    brands from the copy, which would be noise.
+
+    Resolve-first, exactly like create-unit and create-supplier: an existing
+    record is returned rather than duplicated, so a double-click cannot litter
+    the catalogue. The CREATE is the one Loaded write; the LINE takes the brand
+    as a local edit and lands on receive.
+
+    ``POST /1.0/stock/internal/brands {name}`` → 201 ``{id, name, masterId,
+    datestampDeleted}`` (verified live on the test venue, 11 Aug 2026).
+    """
+    from app.services.invoice_replica import fetch_brands
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "a brand name is required")
+    lh = _Loaded(db, config_db, body.venue_id)
+
+    existing = next(
+        (b for b in fetch_brands(lh) if _norm(b.get("name")) == _norm(name)), None
+    )
+    if existing:
+        return {
+            "message": f"Found brand '{existing.get('name')}'",
+            "created": False,
+            "brand_id": existing.get("id"),
+            "brand_name": existing.get("name"),
+        }
+
+    created = lh.request("POST", "/1.0/stock/internal/brands", {"name": name})
+    brand_id = created.get("id") if isinstance(created, dict) else None
+    if not brand_id:
+        raise HTTPException(502, "Loaded did not return the created brand")
+    return {
+        "message": f"Created brand '{name}'",
+        "created": True,
+        "brand_id": brand_id,
+        "brand_name": created.get("name") or name,
+    }
+
+
 class CreateSupplierRequest(BaseModel):
     venue_id: str
     name: str

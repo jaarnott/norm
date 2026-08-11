@@ -220,6 +220,32 @@ class TestFetch:
         assert [o["code"] for o in elsewhere] == ["RICK#-DEEKB"]
         assert elsewhere[0]["quantity_received"] == 2
 
+    def test_a_suggested_split_pre_caches_the_siblings_receipts(self):
+        # The doc carries NO split fields yet — the reference is still only a
+        # SUGGESTION. Pre-caching must still fetch the sibling's quantities,
+        # or accepting it would report every row the sibling delivered as
+        # "ordered, not delivered": three items claimed never to have arrived
+        # when they arrived on the other invoice (Bidfood 109945345).
+        data = _doc(linked_purchase_order_id=None)
+        data.pop("po_reference")
+        lh = _FakeLoaded(
+            {"createdAt": "2026-08-07", "lines": PO_LINES},
+            sibling={"lines": [{"code": "RICK#-DEEKB", "quantityReceived": 2}]},
+        )
+        fetch_po_reference(data, lh, po_id="po-1", sibling_invoice_id="sib-1")
+        assert data["po_reference"]["po_id"] == "po-1"
+        assert data["po_reference"]["sibling_qty"] == {"rickdeekb": 2}
+        # Dark until accepted: the doc claims no order yet.
+        project_po_reference(data)
+        assert "ordered_received_elsewhere" not in data
+        # Accepting the reference is what the suggestion applies.
+        data.update({"split_po_id": "po-1", "split_sibling_invoice_id": "sib-1"})
+        project_po_reference(data)
+        assert _not_delivered(data) == []
+        assert [o["code"] for o in data["ordered_received_elsewhere"]] == [
+            "RICK#-DEEKB"
+        ]
+
     def test_unreadable_sibling_never_raises(self):
         data = _doc(
             linked_purchase_order_id=None,

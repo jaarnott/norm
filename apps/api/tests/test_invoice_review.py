@@ -16,6 +16,7 @@ from app.services.invoice_review import (
     review_invoice,
     review_invoices,
 )
+from app.services.invoice_po_reference import project_po_reference
 from app.services.received_invoice import receive_request_from_doc
 
 CATALOGUE = [
@@ -1001,3 +1002,244 @@ class TestOrderBreaksAmbiguousCode:
             apply_suggestion(data, s)
         req = receive_request_from_doc(data, "v-1", "inv-1")
         assert [ln["quantity_ordered"] for ln in req.lines] == [6, 14]
+
+
+class TestSuggestedOrderIsPreCached:
+    """Linking an order writes only its ID; the order's ROWS are what the
+    projection (order date, per-line quantity ordered, "ordered, not
+    delivered") is built from. Caching the rows of the order we are about to
+    SUGGEST makes accepting instant — the projection is pure and recomputes on
+    the accept patch itself, with no round trip and nothing to re-analyse.
+    """
+
+    PO_ID = "po-9"
+    PO = {
+        "id": PO_ID,
+        "orderNumber": "1520999",
+        "supplierId": "sup-akaroa",
+        "createdAt": "2026-08-07T09:39:54Z",
+        "lines": [
+            {
+                "itemId": "item-salmon",
+                "itemName": "SALMON FILLET",
+                "itemCode": "PBO0.7",
+                "quantityOrdered": 5,
+                "unitCost": 44.4,
+                "unitName": "Kilo",
+            }
+        ],
+    }
+
+    class _Lh:
+        """The open-PO list (how resolve_po_id finds a number) and the order
+        detail (how its rows are cached) — the two reads this path makes."""
+
+        def __init__(self, po):
+            self.po = po
+            self.gets: list[str] = []
+
+        def get(self, path):
+            self.gets.append(path)
+            if path.startswith("/1.0/stock/internal/purchase-orders?"):
+                return [self.po]
+            if path.startswith("/1.0/stock/internal/purchase-orders/"):
+                return self.po
+            return []
+
+        def invoice(self, invoice_id):
+            raise KeyError(invoice_id)
+
+    def _run(self):
+        # Loaded has no order linked; the COPY names one that is open.
+        det = DETAIL(linkedPurchaseOrderId=None, purchaseOrderNumber=None)
+        ext = EXTRACTION(purchase_order_number="1520999")
+        lh = self._Lh(self.PO)
+        return _review(detail=det, extraction=ext, lh=lh), lh
+
+    def test_the_suggested_orders_rows_are_cached_before_it_is_linked(self):
+        data, _ = self._run()
+        s = next(s for s in data["suggestions"] if s["kind"] == "link_po")
+        assert s["apply"]["linked_purchase_order_id"] == self.PO_ID
+        assert data["po_reference"]["po_id"] == self.PO_ID
+        assert data["po_reference"]["lines"]
+        # Cached, NOT applied: nothing is linked, so the projection stays dark
+        # rather than reconciling against an order the doc doesn't claim.
+        assert data.get("linked_purchase_order_id") is None
+        assert data.get("order_date") is None
+        assert all(ln.get("quantity_ordered") is None for ln in data["lines"])
+
+    def test_accepting_the_link_projects_with_no_further_fetch(self):
+        data, lh = self._run()
+        before = len(lh.gets)
+        apply_suggestion(
+            data, next(s for s in data["suggestions"] if s["kind"] == "link_po")
+        )
+        project_po_reference(data)  # what the PATCH endpoint runs, server-side
+        assert data["order_date"] == "2026-08-07T09:39:54Z"
+        assert data["lines"][0]["quantity_ordered"] == 5
+        assert len(lh.gets) == before  # pure — Loaded is not called again
+
+    def test_an_already_linked_order_is_not_overwritten(self):
+        # The doc's OWN order was cached by attach_po_reference; a suggestion
+        # for a different one must not replace it under the live projection.
+        lh = self._Lh(self.PO)
+        data = _review(lh=lh)
+        assert data["po_reference"]["po_id"] == "po-1"
+
+
+class TestCreateItemSuggestion:
+    """A product the catalogue has never seen is the stock-item twin of
+    create_unit: no applyable value (Loaded must CREATE it first), so it rides
+    as a suggestion carrying the replica's proposed name and stock group.
+    Before this it was only a blocking issue plus a "link or create" button —
+    the one Norm proposal you couldn't accept, dismiss, or have recorded.
+    """
+
+    def _unmatched(self, **over):
+        # The copy bills a wine no catalogue item matches; the replica's
+        # matcher proposes a name and a stock group for it.
+        det = DETAIL()
+        det["lines"][0].update(
+            {
+                "code": "COSY22",
+                "description": "Alpha Domus Syrah 2022",
+                "linkedItemId": None,
+            }
+        )
+        ext = EXTRACTION()
+        ext["lines"][0].update(
+            {"code": "COSY22", "description": "Alpha Domus Syrah 2022"}
+        )
+        matcher = lambda *a, **k: {  # noqa: E731 — one-line stub
+            "rep-0": {
+                "suggested_name": over.get("name", "ALPHA DOMUS SYRAH 2022"),
+                "suggested_group_id": over.get("group", "grp-wine"),
+            }
+        }
+        return _review(
+            detail=det, extraction=ext, reference=REFERENCE(item_matcher=matcher)
+        )
+
+    def _create_sugg(self, data):
+        return next(
+            (s for s in data["suggestions"] if s["kind"] == "create_item"), None
+        )
+
+    def test_an_unmatched_product_offers_creation(self):
+        data = self._unmatched()
+        s = self._create_sugg(data)
+        assert s is not None
+        assert s["field"] == "linked_item_id" and s["line_id"] == "ld-1"
+        assert s["proposed"] == "ALPHA DOMUS SYRAH 2022"
+        assert s["payload"] == {
+            "name": "ALPHA DOMUS SYRAH 2022",
+            "group_id": "grp-wine",
+        }
+        assert "create it" in s["explanation"]
+
+    def test_no_stock_group_means_no_offer(self):
+        # Loaded's create REQUIRES a group; a name alone is not actionable, so
+        # the line falls back to the blocking issue and the manual form.
+        assert self._create_sugg(self._unmatched(group=None)) is None
+        assert "item_unmatched" in _issue_codes(self._unmatched(group=None))
+
+    def test_a_matched_line_is_never_offered_creation(self):
+        # The stock salmon invoice: Loaded's own code match linked it.
+        assert self._create_sugg(_review()) is None
+
+
+class TestSplitOrderClearsItsOwnRemedy:
+    """Loaded's PO↔invoice link is 1:1, so when a supplier splits an order the
+    sibling delivery holds the link and this invoice keeps only the REFERENCE.
+    That is a validated state — "splits validate against the order and receive
+    without re-linking" — so accepting the reference must clear the blocker.
+    It carried no clears_when, so the blocker outlived its own remedy and the
+    only way to receive was to wave it through by hand.
+    """
+
+    ISSUE = {
+        "id": "po_split_order",
+        "code": "po_split_order",
+        "blocking": True,
+        "line_id": None,
+        "message": "order 1520546: split across deliveries — 109924953 carries the link",
+    }
+
+    def _finalised(self, data):
+        return IR._finalise_issues([self.ISSUE], [], {}, require_valid_po=False)
+
+    def test_the_blocker_names_the_field_its_remedy_sets(self):
+        i = self._finalised({})[0]
+        assert i["clears_when"] == {
+            "scope": "header",
+            "field": "split_po_id",
+            "op": "not_null",
+        }
+
+    def test_keeping_the_reference_clears_it_and_the_invoice_is_receivable(self):
+        data = {"lines": [], "suggestion_actions": [], "issues": self._finalised({})}
+        assert compute_confidence(data) == "needs_review"
+        # What accepting the split_reference suggestion applies:
+        data["split_po_id"] = "po-1"
+        data["split_sibling_invoice_id"] = "inv-sib"
+        assert compute_confidence(data) == "ready"
+
+
+class TestBrandSuggestion:
+    """Loaded refuses to receive a line naming a brand it has no record for —
+    its own client blocks on it and do_receive guards the same way — so before
+    this the invoice just failed at submit with nothing to click (Bidfood
+    109945346: BIOZYME on CLEANER INDUSTRIAL ENZYME). The name comes from
+    LOADED's line; brands are deliberately NOT extracted from the copy.
+    """
+
+    def _with_brand(self, **over):
+        det = DETAIL()
+        det["lines"][0].update(
+            {
+                "brand": over.get("brand", "BIOZYME"),
+                "linkedBrandId": over.get("brand_id"),
+            }
+        )
+        return _review(detail=det)
+
+    def _brand_sugg(self, data):
+        return next(
+            (s for s in data["suggestions"] if s["kind"] == "create_brand"), None
+        )
+
+    def test_an_unknown_brand_offers_creation(self):
+        s = self._brand_sugg(self._with_brand())
+        assert s is not None
+        assert s["field"] == "linked_brand_id" and s["line_id"] == "ld-1"
+        assert s["proposed"] == "BIOZYME"
+        assert s["payload"] == {"brand_name": "BIOZYME"}
+        assert "isn't a brand in Loaded" in s["explanation"]
+
+    def test_a_known_brand_is_left_alone(self):
+        assert self._brand_sugg(self._with_brand(brand_id="brand-akaroa")) is None
+
+    def test_no_brand_no_suggestion(self):
+        assert self._brand_sugg(self._with_brand(brand="")) is None
+
+    def test_it_reads_loadeds_line_not_the_copy(self):
+        # Every line is covered, paired with a copy line or not — an
+        # unresolved brand blocks the receive either way.
+        det = DETAIL()
+        det["lines"].append(
+            {
+                "id": "ld-2",
+                "code": "ZZZ",
+                "description": "NOT ON THE COPY",
+                "unit": "Kilo",
+                "linkedUnitId": "u-kilo",
+                "quantityReceived": 1.0,
+                "unitCostExclTax": 1.0,
+                "saleTaxRate": 0.15,
+                "linkedItemId": "item-freight",
+                "brand": "GHOST BRAND",
+            }
+        )
+        data = _review(detail=det)
+        brands = [s for s in data["suggestions"] if s["kind"] == "create_brand"]
+        assert [s["line_id"] for s in brands] == ["ld-2"]

@@ -42,7 +42,9 @@ from app.services.autopilot_metrics import record_receive_outcome
 from app.services.invoice_po_reference import (
     attach_po_reference,
     enrich_loaded_snapshot,
+    fetch_po_reference,
     loaded_reference,
+    po_id_for,
     seed_working_from_loaded,
 )
 from app.services.invoice_replica import build_replica
@@ -323,9 +325,39 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
             proposed=rl.get("unit_create_name"),
             explanation=(
                 f"the copy's delivered unit '{rl.get('unit_create_name')}' doesn't "
-                f"exist in Loaded — create it, or keep '{ln.get('unit')}'"
+                f"exist in Loaded — create it"
             ),
             payload={"unit_name": rl.get("unit_create_name")},
+        )
+    # The copy's product isn't in the catalogue AT ALL. Exactly the unit case
+    # one level up: no applyable value (the item must be CREATED first), so it
+    # rides as a `create_item` suggestion carrying the replica's proposed name
+    # and stock group. Without it the only prompt was a blocking ISSUE and a
+    # "link or create" button on the line — every other proposal Norm makes is
+    # a suggestion you can accept, dismiss and have recorded.
+    #
+    # Both halves are required: Loaded's create needs a stock group, and a
+    # name we invented without one is not actionable.
+    if (
+        rl.get("suggested_name")
+        and rl.get("suggested_group_id")
+        and not ln.get("linked_item_id")
+    ):
+        _sugg(
+            suggestions,
+            "create_item",
+            field="linked_item_id",
+            line_id=lid,
+            current=None,
+            proposed=rl.get("suggested_name"),
+            explanation=(
+                f"'{desc}' isn't in the Loaded catalogue — create it as "
+                f"'{rl.get('suggested_name')}'"
+            ),
+            payload={
+                "name": rl.get("suggested_name"),
+                "group_id": rl.get("suggested_group_id"),
+            },
         )
 
 
@@ -338,6 +370,42 @@ _HEADER_VALUE_FIELDS = (
     ("discount_amount", "discount"),
     ("total", "total"),
 )
+
+
+def brand_suggestions(data: dict, suggestions: list[dict]) -> None:
+    """Offer to create a brand Loaded names on a line but has no record for.
+
+    Loaded refuses to receive such a line — its own client blocks on it and
+    ``do_receive`` guards the same way — so without this the invoice simply
+    failed at submit with nothing to click (Bidfood 109945346: BIOZYME on
+    CLEANER INDUSTRIAL ENZYME).
+
+    The name comes from LOADED's line, never from the copy: extracting brands
+    would generate a suggestion on nearly every line for no gain.
+
+    Over ALL lines, not just those the replica paired — an unresolved brand
+    blocks the receive whether or not the copy had anything to say about it.
+    """
+    for ln in data.get("lines") or []:
+        if not isinstance(ln, dict) or ln.get("struck"):
+            continue
+        brand = str(ln.get("brand") or "").strip()
+        if not brand or ln.get("linked_brand_id"):
+            continue
+        lid = str(ln.get("id"))
+        _sugg(
+            suggestions,
+            "create_brand",
+            field="linked_brand_id",
+            line_id=lid,
+            current=None,
+            proposed=brand,
+            explanation=(
+                f"'{brand}' isn't a brand in Loaded — create it "
+                "(Loaded won't receive a line naming a brand it doesn't have)"
+            ),
+            payload={"brand_name": brand},
+        )
 
 
 def order_item_suggestions(
@@ -720,6 +788,20 @@ def _finalise_issues(
                 "field": "linked_supplier_id",
                 "op": "not_null",
             }
+        if i.get("code") == "po_split_order":
+            # Its own remedy is the split_reference suggestion: keep the
+            # order's NUMBER without taking its link, because Loaded's
+            # PO↔invoice is 1:1 and the sibling delivery holds it. Accepting
+            # that sets split_po_id, and the reconciliation then runs against
+            # the order — which is exactly what "a split validates and
+            # receives without re-linking" means. Without this predicate the
+            # blocker outlived its own remedy and the only way through was to
+            # wave it by hand.
+            i["clears_when"] = {
+                "scope": "header",
+                "field": "split_po_id",
+                "op": "not_null",
+            }
         if i.get("code") in ("po_unresolved",) and not require_valid_po:
             i["blocking"] = False
         out.append(i)
@@ -964,6 +1046,12 @@ def review_invoice(
                 # note is simply total < 0, and it is a signal the extraction
                 # alone cannot supply.
                 loaded_total=data.get("total"),
+                # The supplier Loaded records for this invoice. When the
+                # invoice was raised from a purchase order this is the
+                # supplier a human picked at order time — not OCR — so it is
+                # a real identity hint when the printed name resolves to
+                # nothing on its own.
+                loaded_supplier_name=data.get("supplier_name"),
                 **(reference or {}),
             )
             data["replica"] = replica
@@ -977,6 +1065,38 @@ def review_invoice(
             suggestions, extra_issues, pairs = build_suggestions(data, replica)
             # Last word on an ambiguous supplier code: the order.
             order_item_suggestions(data, suggestions, catalogue)
+            # A brand Loaded names but has no record for blocks its own receive.
+            brand_suggestions(data, suggestions)
+            # Cache the rows of the order we're about to SUGGEST, so accepting
+            # that suggestion is instant: the projection (order date, per-line
+            # quantity ordered, "ordered, not delivered") is pure and recomputes
+            # on the accept patch itself. Without this the link landed with an
+            # empty Qty Ordered column until the draft was re-opened.
+            if not po_id_for(data):
+                apply = next(
+                    (
+                        s.get("apply") or {}
+                        for s in suggestions
+                        if s.get("kind") in ("link_po", "split_reference")
+                    ),
+                    {},
+                )
+                proposed = apply.get("linked_purchase_order_id") or apply.get(
+                    "split_po_id"
+                )
+                if proposed:
+                    try:
+                        fetch_po_reference(
+                            data,
+                            lh,
+                            po_id=proposed,
+                            # A split: the sibling's quantities are what let the
+                            # projection say "received on the other delivery"
+                            # instead of "never arrived".
+                            sibling_invoice_id=apply.get("split_sibling_invoice_id"),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — a pre-cache only
+                        logger.info("suggested order pre-cache failed: %s", exc)
             data["suggestions"] = suggestions
             data["issues"] = _finalise_issues(
                 replica.get("issues") or [],
