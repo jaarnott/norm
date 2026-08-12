@@ -105,6 +105,38 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     embedded && initialRecipe ? toDraft(initialRecipe) : null,
   );
 
+  // Upload → extract a draft recipe from a document (web-only; review-only —
+  // see the note in the card. Saving it as a NEW Loaded recipe needs a create
+  // path that doesn't exist yet).
+  interface Extracted { name?: string; yield_quantity?: number | null; yield_unit?: string | null; ingredients?: Array<{ name?: string; quantity?: number | null; unit?: string | null }>; method?: string | null }
+  const [extracted, setExtracted] = useState<Extracted | null>(null);
+  const [extracting, setExtracting] = useState(false);
+
+  const onDoc = async (file: File | null) => {
+    if (!file) return;
+    setExtracting(true);
+    setError(null);
+    setExtracted(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('extraction_target', 'recipe');
+      if (venueId) fd.append('venue_id', venueId);
+      const up = await apiFetch('/api/uploads', { method: 'POST', body: fd });
+      if (!up.ok) throw new Error('Upload failed');
+      const upj = await up.json();
+      const ex = await apiFetch(`/api/uploads/${upj.id}/extract-recipe`, { method: 'POST', body: '{}' });
+      if (!ex.ok) {
+        const t = await ex.json().catch(() => ({}));
+        throw new Error((t as { detail?: string }).detail || 'Extraction failed');
+      }
+      setExtracted(((await ex.json()) as { recipe?: Extracted }).recipe || null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not extract a recipe');
+    }
+    setExtracting(false);
+  };
+
   useEffect(() => {
     apiFetch('/api/venues')
       .then((r) => (r.ok ? r.json() : null))
@@ -299,6 +331,55 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   return (
     <div style={{ maxWidth: 820 }}>
       {venueBar}
+
+      {/* Upload a recipe document → extract a structured draft. Web-only: the
+          MCP iframe has no multipart upload. Review-only for now — see note. */}
+      {!embedded && (
+        <div style={{ margin: '0.25rem 0 0.9rem' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.85rem', border: `1px dashed ${colors.border}`, borderRadius: 8, background: '#fff', cursor: extracting ? 'default' : 'pointer', fontWeight: 600, color: colors.textPrimary, opacity: extracting ? 0.6 : 1 }}>
+            {extracting ? 'Reading document…' : 'Extract recipe from document'}
+            <input
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,image/*,application/pdf"
+              disabled={extracting}
+              onChange={(e) => { onDoc(e.target.files?.[0] || null); e.target.value = ''; }}
+              style={{ display: 'none' }}
+            />
+          </label>
+          <span style={{ marginLeft: '0.6rem', color: colors.textMuted, fontSize: '0.82rem' }}>PDF or image</span>
+        </div>
+      )}
+
+      {extracted && (
+        <div style={{ margin: '0 0 1rem', padding: '0.9rem 1rem', border: `1px solid ${colors.border}`, borderRadius: 10, background: '#fbf7f4' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '1rem' }}>
+            <strong style={{ color: colors.textPrimary, fontSize: '1.05rem' }}>{extracted.name || 'Untitled recipe'}</strong>
+            <button onClick={() => setExtracted(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: '1.1rem', lineHeight: 1 }} aria-label="Dismiss">×</button>
+          </div>
+          {(extracted.yield_quantity != null || extracted.yield_unit) && (
+            <div style={{ color: colors.textMuted, fontSize: '0.85rem', marginTop: '0.15rem' }}>
+              Yields {extracted.yield_quantity ?? ''} {extracted.yield_unit || ''}
+            </div>
+          )}
+          {!!extracted.ingredients?.length && (
+            <ul style={{ margin: '0.6rem 0 0', paddingLeft: '1.1rem', color: colors.textPrimary }}>
+              {extracted.ingredients.map((ing, i) => (
+                <li key={i} style={{ marginBottom: '0.15rem' }}>
+                  {ing.quantity ?? ''} {ing.unit || ''} {ing.name || ''}
+                </li>
+              ))}
+            </ul>
+          )}
+          {extracted.method && (
+            <p style={{ margin: '0.6rem 0 0', color: colors.textSecondary, fontSize: '0.88rem', whiteSpace: 'pre-wrap' }}>{extracted.method}</p>
+          )}
+          <div style={{ marginTop: '0.7rem', color: colors.textMuted, fontSize: '0.78rem', fontStyle: 'italic' }}>
+            Extracted for review. Creating a new Loaded recipe from a document isn&apos;t available yet — copy these into an existing recipe above.
+          </div>
+        </div>
+      )}
+
+      {error && !draft && <div style={{ color: colors.error, padding: '0.4rem 0' }}>{error}</div>}
       {loading && <div style={{ color: colors.textMuted, padding: '1rem 0' }}>Loading…</div>}
       {!loading && recipes.length === 0 && <div style={{ color: colors.textMuted, padding: '1rem 0' }}>No recipes.</div>}
       {recipes.map((r) => (

@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     JSON,
     Boolean,
+    LargeBinary,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -483,6 +484,28 @@ class WorkingDocument(Base):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     thread = relationship("Thread", back_populates="working_documents")
+
+
+class UploadedDocument(Base):
+    """A document a user uploaded — a Norm-wide capability.
+
+    The bytes live in the DB (LargeBinary), matching the only in-repo binary
+    precedent (SupplierSpecSample). ``extraction_target`` names what the upload
+    is for (e.g. "recipe"), so one generic upload endpoint can hand it to the
+    right extractor. Kept small — the router caps size; recipe docs are a few MB.
+    """
+
+    __tablename__ = "uploaded_documents"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    filename = Column(String, nullable=True)
+    content_type = Column(String, nullable=True)
+    size = Column(Integer, nullable=True)
+    data = Column(LargeBinary, nullable=False)
+    extraction_target = Column(String, nullable=True)  # e.g. "recipe"
+    created_at = Column(DateTime(timezone=True), default=_now)
 
 
 class DocumentExtraction(Base):

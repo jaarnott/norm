@@ -417,6 +417,7 @@ async def delete_venue(
         Report,
         Thread,
         ToolCall,
+        UploadedDocument,
         WorkingDocument,
     )
 
@@ -452,6 +453,10 @@ async def delete_venue(
         HiringCriteria,
         AutomatedTask,
         WorkingDocument,
+        # An uploaded document is owned by the user who uploaded it; the
+        # venue_id is just the venue it was uploaded against. Drop the tag,
+        # keep the upload.
+        UploadedDocument,
         # How well Norm did on this venue's invoices is evidence about NORM,
         # not about the venue — it stays useful after the venue is gone.
         InvoiceAutopilotOutcome,
