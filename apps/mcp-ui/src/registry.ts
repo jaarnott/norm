@@ -23,6 +23,7 @@ import RosterEditor from '../../web/app/components/display/RosterEditor';
 import PurchaseOrderEditor from '../../web/app/components/display/PurchaseOrderEditor';
 import ReceiveInvoiceEditor from '../../web/app/components/display/ReceiveInvoiceEditor';
 import MenuEditor from '../../web/app/components/display/MenuEditor';
+import RecipeEditor from '../../web/app/components/display/RecipeEditor';
 import WorkflowResult from './WorkflowResult';
 
 // Structurally DisplayBlockProps, declared locally so we don't import
@@ -53,6 +54,10 @@ export const REGISTRY: Record<string, ComponentType<BlockProps>> = {
   // norm__menu_component_api (mcp:menus:read), edits locally, and Save writes
   // back to Loaded through norm__save_menu — the user's click is the approval.
   menu_editor: MenuEditor as ComponentType<BlockProps>,
+  // The recipe editor: reads direct via norm__recipe_component_api
+  // (mcp:recipes:read); Save routes through norm__save_recipe (Cook Brothers
+  // App) — the user's click is the approval.
+  recipe_editor: RecipeEditor as ComponentType<BlockProps>,
   // Status card for playbook outcomes that aren't a draft we can edit
   // (running / completed / pending approval).
   workflow_result: WorkflowResult,

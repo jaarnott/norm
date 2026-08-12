@@ -53,7 +53,12 @@ ALLOWED_ACCESS_LEVELS = frozenset({ACCESS_READ, ACCESS_DRAFT, ACCESS_WRITE})
 # scope NOT listed here fails validate_scope_vocabulary at import — deliberate
 # friction so a new write is never added by pattern.
 _WRITE_SCOPES = frozenset(
-    {"mcp:orders:submit", "mcp:invoices:receive", "mcp:menus:write"}
+    {
+        "mcp:orders:submit",
+        "mcp:invoices:receive",
+        "mcp:menus:write",
+        "mcp:recipes:write",
+    }
 )
 
 
@@ -188,6 +193,26 @@ MCP_SCOPES: dict[str, McpScope] = {
         description="Lets YOU save an edited menu back to Loaded by pressing "
         "Save inside the embedded menu editor. Claude cannot trigger this "
         "itself — only your click saves the menu, exactly as shown.",
+        access_level=ACCESS_WRITE,
+        requires=frozenset({"orders:read", "orders:write"}),
+    ),
+    # Recipes — a venue's recipes (ingredients, yields, versions). Reads are
+    # direct loadedhub; the write is routed through the Cook Brothers App. Gated
+    # on orders:read/write like menus (no stock/recipe org scope exists).
+    "mcp:recipes:read": McpScope(
+        name="mcp:recipes:read",
+        label="View recipes",
+        description="See your venues' recipes — their ingredients, quantities, "
+        "units and yields.",
+        access_level=ACCESS_READ,
+        requires=frozenset({"orders:read"}),
+    ),
+    "mcp:recipes:write": McpScope(
+        name="mcp:recipes:write",
+        label="Save recipes you approve",
+        description="Lets YOU save an edited recipe back to Loaded by pressing "
+        "Save inside the embedded recipe editor. Claude cannot trigger this "
+        "itself — only your click saves the recipe, exactly as shown.",
         access_level=ACCESS_WRITE,
         requires=frozenset({"orders:read", "orders:write"}),
     ),

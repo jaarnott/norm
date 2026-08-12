@@ -1,0 +1,167 @@
+"""Save a recipe to LoadedHub — the one place recipe writes happen.
+
+Loaded's only recipe-write API is its legacy ``/wapi`` host, which Norm's own
+OAuth token can't authenticate against. So recipe writes are routed through the
+Cook Brothers App MCP connector's ``kitchen_loadedhub_update_recipe`` tool (its
+stored per-org token DOES reach the legacy host). Recipe *reads* stay direct on
+the loadedhub connector — see ``sync_recipe_component_apis.py``.
+
+The write tool wants the CB App's OWN venue id (not Norm's), so we resolve it
+from ``list_venues`` on the same connection. Quantities on the wire are DISPLAY
+units for each line's ``unit_id`` — the RecipeEditor already converts Loaded's
+raw base quantities to display on load (``qty / unitRatio``), so the lines it
+sends here pass straight through.
+
+One writer, two front doors: the web route (routers/recipe_editor) and the MCP
+app tool (``norm__save_recipe``) both call ``save_recipe``.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+CONNECTOR = "cook_brothers_app"
+SAVE_ACTION = "kitchen_loadedhub_update_recipe"
+LIST_VENUES_ACTION = "list_venues"
+
+
+class RecipeSaveError(Exception):
+    """Recoverable failure saving a recipe; message goes back to the caller."""
+
+
+def _op(spec, action: str) -> dict:
+    for t in spec.tools or []:
+        if t.get("action") == action:
+            return t
+    raise RecipeSaveError(
+        f"The Cook Brothers App connector has no '{action}' tool. "
+        "Run sync-mcp-tools to discover it."
+    )
+
+
+def _cb_context(venue_id: str, db: Session, config_db: Session):
+    """The CB App spec + this venue's credentials, or a clear error."""
+    from app.db.config_models import ConnectorSpec
+    from app.db.models import ConnectorConfig
+
+    spec = (
+        config_db.query(ConnectorSpec)
+        .filter(ConnectorSpec.connector_name == CONNECTOR)
+        .first()
+    )
+    if not spec:
+        raise RecipeSaveError("The Cook Brothers App connector is not configured.")
+
+    cfg = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == CONNECTOR,
+            ConnectorConfig.enabled == "true",
+            ConnectorConfig.venue_id == venue_id,
+        )
+        .first()
+    )
+    if not cfg:
+        raise RecipeSaveError(
+            "This venue isn't connected to the Cook Brothers App. Connect it in "
+            "Settings to save recipes."
+        )
+    return spec, cfg
+
+
+def resolve_cb_venue_id(venue_id: str, db: Session, config_db: Session) -> str:
+    """The CB App's own venue id for this Norm venue.
+
+    The connection's token grants a set of CB venues; pick the one that matches
+    this Norm venue by name, or the only one if it grants exactly one.
+    """
+    from app.connectors.spec_executor import execute_spec
+    from app.db.models import Venue
+
+    spec, cfg = _cb_context(venue_id, db, config_db)
+    result, _ = execute_spec(
+        spec, _op(spec, LIST_VENUES_ACTION), {}, cfg.config, db, venue_id=venue_id
+    )
+    if not result.success:
+        raise RecipeSaveError(
+            f"Couldn't list Cook Brothers App venues: {result.error_message}"
+        )
+    payload = result.response_payload or {}
+    data = payload.get("data") if isinstance(payload, dict) else payload
+    venues = data.get("venues") if isinstance(data, dict) else data
+    venues = venues if isinstance(venues, list) else []
+    if not venues:
+        raise RecipeSaveError("The Cook Brothers App connection grants no venues.")
+    if len(venues) == 1:
+        return venues[0].get("id")
+
+    venue = db.query(Venue).filter(Venue.id == venue_id).first()
+    name = (venue.name if venue else "").strip().lower()
+    for v in venues:
+        vn = str(v.get("name") or "").strip().lower()
+        if vn and (vn == name or vn in name or name in vn):
+            return v.get("id")
+    raise RecipeSaveError(
+        "Couldn't match this venue to a Cook Brothers App venue. Reconnect the "
+        "Cook Brothers App for the correct venue."
+    )
+
+
+def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) -> dict:
+    """Save a recipe version to Loaded via the Cook Brothers App.
+
+    ``recipe`` carries what the editor built: ``recipe_id``, ``version_id``,
+    optional ``name``/``notes``/``is_counted_in_stocktake``/``yield_quantity``/
+    ``yield_unit_id``, and ``lines`` (each ``{kind, ref_id, unit_id, quantity}``
+    in DISPLAY units — a full replacement of the version's lines).
+    """
+    from app.connectors.spec_executor import ConnectorAuthError, execute_spec
+
+    if not isinstance(recipe, dict) or not recipe.get("recipe_id"):
+        raise RecipeSaveError("recipe must include a recipe_id.")
+    if not recipe.get("version_id"):
+        raise RecipeSaveError("recipe must include a version_id (from the load).")
+    lines = recipe.get("lines")
+    if lines is not None and (not isinstance(lines, list) or len(lines) > 500):
+        raise RecipeSaveError("lines must be a list of at most 500 entries.")
+
+    spec, cfg = _cb_context(venue_id, db, config_db)
+    cb_venue_id = resolve_cb_venue_id(venue_id, db, config_db)
+
+    fields = {"venue_id": cb_venue_id}
+    for k in (
+        "recipe_id",
+        "version_id",
+        "name",
+        "notes",
+        "is_counted_in_stocktake",
+        "yield_quantity",
+        "yield_unit_id",
+        "lines",
+    ):
+        if recipe.get(k) is not None:
+            fields[k] = recipe[k]
+
+    logger.info(
+        "recipe_save",
+        extra={
+            "venue_id": venue_id,
+            "recipe_id": recipe.get("recipe_id"),
+            "lines": len(lines or []),
+        },
+    )
+    try:
+        result, _ = execute_spec(
+            spec, _op(spec, SAVE_ACTION), fields, cfg.config, db, venue_id=venue_id
+        )
+    except ConnectorAuthError as exc:
+        raise RecipeSaveError(str(exc)) from exc
+    if not result.success:
+        raise RecipeSaveError(result.error_message or "Loaded rejected the save.")
+    # The CB response echoes a placeholder version, so callers should re-read the
+    # recipe rather than trust the returned body.
+    return {"saved": True, "detail": result.response_payload}

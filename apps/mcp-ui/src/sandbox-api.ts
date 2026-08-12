@@ -161,6 +161,24 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
       return jsonResponse(false, {}, 502);
     }
   }
+  // Save recipe — the one recipe write, routed to the Cook Brothers App through
+  // norm__save_recipe. The editor POSTs {venue_id, recipe}.
+  if (/\/api\/recipe-editor\/save$/.test(url) && (init?.method || '').toUpperCase() === 'POST') {
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    try {
+      const reply = await window.NormApp.callTool('norm__save_recipe', {
+        venue_id: body.venue_id,
+        recipe: body.recipe,
+      });
+      const p = (toolPayload(reply) ?? {}) as { saved?: boolean; detail?: unknown };
+      if (isErrorReply(reply) || p.saved === false) {
+        return jsonResponse(false, { detail: p.detail ?? 'Save failed' }, 400);
+      }
+      return jsonResponse(true, p);
+    } catch {
+      return jsonResponse(false, {}, 502);
+    }
+  }
   return jsonResponse(false, { detail: 'Not available in this surface' }, 404);
 }
 
@@ -214,7 +232,11 @@ export async function callComponentApi(
   // component, which expects the full array in one go. The menu editor's reads
   // route to a menus-scoped bridge (mcp:menus:read) — MCP scope projection is
   // all-of, so they can't share the orders-scoped norm__component_api.
-  const readTool = componentKey === 'menu_editor' ? 'norm__menu_component_api' : 'norm__component_api';
+  const readTool = componentKey === 'menu_editor'
+    ? 'norm__menu_component_api'
+    : componentKey === 'recipe_editor'
+      ? 'norm__recipe_component_api'
+      : 'norm__component_api';
   const all: unknown[] = [];
   let page = 0;
   let totalPages = 1;

@@ -33,7 +33,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 AGENT_SLUG = "executive_chef"
 DISPLAY_NAME = "Executive Chef"
-DESCRIPTION = "Manages recipes and menus in LoadedHub, and extracts recipes from documents"
+DESCRIPTION = (
+    "Manages recipes and menus in LoadedHub, and extracts recipes from documents"
+)
 
 SYSTEM_PROMPT = """You are the executive chef agent for Norm, a hospitality operations platform.
 Today's date is {{today}}.
@@ -84,17 +86,13 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    from app.db.config_models import AgentConfig, AgentConnectorBinding
+    from app.db.config_models import AgentConfig, AgentConnectorBinding, ConnectorSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     try:
         # --- 1. agent_configs -------------------------------------------------
-        cfg = (
-            db.query(AgentConfig)
-            .filter(AgentConfig.agent_slug == AGENT_SLUG)
-            .first()
-        )
+        cfg = db.query(AgentConfig).filter(AgentConfig.agent_slug == AGENT_SLUG).first()
         if cfg:
             cfg.display_name = DISPLAY_NAME
             cfg.description = DESCRIPTION
@@ -114,7 +112,29 @@ def main() -> None:
             print(f"creating agent_configs '{AGENT_SLUG}'")
 
         # --- 2. agent_connector_bindings: loadedhub --------------------------
-        caps = [{"action": a} for a in LOADEDHUB_ACTIONS]
+        # Full capability dicts (action + label + enabled) — the shape every
+        # other agent binding uses. The Settings UI reads each cap's `enabled`
+        # to show its toggle as on; a capability WITHOUT that field renders as
+        # OFF (so the binding looks "not set up"), even though the agent's
+        # prompt builder defaults a missing `enabled` to True.
+        spec = (
+            db.query(ConnectorSpec)
+            .filter(ConnectorSpec.connector_name == "loadedhub")
+            .first()
+        )
+        tool_desc = (
+            {t.get("action"): t.get("description", "") for t in (spec.tools or [])}
+            if spec
+            else {}
+        )
+        caps = [
+            {
+                "action": a,
+                "label": tool_desc.get(a) or a.replace("_", " ").title(),
+                "enabled": True,
+            }
+            for a in LOADEDHUB_ACTIONS
+        ]
         binding = (
             db.query(AgentConnectorBinding)
             .filter(

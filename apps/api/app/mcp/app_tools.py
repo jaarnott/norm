@@ -74,6 +74,18 @@ MENU_COMPONENT_API_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+# The recipe editor's reference reads (all direct loadedhub), reached through
+# norm__recipe_component_api (scope mcp:recipes:read). The recipe SAVE is not
+# here — it is reachable only through norm__save_recipe (Cook Brothers App).
+RECIPE_COMPONENT_API_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("recipe_editor", "list_recipes"),
+        ("recipe_editor", "get_recipe"),
+        ("recipe_editor", "list_stock_items"),
+        ("recipe_editor", "list_units"),
+    }
+)
+
 # Document kinds the ORDER scope may open. A draft scope authorizes one kind
 # of document, not every document that happens to hang off the same thread:
 # mcp:orders:draft must not be a way to edit a roster. That is not
@@ -323,6 +335,56 @@ def app_tool_defs(mcp_ui_enabled: bool) -> list[dict]:
             },
         },
         {
+            "name": "norm__recipe_component_api",
+            "method": "GET",
+            "access": ACCESS_READ,
+            "scopes": frozenset({"mcp:recipes:read"}),
+            "description": (
+                "Read-only reference data for Norm's embedded recipe editor (the "
+                "recipe list, one recipe's detail, stock items and units). Large "
+                "results are paged: pass page (0-based) and read total_pages from "
+                "the response. Used by the recipe editor; you rarely need it."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "venue_id": {"type": "string"},
+                    "component_key": {"type": "string"},
+                    "action_name": {"type": "string"},
+                    "params": {"type": "object"},
+                    "page": {"type": "integer", "minimum": 0},
+                },
+                "required": ["venue_id", "component_key", "action_name"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "norm__save_recipe",
+            "method": "POST",
+            "access": ACCESS_WRITE,
+            "scopes": frozenset({"mcp:recipes:write"}),
+            "description": (
+                "Save a recipe version to Loaded (through the Cook Brothers App). "
+                "ONLY call this when the user has pressed Save in the embedded "
+                "recipe editor — never on your own initiative. The recipe is "
+                "written exactly as passed."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "venue_id": {"type": "string"},
+                    "recipe": {
+                        "type": "object",
+                        "description": "The recipe the editor built: recipe_id, "
+                        "version_id, name, yield_quantity, yield_unit_id, and "
+                        "lines[] (each kind/ref_id/name/unit_id/quantity).",
+                    },
+                },
+                "required": ["venue_id", "recipe"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "norm__place_stock_order",
             "method": "POST",
             "access": ACCESS_WRITE,
@@ -481,6 +543,12 @@ def execute_app_tool(
         return _component_api(
             params, principal, db, config_db, allowlist=MENU_COMPONENT_API_ALLOWLIST
         )
+    if name == "norm__recipe_component_api":
+        return _component_api(
+            params, principal, db, config_db, allowlist=RECIPE_COMPONENT_API_ALLOWLIST
+        )
+    if name == "norm__save_recipe":
+        return _save_recipe(params, principal, db, config_db)
     if name == "norm__place_stock_order":
         return _place_stock_order(params, principal, db, config_db)
     if name == "norm__receive_invoice":
@@ -710,6 +778,42 @@ def _save_menu(
         "status_code": result.get("status_code"),
         "detail": result.get("data"),
     }
+
+
+def _save_recipe(
+    params: dict, principal: McpPrincipal, db: Session, config_db: Session
+) -> dict:
+    """Save a recipe to Loaded — the recipe editor's Save button.
+
+    Routes through the Cook Brothers App (recipe_save.save_recipe); the user's
+    click is the approval.
+    """
+    from app.services.recipe_save import RecipeSaveError, save_recipe
+
+    venue_id = str(params.get("venue_id") or "")
+    _authorize_venue_id(principal, venue_id, db)
+
+    recipe = params.get("recipe")
+    if not isinstance(recipe, dict) or not recipe.get("recipe_id"):
+        raise AppToolError("recipe must be an object with a recipe_id.")
+    lines = recipe.get("lines")
+    if lines is not None and (not isinstance(lines, list) or len(lines) > 500):
+        raise AppToolError("recipe.lines must be a list of at most 500 entries.")
+
+    logger.info(
+        "mcp_save_recipe",
+        extra={
+            "venue_id": venue_id,
+            "recipe_id": recipe.get("recipe_id"),
+            "lines": len(lines or []),
+            "user_id": principal.user_id,
+        },
+    )
+    try:
+        result = save_recipe(venue_id, recipe, db, config_db)
+    except RecipeSaveError as e:
+        return {"saved": False, "detail": str(e)}
+    return {"saved": True, "detail": result.get("detail")}
 
 
 def _place_stock_order(

@@ -17,6 +17,7 @@ import ToolApprovalCard from './ToolApprovalCard';
 import ReceiveInvoiceEditor from './ReceiveInvoiceEditor';
 import InvoicesDashboard from './InvoicesDashboard';
 import MenuEditor from './MenuEditor';
+import RecipeEditor from './RecipeEditor';
 import DashboardView from './DashboardView';
 import VenuePicker from './VenuePicker';
 import StockPicker from './StockPicker';
@@ -31,7 +32,7 @@ export interface DisplayBlockProps {
 }
 
 /** Components that render full-width above the conversation instead of inline in chat bubbles */
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'dashboard_view']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'recipe_editor', 'dashboard_view']);
 
 // The single source of truth for which display components EXIST. The admin
 // Settings → Components panel derives its catalogue from these keys (with a
@@ -52,6 +53,7 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   orders_dashboard: OrdersDashboard,
   invoices_dashboard: InvoicesDashboard,
   menu_editor: MenuEditor,
+  recipe_editor: RecipeEditor,
   tool_approval: ToolApprovalCard,
   receive_invoice_editor: ReceiveInvoiceEditor,
   venue_picker: VenuePicker,

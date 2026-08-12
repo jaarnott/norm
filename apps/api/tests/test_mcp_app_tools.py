@@ -143,6 +143,8 @@ class TestProjection:
             "norm__component_api",
             "norm__menu_component_api",
             "norm__save_menu",
+            "norm__recipe_component_api",
+            "norm__save_recipe",
             "norm__place_stock_order",
             "norm__receive_invoice",
         }
@@ -156,6 +158,8 @@ class TestProjection:
         assert defs["norm__receive_invoice"]["scopes"] == {"mcp:invoices:receive"}
         assert defs["norm__save_menu"]["scopes"] == {"mcp:menus:write"}
         assert defs["norm__menu_component_api"]["scopes"] == {"mcp:menus:read"}
+        assert defs["norm__save_recipe"]["scopes"] == {"mcp:recipes:write"}
+        assert defs["norm__recipe_component_api"]["scopes"] == {"mcp:recipes:read"}
 
     def test_project_tools_gates_on_scopes(self, db_session):
         # Locally and in CI the config tables share the test DB (see

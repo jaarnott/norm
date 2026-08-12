@@ -121,6 +121,10 @@ TOOL_COMPONENT: dict[tuple[str, str], str] = {
     # menu. Interactive here: recipe options and Save route back through
     # norm__menu_component_api / norm__save_menu (the venue rides in as a prop).
     ("loadedhub", "get_menu"): "menu_editor",
+    # get_recipe_details hands the raw recipe (with its current version + lines)
+    # to the recipe editor, opened on that recipe. Reads are direct; Save routes
+    # through the Cook Brothers App (norm__save_recipe). Venue rides in as a prop.
+    ("loadedhub", "get_recipe_details"): "recipe_editor",
 }
 
 # Bespoke apps for a connector tool, keyed by (connector, action). Empty: the
