@@ -495,7 +495,8 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
                     (
                         line
                         for line in g.get("lines", [])
-                        if isinstance(line, dict) and line.get("id") == op.get("line_id")
+                        if isinstance(line, dict)
+                        and line.get("id") == op.get("line_id")
                     ),
                     None,
                 )

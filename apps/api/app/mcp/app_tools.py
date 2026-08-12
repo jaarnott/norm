@@ -676,9 +676,7 @@ def _save_menu(
     groups = menu.get("groups") or []
     if not isinstance(groups, list) or len(groups) > 100:
         raise AppToolError("menu.groups must be a list of at most 100 sections.")
-    total_lines = sum(
-        len(g.get("lines") or []) for g in groups if isinstance(g, dict)
-    )
+    total_lines = sum(len(g.get("lines") or []) for g in groups if isinstance(g, dict))
     if total_lines > 1000:
         raise AppToolError("Too many menu lines in one save (max 1000).")
 
