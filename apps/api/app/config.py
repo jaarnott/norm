@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     SENTRY_DSN: str = ""
     GCP_PROJECT_ID: str = ""
 
+    # ── Out-of-process work ─────────────────────────────────────────────
+    # The dojo sensei is a 1-2 minute strong-model run that also re-extracts
+    # every sibling sample, so it belongs in its own container: inside the web
+    # process it aborted production twice (12 and 13 Aug 2026) and its daemon
+    # thread died with the container, stranding the sample at "analysing".
+    # Set SENSEI_JOB to the Cloud Run job name to run it out there; leave it
+    # empty (local, tests, CI) and it falls back to the in-process thread.
+    SENSEI_JOB: str = ""
+    GCP_REGION: str = "australia-southeast1"
+
     # ── Helpers ─────────────────────────────────────────────────────────
 
     @property

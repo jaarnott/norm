@@ -1354,30 +1354,18 @@ def _stage_and_analyse(
 
     Raises RuntimeError when the invoice has no copy attached.
     """
-    import threading
-
-    from app.services import spec_dojo
+    from app.services import sensei_runner, spec_dojo
 
     staged = spec_dojo.stage_invoice_sample(db, venue_id, invoice_id, draft=draft)
     sample_id = staged["sample_id"]
     if not analyse:
         return staged
 
-    def _run_analysis() -> None:
-        from app.db.engine import SessionLocal, _ConfigSessionLocal as _CSL
-
-        wdb, acdb = SessionLocal(), _CSL()
-        try:
-            spec_dojo.analyse_sample(wdb, acdb, sample_id)
-        except Exception:  # noqa: BLE001 — background; the sample records its own failure
-            logger.exception("background dojo analysis failed for %s", sample_id)
-        finally:
-            wdb.close()
-            acdb.close()
-
-    threading.Thread(
-        target=_run_analysis, daemon=True, name=f"dojo-analysis-{sample_id[:8]}"
-    ).start()
+    # Out of process where a job is configured, in a thread otherwise. This
+    # used to be a bare daemon thread, which died with its container and left
+    # the sample reading "sensei analysing…" until a staleness rule noticed.
+    where = sensei_runner.start_analysis(sample_id)
+    logger.info("dojo analysis for %s started (%s)", sample_id, where)
     return staged
 
 
