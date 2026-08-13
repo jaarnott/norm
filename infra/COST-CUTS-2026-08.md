@@ -58,6 +58,19 @@ scheduler ticks, zero human requests.
   7d, IAM auth on + github-deploy IAM user). All 52 tables row-count-verified
   against the source, DATABASE_URL secret v3 + Cloud Run/migrate-job
   annotations repointed, login endpoint verified reading the new DB.
+- **MISSED, and it broke production migrations for 3 days (found 13 Aug):**
+  the migrate job does not use `DATABASE_URL` — it reads a SEPARATE secret,
+  **`DATABASE_URL_DIRECT`**, which still held the OLD instance's private IP
+  `10.31.0.2`. Repointing the job's Cloud SQL *annotation* was not enough.
+  Every `norm-migrate-production` run failed on "is the server running on that
+  host" from 10 Aug, and `deploy-env.yml` swallowed it with `|| echo`, so the
+  pipeline stayed green while THREE revisions went unapplied — PKCE
+  `oauth_states`, `invoice_autopilot_outcomes`, `uploaded_documents`. Code
+  that needed those tables shipped without them and failed silently in
+  production. Fixed: secret v2 → `10.31.0.38`, job re-run (now at head), and
+  the workflow now fails the deploy on a migration error.
+  **Lesson: after moving a database, grep every secret for the old host —
+  not just the resources that obviously reference it.**
 - **Old `norm-production` instance: STOPPED, kept as fallback.** Its 200 GB
   disk still bills (~$37/mo) until deleted — **delete after a stable week**:
   `gcloud sql instances delete norm-production --project=norm-production-491101`

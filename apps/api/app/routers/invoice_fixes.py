@@ -1442,6 +1442,10 @@ async def cannot_receive(
         "staged": bool(staged),
         "sample_id": staged.get("sample_id"),
         "spec_name": staged.get("spec_name"),
+        # Was it ALREADY a dojo sample before this press? Staging is idempotent,
+        # so a second press is a silent no-op — the card needs to say "already
+        # filed" rather than claim it just did something.
+        "already_in_dojo": bool(staged.get("already_in_dojo")),
         "reason": stage_error,
     }
 

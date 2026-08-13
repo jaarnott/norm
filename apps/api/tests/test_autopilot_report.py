@@ -174,7 +174,11 @@ class TestCannotReceive:
             json={"venue_id": v.id, "invoice_id": "inv-x", "reason": "unit is wrong"},
         )
         assert res.status_code == 200, res.text
-        assert res.json()["staged"] is True
+        body = res.json()
+        assert body["staged"] is True
+        # The card branches on these — a repeat press must not claim it filed
+        # something, and a copy-less invoice must not claim it at all.
+        assert body["already_in_dojo"] is False
         # NOT a draft. Drafts are the Dojo page's "somebody expanded this row"
         # state and are hidden from "awaiting review", so filing a human's
         # explicit verdict that way made the button look like it did nothing.

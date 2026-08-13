@@ -959,9 +959,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id }),
       });
       if (!res.ok) throw new Error(`Error ${res.status}`);
+      // Report what HAPPENED, not what we asked for. The endpoint answers 200
+      // in three different situations and they are not the same news: filed,
+      // already filed (staging is idempotent, so a second press changes
+      // nothing), and couldn't file at all because Loaded holds no copy of
+      // the invoice. Claiming "filed" for all three is how this button spent
+      // a day looking like it worked while nothing reached the Dojo.
+      const out = await res.json().catch(() => ({}));
       setCannotState('filed');
-      setMessage('Filed for training — an admin will review it in the Dojo');
       setStatus('idle');
+      if (!out.staged) {
+        setMessage(
+          out.reason
+            ? `Recorded, but it can't be filed for training: ${out.reason}`
+            : "Recorded, but there's no invoice copy in Loaded to train on",
+        );
+      } else if (out.already_in_dojo) {
+        setMessage('Already in the Dojo — nothing more to file');
+      } else {
+        setMessage('Filed for training — an admin will review it in the Dojo');
+      }
     } catch (e) {
       setCannotState(null);
       setMessage(e instanceof Error ? e.message : 'Could not file this invoice');
