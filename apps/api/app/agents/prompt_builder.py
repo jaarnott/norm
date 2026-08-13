@@ -568,6 +568,8 @@ The user has access to multiple venues:
                 "roster": "Roster",
                 "hiring": "Hiring",
                 "orders": "Orders",
+                "recipes": "Recipes",
+                "menus": "Menus",
                 "saved-reports": "Saved Reports",
                 "tasks-hr": "HR Automated Tasks",
                 "tasks-procurement": "Procurement Automated Tasks",
@@ -581,6 +583,36 @@ The user has access to multiple venues:
 ## Current Page Context
 The user is currently viewing the **{page_label}** page.
 Their question likely relates to what they see on this page. Prioritize answers relevant to this context.
+"""
+
+            # If a document is open (e.g. the recipe being edited), give the agent
+            # its identifiers + current state so "change the salt to 5g" resolves
+            # to THIS recipe without asking which one.
+            document = (
+                page_context.get("document") if isinstance(page_context, dict) else None
+            )
+            if isinstance(document, dict) and document.get("kind") == "recipe":
+                _lines = document.get("lines") or []
+                _line_txt = "\n".join(
+                    f"  - [{ln.get('id')}] {ln.get('name')}: {ln.get('quantity')} {ln.get('unit') or ''}".rstrip()
+                    for ln in _lines
+                    if isinstance(ln, dict)
+                )
+                system_prompt += f"""
+
+## Open Recipe (act on THIS one)
+The user has this recipe open in the editor. To change it, call the `edit_recipe`
+tool with EXACTLY these ids (opaque GUIDs you cannot guess otherwise):
+- recipe_id: {document.get("recipe_id")}
+- venue_id: {document.get("venue_id")}
+Recipe: {document.get("name")}
+Current lines (id, name, quantity, unit):
+{_line_txt or "  (none)"}
+
+Pass only the fields you're changing in `changes` (they merge into the draft) —
+address a line by its id or a `match` on its name. edit_recipe edits the shared
+draft only; it does NOT save to Loaded. Tell the user the change is on the card
+and they can press Save.
 """
 
         # Always add parallel tool-use guidance (standard mode only)

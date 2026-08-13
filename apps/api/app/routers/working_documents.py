@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -512,6 +513,36 @@ def _apply_op(data: dict | list, op: dict) -> dict | list:
                 ]
 
         data["groups"] = groups
+        return data
+
+    # --- Recipe operations (ingredient lines, addressed by line id) ---
+    # A recipe draft's lines are flat (unlike the menu's group nesting) but need
+    # their own ops so an ingredient's kind/ref/unit/quantity are addressed by a
+    # stable id — server rebuilds may reorder, so index-addressing is unsafe.
+    # Recipe name / yield / stocktake flag go through update_header; the method
+    # goes through update_notes.
+    if op_type in ("add_recipe_line", "update_recipe_line", "remove_recipe_line"):
+        if not isinstance(data, dict):
+            return data
+        lines = data.get("lines")
+        if not isinstance(lines, list):
+            lines = []
+        if op_type == "add_recipe_line":
+            new_line = {k: v for k, v in dict(op.get("line", {})).items()}
+            new_line.setdefault("id", op.get("line_id") or str(uuid.uuid4()))
+            lines.append(new_line)
+        elif op_type == "update_recipe_line":
+            lid = op.get("line_id")
+            for ln in lines:
+                if isinstance(ln, dict) and ln.get("id") == lid:
+                    ln.update(op.get("fields", {}))
+                    break
+        elif op_type == "remove_recipe_line":
+            lid = op.get("line_id")
+            lines = [
+                ln for ln in lines if not (isinstance(ln, dict) and ln.get("id") == lid)
+            ]
+        data["lines"] = lines
         return data
 
     # --- Order operations (lines-based documents) ---

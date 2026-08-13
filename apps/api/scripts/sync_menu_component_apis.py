@@ -80,6 +80,22 @@ ROWS = [
         "//api.loadedhub.com/1.0//stock/internal/recipes",
     ),
     _row(
+        # Stock item prices — the menu editor costs each dish (recipe cost vs sell
+        # price) and needs currentPrice + counting-unit ratios. Same host/path the
+        # recipe editor uses.
+        "list_stock_items",
+        "Stock item list",
+        "GET",
+        "//loadedhub.com/api/StockItems",
+    ),
+    _row(
+        # Unit ratios + types, for the cost engine (see recipeCost.ts).
+        "list_units",
+        "Unit list",
+        "GET",
+        "//api.loadedhub.com/1.0/stock/internal/units?includeDeleted=true",
+    ),
+    _row(
         "create_menu",
         "Create menu",
         "POST",

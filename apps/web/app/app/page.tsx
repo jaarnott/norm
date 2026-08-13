@@ -13,6 +13,7 @@ import QuotaExceededModal from '../components/layout/QuotaExceededModal';
 import ConnectorConnectCard from '../components/display/ConnectorConnectCard';
 import { FUNCTIONAL_PAGES } from '../components/pages/pageRegistry';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
+import { getPageDocument } from '../lib/pageDocument';
 import { PanelLeft as PanelLeftIcon, ArrowLeft, Menu, Settings, LogOut } from 'lucide-react';
 import { AGENTS } from '../components/layout/Sidebar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
@@ -310,7 +311,12 @@ export default function Home() {
     try {
       const body: Record<string, unknown> = { message: messageText };
       if (threadIdForRequest) body.thread_id = threadIdForRequest;
-      if (pageContext) body.page_context = pageContext;
+      if (pageContext) {
+        // Attach the open document (e.g. the recipe being edited) so the agent
+        // knows exactly what the user is looking at.
+        const doc = getPageDocument();
+        body.page_context = doc ? { ...pageContext, document: doc } : pageContext;
+      }
 
       await apiStream(
         '/api/messages/stream',

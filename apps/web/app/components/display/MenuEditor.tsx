@@ -21,7 +21,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
+import Combobox, { type ComboOption } from './Combobox';
+import { recipeCost, type CostTables } from './recipeCost';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
+
+const num = (v: unknown): number => (typeof v === 'number' ? v : parseFloat(String(v)) || 0);
+const money = (n: number): string => `$${n.toFixed(2)}`;
 
 interface MenuLine {
   id: string;
@@ -38,6 +43,16 @@ interface MenuGroup { id: string; name: string; lines: MenuLine[] }
 interface Menu { id: string; name: string; createdAt?: string; deletedAt?: string | null; groups: MenuGroup[] }
 interface RecipeOpt { id: string; name: string }
 interface VenueOpt { id: string; name: string }
+interface RawMenuRecipe {
+  id: string;
+  name?: string;
+  deletedAt?: unknown;
+  currentVersion?: {
+    yieldQuantity?: unknown;
+    yieldUnitRatio?: unknown;
+    lines?: Array<{ itemId?: string | null; recipeId?: string | null; quantity?: unknown; unitRatio?: unknown; unitId?: string | null; deletedAt?: unknown }>;
+  } | null;
+}
 
 function uid(): string {
   try { return crypto.randomUUID(); } catch { return 'new-' + Math.random().toString(36).slice(2); }
@@ -63,7 +78,9 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
   );
 
   const [menus, setMenus] = useState<Menu[]>([]);
+  const [query, setQuery] = useState('');
   const [recipes, setRecipes] = useState<RecipeOpt[]>([]);
+  const [costTables, setCostTables] = useState<CostTables | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
@@ -94,11 +111,34 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
     setLoading(true);
     setError(null);
     try {
-      // Recipes drive the line autocomplete on both surfaces. The menu LIST is
-      // only for the web picker — the embedded card is already on one menu.
-      const rRes = await callComponentApi('menu_editor', 'list_recipes', {}, vid);
-      const r = (((rRes?.data as Array<{ id: string; name: string }>) || [])).map((x) => ({ id: x.id, name: x.name }));
-      setRecipes(r);
+      // Recipes drive the line autocomplete AND the cost of each dish; prices +
+      // units feed the cost engine (see recipeCost.ts). The menu LIST is only for
+      // the web picker — the embedded card is already on one menu.
+      const [rRes, iRes, uRes] = await Promise.all([
+        callComponentApi('menu_editor', 'list_recipes', {}, vid),
+        callComponentApi('menu_editor', 'list_stock_items', {}, vid),
+        callComponentApi('menu_editor', 'list_units', {}, vid),
+      ]);
+      const rawRecipes = ((rRes?.data as Array<RawMenuRecipe>) || []).filter((x) => !x.deletedAt);
+      setRecipes(rawRecipes.map((x) => ({ id: x.id, name: (x.name || '').trim() })));
+
+      // Cost from all items (incl. removed, which keep a last-known price); the
+      // picker isn't shown here, so no active-only filter is needed.
+      const allItems = (iRes?.data as Array<{ id: string; currentPrice?: unknown; countingUnitId?: string }>) || [];
+      const rawUnits = ((uRes?.data as Array<{ id: string; ratio?: unknown; stockUnitType?: string; datestampDeleted?: unknown }>) || [])
+        .filter((u) => !u.datestampDeleted);
+      const recipeMap = new Map(rawRecipes.map((x) => {
+        const cv = x.currentVersion || {};
+        return [x.id, {
+          yieldQuantity: num(cv.yieldQuantity),
+          yieldUnitRatio: num(cv.yieldUnitRatio) || 1,
+          lines: (cv.lines || []).map((l) => ({ itemId: l.itemId, recipeId: l.recipeId, quantity: num(l.quantity), unitRatio: num(l.unitRatio) || 1, unitId: l.unitId, deletedAt: l.deletedAt })),
+        }] as const;
+      }));
+      const itemMap = new Map(allItems.map((i) => [i.id, { currentPrice: num(i.currentPrice), countingUnitId: i.countingUnitId }] as const));
+      const unitTypeMap = new Map(rawUnits.filter((u) => u.stockUnitType).map((u) => [u.id, u.stockUnitType as string] as const));
+      setCostTables({ recipes: recipeMap, items: itemMap, unitType: unitTypeMap });
+
       if (!embedded) {
         const mRes = await callComponentApi('menu_editor', 'list_menus', {}, vid);
         const m = (mRes?.data as Menu[]) || [];
@@ -116,6 +156,20 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
     const m = new Map(recipes.map((r) => [r.id, r.name]));
     return (id?: string | null) => (id ? m.get(id) || '' : '');
   }, [recipes]);
+  const recipeOptions: ComboOption[] = useMemo(
+    () => recipes.map((r) => ({ id: r.id, name: r.name })),
+    [recipes],
+  );
+  // A dish's food cost = the linked recipe's cost. Food-cost % is that against the
+  // sell price. Green ≤30%, amber ≤40%, red above — the usual kitchen bands.
+  const dishCost = (recipeId?: string | null) => (recipeId && costTables ? recipeCost(recipeId, costTables) : null);
+  const fcColor = (pct: number): string => (pct <= 30 ? colors.success : pct <= 40 ? colors.warning : colors.error);
+  // Menus list: filter by search, sort alphabetically.
+  const visibleMenus = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q ? menus.filter((m) => (m.name || '').toLowerCase().includes(q)) : menus;
+    return [...filtered].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }, [menus, query]);
 
   const changeVenue = (vid: string) => {
     setVenueId(vid);
@@ -155,12 +209,6 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
     ...d,
     groups: d.groups.map((g) => (g.id === gid ? { ...g, lines: g.lines.filter((ln) => ln.id !== lid) } : g)),
   } : d));
-
-  const onPickRecipe = (gid: string, lid: string, typed: string) => {
-    const hit = recipes.find((r) => r.name === typed);
-    if (hit) updateLine(gid, lid, { recipeId: hit.id, stockItemId: null, name: hit.name });
-    else updateLine(gid, lid, { name: typed });
-  };
 
   const save = async () => {
     if (!draft || !venueId) return;
@@ -204,29 +252,36 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
     setSaving(false);
   };
 
-  // --- Styles ---
+  // --- Styles (mirror InvoicesDashboard/OrdersDashboard) ---
   const input: React.CSSProperties = { padding: '5px 8px', fontSize: '0.85rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit' };
-  const btn = (bg: string, fg = '#fff'): React.CSSProperties => ({ padding: '5px 12px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6, background: bg, color: fg, cursor: 'pointer', fontFamily: 'inherit' });
+  const btn = (bg: string, fg = '#fff'): React.CSSProperties => ({ padding: '5px 12px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6, background: bg, color: fg, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' });
   const ghost: React.CSSProperties = { ...btn('#fff', colors.textSecondary), border: `1px solid ${colors.border}` };
+  const selectStyle: React.CSSProperties = { padding: '3px 8px', fontSize: '0.75rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit', color: colors.textSecondary, backgroundColor: '#fff' };
+  const thStyle: React.CSSProperties = { padding: '8px 12px', textAlign: 'left', fontSize: '0.72rem', fontWeight: 600, color: colors.textSecondary, borderBottom: `2px solid ${colors.border}`, whiteSpace: 'nowrap' };
+  const tdStyle: React.CSSProperties = { padding: '8px 12px', fontSize: '0.8rem', color: colors.textPrimary, borderBottom: `1px solid ${colors.borderLight}` };
 
-  const venueBar = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-      <span style={{ fontSize: '0.95rem', fontWeight: 700, color: colors.executive_chef }}>Menus</span>
-      {venues.length > 1 && (
-        <select value={venueId || ''} onChange={(e) => changeVenue(e.target.value)} style={input}>
-          {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-        </select>
-      )}
+  const venueSelect = venues.length > 1 && (
+    <select value={venueId || ''} onChange={(e) => changeVenue(e.target.value)} style={selectStyle}>
+      {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+    </select>
+  );
+  const notes = (
+    <>
       {savedNote && <span style={{ fontSize: '0.8rem', color: colors.success }}>{savedNote}</span>}
-      {error && <span style={{ fontSize: '0.8rem', color: '#e53e3e' }}>{error}</span>}
-    </div>
+      {error && <span style={{ fontSize: '0.8rem', color: colors.error }}>{error}</span>}
+    </>
   );
 
   // --- Editor view ---
   if (draft) {
     return (
       <div style={{ maxWidth: 760 }}>
-        {venueBar}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+          {!embedded && <button onClick={closeEditor} disabled={saving} style={ghost}>← Menus</button>}
+          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>{isNewMenu ? 'New menu' : 'Edit menu'}</h2>
+          {venueSelect}
+          {notes}
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
           <input
             value={draft.name}
@@ -237,77 +292,128 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
           <button onClick={save} disabled={saving || !draft.name.trim()} style={btn(colors.executive_chef)}>
             {saving ? 'Saving…' : isNewMenu ? 'Create in Loaded' : 'Save to Loaded'}
           </button>
-          {!embedded && <button onClick={closeEditor} disabled={saving} style={ghost}>Cancel</button>}
         </div>
 
         {draft.groups.map((g) => (
-          <div key={g.id} style={{ border: `1px solid ${colors.border}`, borderRadius: 8, marginBottom: '0.75rem', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.6rem', background: colors.selectedBg }}>
+          <div key={g.id} style={{ border: `1px solid ${colors.border}`, borderRadius: 8, marginBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.6rem', background: colors.selectedBg, borderTopLeftRadius: 7, borderTopRightRadius: 7 }}>
               <input value={g.name} onChange={(e) => renameSection(g.id, e.target.value)} style={{ ...input, fontWeight: 600, flex: 1, background: '#fff' }} />
-              <button onClick={() => removeSection(g.id)} style={ghost} title="Remove section">✕</button>
+              <button onClick={() => removeSection(g.id)} style={{ ...ghost, width: 28, padding: '5px 0', textAlign: 'center' }} title="Remove section">✕</button>
             </div>
-            <div style={{ padding: '0.4rem 0.6rem' }}>
-              {g.lines.map((ln) => (
-                <div key={ln.id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
-                  <input
-                    list={`recipes-${venueId}`}
-                    value={ln.recipeId ? recipeName(ln.recipeId) : ln.name}
-                    onChange={(e) => onPickRecipe(g.id, ln.id, e.target.value)}
-                    placeholder="Recipe or dish name"
-                    style={{ ...input, flex: 1 }}
-                  />
-                  <span style={{ color: colors.textMuted, fontSize: '0.8rem' }}>$</span>
-                  <input
-                    type="number" step="0.01" min="0"
-                    value={ln.workingPrice}
-                    onChange={(e) => updateLine(g.id, ln.id, { workingPrice: parseFloat(e.target.value) })}
-                    style={{ ...input, width: 90, textAlign: 'right' }}
-                  />
-                  <button onClick={() => removeLine(g.id, ln.id)} style={ghost} title="Remove line">✕</button>
-                </div>
-              ))}
+            <div style={{ padding: '0.5rem 0.6rem' }}>
+              {g.lines.length === 0 && (
+                <div style={{ fontSize: '0.8rem', color: colors.textMuted, padding: '0.15rem 0 0.5rem' }}>No lines yet — add one below.</div>
+              )}
+              {g.lines.map((ln) => {
+                const c = dishCost(ln.recipeId);
+                const price = Number(ln.workingPrice) || 0;
+                const fc = c && c.complete && price > 0 ? (c.cost / price) * 100 : null;
+                return (
+                  <div key={ln.id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.4rem' }}>
+                    <div style={{ flex: 1 }}>
+                      <Combobox
+                        value={ln.recipeId ? recipeName(ln.recipeId) : ln.name}
+                        options={recipeOptions}
+                        onType={(t) => updateLine(g.id, ln.id, { name: t, recipeId: null })}
+                        onPick={(o) => updateLine(g.id, ln.id, { recipeId: o.id, stockItemId: null, name: o.name })}
+                        placeholder="Search recipe or type a dish name"
+                      />
+                    </div>
+                    <span style={{ color: colors.textMuted, fontSize: '0.8rem' }}>$</span>
+                    <input
+                      type="number" step="0.01" min="0"
+                      value={ln.workingPrice}
+                      onChange={(e) => updateLine(g.id, ln.id, { workingPrice: parseFloat(e.target.value) })}
+                      style={{ ...input, width: 84, textAlign: 'right' }}
+                    />
+                    <div style={{ width: 96, textAlign: 'right', fontSize: '0.74rem', lineHeight: 1.25 }} title={!ln.recipeId ? 'Link a recipe to cost this dish' : c?.complete ? 'Linked recipe cost vs sell price' : 'The linked recipe has unpriced ingredients — cost incomplete'}>
+                      {c?.complete ? (
+                        <>
+                          <div style={{ color: colors.textPrimary }}>{money(c.cost)}</div>
+                          {fc != null && <div style={{ color: fcColor(fc), fontWeight: 600 }}>{fc.toFixed(0)}% FC</div>}
+                        </>
+                      ) : (
+                        <span style={{ color: colors.textMuted }}>—</span>
+                      )}
+                    </div>
+                    <button onClick={() => removeLine(g.id, ln.id)} style={{ ...ghost, width: 28, padding: '5px 0', textAlign: 'center' }} title="Remove line">✕</button>
+                  </div>
+                );
+              })}
               <button onClick={() => addLine(g.id)} style={{ ...ghost, marginTop: 4 }}>+ Add line</button>
             </div>
           </div>
         ))}
 
         <button onClick={addSection} style={ghost}>+ Add section</button>
-
-        <datalist id={`recipes-${venueId}`}>
-          {recipes.map((r) => <option key={r.id} value={r.name} />)}
-        </datalist>
       </div>
     );
   }
 
   // --- List view ---
   return (
-    <div style={{ maxWidth: 760 }}>
-      {venueBar}
-      <div style={{ marginBottom: '0.75rem' }}>
-        <button onClick={newMenu} style={btn(colors.executive_chef)} disabled={!venueId}>+ New menu</button>
+    <div>
+      {/* Header — mirrors OrdersDashboard: title + count + venue + New button */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>Menus</h2>
+          <span style={{ fontSize: '0.75rem', color: colors.textMuted }}>
+            {loading ? 'Loading…' : `${visibleMenus.length}${query ? ` of ${menus.length}` : ''} menu${menus.length === 1 ? '' : 's'}`}
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {notes}
+          {venueSelect}
+          <button onClick={newMenu} disabled={!venueId} style={{ ...btn(colors.executive_chef), background: venueId ? colors.executive_chef : '#ccc', cursor: venueId ? 'pointer' : 'default' }}>+ New menu</button>
+        </div>
       </div>
-      {loading && <div style={{ color: colors.textMuted, padding: '1rem 0' }}>Loading…</div>}
-      {!loading && menus.length === 0 && <div style={{ color: colors.textMuted, padding: '1rem 0' }}>No menus yet.</div>}
-      {menus.map((m) => {
-        const lineCount = m.groups.reduce((n, g) => n + g.lines.length, 0);
-        return (
-          <button
-            key={m.id}
-            onClick={() => editMenu(m)}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
-              padding: '0.6rem 0.8rem', marginBottom: '0.4rem', textAlign: 'left',
-              border: `1px solid ${colors.border}`, borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            <span style={{ fontWeight: 600, color: colors.textPrimary }}>{m.name}</span>
-            <span style={{ fontSize: '0.78rem', color: colors.textMuted }}>
-              {m.groups.length} section{m.groups.length === 1 ? '' : 's'} · {lineCount} line{lineCount === 1 ? '' : 's'}
-            </span>
-          </button>
-        );
-      })}
+
+      {menus.length > 3 && (
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search menus…"
+          style={{ ...input, width: '100%', maxWidth: 320, marginBottom: '0.75rem', boxSizing: 'border-box' }}
+        />
+      )}
+
+      {loading ? (
+        <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>Loading menus…</div>
+      ) : visibleMenus.length === 0 ? (
+        <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>
+          {menus.length === 0 ? 'No menus yet.' : `No menus match “${query}”.`}
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Menu</th>
+                <th style={{ ...thStyle, textAlign: 'right', width: 90 }}>Sections</th>
+                <th style={{ ...thStyle, textAlign: 'right', width: 90 }}>Lines</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleMenus.map((m) => {
+                const lineCount = m.groups.reduce((n, g) => n + g.lines.length, 0);
+                return (
+                  <tr
+                    key={m.id}
+                    onClick={() => editMenu(m)}
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = colors.pageBg; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
+                  >
+                    <td style={{ ...tdStyle, fontWeight: 600 }}>{m.name || 'Untitled menu'}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', color: colors.textSecondary }}>{m.groups.length}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', color: lineCount ? colors.textPrimary : colors.textMuted }}>{lineCount}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

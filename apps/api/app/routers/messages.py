@@ -123,6 +123,9 @@ def _assert_venue_access(db: Session, user: User, venue_id: str | None) -> None:
 class PageContext(BaseModel):
     page_id: str
     agent: str
+    # The document the user has open on the page (e.g. the recipe being edited:
+    # recipe_id, venue_id, name, lines), so the agent can act on exactly that.
+    document: dict | None = None
 
 
 class MessageRequest(BaseModel):

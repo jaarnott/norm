@@ -71,6 +71,9 @@ MENU_COMPONENT_API_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {
         ("menu_editor", "list_menus"),
         ("menu_editor", "list_recipes"),
+        # Prices + units so the menu editor can cost each dish (food-cost %).
+        ("menu_editor", "list_stock_items"),
+        ("menu_editor", "list_units"),
     }
 )
 

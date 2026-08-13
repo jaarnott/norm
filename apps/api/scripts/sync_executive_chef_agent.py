@@ -70,6 +70,7 @@ user's click in the card is the approval.
 LOADEDHUB_ACTIONS = [
     "get_all_recipes",
     "get_recipe_details",
+    "edit_recipe",  # internal tool — edits the open recipe draft (see sync_recipe_edit_tool.py)
     "list_menus",
     "get_menu",
     "create_menu",

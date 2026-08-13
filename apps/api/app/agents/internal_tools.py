@@ -2549,3 +2549,126 @@ def _recall_memory(params: dict, db: Session, thread_id: str | None) -> dict:
             ),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Executive Chef — edit the open recipe draft
+# ---------------------------------------------------------------------------
+
+
+def _find_recipe_line(lines: list, sel: dict):
+    """Locate a draft line by explicit id or a case-insensitive name match."""
+    if not isinstance(sel, dict):
+        return None
+    lid = sel.get("id")
+    if lid:
+        for ln in lines:
+            if isinstance(ln, dict) and ln.get("id") == lid:
+                return ln
+    m = str(sel.get("match") or "").strip().lower()
+    if m:
+        for ln in lines:
+            if m in str(ln.get("name") or "").lower():
+                return ln
+    return None
+
+
+def _apply_recipe_changes(draft: dict, changes: dict) -> None:
+    """Merge the agent's changes into the recipe draft (in place).
+
+    Scalar fields (name/notes/yield_quantity/yield_unit_id/is_counted_in_stocktake)
+    are set directly. Line edits are addressed by line id or a name match:
+        changes = {
+          "name": "...", "notes": "...", "yield_quantity": 4,
+          "lines": {
+            "update": [{"match": "salt", "set": {"quantity": 5}}],
+            "remove": [{"match": "pepper"}],
+            "add":    [{"name": "Cumin", "quantity": 2, "kind": "item"}],
+          }
+        }
+    """
+    if not isinstance(changes, dict):
+        return
+    for k in (
+        "name",
+        "notes",
+        "yield_quantity",
+        "yield_unit_id",
+        "is_counted_in_stocktake",
+    ):
+        if k in changes:
+            draft[k] = changes[k]
+
+    lc = changes.get("lines") or {}
+    if not isinstance(lc, dict):
+        return
+    lines = draft.get("lines")
+    if not isinstance(lines, list):
+        lines = []
+
+    for upd in lc.get("update") or []:
+        target = _find_recipe_line(lines, upd)
+        if target is not None and isinstance(upd.get("set"), dict):
+            target.update(upd["set"])
+
+    to_remove = []
+    for sel in lc.get("remove") or []:
+        found = _find_recipe_line(lines, sel)
+        if found is not None:
+            to_remove.append(id(found))
+    if to_remove:
+        lines = [ln for ln in lines if id(ln) not in to_remove]
+
+    for add in lc.get("add") or []:
+        if not isinstance(add, dict):
+            continue
+        new_line = dict(add)
+        new_line.setdefault("id", str(uuid.uuid4()))
+        new_line.setdefault("kind", "item")
+        lines.append(new_line)
+
+    draft["lines"] = lines
+
+
+@register("loadedhub", "edit_recipe")
+def _edit_recipe(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Edit the recipe the user has open — prepares the shared draft card.
+
+    Never writes to LoadedHub: it merges the change into the same working document
+    the Recipes page is showing (keyed by recipe_id + venue), and the user presses
+    Save to write. The venue_id is echoed into the result so tool_loop stamps the
+    ref key and this hits the page's document.
+    """
+    from app.db.engine import _ConfigSessionLocal
+    from app.services.recipe_document import find_recipe_doc, open_recipe_doc
+
+    recipe_id = params.get("recipe_id")
+    venue_id = params.get("venue_id")
+    changes = params.get("changes") or {}
+    if not recipe_id or not venue_id:
+        return {
+            "success": False,
+            "data": None,
+            "error": "recipe_id and venue_id are required (from the open recipe).",
+        }
+
+    doc = find_recipe_doc(db, venue_id, recipe_id)
+    if doc:
+        draft = dict(doc.data or {})
+    else:
+        cfg = _ConfigSessionLocal()
+        try:
+            doc = open_recipe_doc(venue_id, recipe_id, db, cfg)
+            draft = dict(doc.data or {})
+        except Exception as exc:  # noqa: BLE001 — surface a clean message
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Couldn't open the recipe: {exc}",
+            }
+        finally:
+            cfg.close()
+
+    _apply_recipe_changes(draft, changes)
+    draft["venue_id"] = venue_id  # so tool_loop sets tc.venue_id -> ref key matches
+    return {"success": True, "data": draft, "error": None}

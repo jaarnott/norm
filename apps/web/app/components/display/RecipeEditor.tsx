@@ -12,14 +12,20 @@
  * kitchen_loadedhub_update_recipe expects.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
+import Combobox, { type ComboOption } from './Combobox';
+import HtmlField from './HtmlField';
+import { draftCost, lineCost, type CostTables } from './recipeCost';
+import { setPageDocument } from '../../lib/pageDocument';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 
-interface Unit { id: string; name: string; ratio: number }
+interface Unit { id: string; name: string; ratio: number; type?: string }
 interface Opt { id: string; name: string; kind: 'item' | 'recipe' }
+// A row in the recipes table — summarised from the list payload's currentVersion.
+interface RecipeRow { id: string; name: string; prep: boolean; ingredients: number; yieldText: string }
 interface EditLine {
   key: string;
   kind: 'item' | 'recipe';
@@ -96,6 +102,77 @@ function blankDraft(seed?: Partial<Draft>): Draft {
   };
 }
 
+interface RawLine {
+  itemId?: string | null;
+  recipeId?: string | null;
+  quantity?: unknown;
+  unitRatio?: unknown;
+  unitId?: string | null;
+  deletedAt?: unknown;
+}
+interface RawRecipe {
+  id: string;
+  name?: string;
+  deletedAt?: unknown;
+  prepRecipe?: boolean;
+  currentVersion?: {
+    yieldQuantity?: unknown;
+    yieldUnitRatio?: unknown;
+    yieldUnitName?: string;
+    lines?: RawLine[];
+  } | null;
+}
+
+const money = (n: number): string => `$${n.toFixed(2)}`;
+
+// Summarise a list-payload recipe for the table (ingredient count uses the same
+// deletedAt filter the editor's toDraft uses, so the count matches what you'd
+// see on opening the recipe).
+function summarizeRecipe(x: RawRecipe): RecipeRow {
+  const cv = x.currentVersion || {};
+  const yr = num(cv.yieldUnitRatio) || 1;
+  const yq = num(cv.yieldQuantity) / yr;
+  const lines = (cv.lines || []).filter((l) => !l.deletedAt);
+  const yieldText = cv.yieldUnitName && yq ? `${+yq.toFixed(2)} ${cv.yieldUnitName}` : '—';
+  // Loaded pads some names (" COMPONENT - …") — trim so display and the
+  // alphabetical sort aren't thrown by leading whitespace.
+  return { id: x.id, name: (x.name || '').trim(), prep: !!x.prepRecipe, ingredients: lines.length, yieldText };
+}
+
+// The recipe currently open in the editor, held at MODULE scope so it survives a
+// remount. Sending a chat message flips the functional page from full-height to
+// split view, which remounts this component and would otherwise reset the local
+// draft back to the list — losing the recipe the user was on. Restoring from here
+// keeps them on it (and the working-doc id/version, so the agent-edit poll keeps
+// running). Cleared when the user returns to the list (draft → null).
+let openSession: { venueId: string | null; draft: Draft; workingDocId: string | null; docVersion: number } | null = null;
+
+// A recipe working-document's data (built server-side by recipe_document.py) ->
+// the editable Draft. Loaded lines already carry a stable id; we key rows on it
+// so an agent edit picked up by the poll re-renders in place.
+function fromDoc(d: Record<string, unknown>): Draft {
+  const lines = Array.isArray(d.lines) ? (d.lines as Array<Record<string, unknown>>) : [];
+  return {
+    recipe_id: (d.recipe_id as string) || '',
+    version_id: (d.version_id as string) || '',
+    name: (d.name as string) || '',
+    notes: (d.notes as string) || '',
+    is_counted_in_stocktake: !!d.is_counted_in_stocktake,
+    yield_quantity: num(d.yield_quantity),
+    yield_unit_id: (d.yield_unit_id as string) || null,
+    lines: lines.map((l) => ({
+      key: (l.id as string) || uid(),
+      kind: l.kind === 'recipe' ? 'recipe' : 'item',
+      ref_id: (l.ref_id as string) ?? null,
+      name: (l.name as string) || '',
+      unit_id: (l.unit_id as string) ?? null,
+      unit_name: (l.unit_name as string) ?? null,
+      unit_ratio: num(l.unit_ratio) || 1,
+      quantity: num(l.quantity),
+    })),
+  };
+}
+
 export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   const embedded = !!props?.embedded;
   const initialRecipe =
@@ -111,16 +188,25 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     (props?.activeVenueId as string) || rememberedVenue || null,
   );
 
-  const [recipes, setRecipes] = useState<{ id: string; name: string }[]>([]);
+  const [recipes, setRecipes] = useState<RecipeRow[]>([]);
+  const [query, setQuery] = useState('');
   const [units, setUnits] = useState<Unit[]>([]);
   const [opts, setOpts] = useState<Opt[]>([]);
+  const [costTables, setCostTables] = useState<CostTables | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [draft, setDraft] = useState<Draft | null>(
-    embedded && initialRecipe ? toDraft(initialRecipe) : null,
+  const [draft, setDraft] = useState<Draft | null>(() =>
+    embedded && initialRecipe ? toDraft(initialRecipe) : openSession?.draft ?? null,
   );
+  // Working-document backing (web/page only): the open recipe is a shared draft
+  // the agent can also edit. Restored from the session so the remount doesn't
+  // drop the doc id/version the poll needs.
+  const [workingDocId, setWorkingDocId] = useState<string | null>(() => (embedded ? null : openSession?.workingDocId ?? null));
+  const [docVersion, setDocVersion] = useState<number>(() => (embedded ? 0 : openSession?.docVersion ?? 0));
+  const lastVersionRef = useRef<number>(openSession?.docVersion ?? 0);
+  const lastEditRef = useRef<number>(0);
 
   // Upload → extract a draft recipe from a document (web-only). The extracted
   // draft can be turned into a NEW Loaded recipe (fromExtracted → blank draft →
@@ -179,16 +265,37 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
         callComponentApi('recipe_editor', 'list_units', {}, vid),
         callComponentApi('recipe_editor', 'list_stock_items', {}, vid),
       ]);
-      const rl = ((rRes?.data as Array<{ id: string; name: string; deletedAt?: unknown }>) || []).filter((x) => !x.deletedAt);
-      if (!embedded) setRecipes(rl.map((x) => ({ id: x.id, name: x.name })));
-      setUnits(((uRes?.data as Array<{ id: string; name: string; ratio: number; datestampDeleted?: unknown }>) || [])
-        .filter((u) => !u.datestampDeleted)
-        .map((u) => ({ id: u.id, name: u.name, ratio: num(u.ratio) })));
-      const items = ((iRes?.data as Array<{ id: string; name: string; datestampDeleted?: unknown }>) || [])
-        .filter((i) => !i.datestampDeleted)
-        .map((i) => ({ id: i.id, name: (i.name || '').trim(), kind: 'item' as const }));
-      const subs = rl.map((x) => ({ id: x.id, name: x.name, kind: 'recipe' as const }));
+      const rl = ((rRes?.data as RawRecipe[]) || []).filter((x) => !x.deletedAt);
+      if (!embedded) setRecipes(rl.map(summarizeRecipe));
+
+      const rawUnits = ((uRes?.data as Array<{ id: string; name: string; ratio: number; stockUnitType?: string; datestampDeleted?: unknown }>) || [])
+        .filter((u) => !u.datestampDeleted);
+      setUnits(rawUnits.map((u) => ({ id: u.id, name: u.name, ratio: num(u.ratio), type: u.stockUnitType })));
+
+      // Loaded marks a removed stock item with datestampRemoved (not
+      // datestampDeleted). Removed items are kept OUT of the ingredient picker
+      // (nobody should add an item that was removed years ago) but kept IN the
+      // cost index — a recipe that still lists a removed item can be costed from
+      // its last-known price.
+      const allItems = (iRes?.data as Array<{ id: string; name: string; currentPrice?: unknown; countingUnitId?: string; datestampDeleted?: unknown; datestampRemoved?: unknown }>) || [];
+      const activeItems = allItems.filter((i) => !i.datestampDeleted && !i.datestampRemoved);
+      const items = activeItems.map((i) => ({ id: i.id, name: (i.name || '').trim(), kind: 'item' as const }));
+      const subs = rl.map((x) => ({ id: x.id, name: (x.name || '').trim(), kind: 'recipe' as const }));
       setOpts([...subs, ...items]);
+
+      // Cost tables: a recipe index (with lines, for sub-recipe costing), an item
+      // price index, and a unitId -> type map. See recipeCost.ts.
+      const recipeMap = new Map(rl.map((x) => {
+        const cv = x.currentVersion || {};
+        return [x.id, {
+          yieldQuantity: num(cv.yieldQuantity),
+          yieldUnitRatio: num(cv.yieldUnitRatio) || 1,
+          lines: (cv.lines || []).map((l) => ({ itemId: l.itemId, recipeId: l.recipeId, quantity: num(l.quantity), unitRatio: num(l.unitRatio) || 1, unitId: l.unitId, deletedAt: l.deletedAt })),
+        }] as const;
+      }));
+      const itemMap = new Map(allItems.map((i) => [i.id, { currentPrice: num(i.currentPrice), countingUnitId: i.countingUnitId }] as const));
+      const unitTypeMap = new Map(rawUnits.filter((u) => u.stockUnitType).map((u) => [u.id, u.stockUnitType as string] as const));
+      setCostTables({ recipes: recipeMap, items: itemMap, unitType: unitTypeMap });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load recipes');
     }
@@ -197,38 +304,140 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
 
   useEffect(() => { if (venueId) loadRefs(venueId); }, [venueId, loadRefs]);
 
+  // Mirror the open recipe into module scope so a functional-page remount (which
+  // happens the moment you send a chat message) restores it instead of dropping
+  // you back on the list. Page instance only — the embedded card owns its own.
+  useEffect(() => {
+    if (embedded) return;
+    openSession = draft ? { venueId, draft, workingDocId, docVersion } : null;
+    // Publish the open recipe so a chat message can tell the agent exactly what
+    // the user is editing (which recipe, which venue, and the current lines so it
+    // can resolve "the salt"). Cleared when back on the list.
+    setPageDocument(
+      draft
+        ? {
+            kind: 'recipe',
+            recipe_id: draft.recipe_id || null,
+            venue_id: venueId,
+            working_document_id: workingDocId,
+            name: draft.name,
+            yield: { quantity: draft.yield_quantity, unit_id: draft.yield_unit_id },
+            lines: draft.lines.map((l) => ({ id: l.key, kind: l.kind, ref_id: l.ref_id, name: l.name, quantity: l.quantity, unit: l.unit_name })),
+          }
+        : null,
+    );
+  }, [draft, venueId, embedded, workingDocId, docVersion]);
+
+  // Clear the published document when the editor unmounts for good (navigating to
+  // another page), so a stale recipe isn't attached to an unrelated page's chat.
+  useEffect(() => () => { if (!embedded) setPageDocument(null); }, [embedded]);
+
+  // Catch-up poll: while a recipe is open as a working document, re-read it so an
+  // edit the agent made (it patches the same {recipe_id, venue} doc) appears here.
+  // Skips a refresh within 3s of a local edit so it never clobbers active typing.
+  useEffect(() => {
+    if (!workingDocId) return;
+    const id = setInterval(async () => {
+      try {
+        const res = await apiFetch(`/api/working-documents/${workingDocId}`);
+        if (!res.ok) return;
+        const doc = await res.json();
+        if (!doc || typeof doc.version !== 'number' || doc.version <= lastVersionRef.current) return;
+        if (Date.now() - lastEditRef.current < 3000) return;
+        lastVersionRef.current = doc.version;
+        setDocVersion(doc.version);
+        setDraft(fromDoc(doc.data || {}));
+      } catch { /* transient — retry next tick */ }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [workingDocId]);
+
   const unitById = useMemo(() => new Map(units.map((u) => [u.id, u])), [units]);
-  const optByName = useMemo(() => new Map(opts.map((o) => [o.name, o])), [opts]);
+  const ingredientOptions: ComboOption[] = useMemo(
+    () => opts.map((o) => ({ id: o.id, name: o.name, kind: o.kind, sublabel: o.kind === 'recipe' ? 'Sub-recipe' : 'Stock item' })),
+    [opts],
+  );
+  // Recipes list: filter by the search box, sort alphabetically.
+  const visibleRecipes = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q ? recipes.filter((r) => r.name.toLowerCase().includes(q)) : recipes;
+    return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+  }, [recipes, query]);
+
+  // The unit type a line should be measured in (for scoping the unit picker):
+  // an item's own counting-unit type, else the type of the unit already chosen.
+  const unitTypeForLine = (l: EditLine): string | undefined => {
+    if (l.kind === 'item' && l.ref_id) {
+      const it = costTables?.items.get(l.ref_id);
+      if (it?.countingUnitId) return costTables?.unitType.get(it.countingUnitId);
+    }
+    return l.unit_id ? costTables?.unitType.get(l.unit_id) : undefined;
+  };
+  const lineCostOf = (l: EditLine) => {
+    if (!costTables || !l.ref_id) return null;
+    return lineCost(
+      { itemId: l.kind === 'item' ? l.ref_id : null, recipeId: l.kind === 'recipe' ? l.ref_id : null, quantity: l.quantity, unitRatio: l.unit_ratio, unitId: l.unit_id },
+      costTables,
+      draft?.recipe_id ? new Set([draft.recipe_id]) : new Set(),
+    );
+  };
+  // Total recipe cost + cost per yield unit (recomputed as the draft changes).
+  const totalCost = useMemo(() => {
+    if (!draft || !costTables) return null;
+    return draftCost(
+      draft.lines.map((l) => ({ itemId: l.kind === 'item' ? l.ref_id : null, recipeId: l.kind === 'recipe' ? l.ref_id : null, quantity: l.quantity, unitRatio: l.unit_ratio, unitId: l.unit_id })),
+      costTables,
+      draft.recipe_id || undefined,
+    );
+  }, [draft, costTables]);
+
+  const clearDoc = () => { setWorkingDocId(null); setDocVersion(0); lastVersionRef.current = 0; };
 
   const changeVenue = (vid: string) => {
     setVenueId(vid);
     if (persistVenue) setActiveVenue(vid);
     setDraft(null);
+    clearDoc();
   };
 
+  // Open a recipe as a shared working document, so the agent can edit the same
+  // draft and the poll above reflects it. Falls back to a plain read if the doc
+  // route is unavailable.
   const openRecipe = async (id: string) => {
     setError(null);
     setSavedNote(null);
+    if (!venueId) { setError('Select a venue first.'); return; }
     try {
-      const res = await callComponentApi('recipe_editor', 'get_recipe', { recipe_id: id }, venueId || undefined);
-      const d = toDraft((res?.data as Record<string, unknown>) || {});
-      if (!d) { setError('This recipe has no editable version.'); return; }
-      setDraft(d);
+      const res = await apiFetch('/api/recipe-editor/open', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, recipe_id: id }),
+      });
+      if (!res.ok) {
+        const t = await res.json().catch(() => ({}));
+        throw new Error((t as { detail?: string }).detail || 'Failed to open recipe');
+      }
+      const doc = await res.json();
+      lastVersionRef.current = doc.version ?? 0;
+      lastEditRef.current = Date.now();
+      setWorkingDocId(doc.id);
+      setDocVersion(doc.version ?? 0);
+      setDraft(fromDoc(doc.data || {}));
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load recipe');
+      setError(e instanceof Error ? e.message : 'Failed to open recipe');
     }
   };
-  const closeEditor = () => setDraft(null);
+  const closeEditor = () => { setDraft(null); clearDoc(); };
 
-  // Start a blank new recipe (the save creates it in Loaded).
-  const startNew = () => { setError(null); setSavedNote(null); setExtracted(null); setDraft(blankDraft()); };
+  // Start a blank new recipe (the save creates it in Loaded). No working doc yet
+  // — it doesn't exist to share until it's been created.
+  const startNew = () => { setError(null); setSavedNote(null); setExtracted(null); clearDoc(); setDraft(blankDraft()); };
 
   // Turn an extracted document draft into a new-recipe draft. The ingredient
   // names/quantities pre-fill the lines, but each line still needs a real Loaded
   // stock item + unit (ref_id/unit_id) picked from the autocomplete before it can
   // save — extraction gives loose text, Loaded needs ids.
   const fromExtracted = (e: Extracted) => {
-    setError(null); setSavedNote(null); setExtracted(null);
+    setError(null); setSavedNote(null); setExtracted(null); clearDoc();
     setDraft(blankDraft({
       name: e.name || '',
       notes: e.method || '',
@@ -241,23 +450,31 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     }));
   };
 
-  // --- Draft mutations ---
-  const setName = (name: string) => setDraft((d) => (d ? { ...d, name } : d));
-  const setNotes = (notes: string) => setDraft((d) => (d ? { ...d, notes } : d));
-  const setYieldQty = (q: number) => setDraft((d) => (d ? { ...d, yield_quantity: q } : d));
-  const setYieldUnit = (unitId: string) => setDraft((d) => (d ? { ...d, yield_unit_id: unitId } : d));
-  const addLine = () => setDraft((d) => (d ? { ...d, lines: [...d.lines, { key: uid(), kind: 'item', ref_id: null, name: '', unit_id: null, unit_name: null, unit_ratio: 1, quantity: 0 }] } : d));
-  const removeLine = (key: string) => setDraft((d) => (d ? { ...d, lines: d.lines.filter((l) => l.key !== key) } : d));
-  const updateLine = (key: string, patch: Partial<EditLine>) => setDraft((d) => (d ? { ...d, lines: d.lines.map((l) => (l.key === key ? { ...l, ...patch } : l)) } : d));
+  // --- Draft mutations --- (touch() marks recent local edits so the agent-edit
+  // poll doesn't refresh over active typing).
+  const touch = () => { lastEditRef.current = Date.now(); };
+  const setName = (name: string) => { touch(); setDraft((d) => (d ? { ...d, name } : d)); };
+  const setNotes = (notes: string) => { touch(); setDraft((d) => (d ? { ...d, notes } : d)); };
+  const setYieldQty = (q: number) => { touch(); setDraft((d) => (d ? { ...d, yield_quantity: q } : d)); };
+  const setYieldUnit = (unitId: string) => { touch(); setDraft((d) => (d ? { ...d, yield_unit_id: unitId } : d)); };
+  const addLine = () => { touch(); setDraft((d) => (d ? { ...d, lines: [...d.lines, { key: uid(), kind: 'item', ref_id: null, name: '', unit_id: null, unit_name: null, unit_ratio: 1, quantity: 0 }] } : d)); };
+  const removeLine = (key: string) => { touch(); setDraft((d) => (d ? { ...d, lines: d.lines.filter((l) => l.key !== key) } : d)); };
+  const updateLine = (key: string, patch: Partial<EditLine>) => { touch(); setDraft((d) => (d ? { ...d, lines: d.lines.map((l) => (l.key === key ? { ...l, ...patch } : l)) } : d)); };
 
-  const pickIngredient = (key: string, typed: string) => {
-    const hit = optByName.get(typed);
-    if (hit) updateLine(key, { kind: hit.kind, ref_id: hit.id, name: hit.name });
-    else updateLine(key, { name: typed });
-  };
   const pickUnit = (key: string, unitId: string) => {
     const u = unitById.get(unitId);
     updateLine(key, { unit_id: unitId, unit_name: u?.name ?? null, unit_ratio: u?.ratio ?? 1 });
+  };
+  // Picking an ingredient sets the ref + a sensible default unit (a stock item's
+  // own counting unit), so cost shows immediately and the unit is the right type.
+  const pickIngredient = (key: string, o: ComboOption) => {
+    const patch: Partial<EditLine> = { kind: (o.kind as 'item' | 'recipe') || 'item', ref_id: o.id, name: o.name };
+    if (o.kind !== 'recipe') {
+      const it = costTables?.items.get(o.id);
+      const u = it?.countingUnitId ? unitById.get(it.countingUnitId) : undefined;
+      if (u) { patch.unit_id = u.id; patch.unit_name = u.name; patch.unit_ratio = u.ratio; }
+    }
+    updateLine(key, patch);
   };
 
   const save = async () => {
@@ -306,89 +523,156 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     setSaving(false);
   };
 
-  // --- Styles ---
+  // --- Styles (mirror InvoicesDashboard/OrdersDashboard) ---
   const input: React.CSSProperties = { padding: '5px 8px', fontSize: '0.85rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit' };
-  const btn = (bg: string, fg = '#fff'): React.CSSProperties => ({ padding: '5px 12px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6, background: bg, color: fg, cursor: 'pointer', fontFamily: 'inherit' });
+  const btn = (bg: string, fg = '#fff'): React.CSSProperties => ({ padding: '5px 12px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6, background: bg, color: fg, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' });
   const ghost: React.CSSProperties = { ...btn('#fff', colors.textSecondary), border: `1px solid ${colors.border}` };
+  const selectStyle: React.CSSProperties = { padding: '3px 8px', fontSize: '0.75rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit', color: colors.textSecondary, backgroundColor: '#fff' };
+  const thStyle: React.CSSProperties = { padding: '8px 12px', textAlign: 'left', fontSize: '0.72rem', fontWeight: 600, color: colors.textSecondary, borderBottom: `2px solid ${colors.border}`, whiteSpace: 'nowrap' };
+  const tdStyle: React.CSSProperties = { padding: '8px 12px', fontSize: '0.8rem', color: colors.textPrimary, borderBottom: `1px solid ${colors.borderLight}` };
 
-  const venueBar = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-      <span style={{ fontSize: '0.95rem', fontWeight: 700, color: colors.executive_chef }}>Recipes</span>
-      {venues.length > 1 && (
-        <select value={venueId || ''} onChange={(e) => changeVenue(e.target.value)} style={input}>
-          {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-        </select>
-      )}
-      {savedNote && <span style={{ fontSize: '0.8rem', color: colors.success }}>{savedNote}</span>}
-      {error && <span style={{ fontSize: '0.8rem', color: '#e53e3e' }}>{error}</span>}
-    </div>
-  );
-
-  const unitSelect = (value: string | null, onChange: (id: string) => void) => (
-    <select value={value || ''} onChange={(e) => onChange(e.target.value)} style={{ ...input, width: 120 }}>
-      {!value && <option value="">unit</option>}
-      {units.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+  const venueSelect = venues.length > 1 && (
+    <select value={venueId || ''} onChange={(e) => changeVenue(e.target.value)} style={selectStyle}>
+      {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
     </select>
   );
+  const notes = (
+    <>
+      {savedNote && <span style={{ fontSize: '0.8rem', color: colors.success }}>{savedNote}</span>}
+      {error && <span style={{ fontSize: '0.8rem', color: colors.error }}>{error}</span>}
+    </>
+  );
+
+  // Unit picker, scoped to a stock unit type when known (so a solid ingredient
+  // offers kg/g, not all 450+ units). Falls back to every unit if type unknown,
+  // and always keeps the currently-selected unit visible.
+  const unitSelect = (value: string | null, onChange: (id: string) => void, type?: string) => {
+    const list = type ? units.filter((u) => !u.type || u.type === type || u.id === value) : units;
+    return (
+      <select value={value || ''} onChange={(e) => onChange(e.target.value)} style={{ ...input, width: 120 }}>
+        {!value && <option value="">unit</option>}
+        {list.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+      </select>
+    );
+  };
 
   if (draft) {
+    const yieldUnitName = units.find((u) => u.id === draft.yield_unit_id)?.name || 'yield';
+    const lbl: React.CSSProperties = { fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: colors.textMuted };
     return (
-      <div style={{ maxWidth: 820 }}>
-        {venueBar}
-        {!draft.recipe_id && (
-          <div style={{ fontSize: '0.8rem', color: colors.textMuted, marginBottom: '0.4rem' }}>New recipe — this will be created in Loaded when you save.</div>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
-          <input value={draft.name} onChange={(e) => setName(e.target.value)} placeholder="Recipe name" style={{ ...input, fontSize: '1rem', fontWeight: 600, flex: 1, minWidth: 220 }} />
+      <div style={{ maxWidth: 760 }}>
+        {/* Header: back · title · venue · save */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+          {!embedded && <button onClick={closeEditor} disabled={saving} style={ghost}>← Recipes</button>}
+          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>{draft.recipe_id ? 'Edit recipe' : 'New recipe'}</h2>
+          {venueSelect}
+          <span style={{ flex: 1 }} />
+          {notes}
           <button onClick={save} disabled={saving || !draft.name.trim()} style={btn(colors.executive_chef)}>{saving ? 'Saving…' : draft.recipe_id ? 'Save to Loaded' : 'Create in Loaded'}</button>
-          {!embedded && <button onClick={closeEditor} disabled={saving} style={ghost}>Cancel</button>}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.6rem' }}>
-          <span style={{ fontSize: '0.8rem', color: colors.textMuted }}>Yield</span>
-          <input type="number" step="0.01" min="0" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ ...input, width: 90, textAlign: 'right' }} />
-          {unitSelect(draft.yield_unit_id, setYieldUnit)}
-        </div>
-        <textarea value={draft.notes} onChange={(e) => setNotes(e.target.value)} placeholder="Method / notes" rows={draft.notes ? 4 : 2} style={{ ...input, width: '100%', marginBottom: '0.75rem', resize: 'vertical', boxSizing: 'border-box' }} />
 
-        <div style={{ border: `1px solid ${colors.border}`, borderRadius: 8, overflow: 'hidden' }}>
-          <div style={{ display: 'flex', gap: '0.4rem', padding: '0.35rem 0.6rem', background: colors.selectedBg, fontSize: '0.72rem', color: colors.textMuted, fontWeight: 600 }}>
-            <span style={{ flex: 1 }}>Ingredient</span><span style={{ width: 90, textAlign: 'right' }}>Qty</span><span style={{ width: 120 }}>Unit</span><span style={{ width: 24 }} />
-          </div>
-          <div style={{ padding: '0.4rem 0.6rem' }}>
-            {draft.lines.map((l) => (
-              <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
-                <input list={`ings-${venueId}`} value={l.name} onChange={(e) => pickIngredient(l.key, e.target.value)} placeholder="Ingredient or sub-recipe" style={{ ...input, flex: 1 }} />
-                <input type="number" step="0.001" min="0" value={l.quantity} onChange={(e) => updateLine(l.key, { quantity: parseFloat(e.target.value) })} style={{ ...input, width: 90, textAlign: 'right' }} />
-                {unitSelect(l.unit_id, (u) => pickUnit(l.key, u))}
-                <button onClick={() => removeLine(l.key)} style={ghost} title="Remove">✕</button>
+        {/* Details card: name · yield · live cost */}
+        <div style={{ border: `1px solid ${colors.border}`, borderRadius: 10, padding: '1rem 1.1rem', marginBottom: '1.1rem', background: '#fff' }}>
+          {!draft.recipe_id && <div style={{ fontSize: '0.78rem', color: colors.textMuted, marginBottom: '0.6rem' }}>This will be created in Loaded when you save.</div>}
+          <input value={draft.name} onChange={(e) => setName(e.target.value)} placeholder="Recipe name"
+            style={{ fontSize: '1.2rem', fontWeight: 700, color: colors.textPrimary, width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: `1px solid ${colors.border}`, padding: '2px 0 7px', fontFamily: 'inherit', outline: 'none' }} />
+          <div style={{ marginTop: '0.9rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', width: 'fit-content' }}>
+              <span style={lbl}>Yield</span>
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                <input type="number" step="0.01" min="0" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ ...input, width: 80, textAlign: 'right' }} />
+                {unitSelect(draft.yield_unit_id, setYieldUnit)}
               </div>
-            ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Ingredients */}
+        <div style={{ ...lbl, marginBottom: '0.35rem' }}>Ingredients</div>
+        <div style={{ border: `1px solid ${colors.border}`, borderRadius: 8 }}>
+          <div style={{ display: 'flex', gap: '0.4rem', padding: '0.5rem 0.7rem', background: colors.selectedBg, fontSize: '0.68rem', color: colors.textMuted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', borderTopLeftRadius: 7, borderTopRightRadius: 7 }}>
+            <span style={{ flex: 1 }}>Ingredient</span><span style={{ width: 84, textAlign: 'right' }}>Qty</span><span style={{ width: 112 }}>Unit</span><span style={{ width: 72, textAlign: 'right' }}>Cost</span><span style={{ width: 28 }} />
+          </div>
+          <div style={{ padding: '0.6rem 0.7rem' }}>
+            {draft.lines.length === 0 && (
+              <div style={{ fontSize: '0.8rem', color: colors.textMuted, padding: '0.15rem 0 0.5rem' }}>No ingredients yet — add one below.</div>
+            )}
+            {draft.lines.map((l) => {
+              const lc = lineCostOf(l);
+              return (
+                <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.45rem' }}>
+                  <div style={{ flex: 1 }}>
+                    <Combobox
+                      value={l.name}
+                      options={ingredientOptions}
+                      onType={(t) => updateLine(l.key, { name: t, ref_id: null })}
+                      onPick={(o) => pickIngredient(l.key, o)}
+                      placeholder="Search ingredient or sub-recipe"
+                    />
+                  </div>
+                  <input type="number" step="0.001" min="0" value={l.quantity} onChange={(e) => updateLine(l.key, { quantity: parseFloat(e.target.value) })} style={{ ...input, width: 84, textAlign: 'right' }} />
+                  {unitSelect(l.unit_id, (u) => pickUnit(l.key, u), unitTypeForLine(l))}
+                  <span style={{ width: 72, textAlign: 'right', fontSize: '0.8rem', color: lc?.complete ? colors.textPrimary : colors.textMuted }} title={lc && !lc.complete ? 'No price for this ingredient yet' : undefined}>
+                    {lc?.complete ? money(lc.cost) : '—'}
+                  </span>
+                  <button onClick={() => removeLine(l.key)} style={{ ...ghost, width: 28, padding: '5px 0', textAlign: 'center' }} title="Remove">✕</button>
+                </div>
+              );
+            })}
             <button onClick={addLine} style={{ ...ghost, marginTop: 4 }}>+ Add ingredient</button>
           </div>
+          {totalCost && draft.lines.some((l) => l.ref_id) && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'baseline', gap: '1.25rem', padding: '0.6rem 0.75rem', borderTop: `1px solid ${colors.borderLight}`, background: colors.pageBg, borderBottomLeftRadius: 7, borderBottomRightRadius: 7 }}>
+              {draft.yield_quantity > 0 && (
+                <span style={{ fontSize: '0.8rem', color: colors.textMuted }}>{money(totalCost.cost / draft.yield_quantity)} / {yieldUnitName}</span>
+              )}
+              <span style={{ fontSize: '0.95rem', fontWeight: 700, color: colors.textPrimary }}>{totalCost.complete ? '' : '~'}{money(totalCost.cost)} total</span>
+            </div>
+          )}
         </div>
+        {totalCost && !totalCost.complete && draft.lines.some((l) => l.ref_id) && (
+          <div style={{ fontSize: '0.72rem', color: colors.textMuted, marginTop: '0.4rem' }}>~ Some lines have no price yet, so the total is a partial estimate.</div>
+        )}
 
-        <datalist id={`ings-${venueId}`}>
-          {opts.map((o) => <option key={`${o.kind}-${o.id}`} value={o.name} />)}
-        </datalist>
+        {/* Method — below the ingredients */}
+        <div style={{ marginTop: '1.25rem' }}>
+          <div style={{ ...lbl, marginBottom: '0.35rem' }}>Method / notes</div>
+          <HtmlField html={draft.notes} resetKey={draft.recipe_id || 'new'} onChange={setNotes} placeholder="Add a method or notes…" />
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 820 }}>
-      {venueBar}
-
-      {venueId && (
-        <div style={{ marginBottom: '0.75rem' }}>
-          <button onClick={startNew} style={btn(colors.executive_chef)}>+ New recipe</button>
+    <div>
+      {/* Header — mirrors OrdersDashboard: title + count + venue + New button */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>Recipes</h2>
+          <span style={{ fontSize: '0.75rem', color: colors.textMuted }}>
+            {loading ? 'Loading…' : `${visibleRecipes.length}${query ? ` of ${recipes.length}` : ''} recipe${recipes.length === 1 ? '' : 's'}`}
+          </span>
         </div>
-      )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {notes}
+          {venueSelect}
+          <button onClick={startNew} disabled={!venueId} style={{ ...btn(colors.executive_chef), background: venueId ? colors.executive_chef : '#ccc', cursor: venueId ? 'pointer' : 'default' }}>+ New recipe</button>
+        </div>
+      </div>
+
+      {/* Search box */}
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search recipes…"
+        style={{ ...input, width: '100%', maxWidth: 320, marginBottom: '0.75rem', boxSizing: 'border-box' }}
+      />
 
       {/* Upload a recipe document → extract a structured draft. Web-only: the
           MCP iframe has no multipart upload. */}
       {!embedded && (
-        <div style={{ margin: '0.25rem 0 0.9rem' }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.85rem', border: `1px dashed ${colors.border}`, borderRadius: 8, background: '#fff', cursor: extracting ? 'default' : 'pointer', fontWeight: 600, color: colors.textPrimary, opacity: extracting ? 0.6 : 1 }}>
+        <div style={{ margin: '0 0 0.9rem' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.85rem', border: `1px dashed ${colors.border}`, borderRadius: 8, background: '#fff', cursor: extracting ? 'default' : 'pointer', fontWeight: 600, color: colors.textSecondary, fontSize: '0.8rem', opacity: extracting ? 0.6 : 1 }}>
             {extracting ? 'Reading document…' : 'Extract recipe from document'}
             <input
               type="file"
@@ -435,13 +719,46 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
       )}
 
       {error && !draft && <div style={{ color: colors.error, padding: '0.4rem 0' }}>{error}</div>}
-      {loading && <div style={{ color: colors.textMuted, padding: '1rem 0' }}>Loading…</div>}
-      {!loading && recipes.length === 0 && <div style={{ color: colors.textMuted, padding: '1rem 0' }}>No recipes.</div>}
-      {recipes.map((r) => (
-        <button key={r.id} onClick={() => openRecipe(r.id)} style={{ display: 'block', width: '100%', padding: '0.55rem 0.8rem', marginBottom: '0.35rem', textAlign: 'left', border: `1px solid ${colors.border}`, borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, color: colors.textPrimary }}>
-          {r.name}
-        </button>
-      ))}
+
+      {loading ? (
+        <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>Loading recipes…</div>
+      ) : visibleRecipes.length === 0 ? (
+        <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>
+          {recipes.length === 0 ? 'No recipes.' : `No recipes match “${query}”.`}
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 480 }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Recipe</th>
+                <th style={{ ...thStyle, textAlign: 'right', width: 110 }}>Ingredients</th>
+                <th style={{ ...thStyle, width: 160 }}>Yield</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRecipes.map((r) => (
+                <tr
+                  key={r.id}
+                  onClick={() => openRecipe(r.id)}
+                  style={{ cursor: 'pointer' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = colors.pageBg; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
+                >
+                  <td style={{ ...tdStyle, fontWeight: 600 }}>
+                    {r.name}
+                    {r.prep && (
+                      <span style={{ marginLeft: '0.5rem', fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: colors.executive_chef, border: `1px solid ${colors.executive_chef}`, borderRadius: 4, padding: '1px 5px', verticalAlign: 'middle' }}>Prep</span>
+                    )}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: r.ingredients ? colors.textPrimary : colors.textMuted }}>{r.ingredients}</td>
+                  <td style={{ ...tdStyle, color: colors.textSecondary }}>{r.yieldText}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

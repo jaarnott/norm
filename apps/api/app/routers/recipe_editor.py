@@ -30,6 +30,34 @@ class SaveRecipeRequest(BaseModel):
     recipe: dict
 
 
+class OpenRecipeRequest(BaseModel):
+    venue_id: str
+    recipe_id: str
+
+
+@router.post("/recipe-editor/open")
+def open_recipe_route(
+    req: OpenRecipeRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Open a recipe as a working document, so the editor and the agent edit the
+    same draft (keyed by recipe_id + venue). Returns {working_document_id, data}."""
+    if not user_can_access_venue(db, user.id, req.venue_id):
+        raise HTTPException(
+            status_code=403, detail="You don't have access to that venue."
+        )
+    from app.routers.working_documents import _doc_to_dict
+    from app.services.recipe_document import open_recipe_doc
+
+    try:
+        doc = open_recipe_doc(req.venue_id, req.recipe_id, db, config_db)
+    except Exception as exc:  # noqa: BLE001 — surface a clean message
+        raise HTTPException(status_code=400, detail=f"Couldn't open the recipe: {exc}")
+    return _doc_to_dict(doc)
+
+
 @router.post("/recipe-editor/save")
 def save_recipe_route(
     req: SaveRecipeRequest,
