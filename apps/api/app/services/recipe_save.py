@@ -112,19 +112,32 @@ def resolve_cb_venue_id(venue_id: str, db: Session, config_db: Session) -> str:
 
 
 def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) -> dict:
-    """Save a recipe version to Loaded via the Cook Brothers App.
+    """Save a recipe to Loaded via the Cook Brothers App — update or create.
 
-    ``recipe`` carries what the editor built: ``recipe_id``, ``version_id``,
-    optional ``name``/``notes``/``is_counted_in_stocktake``/``yield_quantity``/
-    ``yield_unit_id``, and ``lines`` (each ``{kind, ref_id, unit_id, quantity}``
-    in DISPLAY units — a full replacement of the version's lines).
+    ``recipe`` carries what the editor built: optional ``name``/``notes``/
+    ``is_counted_in_stocktake``/``yield_quantity``/``yield_unit_id``, and
+    ``lines`` (each ``{kind, ref_id, unit_id, quantity}`` in DISPLAY units — a
+    full replacement of the version's lines).
+
+    Two modes:
+
+    * **Update** — ``recipe_id`` + ``version_id`` present: writes the given
+      version.
+    * **Create** — ``recipe_id`` omitted (or ``create: true``): the CB tool makes
+      the recipe and its first version, then writes the lines/yield in the same
+      call, and returns the new ``recipe_id``/``version_id``. A create needs a
+      ``name``.
     """
     from app.connectors.spec_executor import ConnectorAuthError, execute_spec
 
-    if not isinstance(recipe, dict) or not recipe.get("recipe_id"):
-        raise RecipeSaveError("recipe must include a recipe_id.")
-    if not recipe.get("version_id"):
-        raise RecipeSaveError("recipe must include a version_id (from the load).")
+    if not isinstance(recipe, dict):
+        raise RecipeSaveError("recipe must be an object.")
+    is_create = bool(recipe.get("create")) or not recipe.get("recipe_id")
+    if is_create:
+        if not str(recipe.get("name") or "").strip():
+            raise RecipeSaveError("A new recipe needs a name.")
+    elif not recipe.get("version_id"):
+        raise RecipeSaveError("An update must include a version_id (from the load).")
     lines = recipe.get("lines")
     if lines is not None and (not isinstance(lines, list) or len(lines) > 500):
         raise RecipeSaveError("lines must be a list of at most 500 entries.")
@@ -133,16 +146,21 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
     cb_venue_id = resolve_cb_venue_id(venue_id, db, config_db)
 
     fields = {"venue_id": cb_venue_id}
-    for k in (
-        "recipe_id",
-        "version_id",
+    if is_create:
+        # Belt and suspenders: omit recipe_id/version_id AND flag create, so the
+        # CB tool takes the create branch either way.
+        fields["create"] = True
+    passthrough = (
         "name",
         "notes",
         "is_counted_in_stocktake",
         "yield_quantity",
         "yield_unit_id",
         "lines",
-    ):
+    )
+    if not is_create:
+        passthrough = ("recipe_id", "version_id", *passthrough)
+    for k in passthrough:
         if recipe.get(k) is not None:
             fields[k] = recipe[k]
 
@@ -150,18 +168,39 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
         "recipe_save",
         extra={
             "venue_id": venue_id,
+            "mode": "create" if is_create else "update",
             "recipe_id": recipe.get("recipe_id"),
             "lines": len(lines or []),
         },
     )
+    # execute_spec enforces the operation's required_fields (recipe_id/version_id
+    # in the discovered CB schema) — but a create legitimately omits them. We own
+    # validation above, so hand execute_spec an operation with no required gate.
+    op = {**_op(spec, SAVE_ACTION), "required_fields": []}
     try:
-        result, _ = execute_spec(
-            spec, _op(spec, SAVE_ACTION), fields, cfg.config, db, venue_id=venue_id
-        )
+        result, _ = execute_spec(spec, op, fields, cfg.config, db, venue_id=venue_id)
     except ConnectorAuthError as exc:
         raise RecipeSaveError(str(exc)) from exc
     if not result.success:
         raise RecipeSaveError(result.error_message or "Loaded rejected the save.")
-    # The CB response echoes a placeholder version, so callers should re-read the
-    # recipe rather than trust the returned body.
-    return {"saved": True, "detail": result.response_payload}
+
+    # A create returns the new ids; surface them so the caller can open the saved
+    # recipe. (The CB response otherwise echoes a placeholder, so for an update
+    # callers should still re-read rather than trust the body.)
+    payload = result.response_payload or {}
+    src = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(src, dict):
+        src = payload if isinstance(payload, dict) else {}
+    new_recipe_id = (
+        src.get("recipe_id") or src.get("recipeId") or recipe.get("recipe_id")
+    )
+    new_version_id = (
+        src.get("version_id") or src.get("versionId") or recipe.get("version_id")
+    )
+    return {
+        "saved": True,
+        "created": is_create,
+        "recipe_id": new_recipe_id,
+        "version_id": new_version_id,
+        "detail": result.response_payload,
+    }

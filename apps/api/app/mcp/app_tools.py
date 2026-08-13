@@ -364,10 +364,10 @@ def app_tool_defs(mcp_ui_enabled: bool) -> list[dict]:
             "access": ACCESS_WRITE,
             "scopes": frozenset({"mcp:recipes:write"}),
             "description": (
-                "Save a recipe version to Loaded (through the Cook Brothers App). "
-                "ONLY call this when the user has pressed Save in the embedded "
-                "recipe editor — never on your own initiative. The recipe is "
-                "written exactly as passed."
+                "Save a recipe to Loaded (through the Cook Brothers App) — update "
+                "or create. ONLY call this when the user has pressed Save in the "
+                "embedded recipe editor — never on your own initiative. The recipe "
+                "is written exactly as passed."
             ),
             "input_schema": {
                 "type": "object",
@@ -375,9 +375,11 @@ def app_tool_defs(mcp_ui_enabled: bool) -> list[dict]:
                     "venue_id": {"type": "string"},
                     "recipe": {
                         "type": "object",
-                        "description": "The recipe the editor built: recipe_id, "
-                        "version_id, name, yield_quantity, yield_unit_id, and "
-                        "lines[] (each kind/ref_id/name/unit_id/quantity).",
+                        "description": "The recipe the editor built: name, "
+                        "yield_quantity, yield_unit_id, notes, and lines[] (each "
+                        "kind/ref_id/name/unit_id/quantity). Include recipe_id + "
+                        "version_id to UPDATE an existing recipe; omit recipe_id "
+                        "(or set create:true) to CREATE a new one.",
                     },
                 },
                 "required": ["venue_id", "recipe"],
@@ -793,9 +795,12 @@ def _save_recipe(
     venue_id = str(params.get("venue_id") or "")
     _authorize_venue_id(principal, venue_id, db)
 
+    # An update carries recipe_id; a create omits it (or sets create:true). Let
+    # save_recipe own the update-vs-create validation — it needs a version_id for
+    # an update and a name for a create.
     recipe = params.get("recipe")
-    if not isinstance(recipe, dict) or not recipe.get("recipe_id"):
-        raise AppToolError("recipe must be an object with a recipe_id.")
+    if not isinstance(recipe, dict):
+        raise AppToolError("recipe must be an object.")
     lines = recipe.get("lines")
     if lines is not None and (not isinstance(lines, list) or len(lines) > 500):
         raise AppToolError("recipe.lines must be a list of at most 500 entries.")
@@ -813,7 +818,13 @@ def _save_recipe(
         result = save_recipe(venue_id, recipe, db, config_db)
     except RecipeSaveError as e:
         return {"saved": False, "detail": str(e)}
-    return {"saved": True, "detail": result.get("detail")}
+    return {
+        "saved": True,
+        "created": result.get("created", False),
+        "recipe_id": result.get("recipe_id"),
+        "version_id": result.get("version_id"),
+        "detail": result.get("detail"),
+    }
 
 
 def _place_stock_order(

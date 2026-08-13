@@ -31,9 +31,10 @@ interface EditLine {
   quantity: number;
 }
 interface Draft {
-  recipe_id: string;
+  recipe_id: string; // '' for a not-yet-created recipe
   version_id: string;
   name: string;
+  notes: string;
   is_counted_in_stocktake: boolean;
   yield_quantity: number;
   yield_unit_id: string | null;
@@ -72,10 +73,26 @@ function toDraft(r: Record<string, unknown>): Draft | null {
     recipe_id: r.id as string,
     version_id: cv.id as string,
     name: (r.name as string) || '',
+    notes: (cv.notes as string) || (r.notes as string) || '',
     is_counted_in_stocktake: !!r.isCountedInStocktake,
     yield_quantity: num(cv.yieldQuantity) / yr,
     yield_unit_id: (cv.yieldUnitId as string) || null,
     lines,
+  };
+}
+
+// A blank draft for a brand-new recipe (recipe_id '' => the save creates it).
+function blankDraft(seed?: Partial<Draft>): Draft {
+  return {
+    recipe_id: '',
+    version_id: '',
+    name: '',
+    notes: '',
+    is_counted_in_stocktake: false,
+    yield_quantity: 1,
+    yield_unit_id: null,
+    lines: [],
+    ...seed,
   };
 }
 
@@ -105,9 +122,9 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     embedded && initialRecipe ? toDraft(initialRecipe) : null,
   );
 
-  // Upload → extract a draft recipe from a document (web-only; review-only —
-  // see the note in the card. Saving it as a NEW Loaded recipe needs a create
-  // path that doesn't exist yet).
+  // Upload → extract a draft recipe from a document (web-only). The extracted
+  // draft can be turned into a NEW Loaded recipe (fromExtracted → blank draft →
+  // create), once the user maps each ingredient to a real stock item + unit.
   interface Extracted { name?: string; yield_quantity?: number | null; yield_unit?: string | null; ingredients?: Array<{ name?: string; quantity?: number | null; unit?: string | null }>; method?: string | null }
   const [extracted, setExtracted] = useState<Extracted | null>(null);
   const [extracting, setExtracting] = useState(false);
@@ -203,8 +220,30 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   };
   const closeEditor = () => setDraft(null);
 
+  // Start a blank new recipe (the save creates it in Loaded).
+  const startNew = () => { setError(null); setSavedNote(null); setExtracted(null); setDraft(blankDraft()); };
+
+  // Turn an extracted document draft into a new-recipe draft. The ingredient
+  // names/quantities pre-fill the lines, but each line still needs a real Loaded
+  // stock item + unit (ref_id/unit_id) picked from the autocomplete before it can
+  // save — extraction gives loose text, Loaded needs ids.
+  const fromExtracted = (e: Extracted) => {
+    setError(null); setSavedNote(null); setExtracted(null);
+    setDraft(blankDraft({
+      name: e.name || '',
+      notes: e.method || '',
+      yield_quantity: typeof e.yield_quantity === 'number' ? e.yield_quantity : 1,
+      lines: (e.ingredients || []).map((ing) => ({
+        key: uid(), kind: 'item' as const, ref_id: null,
+        name: ing.name || '', unit_id: null, unit_name: null, unit_ratio: 1,
+        quantity: typeof ing.quantity === 'number' ? ing.quantity : 0,
+      })),
+    }));
+  };
+
   // --- Draft mutations ---
   const setName = (name: string) => setDraft((d) => (d ? { ...d, name } : d));
+  const setNotes = (notes: string) => setDraft((d) => (d ? { ...d, notes } : d));
   const setYieldQty = (q: number) => setDraft((d) => (d ? { ...d, yield_quantity: q } : d));
   const setYieldUnit = (unitId: string) => setDraft((d) => (d ? { ...d, yield_unit_id: unitId } : d));
   const addLine = () => setDraft((d) => (d ? { ...d, lines: [...d.lines, { key: uid(), kind: 'item', ref_id: null, name: '', unit_id: null, unit_name: null, unit_ratio: 1, quantity: 0 }] } : d));
@@ -230,10 +269,10 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     setSaving(true);
     setError(null);
     setSavedNote(null);
-    const recipe = {
-      recipe_id: draft.recipe_id,
-      version_id: draft.version_id,
+    const isNew = !draft.recipe_id;
+    const recipe: Record<string, unknown> = {
       name: draft.name,
+      notes: draft.notes,
       is_counted_in_stocktake: draft.is_counted_in_stocktake,
       yield_quantity: num(draft.yield_quantity),
       yield_unit_id: draft.yield_unit_id,
@@ -247,6 +286,9 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
         quantity: num(l.quantity),
       })),
     };
+    // recipe_id absent (or create:true) => the CB tool creates the recipe.
+    if (isNew) recipe.create = true;
+    else { recipe.recipe_id = draft.recipe_id; recipe.version_id = draft.version_id; }
     try {
       const res = await apiFetch('/api/recipe-editor/save', {
         method: 'POST',
@@ -256,8 +298,8 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
         const t = await res.json().catch(() => ({}));
         throw new Error((t as { detail?: string }).detail || `Save failed (${res.status})`);
       }
-      setSavedNote('Recipe saved to Loaded.');
-      if (!embedded) closeEditor();
+      setSavedNote(isNew ? 'Recipe created in Loaded.' : 'Recipe saved to Loaded.');
+      if (!embedded) { closeEditor(); if (venueId) loadRefs(venueId); }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
     }
@@ -293,16 +335,20 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     return (
       <div style={{ maxWidth: 820 }}>
         {venueBar}
+        {!draft.recipe_id && (
+          <div style={{ fontSize: '0.8rem', color: colors.textMuted, marginBottom: '0.4rem' }}>New recipe — this will be created in Loaded when you save.</div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
           <input value={draft.name} onChange={(e) => setName(e.target.value)} placeholder="Recipe name" style={{ ...input, fontSize: '1rem', fontWeight: 600, flex: 1, minWidth: 220 }} />
-          <button onClick={save} disabled={saving || !draft.name.trim()} style={btn(colors.executive_chef)}>{saving ? 'Saving…' : 'Save to Loaded'}</button>
+          <button onClick={save} disabled={saving || !draft.name.trim()} style={btn(colors.executive_chef)}>{saving ? 'Saving…' : draft.recipe_id ? 'Save to Loaded' : 'Create in Loaded'}</button>
           {!embedded && <button onClick={closeEditor} disabled={saving} style={ghost}>Cancel</button>}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.6rem' }}>
           <span style={{ fontSize: '0.8rem', color: colors.textMuted }}>Yield</span>
           <input type="number" step="0.01" min="0" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ ...input, width: 90, textAlign: 'right' }} />
           {unitSelect(draft.yield_unit_id, setYieldUnit)}
         </div>
+        <textarea value={draft.notes} onChange={(e) => setNotes(e.target.value)} placeholder="Method / notes" rows={draft.notes ? 4 : 2} style={{ ...input, width: '100%', marginBottom: '0.75rem', resize: 'vertical', boxSizing: 'border-box' }} />
 
         <div style={{ border: `1px solid ${colors.border}`, borderRadius: 8, overflow: 'hidden' }}>
           <div style={{ display: 'flex', gap: '0.4rem', padding: '0.35rem 0.6rem', background: colors.selectedBg, fontSize: '0.72rem', color: colors.textMuted, fontWeight: 600 }}>
@@ -332,8 +378,14 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     <div style={{ maxWidth: 820 }}>
       {venueBar}
 
+      {venueId && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <button onClick={startNew} style={btn(colors.executive_chef)}>+ New recipe</button>
+        </div>
+      )}
+
       {/* Upload a recipe document → extract a structured draft. Web-only: the
-          MCP iframe has no multipart upload. Review-only for now — see note. */}
+          MCP iframe has no multipart upload. */}
       {!embedded && (
         <div style={{ margin: '0.25rem 0 0.9rem' }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.85rem', border: `1px dashed ${colors.border}`, borderRadius: 8, background: '#fff', cursor: extracting ? 'default' : 'pointer', fontWeight: 600, color: colors.textPrimary, opacity: extracting ? 0.6 : 1 }}>
@@ -373,8 +425,11 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
           {extracted.method && (
             <p style={{ margin: '0.6rem 0 0', color: colors.textSecondary, fontSize: '0.88rem', whiteSpace: 'pre-wrap' }}>{extracted.method}</p>
           )}
-          <div style={{ marginTop: '0.7rem', color: colors.textMuted, fontSize: '0.78rem', fontStyle: 'italic' }}>
-            Extracted for review. Creating a new Loaded recipe from a document isn&apos;t available yet — copy these into an existing recipe above.
+          <div style={{ marginTop: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+            <button onClick={() => fromExtracted(extracted)} style={btn(colors.executive_chef)}>Start a new recipe from this</button>
+            <span style={{ color: colors.textMuted, fontSize: '0.78rem', fontStyle: 'italic' }}>
+              You&apos;ll match each ingredient to a Loaded stock item and unit before it saves.
+            </span>
           </div>
         </div>
       )}
