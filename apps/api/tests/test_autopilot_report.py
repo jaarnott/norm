@@ -164,6 +164,11 @@ class TestCannotReceive:
             }
 
         monkeypatch.setattr("app.services.spec_dojo.stage_invoice_sample", fake_stage)
+        # Can't-receive now hands every press to the sensei, including repeats.
+        monkeypatch.setattr(
+            "app.services.sensei_runner.start_analysis",
+            lambda sid, fb=None: staged.setdefault("analysed", sid) and "job" or "job",
+        )
         # A Loaded receive here would be a bug — there is no client to call.
         monkeypatch.setattr(
             IF, "_do_receive", lambda *a, **k: pytest.fail("must not receive")
@@ -179,6 +184,8 @@ class TestCannotReceive:
         # The card branches on these — a repeat press must not claim it filed
         # something, and a copy-less invoice must not claim it at all.
         assert body["already_in_dojo"] is False
+        # A press is a training request, not just a filing.
+        assert staged["analysed"] == "s-1"
         # NOT a draft. Drafts are the Dojo page's "somebody expanded this row"
         # state and are hidden from "awaiting review", so filing a human's
         # explicit verdict that way made the button look like it did nothing.

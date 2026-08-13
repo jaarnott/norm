@@ -975,9 +975,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             : "Recorded, but there's no invoice copy in Loaded to train on",
         );
       } else if (out.already_in_dojo) {
-        setMessage('Already in the Dojo — nothing more to file');
+        // Saying "already there, nothing to do" was wrong: a second press
+        // means the last training didn't solve it, so it goes back to the
+        // sensei rather than being treated as a duplicate.
+        setMessage('Already in the Dojo — sent back to the sensei for another look');
       } else {
-        setMessage('Filed for training — an admin will review it in the Dojo');
+        setMessage('Filed for training — the sensei is analysing it now');
       }
     } catch (e) {
       setCannotState(null);

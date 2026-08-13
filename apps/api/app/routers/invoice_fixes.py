@@ -1390,6 +1390,10 @@ async def cannot_receive(
     filed where nobody looks. The invoice is left untouched in Loaded and its
     working document stays open, because "couldn't receive today, received
     fine tomorrow" is a real and useful sequence.
+
+    Pressing it on an invoice that is ALREADY filed re-runs the sensei rather
+    than doing nothing: the second press means the previous training did not
+    solve it, which is exactly when another look is worth paying for.
     """
     docs = _open_docs_for(db, body.venue_id, body.invoice_id)
     data = (docs[0].data or {}) if docs else {}
@@ -1397,8 +1401,15 @@ async def cannot_receive(
     staged: dict = {}
     stage_error: str | None = None
     try:
+        # ALWAYS hand it to the sensei, including when the sample already
+        # exists. "Norm can't do this one" said a second time is not a
+        # duplicate — it is the report that the last attempt did not work, and
+        # the most useful moment to re-analyse. Staging alone would return a
+        # cheerful 200 and change nothing, which is indistinguishable from a
+        # broken button. The analysis runs in the sensei job, so this costs a
+        # container rather than a request.
         staged = _stage_and_analyse(
-            db, body.venue_id, body.invoice_id, draft=False, analyse=False
+            db, body.venue_id, body.invoice_id, draft=False, analyse=True
         )
     except RuntimeError as exc:
         # No PDF attached — it cannot be staged, but the human's verdict is

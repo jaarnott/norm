@@ -188,7 +188,9 @@ class TestTheRosterGate:
     def test_a_clean_merge_still_goes_through(self, db_session, roster):
         """The gate must not be a brake on ordinary work."""
         sf, _ev = roster
-        dupe = SupplierInvoiceSpec(name="SERVICE FOODS LTD", aliases=[], instructions="")
+        dupe = SupplierInvoiceSpec(
+            name="SERVICE FOODS LTD", aliases=[], instructions=""
+        )
         db_session.add(dupe)
         db_session.commit()
         sample = _sample(db_session, dupe, _proposal(alias_of="Service Foods"))
