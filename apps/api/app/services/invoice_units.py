@@ -151,6 +151,27 @@ def _outer_count(u: object) -> float | None:
         return None
 
 
+def copy_is_more_specific(copy_unit: object, variant_unit: object) -> bool:
+    """True when the COPY names the pack SIZE and the variant only counts it.
+
+    ``units_equivalent`` calls '6x1000ml' and '6 Pack' the same pack, and for
+    its own purpose that is right: a copy printing only a count must not
+    displace a variant that knows the size. But equivalence is symmetric and
+    the preference is not. When the COPY carries the size and the variant does
+    not, the copy is strictly more informative — and the copy is the truth.
+
+    Hancocks 4362108 (13 Aug 2026): the copy printed 'CITY OF LONDON DRY GIN
+    (6X1000ML)' and the extraction read '6x1000ml' correctly, but the variant
+    default '6 Pack' was judged equivalent, kept, and — because the working
+    value then matched the replica exactly — produced NO suggestion at all.
+    The right answer was on the page and there was no way to reach it.
+    """
+    if not is_multipack(copy_unit) or is_multipack(variant_unit):
+        return False
+    p = parse_unit(variant_unit)
+    return bool(p and p[0] == "count")
+
+
 def units_equivalent(a: object, b: object) -> bool:
     """True when two unit names denote the same DELIVERED pack.
 

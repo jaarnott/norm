@@ -838,3 +838,36 @@ class TestCreditNoteSigns:
         ]
         doc = _build(self.PRINTED, received_feed=feed)
         assert any(i["code"] == "duplicate_invoice" for i in doc["issues"])
+
+
+class TestCopyUnitBeatsAVagueVariant:
+    """Hancocks 4362108, 13 Aug 2026.
+
+    The copy printed 'CITY OF LONDON DRY GIN (6X1000ML)' and the extraction
+    read '6x1000ml' correctly. Loaded's supplier variant said '6 Pack'.
+    units_equivalent calls those the same pack — rightly, since a copy that
+    prints only a count must not displace a variant that knows the size — so
+    the variant was kept. The working value then MATCHED the replica exactly,
+    which meant no suggestion was raised: the right answer was on the page and
+    the user had no way to reach it.
+    """
+
+    def test_a_sized_copy_unit_overrides_a_bare_count_variant(self):
+        from app.services.invoice_units import copy_is_more_specific
+
+        assert copy_is_more_specific("6x1000ml", "6 Pack") is True
+
+    def test_a_bare_count_copy_never_displaces_a_sized_variant(self):
+        """The asymmetry is the whole point — reversing it would let a vague
+        copy throw away the size Loaded already knows."""
+        from app.services.invoice_units import copy_is_more_specific
+
+        assert copy_is_more_specific("6 Pack", "6x750ml") is False
+
+    def test_equivalent_and_equally_specific_units_keep_the_variant(self):
+        """Unchanged behaviour: same pack, same information, so the variant's
+        unit id wins for stability against Loaded."""
+        from app.services.invoice_units import copy_is_more_specific, units_equivalent
+
+        assert units_equivalent("700ml", "700 mL") is True
+        assert copy_is_more_specific("700ml", "700 mL") is False

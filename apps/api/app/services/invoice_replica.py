@@ -47,6 +47,7 @@ from app.services.supplier_identity import (
 )
 from app.services.invoice_units import (
     _unit_norm,
+    copy_is_more_specific,
     is_multipack,
     multipack_equal,
     parse_unit,
@@ -633,7 +634,17 @@ def build_replica(
             # The unit-fix doctrine: the copy's confidently-delivered unit
             # overrides a variant default that names a DIFFERENT pack —
             # equivalent names keep the variant's unit (id-stable vs Loaded).
-            if confident and not units_equivalent(unit_rec.get("name"), derived):
+            #
+            # ...with one asymmetry. Equivalence is a two-way test, but "same
+            # pack" does not mean "as informative": '6 Pack' and '6x1000ml'
+            # are equivalent, yet only one says how big the bottles are. When
+            # the COPY is the specific one the copy wins, otherwise the right
+            # answer sits on the page with no way to reach it — the working
+            # value matches the replica, so nothing is even suggested.
+            if confident and (
+                not units_equivalent(unit_rec.get("name"), derived)
+                or copy_is_more_specific(derived, unit_rec.get("name"))
+            ):
                 copy_rec = _resolve_unit_record(derived, units)
                 if copy_rec and copy_rec.get("id") != unit_rec.get("id"):
                     log.append(
