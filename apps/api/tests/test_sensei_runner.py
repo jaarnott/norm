@@ -132,3 +132,66 @@ class TestJobRequest:
         monkeypatch.setattr(settings, "GCP_PROJECT_ID", "")
         with pytest.raises(RuntimeError, match="GCP_PROJECT_ID"):
             sensei_runner._run_job("s-8", None)
+
+
+class TestTheAnalyseEndpoint:
+    """The path that actually crashed production on 13 Aug.
+
+    Add-to-dojo's background thread was the obvious offender, but the Dojo's
+    Analyse button ran the same 1-2 minute job INLINE in the request — and
+    that is what was in flight when the container aborted, taking the analysis
+    with it and freezing the sample at "analysing".
+    """
+
+    def _sample(self, db):
+        from app.db.config_models import SupplierInvoiceSpec, SupplierSpecSample
+
+        spec = SupplierInvoiceSpec(name="Dispatch Co", aliases=[], instructions="x")
+        db.add(spec)
+        db.commit()
+        s = SupplierSpecSample(spec_id=spec.id, label="a.pdf", pdf_bytes=b"%PDF-")
+        db.add(s)
+        db.commit()
+        return s
+
+    def test_with_a_job_it_dispatches_instead_of_blocking(
+        self, client, admin_headers, db_session, monkeypatch
+    ):
+        s = self._sample(db_session)
+        monkeypatch.setattr(settings, "SENSEI_JOB", "norm-sensei-production")
+        monkeypatch.setattr(
+            "app.services.spec_dojo.analyse_sample",
+            lambda *a, **k: pytest.fail("must not run inline when a job exists"),
+        )
+        seen = {}
+        monkeypatch.setattr(
+            "app.services.sensei_runner.start_analysis",
+            lambda sid, fb=None: seen.setdefault("sid", sid) and "job" or "job",
+        )
+        res = client.post(
+            f"/api/supplier-invoice-specs/samples/{s.id}/analyse", headers=admin_headers
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["dispatched"] == "job"
+        # Marked running immediately: a cold start is tens of seconds, and the
+        # panel would otherwise show the stale previous result and look inert.
+        assert res.json()["analysis"]["status"] == "running"
+        assert seen["sid"] == s.id
+
+    def test_without_a_job_it_still_runs_inline(
+        self, client, admin_headers, db_session, monkeypatch
+    ):
+        """Local and CI have no job — the work must still happen, in the
+        foreground where it can be debugged."""
+        s = self._sample(db_session)
+        monkeypatch.setattr(settings, "SENSEI_JOB", "")
+        monkeypatch.setattr(
+            "app.services.spec_dojo.analyse_sample",
+            lambda *a, **k: {"status": "ready", "green": True},
+        )
+        res = client.post(
+            f"/api/supplier-invoice-specs/samples/{s.id}/analyse", headers=admin_headers
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["dispatched"] == "inline"
+        assert res.json()["analysis"]["status"] == "ready"

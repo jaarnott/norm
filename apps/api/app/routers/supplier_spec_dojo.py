@@ -19,7 +19,8 @@ from app.auth.dependencies import require_permission
 from app.db.config_models import SupplierInvoiceSpec, SupplierSpecSample
 from app.db.engine import SessionLocal, get_config_db_rw, get_db
 from app.db.models import User
-from app.services import spec_dojo
+from app.config import settings
+from app.services import sensei_runner, spec_dojo
 
 logger = logging.getLogger(__name__)
 
@@ -695,14 +696,43 @@ async def analyse_sample_endpoint(
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
 ):
-    """Run the SENSEI on a sample synchronously (1–2 min): strong
-    model + full context + candidate verification. Stores sample.analysis.
-    With ``feedback``, this is the admin replying to the proposal thread."""
-    _sample_or_404(config_db, sample_id)
-    analysis = spec_dojo.analyse_sample(
-        db, config_db, sample_id, feedback=(body.feedback if body else None)
-    )
-    return {"analysis": _slim_analysis(analysis)}
+    """Run the SENSEI on a sample: strong model + full context + candidate
+    verification. With ``feedback``, this is the admin replying to the
+    proposal thread.
+
+    Where a sensei job is configured this DISPATCHES and returns immediately
+    with the analysis marked running; the panel already polls that state. It
+    used to run inline, which is a 1-2 minute blocking call inside a request
+    with a 300-second ceiling — and on 13 Aug it took the whole container down
+    with it (SIGABRT), leaving the sample stuck at "analysing". Without a job
+    (local, tests) it still runs inline, which is what makes it debuggable.
+    """
+    import datetime as _dt
+
+    sample = _sample_or_404(config_db, sample_id)
+    feedback = body.feedback if body else None
+
+    if settings.SENSEI_JOB:
+        # Mark it running BEFORE dispatching. The job sets this itself once it
+        # starts, but a container cold start is tens of seconds and the panel
+        # would show the stale previous result in the meantime — which looks
+        # exactly like the button doing nothing.
+        prev = sample.analysis or {}
+        sample.analysis = {
+            "status": "running",
+            "thread": prev.get("thread") or [],
+            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+        config_db.commit()
+        where = sensei_runner.start_analysis(sample_id, feedback)
+        if where == "job":
+            return {"analysis": _slim_analysis(sample.analysis), "dispatched": "job"}
+        # start_analysis fell back to a thread; the sample is already marked
+        # running and the thread will finish it.
+        return {"analysis": _slim_analysis(sample.analysis), "dispatched": where}
+
+    analysis = spec_dojo.analyse_sample(db, config_db, sample_id, feedback=feedback)
+    return {"analysis": _slim_analysis(analysis), "dispatched": "inline"}
 
 
 class ApplyAnalysisRequest(BaseModel):
