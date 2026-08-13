@@ -1340,10 +1340,19 @@ def _stage_and_analyse(
 ) -> dict:
     """File an invoice's PDF as a dojo sample and (optionally) kick the sensei.
 
-    Shared by Add-to-dojo (admin, permanent, analysed) and Cannot-receive (any
-    user, staged as a DRAFT so untrusted intake stays out of regression until
-    an admin promotes it, and NOT analysed — an unattended Opus pass per press
-    is real money). Raises RuntimeError when the invoice has no copy attached.
+    Shared by Add-to-dojo (admin, analysed) and Cannot-receive (any user, not
+    analysed — an unattended Opus pass per press is real money).
+
+    Both file a REAL sample, not a draft. ``draft`` is the Dojo page's
+    "somebody expanded this row" state, which is invisible in the UI by
+    design: drafts are excluded from "awaiting review"
+    (``dojo/overview``) and never show the "in dojo" chip. Filing a human's
+    explicit "Norm can't do this one" that way made the button look broken —
+    it left the invoice sitting in the outstanding list exactly as before.
+    A sample with no baseline is already harmless to regression: it scores
+    "new", never "fail", so the draft flag was protecting nothing here.
+
+    Raises RuntimeError when the invoice has no copy attached.
     """
     import threading
 
@@ -1388,10 +1397,11 @@ async def cannot_receive(
 
     Deliberately NOT admin-only (unlike add-to-dojo): the person who hits the
     problem is the one who should flag it, which is also what gives the
-    autopilot report its coverage. The sample lands as a DRAFT for an admin to
-    triage; the invoice is left untouched in Loaded and its working document
-    stays open, because "couldn't receive today, received fine tomorrow" is a
-    real and useful sequence.
+    autopilot report its coverage. The sample joins the dojo proper so it is
+    visible in "awaiting review" — a human verdict that must not be silently
+    filed where nobody looks. The invoice is left untouched in Loaded and its
+    working document stays open, because "couldn't receive today, received
+    fine tomorrow" is a real and useful sequence.
     """
     docs = _open_docs_for(db, body.venue_id, body.invoice_id)
     data = (docs[0].data or {}) if docs else {}
@@ -1400,7 +1410,7 @@ async def cannot_receive(
     stage_error: str | None = None
     try:
         staged = _stage_and_analyse(
-            db, body.venue_id, body.invoice_id, draft=True, analyse=False
+            db, body.venue_id, body.invoice_id, draft=False, analyse=False
         )
     except RuntimeError as exc:
         # No PDF attached — it cannot be staged, but the human's verdict is

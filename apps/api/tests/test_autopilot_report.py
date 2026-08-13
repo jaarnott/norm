@@ -175,8 +175,10 @@ class TestCannotReceive:
         )
         assert res.status_code == 200, res.text
         assert res.json()["staged"] is True
-        # Non-admin intake is staged as a DRAFT — untrusted until promoted.
-        assert staged["draft"] is True
+        # NOT a draft. Drafts are the Dojo page's "somebody expanded this row"
+        # state and are hidden from "awaiting review", so filing a human's
+        # explicit verdict that way made the button look like it did nothing.
+        assert staged["draft"] is False
 
         row = (
             db_session.query(InvoiceAutopilotOutcome)
@@ -211,3 +213,47 @@ class TestCannotReceive:
             .first()
         )
         assert row.outcome == "dojo" and row.detail["dojo"]["staged"] is False
+
+
+class TestAFiledInvoiceIsVisible:
+    """The bug behind "Can't receive isn't adding invoices to the dojo".
+
+    Filing worked — a sample row was created every time. But it was created as
+    a DRAFT, and the Dojo page hides drafts: they are excluded from "awaiting
+    review" and never earn the green "in dojo" chip, because a draft means
+    "somebody expanded this row", not "a human filed this for training". The
+    invoice therefore sat in the outstanding list looking exactly as before.
+    """
+
+    def _sample(self, db, spec, *, draft):
+        from app.db.config_models import SupplierSpecSample
+
+        s = SupplierSpecSample(
+            spec_id=spec.id,
+            label=f"draft-{draft}.pdf",
+            pdf_bytes=b"%PDF-",
+            expected=None,  # no baseline yet — this is what "awaiting review" means
+            draft=draft,
+        )
+        db.add(s)
+        db.commit()
+        return s
+
+    def test_a_filed_sample_reaches_awaiting_review(
+        self, client, admin_headers, db_session
+    ):
+        from app.db.config_models import SupplierInvoiceSpec
+
+        spec = SupplierInvoiceSpec(name="Filed Co", aliases=[], instructions="")
+        db_session.add(spec)
+        db_session.commit()
+        filed = self._sample(db_session, spec, draft=False)
+        hidden = self._sample(db_session, spec, draft=True)
+
+        res = client.get(
+            "/api/supplier-invoice-specs/dojo/overview", headers=admin_headers
+        )
+        assert res.status_code == 200, res.text
+        ids = {r["id"] for r in res.json()["pending_review"]}
+        assert filed.id in ids, "a filed invoice must be visible in the dojo"
+        assert hidden.id not in ids, "an incidental draft must stay hidden"
