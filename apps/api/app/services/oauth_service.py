@@ -281,20 +281,27 @@ def refresh_access_token(
     db: Session,
     venue_id: str | None = None,
     user_id: str | None = None,
+    force: bool = False,
 ) -> str:
-    """Refresh an expired access token. Returns the new access_token.
+    """Redeem the refresh token for new tokens. Returns the new access_token.
 
-    Providers such as LoadedHub *rotate* refresh tokens: each successful refresh
-    returns a new refresh token and invalidates the previous one. Two concurrent
-    refreshes would therefore race, and the loser's token would be dead — which
-    eventually locks us out entirely.
+    ``force=True`` performs the redemption even while the stored access token is
+    still valid. This is what the scheduled keep-alive uses, and it is the whole
+    point of the schedule: LoadedHub's access AND refresh tokens live ~14 days
+    and expire TOGETHER, so a lazy refresh that waits for access-token expiry is
+    structurally always too late — by then the refresh token is dead at the same
+    instant (Aug-2026 incident: every venue's connection died on a 14-day cycle,
+    with zero successful refresh redemptions in production history). Redeeming
+    early makes Loaded rotate the refresh token (their server issues a fresh one
+    on redemption), so the grant's age resets every run and never hits the cliff.
 
-    To prevent that we take a row lock on the ConnectorConfig for the duration of
-    the exchange, so refreshes are serialised. After acquiring the lock we
-    re-check expiry: if another caller already refreshed while we were blocked,
-    we reuse their token instead of burning a second exchange. (Same shape as the
-    ``with_for_update`` claim in ``task_scheduler._claim_due_tasks``; blocking
-    rather than ``skip_locked`` so the loser waits and reuses the winner's token.)
+    Concurrency: providers such as LoadedHub *rotate* refresh tokens — each
+    successful redemption returns a new refresh token and invalidates the
+    previous one. Two concurrent redemptions would race, and the loser's token
+    would be dead. So we take a row lock on the ConnectorConfig for the duration
+    of the exchange; non-forced callers re-check expiry under the lock and reuse
+    a token another caller just refreshed. (Same shape as the ``with_for_update``
+    claim in ``task_scheduler._claim_due_tasks``.)
     """
     query = db.query(ConnectorConfig).filter(
         ConnectorConfig.connector_name == spec.connector_name
@@ -314,8 +321,10 @@ def refresh_access_token(
     if not config_row or not config_row.refresh_token:
         raise ValueError("No refresh token available")
 
-    # Re-check under the lock — another caller may have just refreshed.
-    if config_row.access_token and config_row.token_expires_at:
+    # Re-check under the lock — another caller may have just refreshed. A forced
+    # redemption (the keep-alive) skips this on purpose: its job is to redeem
+    # while everything still looks valid, because waiting for expiry is too late.
+    if not force and config_row.access_token and config_row.token_expires_at:
         if datetime.now(timezone.utc) < config_row.token_expires_at - timedelta(
             seconds=60
         ):
@@ -421,24 +430,23 @@ def get_valid_access_token(
 def refresh_all_tokens(
     db: Session | None = None, config_db: Session | None = None
 ) -> dict:
-    """Proactively refresh every OAuth connector's tokens. Returns a summary.
+    """Redeem every OAuth connector's refresh token for fresh tokens. Summary out.
 
-    Providers such as LoadedHub *rotate* refresh tokens, and each rotation resets
-    the refresh token's lifetime. A connector that goes unrefreshed for longer
-    than that lifetime is permanently locked out and needs a manual
-    re-authorization — which is exactly how LoadedHub broke here: months of
-    failing task runs meant Loaded was never called, so the token was never
-    rotated and quietly expired.
+    This must perform a REAL redemption on every run — never a lazy
+    is-the-access-token-still-valid check. LoadedHub issues access and refresh
+    tokens that live ~14 days and expire TOGETHER, so any strategy that waits
+    for access-token expiry redeems the refresh token at the exact moment it
+    dies. That was the Aug-2026 failure mode: this function called
+    ``get_valid_access_token`` (a no-op while the access token was valid), so
+    production made one real token call per 14 days — always a 400 — and every
+    venue's connection collapsed on a 14-day cycle behind ``refreshed=N``
+    no-op summaries. Redeeming eagerly makes Loaded rotate the refresh token on
+    each run, so the grant's age resets every 6 hours and never reaches the
+    cliff. The "issued a rotated refresh token" INFO log firing on each run is
+    the operational proof of life.
 
-    Lazy refresh (``get_valid_access_token``) only fires when something actually
-    uses the connector, so it cannot protect an idle one. This runs on a
-    schedule instead, independent of task activity, and is what makes refresh
-    reliable rather than a side effect of traffic.
-
-    Normally a no-op for still-valid tokens: the short access-token lifetime
-    (~1h) sets the real rotation cadence. Per-connector failures are logged and
-    collected rather than aborting the run, so one dead connector can't stop the
-    others from being kept alive.
+    Per-connector failures are logged and collected rather than aborting the
+    run, so one dead connector can't stop the others from being kept alive.
     """
     from app.db.engine import SessionLocal, _ConfigSessionLocal
 
@@ -484,18 +492,13 @@ def refresh_all_tokens(
                 continue
 
             try:
-                if row.token_expires_at is None:
-                    # With no expiry recorded, the lazy path never refreshes this
-                    # connector (see get_valid_access_token), so its refresh token
-                    # would rot. Force a rotation — which also establishes an
-                    # expiry if the provider returns expires_in.
-                    refresh_access_token(
-                        spec, db, venue_id=row.venue_id, user_id=row.user_id
-                    )
-                else:
-                    get_valid_access_token(
-                        spec, db, venue_id=row.venue_id, user_id=row.user_id
-                    )
+                # Always a real redemption (force=True): a lazy check would skip
+                # rows whose access token still looks valid — and with Loaded's
+                # paired ~14-day lifetimes, "still valid" means "the refresh
+                # token dies at the same moment you finally use it".
+                refresh_access_token(
+                    spec, db, venue_id=row.venue_id, user_id=row.user_id, force=True
+                )
                 refreshed.append(label)
             except Exception as exc:
                 logger.warning(

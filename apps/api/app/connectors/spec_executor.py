@@ -559,8 +559,15 @@ def execute_spec(
             try:
                 from app.services.oauth_service import refresh_access_token
 
+                # force=True: the 401 proves the token is dead no matter what
+                # token_expires_at claims — the lazy early-return would hand the
+                # same rejected token straight back.
                 result = _call(
-                    {"access_token": refresh_access_token(spec, db, venue_id=venue_id)}
+                    {
+                        "access_token": refresh_access_token(
+                            spec, db, venue_id=venue_id, force=True
+                        )
+                    }
                 )
             except Exception:
                 # Refresh failed — refresh_access_token has already flagged
@@ -654,7 +661,10 @@ def _refresh_and_retry(
     logger.info("Got 401 from %s; refreshing access token and retrying once", connector)
 
     try:
-        refresh_access_token(spec, db, venue_id=venue_id)
+        # force=True: the 401 proves the token is dead no matter what
+        # token_expires_at claims — the lazy early-return would hand the same
+        # rejected token straight back for the replay.
+        refresh_access_token(spec, db, venue_id=venue_id, force=True)
         rendered.headers, _ = _apply_auth(
             rendered.headers,
             spec.auth_type,

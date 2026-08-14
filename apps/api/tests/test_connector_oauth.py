@@ -271,6 +271,117 @@ class TestVenueScopedTokenSelection:
         assert get_valid_access_token(spec, db_session) == "global-token"
 
 
+class TestKeepAliveActuallyRedeems:
+    """The keep-alive must perform a REAL redemption on every run.
+
+    LoadedHub's access and refresh tokens live ~14 days and expire TOGETHER, so
+    a lazy is-the-access-token-still-valid check redeems the refresh token at
+    the exact moment it dies. That was the Aug-2026 failure: the keep-alive
+    called get_valid_access_token (a no-op while the access token was valid),
+    production made ONE real token call per 14 days — always a 400 — and every
+    venue's connection collapsed on a 14-day cycle. force=True is the fix.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, db_session):
+        # refresh_all_tokens scans every connector row; clear leftover rows from
+        # the shared dev database so they can't bleed into the call counts.
+        from app.db.models import ConnectorConfig
+
+        db_session.query(ConnectorConfig).delete()
+        db_session.flush()
+
+    def _setup(self, db_session, expires_in_days=10):
+        import uuid
+
+        from app.db.config_models import ConnectorSpec
+        from app.db.models import ConnectorConfig, Venue
+
+        spec = ConnectorSpec(
+            connector_name="loadedhub",
+            display_name="LoadedHub",
+            execution_mode="template",
+            auth_type="oauth2",
+            auth_config={},
+            oauth_config={
+                "token_url": "https://loadedhub.test/api/token",
+                "client_id": "cookbrothers",
+                "client_secret": "s3cret",
+            },
+            tools=[],
+        )
+        db_session.add(spec)
+        venue = Venue(id=str(uuid.uuid4()), name="Venue A")
+        db_session.add(venue)
+        db_session.flush()
+        cfg = ConnectorConfig(
+            connector_name="loadedhub",
+            venue_id=venue.id,
+            enabled="true",
+            config={},
+            access_token="old-access",
+            refresh_token="old-refresh",
+            token_expires_at=datetime.now(timezone.utc)
+            + timedelta(days=expires_in_days),
+        )
+        db_session.add(cfg)
+        db_session.flush()
+        return spec, cfg
+
+    def _token_response(self):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 1209600,
+        }
+        return resp
+
+    def test_force_redeems_even_with_valid_access_token(self, db_session):
+        from app.services.oauth_service import refresh_access_token
+
+        spec, cfg = self._setup(db_session)
+        with patch(
+            "app.services.oauth_service.httpx.post",
+            return_value=self._token_response(),
+        ) as post:
+            got = refresh_access_token(
+                spec, db_session, venue_id=cfg.venue_id, force=True
+            )
+        post.assert_called_once()
+        assert got == "new-access"
+        db_session.refresh(cfg)
+        assert cfg.access_token == "new-access"
+        assert cfg.refresh_token == "new-refresh"  # rotation stored
+
+    def test_unforced_keeps_the_early_return(self, db_session):
+        from app.services.oauth_service import refresh_access_token
+
+        spec, cfg = self._setup(db_session)
+        with patch("app.services.oauth_service.httpx.post") as post:
+            got = refresh_access_token(spec, db_session, venue_id=cfg.venue_id)
+        post.assert_not_called()
+        assert got == "old-access"
+
+    def test_refresh_all_tokens_forces_real_redemption(self, db_session):
+        from app.services.oauth_service import refresh_all_tokens
+
+        spec, cfg = self._setup(db_session)
+        with patch(
+            "app.services.oauth_service.httpx.post",
+            return_value=self._token_response(),
+        ) as post:
+            summary = refresh_all_tokens(db=db_session, config_db=db_session)
+        # The access token was 10 days from expiry — a lazy check would have
+        # skipped it. The keep-alive must have redeemed anyway.
+        post.assert_called_once()
+        assert len(summary["refreshed"]) == 1
+        assert summary["failed"] == []
+        db_session.refresh(cfg)
+        assert cfg.refresh_token == "new-refresh"
+
+
 class TestRetryOn401:
     def test_401_on_oauth2_is_retryable(self):
         result = ConnectorResult(
@@ -443,8 +554,13 @@ class TestKeepAliveRefresh:
         mock_lazy.assert_not_called()
         assert "loadedhub" in result["refreshed"]
 
-    def test_known_expiry_uses_the_lazy_path(self, db_session):
-        """A live token is a no-op; get_valid_access_token only refreshes if due."""
+    def test_live_token_is_still_force_redeemed(self, db_session):
+        """A live access token must NOT skip the redemption.
+
+        The lazy path was the Aug-2026 outage: with Loaded's paired ~14-day
+        lifetimes, waiting for access-token expiry redeems the refresh token at
+        the moment it dies. Every keep-alive run redeems for real, forced.
+        """
         from app.services.oauth_service import refresh_all_tokens
 
         self._spec_row(
@@ -455,14 +571,11 @@ class TestKeepAliveRefresh:
             _oauth_spec()
         )
 
-        with (
-            patch("app.services.oauth_service.refresh_access_token") as mock_refresh,
-            patch("app.services.oauth_service.get_valid_access_token") as mock_lazy,
-        ):
+        with patch("app.services.oauth_service.refresh_access_token") as mock_refresh:
             refresh_all_tokens(db=db_session, config_db=config_db)
 
-        mock_lazy.assert_called_once()
-        mock_refresh.assert_not_called()
+        mock_refresh.assert_called_once()
+        assert mock_refresh.call_args.kwargs.get("force") is True
 
     def test_one_dead_connector_does_not_stop_the_others(self, db_session):
         """A connector needing re-auth must not block keeping the rest alive."""
@@ -483,11 +596,11 @@ class TestKeepAliveRefresh:
             _oauth_spec()
         )
 
-        def _fail_loadedhub(spec, db, venue_id=None, user_id=None):
+        def _fail_loadedhub(spec, db, venue_id=None, user_id=None, force=False):
             raise ValueError("Refresh token is invalid or expired.")
 
         with patch(
-            "app.services.oauth_service.get_valid_access_token",
+            "app.services.oauth_service.refresh_access_token",
             side_effect=_fail_loadedhub,
         ):
             result = refresh_all_tokens(db=db_session, config_db=config_db)
