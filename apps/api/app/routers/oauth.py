@@ -128,6 +128,96 @@ async def oauth_authorize(
     return {"authorize_url": authorize_url}
 
 
+def _reject_wrong_company_token(
+    db: Session, connector_name: str, venue_id: str, token_data: dict
+) -> HTMLResponse | None:
+    """Per-venue LoadedHub connect: refuse a token minted for another company.
+
+    Loaded scopes data by the token itself — a token minted while the Loaded
+    session had a DIFFERENT company active silently serves that company's data
+    under this venue's name (14 Aug: four venues all returning Bessie's data,
+    each behind a green "Connected successfully"). ``exchange_code`` has already
+    stored the tokens on this venue's row, so on mismatch this removes them,
+    flags the row with an error naming the wrong company, and returns a failure
+    page. A venue with no stored company id yet (first connect) adopts the
+    token's company. Returns None when the connect is acceptable.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.db.models import Venue
+
+    token_company = None
+    for key in (
+        "venue_id",
+        "company_id",
+        "companyId",
+        "x-loaded-company-id",
+        "tenant_id",
+        "tenantId",
+    ):
+        if token_data.get(key):
+            token_company = str(token_data[key]).strip()
+            break
+    if not token_company:
+        return None  # nothing to validate against — keep legacy behavior
+
+    cfg = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == connector_name,
+            ConnectorConfig.venue_id == venue_id,
+        )
+        .first()
+    )
+    if not cfg:
+        return None
+
+    stored = str((cfg.config or {}).get("x_loaded_company_id") or "").strip()
+    if not stored:
+        # First connect for this venue: adopt the token's company id.
+        merged = dict(cfg.config or {})
+        merged["x_loaded_company_id"] = token_company
+        cfg.config = merged
+        flag_modified(cfg, "config")
+        db.commit()
+        return None
+    if stored == token_company:
+        return None
+
+    # Wrong company — undo the store and fail loudly.
+    venue = db.query(Venue).filter(Venue.id == venue_id).first()
+    venue_name = venue.name if venue else "this venue"
+    wrong_name = str(token_data.get("venue_name") or token_company)
+    logger.warning(
+        "Rejected wrong-company loadedhub token for venue %s (%s): token is for %s",
+        venue_id,
+        venue_name,
+        wrong_name,
+    )
+    cfg.access_token = None
+    cfg.refresh_token = None
+    cfg.token_expires_at = None
+    cfg.oauth_metadata = None
+    cfg.needs_reconnect = True
+    cfg.last_auth_error = (
+        f"Connected to the wrong Loaded company ('{wrong_name}'). Switch to "
+        f"{venue_name}'s company in Loaded, then reconnect."
+    )
+    db.commit()
+    return HTMLResponse(
+        content=_result_page(
+            success=False,
+            connector=connector_name,
+            message=(
+                f"This Loaded login is currently on '{wrong_name}', not "
+                f"{venue_name}. Switch company in Loaded, then reconnect "
+                f"{venue_name}."
+            ),
+        ),
+        status_code=400,
+    )
+
+
 @router.get("/oauth/callback")
 async def oauth_callback(
     code: str,
@@ -151,6 +241,9 @@ async def oauth_callback(
 
     connector_name = oauth_state.connector_name
     oauth_state_user_id = oauth_state.user_id
+    # Captured before exchange_code deletes the state row (like user_id above):
+    # a per-venue flow must know which venue it was FOR, to validate the token.
+    oauth_state_venue_id = oauth_state.venue_id
     spec = (
         config_db.query(ConnectorSpec)
         .filter(ConnectorSpec.connector_name == connector_name)
@@ -218,7 +311,12 @@ async def oauth_callback(
                             company_id = str(null_cfg.oauth_metadata[key])
                             break
 
-            if company_id:
+            if company_id and not oauth_state_venue_id:
+                # No-venue (admin) flow only: exchange_code stored the tokens on
+                # the null-venue row; move them to the venue whose config matches
+                # the token's company. A per-venue flow already stored onto its
+                # own venue row and is validated below instead — running this
+                # move there could clobber fresh tokens with stale null-row ones.
                 # Find the Norm venue whose ConnectorConfig has this x_loaded_company_id
                 target_cfg = None
                 for cfg in (
@@ -263,12 +361,26 @@ async def oauth_callback(
                     token_data["match_warning"] = (
                         f"No Norm venue found with x_loaded_company_id={company_id}"
                     )
-            else:
+            elif not company_id:
                 token_data["match_warning"] = (
                     "LoadedHub did not return a company identifier in the token response"
                 )
         except Exception as exc:
             logger.warning("LoadedHub venue mapping failed: %s", exc)
+
+    # Per-venue LoadedHub connect: the minted token must belong to THIS venue's
+    # company. Kept OUTSIDE the try above so a validation failure can never be
+    # swallowed into a "Connected successfully" page.
+    if (
+        connector_name == "loadedhub"
+        and oauth_state_venue_id
+        and token_data.get("access_token")
+    ):
+        failure_page = _reject_wrong_company_token(
+            db, connector_name, oauth_state_venue_id, token_data
+        )
+        if failure_page is not None:
+            return failure_page
 
     # For Google connectors, fetch user email from userinfo endpoint
     if connector_name == "gmail" and token_data.get("access_token"):

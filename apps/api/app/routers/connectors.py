@@ -168,6 +168,23 @@ async def connector_connect_info(
             return "needs_reconnect"
         return "connected"
 
+    def _token_binding(cfg) -> tuple[str | None, bool]:
+        # Which provider-side company the stored token actually belongs to
+        # (LoadedHub returns venue_id/venue_name in the token response), and
+        # whether that differs from the venue's configured company id.
+        # Surfacing this is what makes a wrong-company binding visible instead
+        # of hiding behind a green "Connected" tick.
+        if not cfg or not cfg.access_token:
+            return None, False
+        meta = cfg.oauth_metadata or {}
+        name = meta.get("venue_name") or meta.get("userName")
+        token_company = str(meta.get("venue_id") or "").strip()
+        stored = str((cfg.config or {}).get("x_loaded_company_id") or "").strip()
+        wrong = bool(token_company and stored and token_company != stored)
+        return (str(name) if name else None), wrong
+
+    bindings = {v.id: _token_binding(configs.get(v.id)) for v in venues}
+
     return {
         "connector_name": spec.connector_name,
         "display_name": spec.display_name,
@@ -178,6 +195,8 @@ async def connector_connect_info(
                 "venue_id": v.id,
                 "venue_name": v.name,
                 "status": _status(configs.get(v.id)),
+                "connected_as": bindings[v.id][0],
+                "wrong_company": bindings[v.id][1],
                 "last_auth_error": (
                     configs.get(v.id).last_auth_error if configs.get(v.id) else None
                 ),

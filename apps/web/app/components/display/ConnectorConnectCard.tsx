@@ -10,6 +10,12 @@ interface VenueRow {
   venue_id: string;
   venue_name: string;
   status: VenueStatus;
+  // Which provider-side company the stored token is actually for — shown so a
+  // token minted for the wrong company can't hide behind a green "Connected".
+  connected_as?: string | null;
+  // Server-side id comparison (token company vs configured company) — names can
+  // legitimately differ, so the flag, not the name, decides "wrong".
+  wrong_company?: boolean;
   last_auth_error?: string | null;
 }
 
@@ -145,10 +151,20 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
             {info.venues.map(v => {
               const broken = v.status === 'needs_reconnect';
               const connected = v.status === 'connected';
+              // A token bound to a different provider-side company than this
+              // venue is a mis-connect — show it in red, never as a clean tick.
+              const wrongCompany = !!(connected && v.wrong_company);
               return (
                 <div key={v.venue_id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                  <span style={{ flex: 1, fontSize: '0.85rem', color: '#374151' }}>{v.venue_name}</span>
-                  {connected ? (
+                  <span style={{ flex: 1, fontSize: '0.85rem', color: '#374151' }}>
+                    {v.venue_name}
+                    {connected && v.connected_as && (
+                      <span style={{ display: 'block', fontSize: '0.7rem', color: wrongCompany ? '#b91c1c' : '#9ca3af' }}>
+                        as {v.connected_as}{wrongCompany ? ' — wrong company, reconnect' : ''}
+                      </span>
+                    )}
+                  </span>
+                  {connected && !wrongCompany ? (
                     <span style={{ fontSize: '0.72rem', fontWeight: 600, padding: '1px 8px', borderRadius: 8, backgroundColor: '#d1fae5', color: '#065f46' }}>Connected</span>
                   ) : (
                     <button
@@ -158,11 +174,11 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
                       style={{
                         padding: '4px 12px', fontSize: '0.76rem', fontWeight: 600, border: 'none',
                         borderRadius: 6, cursor: busy === v.venue_id ? 'default' : 'pointer',
-                        backgroundColor: broken ? '#b91c1c' : '#111', color: '#fff', fontFamily: 'inherit',
+                        backgroundColor: broken || wrongCompany ? '#b91c1c' : '#111', color: '#fff', fontFamily: 'inherit',
                         opacity: busy === v.venue_id ? 0.6 : 1,
                       }}
                     >
-                      {busy === v.venue_id ? 'Opening…' : broken ? 'Reconnect' : 'Connect'}
+                      {busy === v.venue_id ? 'Opening…' : broken || wrongCompany ? 'Reconnect' : 'Connect'}
                     </button>
                   )}
                 </div>

@@ -207,6 +207,69 @@ class TestVenueScopedTokenSelection:
             got = get_valid_access_token(spec, db_session, venue_id=venue_id)
             assert got == expected, f"{name} got another venue's token"
 
+    def test_unscoped_lookup_never_returns_a_venues_token(self, db_session):
+        """A None/None lookup must mean the GLOBAL (venue IS NULL) row.
+
+        Before the fix, no filter was applied at all: a None/None call took
+        whichever row came back first — and in refresh_access_token that SPENT
+        the victim venue's rotating refresh token while _store_tokens filed the
+        new one on the global row, silently killing that venue's connection on
+        its next refresh (a "reconnect X" prompt with no visible cause).
+        """
+        import uuid
+
+        import pytest
+
+        from app.db.config_models import ConnectorSpec
+        from app.db.models import ConnectorConfig, Venue
+        from app.services.oauth_service import (
+            get_valid_access_token,
+            refresh_access_token,
+        )
+
+        spec = ConnectorSpec(
+            connector_name="loadedhub",
+            display_name="LoadedHub",
+            execution_mode="template",
+            auth_type="oauth2",
+            auth_config={},
+            tools=[],
+        )
+        db_session.add(spec)
+        venue = Venue(id=str(uuid.uuid4()), name="Only Venue")
+        db_session.add(venue)
+        db_session.add(
+            ConnectorConfig(
+                connector_name="loadedhub",
+                venue_id=venue.id,
+                enabled="true",
+                config={},
+                access_token="venue-token",
+                refresh_token="venue-refresh",
+            )
+        )
+        db_session.flush()
+
+        # Only venue rows exist: an unscoped lookup must fail loudly, not
+        # borrow (or burn) a venue's tokens.
+        with pytest.raises(ValueError):
+            get_valid_access_token(spec, db_session)
+        with pytest.raises(ValueError):
+            refresh_access_token(spec, db_session)
+
+        # With a global row present, the unscoped lookup returns exactly it.
+        db_session.add(
+            ConnectorConfig(
+                connector_name="loadedhub",
+                venue_id=None,
+                enabled="true",
+                config={},
+                access_token="global-token",
+            )
+        )
+        db_session.flush()
+        assert get_valid_access_token(spec, db_session) == "global-token"
+
 
 class TestRetryOn401:
     def test_401_on_oauth2_is_retryable(self):

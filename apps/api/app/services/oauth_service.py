@@ -303,6 +303,13 @@ def refresh_access_token(
         query = query.filter(ConnectorConfig.user_id == user_id)
     elif venue_id:
         query = query.filter(ConnectorConfig.venue_id == venue_id)
+    else:
+        # No scope given must mean the GLOBAL row — never an arbitrary venue's.
+        # Without this filter, a None/None call locked whichever row came back
+        # first and SPENT that venue's rotating refresh token, while
+        # _store_tokens (which does filter venue IS NULL) filed the new tokens
+        # on the global row — silently killing the victim venue's connection.
+        query = query.filter(ConnectorConfig.venue_id.is_(None))
     config_row = query.with_for_update().first()
     if not config_row or not config_row.refresh_token:
         raise ValueError("No refresh token available")
@@ -394,6 +401,10 @@ def get_valid_access_token(
         query = query.filter(ConnectorConfig.user_id == user_id)
     elif venue_id:
         query = query.filter(ConnectorConfig.venue_id == venue_id)
+    else:
+        # Unscoped lookup means the GLOBAL row, matching _store_tokens — never
+        # an arbitrary venue's token (see refresh_access_token).
+        query = query.filter(ConnectorConfig.venue_id.is_(None))
     config_row = query.first()
     if not config_row or not config_row.access_token:
         raise ValueError(f"No OAuth tokens for connector {spec.connector_name}")
