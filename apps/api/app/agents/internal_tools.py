@@ -2672,3 +2672,179 @@ def _edit_recipe(params: dict, db: Session, thread_id: str | None) -> dict:
     _apply_recipe_changes(draft, changes)
     draft["venue_id"] = venue_id  # so tool_loop sets tc.venue_id -> ref key matches
     return {"success": True, "data": draft, "error": None}
+
+
+# ---------------------------------------------------------------------------
+# App-builder handlers — the App Builder agent's three tools
+# ---------------------------------------------------------------------------
+#
+# The builder authors apps by CONVERSATION: it reads the capability catalogue
+# (so it never invents an action name), saves through the same
+# app_runtime.save_app the web endpoint uses (so the author-permission
+# intersection can never drift), and reads an app back to revise it. The saved
+# app is private to its author until shared — which is why saving needs no
+# approval step beyond the conversation itself.
+
+
+def _thread_user(db: Session, thread_id: str | None):
+    from app.db.models import Thread, User
+
+    if not thread_id:
+        return None
+    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    if not thread or not thread.user_id:
+        return None
+    return db.query(User).filter(User.id == thread.user_id).first()
+
+
+@register("norm", "list_app_capabilities")
+def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> dict:
+    """The catalogue an app may declare from: connector actions + the scope
+    vocabulary. This is the builder's ground truth — an action not in this list
+    does not exist, and a scope not in this list grants nothing."""
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.config_models import ConnectorSpec
+    from app.mcp.scopes import MCP_SCOPES
+
+    # The connectors an app may currently draw on. Deliberately curated rather
+    # than "every spec row": email senders and admin tools are not app material.
+    connectors = ("loadedhub", "norm", "norm_reports")
+
+    cdb = _ConfigSessionLocal()
+    try:
+        actions = []
+        for cn in connectors:
+            spec = (
+                cdb.query(ConnectorSpec)
+                .filter(ConnectorSpec.connector_name == cn)
+                .first()
+            )
+            for t in (spec.tools if spec else None) or []:
+                if not isinstance(t, dict) or not t.get("action"):
+                    continue
+                actions.append(
+                    {
+                        "connector": cn,
+                        "action": t["action"],
+                        "method": str(t.get("method") or "GET").upper(),
+                        "description": (t.get("description") or "")[:240],
+                        "required_fields": t.get("required_fields") or [],
+                        "fields": {
+                            k: str(v)[:160]
+                            for k, v in (t.get("field_descriptions") or {}).items()
+                        },
+                    }
+                )
+    finally:
+        cdb.close()
+
+    scopes = [
+        {
+            "name": s.name,
+            "label": s.label,
+            "description": s.description,
+            "access_level": s.access_level,
+        }
+        for s in MCP_SCOPES.values()
+    ]
+    return {"success": True, "data": {"actions": actions, "scopes": scopes}}
+
+
+@register("norm", "save_app")
+def _save_app(params: dict, db: Session, thread_id: str | None) -> dict:
+    from fastapi import HTTPException
+
+    from app.services.app_runtime import save_app
+
+    user = _thread_user(db, thread_id)
+    if user is None:
+        return {"success": False, "data": None, "error": "no user on this thread"}
+
+    # The tool loop delivers params as the model sent them, and the anthropic
+    # schema types every field as string — so `spec` routinely arrives as a
+    # JSON STRING. Coerce rather than lecture: the model cannot fix a type the
+    # schema forced on it.
+    import json as _json
+
+    params = dict(params or {})
+    if isinstance(params.get("spec"), str):
+        try:
+            params["spec"] = _json.loads(params["spec"])
+        except ValueError:
+            return {
+                "success": False,
+                "data": None,
+                "error": "spec must be a JSON object with actions/writes/scopes/params",
+            }
+
+    # The same permission the web endpoint requires — a role that cannot build
+    # apps cannot build them by asking the agent instead.
+    from app.services.app_runtime import org_permissions
+
+    if user.role != "admin" and "apps:build" not in org_permissions(db, user):
+        return {
+            "success": False,
+            "data": None,
+            "error": "you do not have the apps:build permission",
+        }
+
+    try:
+        out = save_app(db, user, dict(params or {}))
+    except HTTPException as exc:
+        return {"success": False, "data": None, "error": str(exc.detail)}
+    out["open_url"] = f"/apps/{out['slug']}"
+    return {"success": True, "data": out}
+
+
+@register("norm", "get_app")
+def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
+    from app.db.models import App, AppVersion, OrganizationMembership
+    from app.services.app_runtime import resolve_access
+
+    user = _thread_user(db, thread_id)
+    if user is None:
+        return {"success": False, "data": None, "error": "no user on this thread"}
+    slug = str((params or {}).get("slug") or "").strip()
+    if not slug:
+        return {"success": False, "data": None, "error": "a slug is required"}
+
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(OrganizationMembership.user_id == user.id)
+        .first()
+    )
+    app = (
+        db.query(App)
+        .filter(
+            App.organization_id == (membership.organization_id if membership else ""),
+            App.slug == slug,
+        )
+        .first()
+    )
+    if not app or not resolve_access(db, app, user).can_run:
+        return {"success": False, "data": None, "error": f"no app '{slug}'"}
+    version = (
+        db.query(AppVersion)
+        .filter(AppVersion.id == app.current_version_id)
+        .first()
+    ) or (
+        db.query(AppVersion)
+        .filter(AppVersion.app_id == app.id)
+        .order_by(AppVersion.version.desc())
+        .first()
+    )
+    return {
+        "success": True,
+        "data": {
+            "slug": app.slug,
+            "name": app.name,
+            "description": app.description,
+            "icon": app.icon,
+            "purpose": app.purpose,
+            "visibility": app.visibility,
+            "version": version.version if version else None,
+            "spec": (version.spec if version else None) or {},
+            "ui_source": version.ui_source if version else None,
+            "logic_source": version.logic_source if version else None,
+        },
+    }

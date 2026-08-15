@@ -1,0 +1,16 @@
+{
+  "slug": "weekly-venue-performance",
+  "name": "Weekly venue performance",
+  "icon": "📈",
+  "description": "Last trading week's sales at a glance — total, best day, daily average.",
+  "purpose": "A weekly venue performance dashboard: show last week's sales per day for the selected venue, with the trading window Norm resolves (not calendar weeks), the total, the best day and the daily average.",
+  "spec": {
+    "actions": [
+      { "connector": "loadedhub", "action": "get_sales_for_period" }
+    ],
+    "writes": [],
+    "scopes": ["mcp:reports:read"],
+    "components": [],
+    "params": {}
+  }
+}

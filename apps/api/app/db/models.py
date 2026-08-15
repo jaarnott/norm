@@ -1100,3 +1100,183 @@ class InvoiceAutopilotOutcome(Base):
     #: is_credit_note, reviewed_at, and the dojo block.
     detail = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now, index=True)
+
+
+# ── The app platform ──────────────────────────────────────────────────────
+#
+# A Norm app is user-authored software that runs inside Norm's own
+# infrastructure. Two sandboxes already existed and are reused wholesale: the
+# consolidator runtime (`connectors/function_executor.execute_function`) for
+# logic, and the MCP-app iframe (`apps/mcp-ui` + `mcp/ui_apps.py`) for UI. What
+# these tables add is the missing object — an app with a version, a declared
+# reach, and an audience.
+#
+# They live in the MAIN db, not the config db: the config db is shared by every
+# environment and has no org scoping, and an app is org data. Publishing to a
+# marketplace later promotes a version into a global registry — a separate and
+# deliberate step, not an accident of where the row happens to sit.
+
+
+class App(Base):
+    """A user-built app: what it is for, who may see it, and which version runs.
+
+    The app owns identity and audience only. Everything executable — the UI, the
+    logic, and crucially the DECLARED REACH (which connector actions and scopes
+    it may use) — lives on an immutable ``AppVersion``, so sharing can pin a
+    version and the author can keep editing without changing what anyone else
+    is running.
+    """
+
+    __tablename__ = "apps"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "slug", name="uq_app_org_slug"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    #: The author. Kept even after they leave — an app outlives its builder,
+    #: and "who made this" is the first question anyone asks of a shared app.
+    created_by = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    slug = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    #: Emoji or lucide icon name — apps sit beside Norm's own pages in the nav.
+    icon = Column(String, nullable=True)
+    #: The plain-language brief the user gave the builder. Kept verbatim: it is
+    #: what the builder re-reads to revise the app, and the honest answer to
+    #: "what was this meant to do".
+    purpose = Column(Text, nullable=True)
+    #: private | users | venue | organization. Private on creation, always —
+    #: widening is an explicit act recorded in AppShare.
+    visibility = Column(String, nullable=False, default="private")
+    #: Plain String, not an FK: apps and app_versions reference each other, and
+    #: a circular FK pair costs a use_alter dance for no protection we need.
+    current_version_id = Column(String, nullable=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now, index=True)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class AppVersion(Base):
+    """One immutable build of an app: its UI, its logic, and its declared reach.
+
+    ``spec`` is the security-relevant half and the reason versions are frozen:
+
+        actions   [{connector, action}]  the ONLY calls this version may make
+        playbooks [slug]                 the ONLY playbooks it may run
+        scopes    [permission scope]     the most it may ever do
+        writes    [{connector, action}]  the non-GET subset, approved separately
+        components[name]                 Norm components its UI mounts
+        params    {name: description}    what the app asks the viewer for
+
+    Reach is declared per VERSION rather than per app so that editing an app
+    can never silently widen what an already-shared copy is allowed to touch.
+    A viewer always runs a pinned version; a wider reach means a new version
+    and a fresh approval.
+    """
+
+    __tablename__ = "app_versions"
+    __table_args__ = (
+        UniqueConstraint("app_id", "version", name="uq_app_version"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    app_id = Column(
+        String, ForeignKey("apps.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version = Column(Integer, nullable=False, default=1)
+    spec = Column(JSON, nullable=False, default=dict)
+    #: The app's own markup/JS. Untrusted by construction — it runs in the same
+    #: sandboxed iframe MCP apps use, holding no session token. The data door,
+    #: not this string, is the security boundary.
+    ui_source = Column(Text, nullable=True)
+    #: Optional server-side `run(params, call_api, log)`, executed by the
+    #: consolidator sandbox with call_api bound to this version's allowlist.
+    logic_source = Column(Text, nullable=True)
+    changelog = Column(Text, nullable=True)
+    created_by = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), default=_now, index=True)
+
+
+class AppShare(Base):
+    """Who may run an app, and whether its writes were approved.
+
+    Sharing and write-approval are deliberately ONE row rather than two
+    concepts: the question "may Sam run this?" and "may it place orders when
+    Sam runs it?" are answered by the same person at the same moment, and
+    splitting them invites an app being shared widely with its write grant
+    quietly inherited from somewhere else.
+
+    Effective permission is always the INTERSECTION of this grant with the
+    viewer's own org permissions — a share can widen who runs an app, never
+    what that person is allowed to do.
+    """
+
+    __tablename__ = "app_shares"
+    __table_args__ = (
+        UniqueConstraint(
+            "app_id", "principal_type", "principal_id", name="uq_app_share_principal"
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    app_id = Column(
+        String, ForeignKey("apps.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: user | venue | organization
+    principal_type = Column(String, nullable=False)
+    #: The user/venue/org id. No FK — one column cannot reference three tables,
+    #: and the resolver checks membership at call time anyway.
+    principal_id = Column(String, nullable=False, index=True)
+    #: view | edit
+    access = Column(String, nullable=False, default="view")
+    #: Default FALSE. A shared app may read on day one; completing a write for
+    #: this audience is a second, explicit decision naming the actions.
+    write_actions_approved = Column(Boolean, nullable=False, default=False)
+    granted_by = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+
+class AppCall(Base):
+    """One row per action an app performed — the app platform's audit trail.
+
+    Not ``ToolCall``: that table requires a ``thread_id`` (an agent's
+    conversation) and an app has none. Loosening a NOT NULL on the busiest
+    table in the schema to fit a new caller is the wrong trade, so apps get
+    their own table with the columns that actually matter for them — which
+    version ran, as whom, against which venue, and whether it worked.
+    """
+
+    __tablename__ = "app_calls"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    app_id = Column(
+        String, ForeignKey("apps.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    app_version_id = Column(String, nullable=True)
+    user_id = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    #: Nullable so the record outlives a deleted venue — same rule as
+    #: InvoiceAutopilotOutcome: deleting a venue is not a reason to erase what
+    #: an app did while it existed.
+    venue_id = Column(
+        String, ForeignKey("venues.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    connector = Column(String, nullable=False)
+    action = Column(String, nullable=False)
+    #: GET means a read. Anything else passed the write gate, and this column is
+    #: how you find every write an app has ever made.
+    method = Column(String, nullable=False, default="GET")
+    ok = Column(Boolean, nullable=False, default=True)
+    error = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now, index=True)

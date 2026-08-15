@@ -54,6 +54,7 @@ from app.routers import (
     invoice_fixes,
     recipe_editor,
     uploads,
+    apps as apps_router,
 )
 
 
@@ -83,6 +84,7 @@ _test_app.include_router(supplier_spec_dojo.router, prefix="/api")
 _test_app.include_router(invoice_fixes.router, prefix="/api")
 _test_app.include_router(recipe_editor.router, prefix="/api")
 _test_app.include_router(uploads.router, prefix="/api")
+_test_app.include_router(apps_router.router, prefix="/api")
 
 from app.routers import internal as _internal  # noqa: E402
 from app.routers import mcp as _mcp  # noqa: E402

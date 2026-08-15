@@ -38,6 +38,11 @@ PERMISSION_SCOPES: set[str] = {
     # Connector / agent settings (org-level)
     "settings:connectors",
     "settings:agents",
+    # Apps — building one is open to anyone with this scope; SHARING it beyond
+    # yourself is separate, because a share is what puts your app in front of
+    # someone else's data with their permissions.
+    "apps:build",
+    "apps:share",
     # Platform admin (checked via User.role, listed for completeness)
     "admin:deployments",
     "admin:tests",
@@ -79,6 +84,9 @@ STANDARD_ROLES: dict[str, dict] = {
             "hr:read",
             "reports:read",
             "org:read",
+            # Building an app is open to everyone — it can only ever do what
+            # its author could already do by hand. Sharing it is not here.
+            "apps:build",
         ],
     },
     "payroll_admin": {

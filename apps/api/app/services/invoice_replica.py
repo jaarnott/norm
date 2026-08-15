@@ -878,10 +878,15 @@ def build_replica(
                         )
                         po_number = None
                     else:
+                        # Written as the REASON auto-receive stopped, not the
+                        # mechanics: the card shows this under "Blocked from
+                        # auto receive", and "what do I do" must be in the
+                        # sentence.
                         msg = (
-                            f"order {order_no}: split across deliveries — "
-                            f"{sib_ref} carries the order link; reference "
-                            "kept without linking"
+                            "this invoice isn't linked to a purchase order — "
+                            f"order {order_no} was split across deliveries and "
+                            f"{sib_ref} carries the link. Accept the suggestion "
+                            "to keep the order reference, then receive."
                         )
                         log.append(msg)
                         _issue(

@@ -406,6 +406,7 @@ async def delete_venue(
       nullable precisely so the history can outlive the venue.
     """
     from app.db.models import (
+        AppCall,
         AutomatedTask,
         EmailLog,
         InvoiceAutopilotOutcome,
@@ -465,6 +466,8 @@ async def delete_venue(
         # should not delete what the org learned, so drop the tag and keep the
         # memory.
         Memory,
+        # What an app did while the venue existed is audit, not venue config.
+        AppCall,
     ):
         db.query(model).filter(model.venue_id == venue_id).update(
             {model.venue_id: None}, synchronize_session=False

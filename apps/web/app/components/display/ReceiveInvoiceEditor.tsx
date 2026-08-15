@@ -595,8 +595,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
 
   // The server review (POST /invoice-fixes/review) — builds/rebuilds the
   // replica_v1 payload. Web-only (embedded cards are pre-reviewed at block
-  // build). force=true is "Re-run replica": recomputes AND SQUASHES local
-  // edits + the accept/dismiss record (the button confirms first).
+  // build). force=true recomputes AND SQUASHES local edits + the
+  // accept/dismiss record (Re-analyse confirms before calling it).
   const runReview = async (explicit = false, force = false) => {
     if (embedded || !venueId || !doc.invoice_id || doc.is_deleted) return;
     // One review at a time — but NEVER a dead-end: if the review state gets
@@ -661,13 +661,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [embedded, venueId, doc.invoice_id, reviewed]);
 
-  // "Re-run replica": force review after an explicit confirm — it resets
-  // every local edit and the accept/dismiss record (squash semantics).
-  const rerunReplica = () => {
-    if (embedded || !venueId || !doc.invoice_id || reviewing) return;
-    if (!window.confirm('Re-running the replica resets your edits and accepted suggestions for this invoice.')) return;
-    void runReview(true, true);
-  };
 
   // Serialized patches: one at a time, each using the LATEST version.
   // update_line ops get the target line's id injected so a server-side
@@ -1272,12 +1265,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     ?? issues.find((i) => i.id === sid)?.message
     ?? sid;
 
-  // Retest support (admin escape hatch, unchanged): wipe every cached
-  // validation artifact for this invoice (server deletes the extraction cache
-  // and rebuilds the draft from Loaded), reload THIS card's own doc, then run
-  // the review EXPLICITLY. Twin cards refetch via the actioned event.
-  const resetValidation = async () => {
-    if (embedded || !venueId || !doc.invoice_id) return;
+  // Re-analyse — the ONE recovery control (it replaced the confusing
+  // "Re-run replica" / "reset validation" pair, which differed only in how
+  // much cache they kept). Wipes every cached artifact for this invoice
+  // (extraction cache included), rebuilds the draft from Loaded, then runs
+  // the review from scratch. Confirmed first: it discards local edits and
+  // the accept/dismiss record. Twin cards refetch via the actioned event.
+  const reanalyse = async () => {
+    if (embedded || !venueId || !doc.invoice_id || reviewing) return;
+    if (!window.confirm('Re-analysing rebuilds this invoice from Loaded and the copy — your local edits and accepted suggestions are reset.')) return;
     setReviewing(true);
     try {
       const r = await apiFetch('/api/invoice-fixes/reset-validation', {
@@ -2746,7 +2742,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
           {blockingIssues.length > 0 && (
             <div>
-              <div style={{ ...microLabel, color: '#c0392b', marginBottom: 3 }}>Needs attention</div>
+              <div style={{ ...microLabel, color: '#c0392b', marginBottom: 3 }}>Blocked from auto receive</div>
               {blockingIssues.map(issueRow)}
             </div>
           )}
@@ -2758,23 +2754,17 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         </div>
       )}
 
-      {/* Review controls: Re-run replica (recompute + SQUASH local edits and
-          the record — confirmed first) and reset validation (admin escape
-          hatch: wipe every cached artifact incl. the extraction). */}
+      {/* The one recovery control: re-analyse from scratch (confirmed —
+          discards local edits and the accept record). */}
       {!dojo && !collapsed && !embedded && !doneState && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.4rem 0.9rem', borderTop: '1px solid #eee' }}>
           <span style={{ fontSize: '0.62rem', color: '#9ca3af' }}>
             {reviewing ? 'reviewing…' : reviewed ? `reviewed ${String(docLive.reviewed_at).replace('T', ' ').slice(0, 16)}` : 'not yet reviewed'}
           </span>
-          <button type="button" onClick={rerunReplica} disabled={reviewing}
-            title="recompute the review from the live Loaded draft and the copy — RESETS your edits and accepted suggestions"
+          <button type="button" onClick={() => { void reanalyse(); }} disabled={reviewing}
+            title="rebuild this invoice from Loaded and the copy and review it from scratch — resets your edits and accepted suggestions"
             style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#8a8a8a', cursor: reviewing ? 'default' : 'pointer', fontFamily: 'inherit' }}>
-            {reviewing ? 'running…' : 'Re-run replica'}
-          </button>
-          <button type="button" onClick={() => { void resetValidation(); }} disabled={reviewing}
-            title="wipe the cached review, extraction and action log for this invoice and re-run validation from scratch"
-            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#8a8a8a', cursor: reviewing ? 'default' : 'pointer', fontFamily: 'inherit' }}>
-            reset validation
+            {reviewing ? 'running…' : 'Re-analyse'}
           </button>
         </div>
       )}
@@ -2797,8 +2787,13 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             // beside a receive that is blocked.
             : unresolved.length > 0
               ? ''
+              // Deliberately silent: each blocker is listed in its own words
+              // under "Blocked from auto receive", and the disabled button
+              // explains itself on hover. The branch stays so the cascade
+              // can't fall through to "Ready to receive." beside a gated
+              // button (same rule as the NEW-item line above).
               : blockingOpen.length > 0
-                ? `${blockingOpen.length} blocking issue${blockingOpen.length > 1 ? 's' : ''} need${blockingOpen.length > 1 ? '' : 's'} review — fix each, or mark it checked, then receive.`
+                ? ''
                 : deleteSugg && stateOf(deleteSugg.id) === 'pending'
                   ? 'This looks like a duplicate — review the delete suggestion before receiving.'
                   : pendingSuggestions.length > 0

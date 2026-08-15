@@ -37,6 +37,7 @@ from app.routers import (  # noqa: E402
     roles,
     email,
     component_apis,
+    apps as apps_router,
     invoice_fixes,
     recipe_editor,
     uploads,
@@ -99,6 +100,7 @@ app.include_router(roles.router, prefix="/api")
 app.include_router(email.router, prefix="/api")
 app.include_router(component_apis.router, prefix="/api")
 app.include_router(invoice_fixes.router, prefix="/api")
+app.include_router(apps_router.router, prefix="/api")
 app.include_router(recipe_editor.router, prefix="/api")
 app.include_router(uploads.router, prefix="/api")
 app.include_router(workflow_modes.router, prefix="/api")

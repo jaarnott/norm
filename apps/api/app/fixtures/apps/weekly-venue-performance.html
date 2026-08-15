@@ -1,0 +1,96 @@
+<!-- Weekly venue performance — the app platform's hand-authored fixture.
+
+     Exists to prove the runtime end to end BEFORE any generation exists: the
+     sandboxed iframe, the window.norm bridge, the data door's allowlist, and
+     venue switching. It is also the reference for what generated apps should
+     look like: plain markup, window.norm for every byte of data, no fetch(),
+     no external resources. -->
+<div style="padding:1.2rem;font-family:system-ui,sans-serif">
+  <div id="title" style="font-size:0.95rem;font-weight:600;margin-bottom:2px">Weekly performance</div>
+  <div id="window" style="font-size:0.7rem;color:#8a8a8a;margin-bottom:14px">loading…</div>
+
+  <div style="display:flex;gap:10px;margin-bottom:16px" id="tiles"></div>
+
+  <svg id="chart" width="100%" height="220" viewBox="0 0 720 220" preserveAspectRatio="none"
+       style="border:1px solid #f0ede7;border-radius:8px;background:#fbfaf8"></svg>
+  <div id="legend" style="display:flex;gap:14px;margin-top:8px;font-size:0.66rem;color:#8a8a8a"></div>
+  <div id="error" style="color:#c0392b;font-size:0.8rem;margin-top:10px"></div>
+</div>
+
+<script>
+  var CUR = function (n) {
+    return '$' + Number(n).toLocaleString('en-NZ', { maximumFractionDigits: 0 });
+  };
+
+  function tile(label, value, sub) {
+    return '<div style="flex:1;border:1px solid #e5e2dc;border-radius:8px;padding:10px 14px;background:#fff">'
+      + '<div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.04em;color:#9a948a">' + label + '</div>'
+      + '<div style="font-size:1.25rem;font-weight:650;margin-top:2px">' + value + '</div>'
+      + (sub ? '<div style="font-size:0.66rem;color:#8a8a8a">' + sub + '</div>' : '')
+      + '</div>';
+  }
+
+  function render(rows, windowInfo) {
+    var days = rows.map(function (r) {
+      return { day: (r.startTime_dayOfWeek || '').slice(0, 3), amount: Number(r.amount) || 0 };
+    });
+    var total = days.reduce(function (s, d) { return s + d.amount; }, 0);
+    var best = days.reduce(function (a, b) { return b.amount > a.amount ? b : a; }, days[0] || { day: '—', amount: 0 });
+    var avg = days.length ? total / days.length : 0;
+
+    document.getElementById('window').textContent = windowInfo || '';
+    document.getElementById('tiles').innerHTML =
+      tile('Total sales', CUR(total), days.length + ' trading days')
+      + tile('Best day', best.day, CUR(best.amount))
+      + tile('Daily average', CUR(avg), '');
+
+    // Simple inline bar chart — no libraries in the sandbox, and none needed.
+    var svg = document.getElementById('chart');
+    var W = 720, H = 220, pad = 28, bw = (W - pad * 2) / Math.max(days.length, 1);
+    var max = Math.max.apply(null, days.map(function (d) { return d.amount; }).concat([1]));
+    var parts = [];
+    days.forEach(function (d, i) {
+      var h = Math.round((d.amount / max) * (H - pad * 2));
+      var x = pad + i * bw, y = H - pad - h;
+      parts.push('<rect x="' + (x + bw * 0.14) + '" y="' + y + '" width="' + (bw * 0.72) + '" height="' + h
+        + '" rx="4" fill="' + (d === best ? '#2e7d4f' : '#b7a97a') + '"></rect>');
+      parts.push('<text x="' + (x + bw / 2) + '" y="' + (H - 9) + '" text-anchor="middle" font-size="11" fill="#8a8a8a">' + d.day + '</text>');
+      parts.push('<text x="' + (x + bw / 2) + '" y="' + (y - 5) + '" text-anchor="middle" font-size="10" fill="#6b655c">' + CUR(d.amount) + '</text>');
+    });
+    svg.innerHTML = parts.join('');
+    document.getElementById('legend').innerHTML =
+      '<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#2e7d4f;margin-right:4px"></span>best day</span>'
+      + '<span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#b7a97a;margin-right:4px"></span>daily sales</span>';
+    window.norm.resize();
+  }
+
+  function load(ctx) {
+    var venue = (ctx.venues || []).filter(function (v) { return v.id === ctx.venueId; })[0];
+    document.getElementById('title').textContent =
+      'Weekly performance' + (venue ? ' — ' + venue.name : '');
+    document.getElementById('error').textContent = '';
+    // Business-calendar dates come from Norm, never computed here: 'last week'
+    // is the venue's trading week, resolved server-side.
+    document.getElementById('tiles').innerHTML = '';
+    document.getElementById('chart').innerHTML = '';
+    document.getElementById('legend').innerHTML = '';
+    document.getElementById('window').textContent = 'loading\u2026';
+    window.norm.call('loadedhub', 'get_sales_for_period',
+        { interval: '1.00:00:00', period: 'last week' })
+      .then(function (out) {
+        // A connector failure comes back as data, not an exception \u2014 show
+        // the real message (e.g. \u201creconnect loadedhub\u201d), never a guess.
+        if (out && out.error) throw new Error(out.error);
+        var rows = (out && out.data) || [];
+        var win = out && out.window && out.window.description;
+        if (!rows.length) throw new Error('no sales rows came back');
+        render(rows, win);
+      })
+      .catch(function (e) {
+        document.getElementById('error').textContent = '✗ ' + e.message;
+        window.norm.resize();
+      });
+  }
+
+  window.norm.onReady(load);
+</script>

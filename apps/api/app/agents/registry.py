@@ -15,6 +15,7 @@ def _init():
     from app.agents.time_attendance.agent import TimeAttendanceAgent
     from app.agents.marketing.agent import MarketingAgent
     from app.agents.executive_chef.agent import ExecutiveChefAgent
+    from app.agents.app_builder.agent import AppBuilderAgent
 
     for agent in [
         ProcurementAgent(),
@@ -23,6 +24,7 @@ def _init():
         TimeAttendanceAgent(),
         MarketingAgent(),
         ExecutiveChefAgent(),
+        AppBuilderAgent(),
     ]:
         _agents[agent.domain] = agent
 

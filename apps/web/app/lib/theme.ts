@@ -23,6 +23,7 @@ export const colors = {
   marketing: '#e07c5a',      // Coral orange
   reports: '#7bc4a0',        // Green
   executive_chef: '#b5654d', // Terracotta (kitchen)
+  app_builder: '#5a9e8f',    // Teal (builds things)
   home: '#888',              // Neutral gray
   unknown: '#d4c4a8',        // Warm beige (unassigned)
 

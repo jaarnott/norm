@@ -158,6 +158,7 @@ def execute_function(
     db: Session,
     thread_id: str | None,
     options: dict | None = None,
+    call_api_override=None,
 ) -> dict:
     """Execute a consolidator Python function.
 
@@ -175,6 +176,13 @@ def execute_function(
             max_api_calls (int, default 20, hard cap 200) and
             allowed_write_actions (list of "connector.action" or bare action
             names allowed to use non-GET methods — default: none).
+        call_api_override: Replaces the `call_api` the sandbox hands the
+            function. Used by the app platform, whose door
+            (services/app_runtime.call_action) enforces a per-version allowlist
+            and the viewer's own permissions — WITHOUT this, an app's logic
+            would reach the connector layer directly and the sandbox would be
+            the way around its own app's declared reach. Still counted against
+            max_api_calls.
 
     Returns:
         {"success": bool, "data": Any, "_logs": list[str], "error": str | None}
@@ -643,6 +651,24 @@ def execute_function(
         .replace("+", "%2B"),
         "tz_offset": tz_offset.replace("+", "%2B"),
     }
+
+    if call_api_override is not None:
+        _inner_call = call_api_override
+
+        def call_api(connector: str, action: str, api_params: dict | None = None):  # type: ignore[misc]
+            nonlocal api_call_count
+            api_call_count += 1
+            if api_call_count > max_api_calls:
+                raise RuntimeError(f"Too many API calls (max {max_api_calls})")
+            try:
+                payload = _inner_call(connector, action, dict(api_params or {}))
+                log(f"API: {connector}.{action} → {_describe_data(payload)}")
+                return payload
+            except Exception as exc:
+                # Same shape as the default call_api: a refused call is data the
+                # function can react to, not an exception that kills the run.
+                log(f"API call {connector}.{action} failed: {exc}")
+                return {"error": str(exc)}
 
     # Execute the function
     try:

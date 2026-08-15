@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Home, Package, UserRound, Clock, BarChart3, Megaphone, ChefHat, Settings, LogOut, Menu, X, type LucideIcon } from 'lucide-react';
+import { Home, Package, UserRound, Clock, BarChart3, Megaphone, ChefHat, Blocks, Settings, LogOut, Menu, X, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 
@@ -20,6 +20,7 @@ export const AGENTS: AgentTab[] = [
   { id: 'marketing', label: 'Marketing', icon: Megaphone, color: colors.marketing },
   { id: 'reports', label: 'Reports', icon: BarChart3, color: colors.reports },
   { id: 'executive_chef', label: 'Exec Chef', icon: ChefHat, color: colors.executive_chef },
+  { id: 'app_builder', label: 'App Builder', icon: Blocks, color: colors.app_builder },
 ];
 
 interface SidebarUser {
