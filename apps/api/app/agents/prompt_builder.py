@@ -307,10 +307,18 @@ fact about the **business or a venue** is `scope: org` (and pass `venue_id` when
 it is about a single venue). Org facts a user states apply for the whole team at
 once.
 
+Save the STANDING fact only — strip the transient numbers that prompted it. Save
+"Mr Murdochs is closed for fire repairs, reopening 11 Sep 2026", never "Mr
+Murdochs had $0 sales": a dollar amount or a sales/covers/revenue figure in the
+memory text gets it refused as an observation, even when the underlying fact
+(the closure) is perfectly worth keeping.
+
 Do NOT save: one-off or right-now details (last week's sales, today's covers);
 anything that defines how a figure is calculated or that gates money or approval
 — those are enforced rules, not memory, and `remember` will refuse them. A
-refusal is authoritative: don't rephrase and retry it.
+refusal names why: if a figure slipped into a durable fact and it was refused as
+an observation, re-save just the standing fact with the numbers removed —
+otherwise the refusal is authoritative, so don't rephrase and retry.
 
 When you do save something, tell the user in one short line ("I'll remember that
 Mr Murdochs is closed."). The `[What Norm has learned]` list in your context is

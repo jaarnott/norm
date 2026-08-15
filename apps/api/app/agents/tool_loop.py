@@ -746,6 +746,31 @@ def _execute_loop(
                             }
                         ),
                     }
+                elif (connector, action) in _AUTO_APPROVED_WRITES:
+                    # Auto-approved internal write (memory): execute immediately,
+                    # no approval card, no suspension. Same execution path as a
+                    # read-only tool, but kept in the write branch so it runs on
+                    # the main db session rather than the parallel read batch.
+                    tc = ToolCall(
+                        id=block.id,
+                        thread_id=task.id,
+                        llm_call_id=llm_call_id,
+                        iteration=iteration,
+                        tool_name=block.name,
+                        connector_name=connector,
+                        action=action,
+                        method=method,
+                        input_params=block.input,
+                        status="executed",
+                    )
+                    db.add(tc)
+                    db.flush()
+                    result = _execute_tool_call(tc, db, config_db=config_db)
+                    write_tool_results[block.id] = {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result),
+                    }
                 else:
                     # Standard approval flow (no working document)
                     tc = ToolCall(
@@ -1714,6 +1739,16 @@ def _search_tool_result(
 def _is_read_only(method: str) -> bool:
     """Return True if the HTTP method is read-only."""
     return method.upper() == "GET"
+
+
+# Internal WRITE tools that execute WITHOUT a user-approval card. Memory capture
+# must be frictionless: prompting the user to approve remembering a fact defeats
+# the point, and the write is low-risk — bounded by admission control
+# (memory_rules) and reversible in Settings → Memory. It runs in the sequential
+# write path (its own db session), never the parallel read batch. This is a
+# narrow allow-list, NOT a general escape hatch — money/roster/order writes and
+# every connector write still pause for approval.
+_AUTO_APPROVED_WRITES = {("norm", "remember")}
 
 
 def _join_answer(parts: list[str], final: str) -> str:
