@@ -147,6 +147,10 @@ async def list_apps(
     if not membership:
         return {"apps": []}
 
+    # Pins are a per-user nav preference, not a property of the app — stored
+    # on the user's own preferences blob under a reserved key.
+    pinned = set((user.dashboard_preferences or {}).get("_pinned_apps") or [])
+
     out = []
     for app in (
         db.query(App)
@@ -169,6 +173,7 @@ async def list_apps(
                 "visibility": app.visibility,
                 "mine": app.created_by == user.id,
                 "access": access.role,
+                "pinned": app.slug in pinned,
             }
         )
     return {"apps": out}
@@ -440,3 +445,40 @@ async def revoke_share(
         )
     db.commit()
     return {"ok": True, "visibility": app.visibility}
+
+
+class PinRequest(BaseModel):
+    pinned: bool
+
+
+@router.post("/apps/{slug}/pin")
+async def pin_app(
+    slug: str,
+    body: PinRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Pin (or unpin) an app to this user's nav.
+
+    A pin is the viewer's own shortcut, not a share: anyone who can RUN the
+    app may pin it, and the pin lives on their preferences — the same blob the
+    dashboard picker uses — so it follows them across devices and nobody
+    else's nav moves.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    app, _ = _load(db, slug, user)
+    if not resolve_access(db, app, user).can_run:
+        raise HTTPException(404, "app not found")
+
+    prefs = dict(user.dashboard_preferences or {})
+    pins = [s for s in (prefs.get("_pinned_apps") or []) if isinstance(s, str)]
+    if body.pinned and app.slug not in pins:
+        pins.append(app.slug)
+    if not body.pinned:
+        pins = [s for s in pins if s != app.slug]
+    prefs["_pinned_apps"] = pins
+    user.dashboard_preferences = prefs
+    flag_modified(user, "dashboard_preferences")
+    db.commit()
+    return {"pinned": app.slug in pins}

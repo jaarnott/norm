@@ -11,7 +11,8 @@ import LoginForm from '../components/auth/LoginForm';
 import FunctionalPage from '../components/pages/FunctionalPage';
 import QuotaExceededModal from '../components/layout/QuotaExceededModal';
 import ConnectorConnectCard from '../components/display/ConnectorConnectCard';
-import { FUNCTIONAL_PAGES } from '../components/pages/pageRegistry';
+import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
+import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
 import { getPageDocument } from '../lib/pageDocument';
 import { PanelLeft as PanelLeftIcon, ArrowLeft, Menu, Settings, LogOut } from 'lucide-react';
@@ -35,6 +36,26 @@ export default function Home() {
   const [routingDomain, setRoutingDomain] = useState<string | null>(null);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [activePage, setActivePage] = useState<string | null>(null);
+  // PINNED apps as dynamic page entries (id `app:<slug>`), refreshed when the
+  // Apps page toggles a pin. Sits beside FUNCTIONAL_PAGES, never inside it.
+  const [appPages, setAppPages] = useState<FunctionalPageConfig[]>([]);
+  useEffect(() => {
+    const loadAppPages = () => {
+      apiFetch('/api/apps')
+        .then((r) => (r.ok ? r.json() : { apps: [] }))
+        .then((d) => setAppPages(
+          ((d.apps ?? []) as { slug: string; name: string; icon?: string | null; pinned?: boolean }[])
+            .filter((a) => a.pinned)
+            .map(appPageConfig),
+        ))
+        .catch(() => {});
+    };
+    loadAppPages();
+    window.addEventListener(APP_PAGES_CHANGED_EVENT, loadAppPages);
+    return () => window.removeEventListener(APP_PAGES_CHANGED_EVENT, loadAppPages);
+  }, []);
+  const findPage = (id: string | null) =>
+    id ? (FUNCTIONAL_PAGES.find(p => p.id === id) ?? appPages.find(p => p.id === id)) : undefined;
   const [venues, setVenues] = useState<VenueDetail[]>([]);
   // Shared, persisted "which venue am I looking at" for the functional pages.
   // Page-scoped only — never passed into sendMessage, so conversations keep
@@ -726,7 +747,7 @@ export default function Home() {
     // Thread detail view — back goes to home (conversation)
     if (mobileView === 'detail') {
       const content = connectPanel ? connectPanel : mobileView === 'detail' && activePage ? (() => {
-        const pageConfig = FUNCTIONAL_PAGES.find(p => p.id === activePage);
+        const pageConfig = findPage(activePage);
         if (!pageConfig) return null;
         return <FunctionalPage config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} onVenueChange={setActiveVenue} />;
       })() : selectedThread ? (
@@ -831,6 +852,7 @@ export default function Home() {
               onFilterChange={setFilter}
               onNewChat={() => { handleNewChat(); setMobileView('home'); }}
               onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
+              extraPages={appPages}
             />
           </div>
 
@@ -943,6 +965,7 @@ export default function Home() {
           onFilterChange={setFilter}
           onNewChat={handleNewChat}
           onCollapsePanel={() => setPanelCollapsed(true)}
+          extraPages={appPages}
           onSelectPage={handleSelectPage}
         />
       </div>
@@ -969,7 +992,7 @@ export default function Home() {
         ) : connectPanel ? (
           connectPanel
         ) : activePage ? (() => {
-          const pageConfig = FUNCTIONAL_PAGES.find(p => p.id === activePage);
+          const pageConfig = findPage(activePage);
           if (!pageConfig) return null;
           return (
             <FunctionalPage

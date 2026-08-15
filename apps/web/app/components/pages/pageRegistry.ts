@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, Clock, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, Clock, Blocks, LayoutGrid, type LucideIcon } from 'lucide-react';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -244,4 +244,30 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
       defaultParams: () => ({ agent_slug: 'executive_chef' }),
     },
   },
+  // App Builder
+  {
+    id: 'apps-hub',
+    label: 'Apps',
+    icon: LayoutGrid,
+    agent: 'app_builder',
+    component: 'apps_dashboard',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
 ];
+
+/**
+ * A PINNED app as a page config. Dynamic — built from /api/apps at runtime —
+ * so it lives beside the static list rather than in it. The id is namespaced
+ * (`app:<slug>`) so it can never collide with a static page id.
+ */
+export function appPageConfig(app: { slug: string; name: string; icon?: string | null }): FunctionalPageConfig {
+  return {
+    id: `app:${app.slug}`,
+    label: app.icon ? `${app.icon} ${app.name}` : app.name,
+    icon: Blocks,
+    agent: 'app_builder',
+    component: 'app_runner',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { slug: app.slug },
+  };
+}

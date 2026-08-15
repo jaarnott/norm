@@ -677,3 +677,49 @@ class TestSharingEndpoints:
         assert peer.id in ids
         assert outsider.id not in ids
         assert author.id not in ids  # you don't share with yourself
+
+
+class TestPinning:
+    """A pin is the viewer's own nav shortcut — per user, never per app."""
+
+    def _headers(self, user):
+        from app.auth.security import create_access_token
+
+        return {
+            "Authorization": f"Bearer {create_access_token({'sub': user.id, 'email': user.email})}"
+        }
+
+    def test_pin_round_trip_and_isolation(self, client, db_session, org, author):
+        app = _app(db_session, org, author, slug="pin-me", name="Pin me")
+        _version(db_session, app, READ_SPEC, author)
+        peer = _member(db_session, org, ["reports:read"])
+        db_session.add(
+            AppShare(app_id=app.id, principal_type="user", principal_id=peer.id)
+        )
+        db_session.commit()
+
+        h = self._headers(author)
+        r = client.post("/api/apps/pin-me/pin", json={"pinned": True}, headers=h)
+        assert r.status_code == 200 and r.json()["pinned"] is True
+        apps = client.get("/api/apps", headers=h).json()["apps"]
+        assert next(a for a in apps if a["slug"] == "pin-me")["pinned"] is True
+
+        # The peer's nav is untouched by the author's pin.
+        hp = self._headers(peer)
+        apps_p = client.get("/api/apps", headers=hp).json()["apps"]
+        assert next(a for a in apps_p if a["slug"] == "pin-me")["pinned"] is False
+
+        r = client.post("/api/apps/pin-me/pin", json={"pinned": False}, headers=h)
+        assert r.json()["pinned"] is False
+
+    def test_a_stranger_cannot_pin_a_private_app(self, client, db_session, org, author):
+        app = _app(db_session, org, author, slug="secret", name="Secret")
+        _version(db_session, app, READ_SPEC, author)
+        stranger = _member(db_session, org, ["reports:read"])
+        db_session.commit()
+        r = client.post(
+            "/api/apps/secret/pin",
+            json={"pinned": True},
+            headers=self._headers(stranger),
+        )
+        assert r.status_code == 404

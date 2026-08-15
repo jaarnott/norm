@@ -3,7 +3,7 @@
 import type { Thread } from '../../types';
 import ThreadCard from './ThreadCard';
 import { SquarePen, Search, PanelLeftClose } from 'lucide-react';
-import { FUNCTIONAL_PAGES } from '../pages/pageRegistry';
+import { FUNCTIONAL_PAGES, type FunctionalPageConfig } from '../pages/pageRegistry';
 
 type FilterKey = 'all' | 'awaiting_approval' | 'awaiting_user_input' | 'completed';
 
@@ -26,6 +26,8 @@ interface ThreadListProps {
   onSelectThread: (id: string) => void;
   onRemoveThread: (id: string) => void;
   activeAgent: string;
+  // Dynamic page entries (pinned apps) appended after the static list.
+  extraPages?: FunctionalPageConfig[];
   filter: FilterKey;
   onFilterChange: (filter: FilterKey) => void;
   onNewChat: () => void;
@@ -33,7 +35,7 @@ interface ThreadListProps {
   onSelectPage?: (pageId: string) => void;
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage }: ThreadListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages }: ThreadListProps) {
   // Filter by agent
   const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => t.domain === activeAgent);
   // Apply status filter
@@ -145,7 +147,7 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
         >
           <Search size={20} strokeWidth={1.75} /> Search
         </button>
-        {FUNCTIONAL_PAGES.filter(p => p.agent === activeAgent).map((page, idx) => {
+        {[...FUNCTIONAL_PAGES, ...(extraPages ?? [])].filter(p => p.agent === activeAgent).map((page, idx) => {
           const Icon = page.icon;
           return (
             <button

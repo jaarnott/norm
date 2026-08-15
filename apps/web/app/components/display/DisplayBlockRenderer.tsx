@@ -2,6 +2,8 @@
 
 import type { DisplayBlock, WidgetAction } from '../../types';
 import GenericTable from './GenericTable';
+import AppsDashboard from '../apps/AppsDashboard';
+import AppPage from '../apps/AppPage';
 import RosterTable from './RosterTable';
 import RosterEditor from './RosterEditor';
 import PurchaseOrderEditor from './PurchaseOrderEditor';
@@ -32,7 +34,7 @@ export interface DisplayBlockProps {
 }
 
 /** Components that render full-width above the conversation instead of inline in chat bubbles */
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'recipe_editor', 'dashboard_view']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'recipe_editor', 'dashboard_view', 'apps_dashboard', 'app_runner']);
 
 // The single source of truth for which display components EXIST. The admin
 // Settings → Components panel derives its catalogue from these keys (with a
@@ -52,6 +54,8 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   saved_reports_board: SavedReportsBoard,
   orders_dashboard: OrdersDashboard,
   invoices_dashboard: InvoicesDashboard,
+  apps_dashboard: AppsDashboard,
+  app_runner: AppPage,
   menu_editor: MenuEditor,
   recipe_editor: RecipeEditor,
   tool_approval: ToolApprovalCard,
