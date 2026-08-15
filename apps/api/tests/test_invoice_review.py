@@ -1222,6 +1222,56 @@ class TestBrandSuggestion:
     def test_no_brand_no_suggestion(self):
         assert self._brand_sugg(self._with_brand(brand="")) is None
 
+    def test_the_created_brand_reaches_the_receive_request(self):
+        """Bidfood 109944512, 15 Aug 2026. Creating the brand wrote the id
+        into the document and nothing else — the receive payload had no field
+        for it, so Loaded never heard, its line stayed unlinked, and the guard
+        that reads LOADED refused the invoice forever."""
+        data = self._with_brand()
+        ln = next(ln for ln in data["lines"] if ln["id"] == "ld-1")
+        ln["linked_brand_id"] = "brand-new-1"  # what create-brand writes back
+        req = receive_request_from_doc(data, "v-1", "inv-1")
+        sent = next(x for x in req.lines if x["id"] == "ld-1")
+        assert sent["linked_brand_id"] == "brand-new-1"
+
+    def test_a_reshape_does_not_throw_the_created_brand_away(self):
+        """create-item reshapes the draft from Loaded, which knows nothing of
+        the brand link. Losing it would cost a real Loaded write the user
+        already made — and silently put the invoice back in the refused state.
+        """
+        from app.services.received_invoice import carry_local_state
+
+        fresh = {"lines": [{"id": "ld-1", "brand": "BIOZYME"}]}
+        carry_local_state(
+            fresh,
+            {"lines": [{"id": "ld-1", "brand": "BIOZYME", "linked_brand_id": "b-1"}]},
+        )
+        assert fresh["lines"][0]["linked_brand_id"] == "b-1"
+
+    def test_a_reshape_does_not_throw_a_created_unit_away_either(self):
+        """The same leak one link over. The unit carry used to be nested
+        inside the ITEM branch, so a unit created on an already-linked line
+        vanished on the next reshape — putting the invoice back into the
+        refusal the user had just cleared, at the cost of a Loaded write."""
+        from app.services.received_invoice import carry_local_state
+
+        fresh = {"lines": [{"id": "ld-1", "linked_item_id": "item-1"}]}
+        carry_local_state(
+            fresh,
+            {
+                "lines": [
+                    {
+                        "id": "ld-1",
+                        "linked_item_id": "item-1",  # unchanged — the old gate
+                        "linked_unit_id": "u-new",
+                        "unit": "6x1000mL",
+                    }
+                ]
+            },
+        )
+        assert fresh["lines"][0]["linked_unit_id"] == "u-new"
+        assert fresh["lines"][0]["unit"] == "6x1000mL"
+
     def test_it_reads_loadeds_line_not_the_copy(self):
         # Every line is covered, paired with a copy line or not — an
         # unresolved brand blocks the receive either way.

@@ -777,6 +777,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   };
   // The suggestion kinds that move the order link, and so need the re-project.
   const PO_LINK_KINDS = ['link_po', 'unlink_po', 'split_reference'];
+  // The kinds whose accept performs a write in LOADED, not just a doc edit.
+  const LOADED_WRITE_KINDS = ['create_brand', 'create_unit', 'create_item', 'delete_invoice'];
   // True when the doc already carries the rows of the order this suggestion
   // links to — the review pre-caches exactly that order, so the projection
   // recomputes on the accept patch and there is nothing to fetch.
@@ -929,6 +931,18 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       }
       if (batch.some((s) => PO_LINK_KINDS.includes(s.kind))) await refreshOrderReference();
     }
+    // The batch above is doc-only and applies anywhere; these need Loaded.
+    // In the card they would each no-op, so the count on the button would be
+    // a lie — accept what can be accepted and name what could not.
+    if (embedded && creates.length) {
+      setStatus('error');
+      setMessage(
+        `${creates.length} suggestion${creates.length > 1 ? 's need' : ' needs'} `
+        + 'something created in Loaded — open the invoice in Norm to apply '
+        + `${creates.length > 1 ? 'those' : 'that'}.`,
+      );
+      return;
+    }
     for (const s of creates) {
       const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
       if (idx < 0) continue;
@@ -989,8 +1003,19 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
   };
 
+  // Every kind below that needs a Loaded WRITE (create the brand/unit/item,
+  // delete the draft) is web-only — each applier early-returns on `embedded`.
+  // Silently: the ✓ did nothing, said nothing, and recorded no acceptance, so
+  // inside Claude's card accepting a create looked like it had worked. Say so
+  // instead. (Same honesty rule as the Can't-receive button: report what
+  // happened, not what was asked.)
   const acceptSuggestion = (s: Suggestion) => {
     if (doneState) return;
+    if (embedded && LOADED_WRITE_KINDS.includes(s.kind)) {
+      setStatus('error');
+      setMessage('This one has to be done in Norm — open the invoice there to apply it.');
+      return;
+    }
     if (s.kind === 'delete_invoice') {
       // A Loaded write (verified DELETE endpoint) — server applier, web only.
       void acceptFix(s);

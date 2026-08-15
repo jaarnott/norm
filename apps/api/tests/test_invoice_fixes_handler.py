@@ -796,6 +796,48 @@ class TestReceive:
             assert "must be created in Loaded before receiving" in str(e)
         assert [w for w in lh.writes if w[0] == "PUT"] == []
 
+    def test_receive_blocked_by_a_brand_loaded_does_not_know(self):
+        """A brand named on the line with no Loaded record still blocks —
+        Loaded won't receive a line naming a brand it doesn't have."""
+        inv = self._inv()
+        inv["lines"][0]["brand"] = "FARMBYNATURE"
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
+        )
+        try:
+            IF._do_receive(lh, self._req())
+            assert False, "expected the receive guard to block"
+        except Exception as e:
+            assert "brand 'FARMBYNATURE'" in str(e)
+        assert [w for w in lh.writes if w[0] == "PUT"] == []
+
+    def test_a_created_brand_travels_to_loaded_and_unblocks_the_receive(self):
+        """Bidfood 109944512, 15 Aug 2026 — the regression this exists for.
+
+        The user accepted 'create this brand', Loaded created it, and the
+        working document held the new id. But the id had no way onto Loaded's
+        invoice line, so the guard read the untouched line (brand name, no
+        linkedBrandId) and refused — every time, forever, on an invoice whose
+        brand had been created minutes earlier.
+        """
+        inv = self._inv()
+        inv["lines"][0]["brand"] = "FARMBYNATURE"  # Loaded knows the NAME only
+        lh = FakeLoaded(
+            {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
+        )
+        IF._do_receive(
+            lh,
+            self._req(lines=[{"id": "ln-1", "linked_brand_id": "brand-new-1"}]),
+        )
+        put = next(w for w in lh.writes if w[0] == "PUT")
+        assert put[2]["lines"][0]["linkedBrandId"] == "brand-new-1"
+
+    def test_an_unbranded_line_is_unaffected(self):
+        lh = self._lh()
+        IF._do_receive(lh, self._req())
+        put = next(w for w in lh.writes if w[0] == "PUT")
+        assert "linkedBrandId" not in put[2]["lines"][0]
+
     def test_receive_not_blocked_when_only_saving(self):
         # The guard is receive-only: a save (receive=False) of an unresolved line
         # still PUTs (the editor persists work-in-progress before resolving).

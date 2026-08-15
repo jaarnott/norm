@@ -474,7 +474,13 @@ def _register_missing_variants(
                         if e.get("unit_cost") is not None
                         else _ln_unit_cost(pre or {})
                     ),
-                    "brandId": (pre or {}).get("linkedBrandId"),
+                    # The card's brand first: a brand created for THIS receive
+                    # exists only on the request line, while `pre` is Loaded's
+                    # pre-edit line and would register the variant unbranded —
+                    # so every future invoice from this supplier would arrive
+                    # with the brand missing again.
+                    "brandId": e.get("linked_brand_id")
+                    or (pre or {}).get("linkedBrandId"),
                     "defaultForSupplier": False,
                     "description": e.get("description")
                     or (pre or {}).get("description"),
@@ -603,6 +609,12 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         # Item links are LOCAL draft edits (accepting a match suggestion never
         # writes to Loaded on its own) — the link lands here, on receive.
         "linked_item_id": ("linkedItemId",),
+        # Same for the brand. create-brand DOES write to Loaded (the brand
+        # record must exist first), but the LINE keeps the id locally until
+        # now. Without this entry the guard below reads Loaded's untouched
+        # line — brand name present, linkedBrandId null — and refuses to
+        # receive an invoice whose brand was created minutes earlier.
+        "linked_brand_id": ("linkedBrandId",),
     }
     # Register missing supplier variants for newly-linked lines BEFORE any
     # edits mutate the invoice dict (the pre-link state decides "newly").
@@ -1137,14 +1149,23 @@ def carry_local_state(fresh: dict, old: dict) -> None:
             continue
         if old_ln.get("struck"):
             fresh_ln["struck"] = True
-        if old_ln.get("linked_item_id") and not fresh_ln.get("linked_item_id"):
-            fresh_ln["linked_item_id"] = old_ln["linked_item_id"]
-            if old_ln.get("item_name") is not None:
-                fresh_ln["item_name"] = old_ln["item_name"]
-            if not fresh_ln.get("linked_unit_id") and old_ln.get("linked_unit_id"):
-                for k in ("linked_unit_id", "unit", "unit_ratio"):
-                    if old_ln.get(k) is not None:
-                        fresh_ln[k] = old_ln[k]
+        # The three links, each with the display fields that travel with it.
+        # PEERS, not nested: the unit carry used to sit inside the item branch,
+        # so a unit created on a line whose item link never changed was thrown
+        # away by the next reshape — and each of these cost a real Loaded write
+        # the user already made. Losing one silently restores the "must be
+        # created in Loaded before receiving" refusal it had just cleared.
+        for link, extras in (
+            ("linked_item_id", ("item_name",)),
+            ("linked_unit_id", ("unit", "unit_ratio")),
+            ("linked_brand_id", ("brand",)),
+        ):
+            if not old_ln.get(link) or fresh_ln.get(link):
+                continue
+            fresh_ln[link] = old_ln[link]
+            for k in extras:
+                if old_ln.get(k) is not None:
+                    fresh_ln[k] = old_ln[k]
 
 
 def receive_request_from_doc(
@@ -1196,6 +1217,13 @@ def receive_request_from_doc(
                 "code": ln.get("code"),
                 "description": ln.get("description"),
                 "linked_item_id": ln.get("linked_item_id"),
+                # The brand created by the create_brand suggestion. Loaded
+                # refuses a line naming a brand it has no record for, and
+                # do_receive guards the same way — but the link only ever
+                # lived in this document, so the guard kept firing on an
+                # invoice whose brand HAD been created (Bidfood 109944512,
+                # 15 Aug 2026). The id has to travel with the line.
+                "linked_brand_id": ln.get("linked_brand_id"),
                 # Resolved on every open by attach_item_names — passing it
                 # saves do_receive an item fetch when it stamps Loaded's
                 # linked-line description.
