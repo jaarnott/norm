@@ -41,10 +41,104 @@ def _followup_system_prompt(**kw):
             kw.get("thread_domain", "time_attendance"),
             None,
             kw.get("recent_summary", "User: hours last week"),
+            config_db=kw.get("config_db"),
         )
     finally:
         anthropic.Anthropic = original
     return captured.get("system", "")
+
+
+class TestTheClassifierIsToldWhatEachDomainDoes:
+    """Knowing the agents EXIST was never enough to pick the right one.
+
+    Thread 46c17508 (15 Aug 2026): from a bare slug list the router sent a
+    wage-cost question to `hr` — which is BambooHR recruitment, with no hours
+    and no pay — while `time_attendance` held the timeclock tools and sat in
+    the same list, unchosen. The descriptions that make the choice obvious
+    already existed in agent_configs; nobody showed them to the router.
+    """
+
+    def test_each_domain_line_says_what_that_agent_does(self, db_session):
+        from app.db.config_models import AgentConfig
+
+        db_session.add(
+            AgentConfig(
+                agent_slug="time_attendance",
+                display_name="Time & Attendance",
+                description="Rosters, timeclock hours and wage cost",
+            )
+        )
+        db_session.flush()
+
+        prompt = _followup_system_prompt(config_db=db_session)
+
+        assert "time_attendance: Rosters, timeclock hours and wage cost" in prompt
+
+    def test_an_agent_with_no_description_is_still_routable(self, db_session):
+        """A registry/config mismatch must not drop an agent off the menu."""
+        prompt = _followup_system_prompt(config_db=db_session)
+        for domain in registered_domains():
+            assert domain in prompt
+
+    def test_a_statement_of_context_is_named_as_a_reason_to_stay(self):
+        prompt = _followup_system_prompt()
+        assert "not a request" in prompt.lower()
+
+    def test_the_classifier_is_asked_whether_this_is_even_a_request(self):
+        assert "is_request" in _followup_system_prompt()
+
+    def test_consulting_is_offered_only_to_an_agent_that_can_do_it(self, db_session):
+        from app.db.config_models import AgentConnectorBinding
+
+        assert "consulting" not in _followup_system_prompt(config_db=db_session).lower()
+
+        db_session.add(
+            AgentConnectorBinding(
+                agent_slug="time_attendance",
+                connector_name="norm",
+                capabilities=[{"action": "delegate_to_agent", "enabled": True}],
+                enabled=True,
+            )
+        )
+        db_session.flush()
+        prompt = _followup_system_prompt(config_db=db_session)
+        assert "consulting another agent" in prompt
+
+
+class TestTheVerdictCarriesWhetherItWasARequest:
+    def test_a_verdict_without_the_field_is_read_as_a_request(self):
+        """Every existing caller and stub predates this field; absent must mean
+        "they asked for something", which is how routing behaved before."""
+        import anthropic
+
+        from app.agents import router
+
+        class _Messages:
+            def create(self, **kw):
+                class _R:
+                    content = [
+                        type(
+                            "T",
+                            (),
+                            {"text": '{"action": "continue", "domain": "reports"}'},
+                        )()
+                    ]
+                    usage = None
+
+                return _R()
+
+        class _Client:
+            def __init__(self, *a, **k):
+                self.messages = _Messages()
+
+        original = anthropic.Anthropic
+        anthropic.Anthropic = _Client
+        try:
+            out = router.classify_followup("anything", "reports", None, "")
+        finally:
+            anthropic.Anthropic = original
+
+        assert out["is_request"] is True
 
 
 class TestTheClassifierIsToldWhichDomainsExist:

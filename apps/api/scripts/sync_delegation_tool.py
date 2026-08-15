@@ -68,10 +68,23 @@ TOOL = {
 }
 
 # agent_slug -> why it needs to ask
+#
+# Widened to every agent on 15 Aug 2026 (thread 46c17508). The original three
+# were the pairs there was a known question for, and the principle above still
+# holds — but the evidence that arrived is that ANY agent can be handed a
+# conversation mid-flight by the router, so any agent without this is a place a
+# conversation can go and not come back from. A wage-cost question landed on
+# hr, which has no hours or pay data and no way to ask anyone who does; the
+# user had to route it by hand. A grant costs tokens only when used; not having
+# one costs the user the answer.
 GRANTS = {
     "procurement": "ordering depends on rostered hours and on sales trends",
     "reports": "commentary needs stock and labour context, not just numbers",
     "time_attendance": "rostering against sales and labour cost",
+    "hr": "staffing questions arrive here with wage and roster data elsewhere",
+    "executive_chef": "menu and recipe costing depends on stock and sales",
+    "marketing": "campaign planning needs sales and what is actually in stock",
+    "app_builder": "an app's data comes from every other domain",
 }
 
 
@@ -123,7 +136,20 @@ def main() -> None:
                 .first()
             )
             if not binding:
-                changes.append(f"SKIP {slug}: no '{CONNECTOR}' binding")
+                # executive_chef had no `norm` binding at all, so it could not
+                # be granted anything — and it is one of the agents the router
+                # actually stranded a conversation on. Create the binding with
+                # just this action rather than skipping.
+                changes.append(f"create '{CONNECTOR}' binding for {slug} ({why})")
+                if not args.dry_run:
+                    db.add(
+                        AgentConnectorBinding(
+                            agent_slug=slug,
+                            connector_name=CONNECTOR,
+                            capabilities=[{"action": ACTION, "enabled": True}],
+                            enabled=True,
+                        )
+                    )
                 continue
             caps = list(binding.capabilities or [])
             if any(c.get("action") == ACTION for c in caps):

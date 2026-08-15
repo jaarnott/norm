@@ -67,6 +67,62 @@ def get_connector_bindings(agent_slug: str, db: Session) -> list[dict]:
     ]
 
 
+def get_agent_actions(agent_slug: str, db: Session) -> set[str]:
+    """The connector actions THIS agent can actually call.
+
+    "What can this agent do" was being re-derived inline wherever it was
+    needed, and the router — the one place that decides who handles a
+    message — had no way to ask at all. It was given bare domain slugs, so on
+    15 Aug 2026 it sent a wage-cost question to `hr` (recruitment) while
+    `time_attendance` held `get_timeclock_entries_for_period`. See
+    `describe_domains`.
+
+    Enabled capabilities on enabled bindings only — a disabled binding is a
+    tool the agent cannot reach, and counting it would answer the question
+    wrongly in the direction that hurts (claiming reach it hasn't got).
+    """
+    actions: set[str] = set()
+    rows = (
+        db.query(AgentConnectorBinding)
+        .filter(
+            AgentConnectorBinding.agent_slug == agent_slug,
+            AgentConnectorBinding.enabled == True,  # noqa: E712
+        )
+        .all()
+    )
+    for row in rows:
+        for cap in row.capabilities or []:
+            if isinstance(cap, str):
+                actions.add(cap)
+            elif cap.get("enabled", True) and cap.get("action"):
+                actions.add(cap["action"])
+    return actions
+
+
+def describe_domains(slugs: list[str], db: Session | None) -> str:
+    """The routing menu: one line per agent, saying what it actually does.
+
+    The router used to be handed `- procurement\\n- hr\\n- reports…` and asked
+    to pick. From a bare list "wage costs" reads as `hr`, which in Norm is
+    BambooHR recruitment — no hours, no pay, and (then) no way to hand off. The
+    descriptions that make the choice obvious already existed in
+    `agent_configs.description`; nobody was showing them to the router.
+
+    Falls back to the bare slug per-agent, so an agent registered in code with
+    no config row is still routable — and the whole list degrades to the old
+    behaviour when there is no config DB (the prompt-rendering test helper).
+    """
+    if db is None:
+        return "\n".join(f"- {s}" for s in slugs)
+    rows = {r.agent_slug: r for r in db.query(AgentConfig).all()}
+    lines = []
+    for slug in slugs:
+        row = rows.get(slug)
+        desc = (row.description or "").strip() if row else ""
+        lines.append(f"- {slug}: {desc}" if desc else f"- {slug}")
+    return "\n".join(lines)
+
+
 def upsert_connector_binding(
     agent_slug: str,
     connector_name: str,

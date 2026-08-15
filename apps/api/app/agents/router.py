@@ -67,12 +67,31 @@ def classify_followup(
             pb_lines = [f"- {pb.slug}: {pb.description}" for pb in playbooks]
             playbook_section = "\n\nAvailable playbooks:\n" + "\n".join(pb_lines)
 
-    # The model has to pick from the agents that actually exist. Without this it
-    # invents plausible-sounding slugs — "inventory" for a stock question, when
-    # stock lives in procurement — and the caller can only discard the answer.
+    # The model has to pick from the agents that actually exist, AND know what
+    # each one does. The slugs alone stopped it inventing "inventory"; they did
+    # not stop it sending "wage costs" to hr (recruitment) while time_attendance
+    # held the timeclock tools — thread 46c17508, 15 Aug 2026.
     from app.agents.registry import registered_domains
+    from app.services.agent_config_service import describe_domains
 
-    domain_list = "\n".join(f"- {d}" for d in registered_domains())
+    domain_list = describe_domains(registered_domains(), _cdb)
+
+    # Only offer "consult instead of switching" to an agent that can actually
+    # do it — telling an agent without the tool to consult is how you get a
+    # confident "I'll ask the reports agent" followed by nothing.
+    from app.services.delegation import DELEGATE_ACTION
+
+    can_consult = False
+    if _cdb and thread_domain:
+        from app.services.agent_config_service import get_agent_actions
+
+        can_consult = DELEGATE_ACTION in get_agent_actions(thread_domain, _cdb)
+    consult_rule = (
+        "\n- This agent can get the answer by consulting another agent, so it "
+        "does not need to hand the conversation over."
+        if can_consult
+        else ""
+    )
 
     system = f"""You are a message router for Norm, a hospitality operations platform.
 The user is sending a follow-up message in an existing thread.
@@ -85,11 +104,18 @@ The ONLY domains that exist:
 {domain_list}
 
 Decide how to handle this follow-up:
-a) "continue" — the message continues the current conversation naturally. If a playbook matches this specific message, include its slug.
-b) "new_thread" — the message is about a completely different topic that belongs to a different domain agent.
+a) "continue" — the message continues the current conversation. If a playbook matches this specific message, include its slug.
+b) "new_thread" — the user has plainly started a different job that this agent cannot do, and nothing in the message depends on the conversation above.
+
+"continue" is the default and the bar for leaving it is high. Choose "continue" whenever ANY of these holds:
+- The message is not a request at all. Statements of fact, context, corrections and asides ("the kitchen flooded", "Murdoch's is closed until the 11th", "that number looks wrong") are things the user is TELLING this agent, not a job for a different one.
+- It refers back to the work in progress — "as well", "also", "add", "same period", "what about", a bare number or a bare venue name.{consult_rule}
+- The topic is merely adjacent to another agent's area. Adjacency is not a switch.
 
 Return ONLY valid JSON:
-{{"action": "continue" | "new_thread", "domain": "<domain>", "playbook": "<slug or null>", "reason": "<brief reason>"}}
+{{"action": "continue" | "new_thread", "domain": "<domain>", "playbook": "<slug or null>", "is_request": true | false, "reason": "<brief reason>"}}
+
+"is_request" is true when the user is asking for something to be fetched or done, and false when they are stating information, giving context or reacting.
 
 If a playbook listed above matches this message, include its slug in "playbook".
 If no playbook matches, set playbook to null (agent gets full tool access).
@@ -109,7 +135,10 @@ Default to "continue" — only use "new_thread" for genuine domain switches (e.g
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=128,
+            # 128 was already tight beside a free-text "reason"; a truncated
+            # verdict fails to parse and silently becomes "continue", which is
+            # safe but blind. One more field buys the headroom back.
+            max_tokens=200,
             system=system,
             messages=[{"role": "user", "content": message}],
         )
@@ -148,6 +177,10 @@ Default to "continue" — only use "new_thread" for genuine domain switches (e.g
             "action": parsed.get("action", "continue"),
             "domain": parsed.get("domain", thread_domain),
             "playbook": parsed.get("playbook"),
+            # Absent means "assume they asked for something" — the reading that
+            # preserves today's behaviour, so an older/terser verdict routes
+            # exactly as it always did.
+            "is_request": parsed.get("is_request", True),
             "reason": parsed.get("reason", ""),
         }
 
@@ -179,7 +212,14 @@ def _llm_classify(
 
     # Use .replace() instead of .format() — the prompt contains literal JSON
     # braces that would break Python's string formatting.
-    domain_list = "\n".join(f"- {d}" for d in domains)
+    #
+    # Each line carries what the agent DOES, from agent_configs.description.
+    # The prompt used to keep its own hand-typed capability list beside this
+    # one; two lists of the same thing drift, and that one had lost
+    # executive_chef and app_builder entirely while both stayed routable.
+    from app.services.agent_config_service import describe_domains
+
+    domain_list = describe_domains(domains, _cdb)
     system = prompt_template.replace("{domains}", domain_list)
 
     # Inject playbook options so the router can match a workflow

@@ -204,6 +204,16 @@ def handle_message(
                 followup.get("reason", ""),
             )
 
+            # This thread may own state that cannot move with it: an automated
+            # task's own conversation, or a suspended tool loop whose approval
+            # card points at this id. Decide that from the THREAD, not from
+            # what the classifier happened to propose — otherwise a message
+            # the classifier called "continue" could still be handed over
+            # below, taking a pending approval with it.
+            pinned = bool(automated_task_ctx) or bool(
+                thread.status == "awaiting_tool_approval" or thread.agent_loop_state
+            )
+
             if action == "new_thread" and automated_task_ctx:
                 # Never spin a new thread out of an automated task's own
                 # conversation. Doing so abandons the task the user is looking
@@ -231,6 +241,39 @@ def handle_message(
                     thread.id[:12],
                 )
                 action = "continue"
+
+            # The user naming an agent outranks the classifier — but not the
+            # two suppressions above, which protect state this thread owns.
+            handoff = _detect_agent_handoff_request(message, _cdb)
+            if handoff and handoff != thread.domain and not pinned:
+                if action != "new_thread":
+                    logger.info(
+                        "User asked for the %s agent by name — handing over", handoff
+                    )
+                action, followup["domain"] = "new_thread", handoff
+
+            if action == "new_thread" and not handoff:
+                # Two reasons to stay that the classifier can't act on alone.
+                stay = None
+                if not followup.get("is_request", True):
+                    # "Murdoch's is closed due to a fire" — context for the job
+                    # in hand, not a new one. Moving on it stranded the whole
+                    # conversation on the recipes agent.
+                    stay = "the message states context rather than asking for something"
+                elif _can_consult(thread, followup.get("domain"), db, _cdb):
+                    stay = f"{thread.domain} can consult {followup.get('domain')}"
+                if stay:
+                    logger.info(
+                        "Follow-up wanted %s, but %s — staying put (reason: %s)",
+                        followup.get("domain"),
+                        stay,
+                        followup.get("reason", ""),
+                    )
+                    action = "continue"
+                    # The slug was chosen for the OTHER agent, and the lookup
+                    # below matches on slug alone — it would happily load into
+                    # this one.
+                    followup["playbook"] = None
 
             if action == "new_thread":
                 rebound = _rebind_thread_agent(
@@ -481,7 +524,7 @@ def handle_message(
         return result
 
     # 4. Unknown domain — return clarification
-    return _create_unknown(message, db, user_id, routing=routing)
+    return _create_unknown(message, db, user_id, routing=routing, config_db=_cdb)
 
 
 def _llm_call_to_dict(llm_call: LlmCall) -> dict:
@@ -520,6 +563,47 @@ def _stored_playbook(thread: Thread, config_db: Session):
         .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
         .first()
     )
+
+
+def _can_consult(
+    thread: Thread, target_domain: str | None, db: Session, config_db: Session
+) -> bool:
+    """True when this agent can ASK the other one instead of being replaced.
+
+    Consulting is strictly better than rebinding when it is available: the
+    thread keeps its own tools and playbook and gains the other agent's answer,
+    where a rebind swaps the toolset underneath a conversation that carries on
+    looking capable. On 15 Aug 2026 a sales thread was rebound to the recipes
+    agent and then to recruitment; it went on quoting the sales table it had
+    already built while holding nothing that could fetch a wage cost.
+
+    Every condition here mirrors a refusal `delegate()` would raise anyway —
+    checking first means a delegation that cannot happen falls through to the
+    rebind rather than pinning the user on an agent that will only apologise.
+    """
+    from app.agents.registry import get_agent
+    from app.services import delegation
+    from app.services.agent_config_service import get_agent_actions
+
+    if not target_domain or target_domain == thread.domain or not thread.domain:
+        return False
+    if delegation.DELEGATE_ACTION not in get_agent_actions(thread.domain, config_db):
+        return False
+    if get_agent(target_domain) is None:
+        return False
+    # A target with nothing readable is refused at delegate() time ("has no
+    # read-only tools available"), so it is no reason to stay put.
+    if not (
+        get_agent_actions(target_domain, config_db)
+        & delegation.read_only_actions(config_db)
+    ):
+        return False
+    try:
+        delegation.check_guards(thread, target_domain, db)
+    except Exception:
+        # Depth, loop or budget exhausted — the hand-off is the only way on.
+        return False
+    return True
 
 
 def _rebind_thread_agent(
@@ -862,6 +946,50 @@ _CONNECT_ALIASES = {
 }
 
 
+# "Ask the reports agent" — the user routing by hand, which is what they
+# resorted to on 15 Aug 2026 after four turns on the wrong agents. When they
+# name an agent they are overruling the classifier, and that has to win, so
+# this is deliberately strict: a verb AND the literal word "agent". "Can you
+# report on wages" and "the reports looked wrong" must not trip it.
+_HANDOFF_VERBS = (
+    "ask ",
+    "switch to",
+    "hand this to",
+    "hand it to",
+    "pass this to",
+    "pass it to",
+    "get the",
+    "talk to",
+    "use the",
+)
+
+
+def _detect_agent_handoff_request(message: str, config_db: Session) -> str | None:
+    """Return the agent slug the user explicitly asked for, or None."""
+    from app.agents.registry import registered_domains
+
+    text = " ".join(message.lower().split())
+    if not any(v in text for v in _HANDOFF_VERBS):
+        return None
+
+    from app.db.config_models import AgentConfig
+
+    names = {}
+    for slug in registered_domains():
+        names[slug.replace("_", " ")] = slug
+    for row in config_db.query(AgentConfig).all():
+        if row.display_name and row.agent_slug in registered_domains():
+            name = row.display_name.lower().removesuffix(" agent").strip()
+            if name:
+                names[name] = row.agent_slug
+
+    # Longest name first: "time attendance" must beat a bare "time".
+    for name in sorted(names, key=len, reverse=True):
+        if f"{name} agent" in text:
+            return names[name]
+    return None
+
+
 def _detect_connect_intent(message: str, config_db: Session) -> str | None:
     """Return the connector the user wants to connect, or None.
 
@@ -1045,11 +1173,54 @@ def _create_venue_clarification(
     }
 
 
+def _capability_hint(config_db: Session | None) -> str:
+    """ "Try asking me to…" built from the agents that actually exist."""
+    fallback = "Try asking me about stock, rosters, sales or staff."
+    if config_db is None:
+        return fallback
+    try:
+        from app.agents.registry import registered_domains
+        from app.db.config_models import AgentConfig
+
+        rows = {r.agent_slug: r for r in config_db.query(AgentConfig).all()}
+        parts = []
+        for slug in registered_domains():
+            row = rows.get(slug)
+            desc = (row.description or "").strip() if row else ""
+            if desc:
+                parts.append(f"- **{row.display_name or slug}** — {desc}")
+        if parts:
+            return "Here's what I can help with:\n\n" + "\n".join(parts)
+    except Exception:  # noqa: BLE001 — a hint is never worth failing a turn for
+        logger.warning("Could not build the capability hint", exc_info=True)
+    return fallback
+
+
 def _create_unknown(
-    message: str, db: Session, user_id: str | None = None, routing: dict | None = None
+    message: str,
+    db: Session,
+    user_id: str | None = None,
+    routing: dict | None = None,
+    config_db: Session | None = None,
 ) -> dict:
-    """Handle unknown intent."""
-    question = "I'm not sure what you need. Try asking me to order stock, set up a new employee, or generate a report."
+    """Handle unknown intent.
+
+    The router usually knows what it found confusing and says so — that
+    question is far better than a generic one, and it was being thrown away.
+    On 15 Aug 2026 "what will expected sales be across all venues" produced
+    "could you clarify what 'this' refers to?" from the router and this
+    hardcoded list to the user, who picked "generate a report" off it; the
+    sales question then took five agents to answer.
+
+    The fallback names what Norm can actually do, built from the live agent
+    descriptions rather than three frozen examples that drift as agents come
+    and go.
+    """
+    question = (routing or {}).get("clarification") or (routing or {}).get(
+        "venue_question"
+    )
+    if not question:
+        question = "I'm not sure what you need. " + _capability_hint(config_db)
 
     thread = Thread(
         user_id=user_id,
