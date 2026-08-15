@@ -28,6 +28,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import { setPageDocument } from '../../lib/pageDocument';
 import AppSharePanel from './AppSharePanel';
 
 interface AppDetail {
@@ -110,6 +111,16 @@ export default function AppRunner({ slug }: { slug: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const venueRef = useRef<string>('');
   venueRef.current = venueId;
+
+  // Tell the chat what the user is LOOKING AT: "rename this app" must
+  // resolve to this slug without asking. Same publish/clear contract as the
+  // RecipeEditor; module-scope, so it survives the send.
+  useEffect(() => {
+    if (app) {
+      setPageDocument({ kind: 'app', slug: app.slug, name: app.name, version: app.version });
+    }
+    return () => setPageDocument(null);
+  }, [app]);
 
   useEffect(() => {
     let live = true;

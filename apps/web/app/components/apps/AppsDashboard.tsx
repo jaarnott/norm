@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import { setPageDocument } from '../../lib/pageDocument';
 import AppRunner from './AppRunner';
 import type { DisplayBlockProps } from '../display/DisplayBlockRenderer';
 
@@ -34,6 +35,19 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
     (props?.openSlug as string) || null,
   );
   const [busy, setBusy] = useState<string | null>(null);
+
+  // While LISTING, the chat sees the visible apps — "rename this app" with
+  // one app on screen resolves without a question. An OPEN app publishes
+  // itself from AppRunner (mounted below), which overwrites this; coming back
+  // to the list republishes it here.
+  useEffect(() => {
+    if (openSlug || apps === null) return undefined;
+    setPageDocument({
+      kind: 'apps_list',
+      apps: apps.map((a) => ({ slug: a.slug, name: a.name })),
+    });
+    return () => setPageDocument(null);
+  }, [openSlug, apps]);
 
   const load = useCallback(() => {
     apiFetch('/api/apps')

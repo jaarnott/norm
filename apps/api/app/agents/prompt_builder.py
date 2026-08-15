@@ -626,9 +626,13 @@ The user has access to multiple venues:
                 "tasks-procurement": "Procurement Automated Tasks",
                 "tasks-reports": "Reports Automated Tasks",
             }
-            page_label = _page_labels.get(
-                page_context["page_id"], page_context["page_id"]
-            )
+            _page_labels["apps-hub"] = "Apps"
+            _pid = str(page_context.get("page_id") or "")
+            if _pid.startswith("app:"):
+                # A pinned user-built app rendered as its own page.
+                page_label = f"the app '{_pid[4:]}'"
+            else:
+                page_label = _page_labels.get(_pid, _pid)
             system_prompt += f"""
 
 ## Current Page Context
@@ -664,6 +668,50 @@ Pass only the fields you're changing in `changes` (they merge into the draft) â€
 address a line by its id or a `match` on its name. edit_recipe edits the shared
 draft only; it does NOT save to Loaded. Tell the user the change is on the card
 and they can press Save.
+"""
+
+            elif isinstance(document, dict) and document.get("kind") == "app":
+                system_prompt += f"""
+
+## Open App (act on THIS one)
+The user has the app **{document.get("name")}** open right now
+(slug: `{document.get("slug")}`, version {document.get("version")}).
+Requests about "this app" - rename it, change what it shows, share it, fix it -
+refer to THIS app. Use `get_app` / `save_app` with slug `{document.get("slug")}`;
+do not ask which app they mean.
+"""
+            elif isinstance(document, dict) and document.get("kind") == "apps_list":
+                _apps = [
+                    a
+                    for a in (document.get("apps") or [])
+                    if isinstance(a, dict) and a.get("slug")
+                ]
+                _app_lines = "\n".join(
+                    f"- {a.get('name')} (slug: `{a.get('slug')}`)" for a in _apps
+                )
+                system_prompt += f"""
+
+## Apps on screen
+The user is looking at their apps list, showing:
+{_app_lines or "- (none yet)"}
+"This app" refers to one of these - if only one is listed, it is that one;
+otherwise name the candidates instead of guessing.
+"""
+            elif isinstance(document, dict) and document.get("kind"):
+                # Any OTHER page document: render it verbatim (capped) so a new
+                # page gets "Norm can see what you see" just by publishing a
+                # document - no server change required.
+                import json as _json
+
+                try:
+                    _doc_txt = _json.dumps(document, default=str)[:1200]
+                except Exception:  # noqa: BLE001 - context is best-effort
+                    _doc_txt = str(document)[:1200]
+                system_prompt += f"""
+
+## What the user has open on this page
+{_doc_txt}
+Requests using "this" likely refer to the item above.
 """
 
         # Always add parallel tool-use guidance (standard mode only)

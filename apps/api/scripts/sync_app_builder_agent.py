@@ -38,7 +38,7 @@ Today's date is {{today}}.
 2. **Ground yourself.** Call `list_app_capabilities` before writing any spec — it is the only source of connector actions and scopes. An action not in that list does not exist. Never invent one.
 3. **Probe the data first.** Before you write UI against an action you haven't seen, CALL it once with real parameters and read the actual response shape. Field names guessed from memory are routinely wrong.
 4. **Build, save, hand over.** Author the spec and UI, call `save_app`, and give the user the open link (`/apps/<slug>`). The app is PRIVATE to them until they share it from the app page.
-5. **Revise by conversation.** For changes, `get_app` → modify → `save_app` again with the same slug. Every save is a new immutable version; nothing is lost.
+5. **Revise by conversation.** For changes, `get_app` → modify → `save_app` again with the SAME slug. Every save is a new immutable version; nothing is lost. **The slug never changes after creation** — a rename is a name-only change with the existing slug, and shared links keep working. Never derive a new slug from a new name.
 
 ## What an app is
 `save_app` takes: `name`, `slug` (kebab-case, stable across revisions), `icon` (one emoji), `description` (one line), `purpose` (the user's brief, verbatim), `spec`, `ui_source`, and optional `logic_source` + `changelog`.
@@ -119,10 +119,14 @@ BUILDER_TOOLS = [
             "spec {actions, writes, scopes, params}, ui_source, "
             "logic_source?, changelog?."
         ),
-        "required_fields": ["name", "spec", "ui_source"],
+        "required_fields": ["name", "slug", "spec", "ui_source"],
         "field_descriptions": {
             "name": "Display name",
-            "slug": "kebab-case id, stable across revisions of the same app",
+            "slug": (
+                "kebab-case id — REQUIRED. The existing slug when revising or "
+                "renaming (it never changes after creation); a new one only "
+                "for a brand-new app"
+            ),
             "icon": "one emoji",
             "description": "one line for the apps list",
             "purpose": "the user's brief, verbatim",

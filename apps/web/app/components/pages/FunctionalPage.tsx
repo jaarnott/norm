@@ -227,20 +227,59 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     );
   }
 
-  // Phase 1: Full-height component (no conversation yet)
-  if (!hasConversation) {
-    return (
-      <div style={{ height: '100dvh', position: 'relative', backgroundColor: '#fff' }}>
+  // ONE layout for both states. The with-conversation and without-conversation
+  // views used to be two different element trees, so the FIRST message from a
+  // page moved the component to a new tree position — React remounted it and
+  // every bit of its local state (an open app, an editor draft, scroll) reset
+  // to zero, which read as "Norm navigated me back to the base page". Keeping
+  // the component pane at a stable position and only resizing/adding siblings
+  // around it means sending a message never remounts what you're looking at.
+  return (
+    <div ref={containerRef} style={{
+      height: '100dvh', display: 'flex', flexDirection: 'column', position: 'relative',
+      backgroundColor: '#fff', userSelect: isDragging ? 'none' : undefined,
+    }}>
+      {/* Component pane — full height until a conversation exists. */}
+      <div style={{
+        height: hasConversation ? (topPaneHeight ?? '50%') : '100%',
+        flexShrink: 0,
+        overflowY: hasConversation ? 'scroll' : 'auto',
+        minHeight: 0,
+      }}>
         {venueSelector}
-        <div style={{ height: '100%', overflowY: 'auto', paddingTop: venueSelector ? '0.5rem' : '1rem', paddingLeft: '1.5rem', paddingRight: '1.5rem', paddingBottom: '100px' }}>
-          {loadingData && (
-            <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading...</div>
-          )}
-          {loadError && (
-            <div style={{ padding: '2rem', textAlign: 'center', color: '#e53e3e' }}>{loadError}</div>
-          )}
+        <div style={{ padding: hasConversation ? '0.75rem 0.5rem 0.75rem 1.5rem' : '1rem 1.5rem 100px' }}>
+          {loadingData && <div style={{ padding: '1rem', color: '#999' }}>Loading...</div>}
+          {loadError && <div style={{ padding: '1rem', color: '#e53e3e' }}>{loadError}</div>}
           {componentBlock}
         </div>
+      </div>
+
+      {hasConversation && (
+        <SplitDragHandle
+          isDragging={isDragging}
+          topPaneHeight={topPaneHeight}
+          containerRef={containerRef}
+          onMouseDown={handleDragStart}
+          onDoubleClick={handleSplitDoubleClick}
+        />
+      )}
+
+      {/* Conversation + input. Without a conversation the input floats over
+          the bottom of the page, exactly as the old full-height view did. */}
+      {hasConversation ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
+            <div style={{ maxWidth: 768, margin: '0 auto' }}>
+              <ConversationView
+                messages={messages}
+                onWidgetAction={onWidgetAction && thread ? (action) => onWidgetAction(thread.id, action) : undefined}
+                threadId={thread?.id}
+              />
+            </div>
+          </div>
+          {inputBar}
+        </div>
+      ) : (
         <div style={{
           position: 'absolute', bottom: 0, left: 0, right: 0,
           padding: '20px 0 0',
@@ -248,51 +287,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
         }}>
           {inputBar}
         </div>
-      </div>
-    );
-  }
-
-  // Phase 2: Split view — component top, conversation bottom
-  return (
-    <div ref={containerRef} style={{
-      height: '100dvh', display: 'flex', flexDirection: 'column',
-      backgroundColor: '#fff', userSelect: isDragging ? 'none' : undefined,
-    }}>
-      {/* Top pane: component */}
-      <div style={{
-        height: topPaneHeight ?? '50%',
-        flexShrink: 0,
-        overflowY: 'scroll',
-      }}>
-        {venueSelector}
-        <div style={{ padding: '0.75rem 0.5rem 0.75rem 1.5rem' }}>
-          {loadingData && <div style={{ padding: '1rem', color: '#999' }}>Loading...</div>}
-          {loadError && <div style={{ padding: '1rem', color: '#e53e3e' }}>{loadError}</div>}
-          {componentBlock}
-        </div>
-      </div>
-
-      <SplitDragHandle
-        isDragging={isDragging}
-        topPaneHeight={topPaneHeight}
-        containerRef={containerRef}
-        onMouseDown={handleDragStart}
-        onDoubleClick={handleSplitDoubleClick}
-      />
-
-      {/* Bottom pane: conversation + input */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
-          <div style={{ maxWidth: 768, margin: '0 auto' }}>
-            <ConversationView
-              messages={messages}
-              onWidgetAction={onWidgetAction && thread ? (action) => onWidgetAction(thread.id, action) : undefined}
-              threadId={thread?.id}
-            />
-          </div>
-        </div>
-        {inputBar}
-      </div>
+      )}
     </div>
   );
 }

@@ -443,6 +443,7 @@ class TestBuilderTools:
         thread = self._thread(db_session, author)
         payload = {
             "name": "Outstanding invoices",
+            "slug": "outstanding-invoices",
             "icon": "🧾",
             "spec": READ_SPEC,
             "ui_source": "<div>v1</div>",
@@ -467,13 +468,28 @@ class TestBuilderTools:
             == 1
         )
 
+    def test_a_rename_without_the_slug_is_refused(self, db_session, org, author):
+        # Optional slug let a rename mint a NEW app: the model sent the new
+        # name only, save_app derived a slug from it, and the org had two apps
+        # (live, 15 Aug 2026). The tool now demands the choice be explicit.
+        from app.agents.internal_tools import get_handler
+
+        thread = self._thread(db_session, author)
+        out = get_handler("norm", "save_app")(
+            {"name": "Renamed", "spec": READ_SPEC, "ui_source": "<div/>"},
+            db_session,
+            thread.id,
+        )
+        assert not out["success"]
+        assert "slug" in out["error"] and "never changes" in out["error"]
+
     def test_save_app_refuses_reach_the_author_lacks(self, db_session, org):
         from app.agents.internal_tools import get_handler
 
         weak = _member(db_session, org, ["apps:build", "tasks:read"])
         thread = self._thread(db_session, weak)
         out = get_handler("norm", "save_app")(
-            {"name": "Too far", "spec": READ_SPEC, "ui_source": "<div/>"},
+            {"name": "Too far", "slug": "too-far", "spec": READ_SPEC, "ui_source": "<div/>"},
             db_session,
             thread.id,
         )
@@ -486,7 +502,9 @@ class TestBuilderTools:
         norole = _member(db_session, org, ["tasks:read"])
         thread = self._thread(db_session, norole)
         out = get_handler("norm", "save_app")(
-            {"name": "X", "spec": {}, "ui_source": "<div/>"}, db_session, thread.id
+            {"name": "X", "slug": "x", "spec": {}, "ui_source": "<div/>"},
+            db_session,
+            thread.id,
         )
         assert not out["success"] and "apps:build" in out["error"]
 
@@ -495,7 +513,12 @@ class TestBuilderTools:
 
         thread = self._thread(db_session, author)
         get_handler("norm", "save_app")(
-            {"name": "Mine", "spec": READ_SPEC, "ui_source": "<b>hi</b>"},
+            {
+                "name": "Mine",
+                "slug": "mine",
+                "spec": READ_SPEC,
+                "ui_source": "<b>hi</b>",
+            },
             db_session,
             thread.id,
         )

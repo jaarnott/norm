@@ -2788,6 +2788,22 @@ def _save_app(params: dict, db: Session, thread_id: str | None) -> dict:
             "error": "you do not have the apps:build permission",
         }
 
+    # The slug is the app's IDENTITY, so the tool demands it explicitly. Left
+    # optional, a rename quietly minted a NEW app: the model sent the new name
+    # without a slug, save_app derived one from the name, and the org ended up
+    # with two apps (live, 15 Aug 2026). Forcing the choice makes "same app,
+    # new version" and "brand-new app" two different deliberate acts.
+    if not str(params.get("slug") or "").strip():
+        return {
+            "success": False,
+            "data": None,
+            "error": (
+                "pass `slug` explicitly: the EXISTING slug when revising or "
+                "renaming an app (the slug never changes after creation), or "
+                "a new kebab-case slug only for a brand-new app"
+            ),
+        }
+
     try:
         out = save_app(db, user, dict(params or {}))
     except HTTPException as exc:
