@@ -1180,9 +1180,7 @@ class AppVersion(Base):
     """
 
     __tablename__ = "app_versions"
-    __table_args__ = (
-        UniqueConstraint("app_id", "version", name="uq_app_version"),
-    )
+    __table_args__ = (UniqueConstraint("app_id", "version", name="uq_app_version"),)
 
     id = Column(String, primary_key=True, default=_uuid)
     app_id = Column(
@@ -1262,9 +1260,7 @@ class AppCall(Base):
         String, ForeignKey("apps.id", ondelete="CASCADE"), nullable=False, index=True
     )
     app_version_id = Column(String, nullable=True)
-    user_id = Column(
-        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     #: Nullable so the record outlives a deleted venue — same rule as
     #: InvoiceAutopilotOutcome: deleting a venue is not a reason to erase what
     #: an app did while it existed.

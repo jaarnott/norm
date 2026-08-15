@@ -2824,9 +2824,7 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
     if not app or not resolve_access(db, app, user).can_run:
         return {"success": False, "data": None, "error": f"no app '{slug}'"}
     version = (
-        db.query(AppVersion)
-        .filter(AppVersion.id == app.current_version_id)
-        .first()
+        db.query(AppVersion).filter(AppVersion.id == app.current_version_id).first()
     ) or (
         db.query(AppVersion)
         .filter(AppVersion.app_id == app.id)

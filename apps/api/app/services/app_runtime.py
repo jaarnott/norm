@@ -374,9 +374,9 @@ def save_app(db: Session, user, payload: dict) -> dict:
         )
 
     name = str(payload.get("name") or "").strip()
-    slug = str(
-        payload.get("slug") or re.sub(r"[^a-z0-9]+", "-", name.lower())
-    ).strip("-")
+    slug = str(payload.get("slug") or re.sub(r"[^a-z0-9]+", "-", name.lower())).strip(
+        "-"
+    )
     if not name or not slug:
         raise HTTPException(400, "a name is required")
 
