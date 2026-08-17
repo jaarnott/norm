@@ -73,15 +73,36 @@ def main(argv: list[str] | None = None) -> int:
 
     load_system_secrets()
 
+    import os as _os
+
     from app.db.engine import SessionLocal, _ConfigSessionLocal
-    from app.services import spec_dojo
+    from app.services import sensei_runner, spec_dojo
+
+    # Claim the queued run before spending anything. No claim = nothing to do
+    # (another execution finished it, or a live one holds it) — exit clean so
+    # a duplicate dispatch is harmless.
+    claimed_by = _os.environ.get("CLOUD_RUN_EXECUTION", sensei_runner.worker_identity())
+    entry = sensei_runner.claim(args.sample_id, claimed_by)
+    if entry is None:
+        logger.info(
+            "sample %s has no claimable run (finished or live elsewhere) — done",
+            args.sample_id,
+        )
+        return 0
+    feedback = args.feedback or entry.get("feedback")
 
     db, config_db = SessionLocal(), _ConfigSessionLocal()
     try:
-        logger.info("analysing sample %s", args.sample_id)
+        logger.info("analysing sample %s (as %s)", args.sample_id, claimed_by)
         result = spec_dojo.analyse_sample(
-            db, config_db, args.sample_id, feedback=args.feedback
+            db, config_db, args.sample_id, feedback=feedback
         )
+        # call_llm only add()+flush()es its llm_calls rows — inside the web
+        # process the request lifecycle commits them, but out here nobody
+        # does, and close() rolls them back. Without this commit every
+        # job-run analysis burns Opus tokens invisibly (Aug 2026: zero
+        # dojo_analysis rows recorded after the move to the job).
+        db.commit()
         status = (result or {}).get("status")
         logger.info("sample %s finished: %s", args.sample_id, status)
         # analyse_sample catches its own errors and STORES status="failed"

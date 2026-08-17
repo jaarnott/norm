@@ -826,6 +826,10 @@ def build_replica(
                 _issue("totals_inconsistent", msg)
 
     # ---- PO ----
+    # customer_… is the extraction contract; the bare name is a legacy field
+    # retired from the schema 17 Aug 2026, read here only so extractions
+    # cached before the retirement (DocumentExtraction fingerprint cache,
+    # stored dojo runs) keep resolving.
     po_number = extraction.get("customer_purchase_order_number") or extraction.get(
         "purchase_order_number"
     )

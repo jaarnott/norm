@@ -35,7 +35,7 @@ __all__ = ["MAIN_PROMPT_NAME", "find_spec_for_supplier"]  # re-exported for call
 logger = logging.getLogger(__name__)
 
 
-# An analysis runs either in a background daemon thread (add-to-dojo) or
+# An analysis runs either in a background daemon thread (the cannot-receive intake) or
 # inline in a request (the sensei). Both die with the process, leaving the
 # stored analysis at "running" forever with no error — the panel then shows
 # "sensei analysing…" for eternity and offers no way back (Lion Nathan
@@ -50,21 +50,52 @@ STALE_ANALYSIS_MINUTES = 15
 
 
 def analysis_view(analysis: dict | None) -> dict | None:
-    """The analysis as a client should see it: a run whose owner died is
-    reported ``failed``, never eternally ``running``. Pure — the stored row
-    is left alone (the next run overwrites it)."""
-    import datetime as _dt
+    """The analysis as a client should see it — never an eternal lie.
 
-    if not isinstance(analysis, dict) or analysis.get("status") != "running":
+    Pure; the stored row is left alone (the worker owns state transitions):
+
+    - ``running`` with a stale heartbeat → annotated ``stale: True`` (the UI
+      shows "restarting…"; the worker requeues it within a tick).
+    - ``queued`` that nobody claimed for QUEUED_ABANDONED_SECONDS → reported
+      ``failed`` with a message naming the real problem (no worker/job alive
+      for its environment), instead of spinning forever.
+    - Legacy ``running`` entries with no heartbeat at all fall back to the
+      old 15-minute rule.
+    """
+    from app.services.sensei_runner import (
+        HEARTBEAT_STALE_SECONDS,
+        QUEUED_ABANDONED_SECONDS,
+        _age_seconds,
+    )
+
+    if not isinstance(analysis, dict):
         return analysis
-    started = analysis.get("at")
-    try:
-        age = _dt.datetime.now(_dt.timezone.utc) - _dt.datetime.fromisoformat(
-            str(started)
-        )
-    except (TypeError, ValueError):
+    status = analysis.get("status")
+    if status == "queued":
+        age = _age_seconds(analysis.get("queued_at") or analysis.get("at"))
+        if age is not None and age > QUEUED_ABANDONED_SECONDS:
+            env = analysis.get("queued_env") or "unknown"
+            return {
+                **analysis,
+                "status": "failed",
+                "error": (
+                    f"queued for {int(age // 60)} minutes and nothing picked "
+                    f"it up — is the sensei worker/job for '{env}' running?"
+                ),
+            }
         return analysis
-    if age < _dt.timedelta(minutes=STALE_ANALYSIS_MINUTES):
+    if status != "running":
+        return analysis
+    hb = analysis.get("heartbeat_at")
+    if hb is not None:
+        age = _age_seconds(hb)
+        if age is not None and age > HEARTBEAT_STALE_SECONDS:
+            # The executor died; the worker will requeue it. Say so.
+            return {**analysis, "stale": True}
+        return analysis
+    # Legacy running entry (pre-heartbeat): the old staleness rule.
+    age = _age_seconds(analysis.get("at"))
+    if age is None or age < STALE_ANALYSIS_MINUTES * 60:
         return analysis
     return {
         **analysis,
@@ -156,7 +187,11 @@ _HEADER_FIELDS = (
     "document_type",
     "invoice_number",
     "invoice_date",
-    "purchase_order_number",
+    # The buyer's PO — the one field the replica resolves a purchase order
+    # from. (The legacy catch-all `purchase_order_number` was retired from
+    # the extraction schema 17 Aug 2026; `supplier_order_number` is a decoy
+    # nothing consumes, so neither is regression-tested here.)
+    "customer_purchase_order_number",
     "subtotal_ex_tax",
     "discount_amount",
     "tax_amount",
@@ -362,6 +397,10 @@ def stage_invoice_sample(
                 pdf_bytes=base64.b64decode(b64),
                 source_venue_id=venue_id,
                 source_invoice_id=invoice_id,
+                # The env-independent key: venue ids differ per environment,
+                # the Loaded company doesn't — any env can resolve its own
+                # venue for this sample (see resolve_sample_venue_id).
+                source_company_id=_venue_company_id(db, venue_id),
                 draft=draft,
             )
             wcdb.add(sample)
@@ -397,13 +436,18 @@ def candidate_run(
 
     For a supplier row that means the spec's own samples (its text only
     composes into that supplier's prompt); for the reserved Main prompt row it
-    means EVERY sample in the dojo. Samples without a baseline report 'new'.
-    ``skip_sample_id`` lets the analysis agent exclude the sample it is
-    grading against its own ground truth.
+    means EVERY sample in the dojo. Only samples WITH a baseline run: a
+    no-baseline sample (including the Dojo page's hidden drafts) can neither
+    pass nor fail, so re-extracting it spends a full extraction (~6k tokens)
+    to report "new" — noise that read as regression coverage in the proposal
+    card while verifying nothing. ``skip_sample_id`` lets the analysis agent
+    exclude the sample it is grading against its own ground truth.
     """
     from app.db.config_models import SupplierSpecSample
 
-    q = config_db.query(SupplierSpecSample)
+    q = config_db.query(SupplierSpecSample).filter(
+        SupplierSpecSample.expected.isnot(None)
+    )
     if spec.name != MAIN_PROMPT_NAME:
         q = q.filter(SupplierSpecSample.spec_id == spec.id)
     samples = q.order_by(SupplierSpecSample.created_at).all()
@@ -1050,6 +1094,18 @@ def analyse_sample(
         config_db.commit()
         return analysis
 
+    def _beat(phase: str) -> None:
+        """Heartbeat: prove the executor is alive and say what it's doing.
+
+        The worker requeues a running analysis whose heartbeat goes stale
+        (HEARTBEAT_STALE_SECONDS), so every stretch of work in this function
+        must be preceded by a beat — a phase is at most one model call."""
+        cur = dict(sample.analysis or {})
+        if cur.get("status") == "running":
+            cur["heartbeat_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            cur["phase"] = phase
+            _store(cur)
+
     # The conversation so far: prior admin corrections + the proposal they
     # were reviewing. A new feedback message joins the thread; the whole
     # thread rides on every subsequent analysis (and re-analysis).
@@ -1069,13 +1125,22 @@ def analyse_sample(
             "status": "running",
             "thread": thread,
             "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "heartbeat_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "phase": "starting",
+            # Queue bookkeeping survives into the running record so a death
+            # here is requeued with its history intact (worker requeue logic
+            # reads attempts; the view shows the claimant).
+            "attempts": int(prev.get("attempts") or 0),
+            "queued_env": prev.get("queued_env"),
+            "claimed_by": prev.get("claimed_by"),
         }
     )
 
     # Ensure there is a current-prompt extraction to critique. This is often
-    # the sample's FIRST stored run (add-to-dojo kicks analyse in the
+    # the sample's FIRST stored run (cannot-receive kicks analyse in the
     # background), so it must carry the replica keys like every other run —
     # a run without them renders as "no invoice view" in the panel.
+    _beat("reading the invoice")
     run = sample.last_run or {}
     if not run.get("extraction"):
         extraction = run_extraction(
@@ -1251,8 +1316,16 @@ def analyse_sample(
                 "extraction": own,
             },
             "siblings": {
+                # Keep the candidate extraction per sibling: it is the answer
+                # to "WHY did this sibling fail" in the proposal card (each
+                # row expands into baseline-vs-candidate). It was stripped
+                # here until Aug 2026, which left the card showing a FAIL
+                # verdict with no way to inspect the failing values.
                 "samples": [
-                    {k: r.get(k) for k in ("id", "label", "status", "diffs")}
+                    {
+                        k: r.get(k)
+                        for k in ("id", "label", "status", "diffs", "extraction")
+                    }
                     for r in siblings["samples"]
                 ],
                 "passed": siblings["passed"],
@@ -1263,7 +1336,9 @@ def analyse_sample(
         }
 
     try:
+        _beat("asking the model")
         proposal = _ask()
+        _beat("verifying against the baselines")
         own_diffs, results = _verify(proposal)
         gt_violations = _ground_truth_violations(proposal["ground_truth"])
         if (
@@ -1294,7 +1369,9 @@ def analyse_sample(
                 + "\nRevise: fix the proposal (or your ground truth if IT was "
                 "wrong) and return the full JSON again."
             )
+            _beat("re-asking after verification failed")
             proposal = _ask(feedback)
+            _beat("re-verifying the revised proposal")
             own_diffs, results = _verify(proposal)
             gt_violations = _ground_truth_violations(proposal["ground_truth"])
         green = (
@@ -1412,145 +1489,9 @@ _REPLICA_HEADER_FIELDS = (
     "total",
 )
 
+
 # Header fields compared by calendar day: Loaded returns '2026-08-07' on some
 # venues and a full ISO datetime on others, the extraction always a bare date.
-_DATE_HEADER_FIELDS = ("issued_at",)
-
-
-def _date_part(v: Any) -> Any:
-    if isinstance(v, str) and len(v) >= 10 and v[4:5] == "-":
-        return v[:10]
-    return v
-
-
-_REPLICA_LINE_FIELDS = (
-    "linked_item_id",
-    "linked_unit_id",
-    "quantity_received",
-    "unit_cost",
-    "sale_tax_rate",
-)
-
-
-def compare_replica(
-    replica: dict, loaded_doc: dict, expected_replica: dict | None = None
-) -> list[dict]:
-    """Score the replica against Loaded's own resolution of the same invoice.
-
-    Same diff shape as ``compare_extractions`` ({field, line, description,
-    expected, actual}) so every existing renderer consumes it. Lines pair by
-    exact normalized code, then description substring (the shared
-    ``plain_match``). ``expected_replica`` is an admin-blessed replica: where
-    the current replica agrees with the blessing, the diff is suppressed —
-    the adjudication path for invoices Loaded itself resolved wrongly.
-    """
-    from app.services.invoice_line_match import plain_match
-
-    def _differ(a: Any, b: Any) -> bool:
-        if a is None and b is None:
-            return False
-        try:
-            return abs(float(a) - float(b)) > 0.011
-        except (TypeError, ValueError):
-            return a != b
-
-    blessed = expected_replica or {}
-    blessed_lines = {
-        _norm_key(bl.get("code"), bl.get("description")): bl
-        for bl in blessed.get("lines") or []
-    }
-
-    diffs: list[dict] = []
-    for f in _REPLICA_HEADER_FIELDS:
-        exp, act = loaded_doc.get(f), replica.get(f)
-        bl_v = blessed.get(f)
-        if f in _DATE_HEADER_FIELDS:
-            exp, act, bl_v = _date_part(exp), _date_part(act), _date_part(bl_v)
-        if not _differ(exp, act):
-            continue
-        if f in blessed and not _differ(bl_v, act):
-            continue  # admin blessed the replica's header value
-        diffs.append(
-            {
-                "field": f,
-                "line": None,
-                "description": None,
-                "expected": exp,
-                "actual": act,
-            }
-        )
-
-    loaded_lines = [
-        dict(ln) for ln in loaded_doc.get("lines") or [] if isinstance(ln, dict)
-    ]
-    unclaimed = list(loaded_lines)
-    for i, rl in enumerate(replica.get("lines") or []):
-        # Strongest pairing first: the resolved ITEM — Loaded's line text is
-        # often the item name while the copy prints the pack description
-        # (live: 'Oysters Half Shell - Pacific Premium' vs 'MARKET OYSTERS'),
-        # so text pairing alone mis-scores correct resolutions.
-        match = None
-        if rl.get("linked_item_id"):
-            by_item = [
-                ln
-                for ln in unclaimed
-                if ln.get("linked_item_id") == rl.get("linked_item_id")
-            ]
-            if len(by_item) == 1:
-                match = by_item[0]
-        if match is None:
-            match = plain_match(rl, unclaimed)
-        key = _norm_key(rl.get("code"), rl.get("description"))
-        bl = blessed_lines.get(key, {})
-        if match is None:
-            if bl:
-                continue  # blessed as a line Loaded doesn't carry
-            diffs.append(
-                {
-                    "field": "line_extra",
-                    "line": i + 1,
-                    "description": rl.get("description"),
-                    "expected": None,
-                    "actual": rl.get("description"),
-                }
-            )
-            continue
-        unclaimed.remove(match)
-        for f in _REPLICA_LINE_FIELDS:
-            exp, act = match.get(f), rl.get(f)
-            if not _differ(exp, act):
-                continue
-            if f in bl and not _differ(bl.get(f), act):
-                continue  # admin blessed the replica's value for this line
-            diffs.append(
-                {
-                    "field": f,
-                    "line": i + 1,
-                    "description": rl.get("description"),
-                    "expected": exp,
-                    "actual": act,
-                }
-            )
-    for ln in unclaimed:
-        diffs.append(
-            {
-                "field": "line_missing",
-                "line": None,
-                "description": ln.get("description"),
-                "expected": ln.get("description"),
-                "actual": None,
-            }
-        )
-    return diffs
-
-
-def _norm_key(code: Any, description: Any) -> str:
-    n = "".join(ch for ch in str(code or "").lower() if ch.isalnum())
-    if n:
-        return f"c:{n}"
-    return "d:" + "".join(ch for ch in str(description or "").lower() if ch.isalnum())
-
-
 def prefetch_replica_reference(db: Session, config_db: Session, venue_id: str) -> dict:
     """One venue's replica reference data, fetched ONCE for a batch run —
     exactly the kwargs ``build_replica`` would otherwise fetch per sample
@@ -1578,6 +1519,69 @@ def prefetch_replica_reference(db: Session, config_db: Session, venue_id: str) -
     return {k: v for k, v in out.items() if v}
 
 
+def _config_company_id(cfg) -> str | None:
+    """A connector row's Loaded company id — the configured
+    ``x_loaded_company_id`` when present, else the company the token was
+    actually minted for (``oauth_metadata.venue_id``, Loaded's name for the
+    company in its token response). Rows connected before the company-id
+    config existed carry only the latter."""
+    if cfg is None:
+        return None
+    configured = str((cfg.config or {}).get("x_loaded_company_id") or "").strip()
+    if configured:
+        return configured
+    minted = str((cfg.oauth_metadata or {}).get("venue_id") or "").strip()
+    return minted or None
+
+
+def _venue_company_id(db: Session, venue_id: str) -> str | None:
+    """The Loaded company id a venue's connection is bound to (main DB)."""
+    from app.db.models import ConnectorConfig
+
+    cfg = (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == "loadedhub",
+            ConnectorConfig.venue_id == venue_id,
+        )
+        .first()
+    )
+    return _config_company_id(cfg)
+
+
+def resolve_sample_venue_id(db: Session, sample) -> str | None:
+    """The venue to use for this sample's Loaded calls IN THIS ENVIRONMENT.
+
+    Venue ids are per-environment (the shared config DB stores samples, but
+    venues live in each env's main DB), so a sample filed in production
+    carries a venue id local dev has never heard of. The Loaded COMPANY id
+    is the env-independent key: prefer the sample's own venue id when this
+    environment knows it, else find whichever of this environment's venues
+    is connected to the same Loaded company. None = this environment has no
+    venue talking to that company.
+    """
+    from app.db.models import ConnectorConfig, Venue
+
+    vid = sample.source_venue_id
+    if vid and db.query(Venue.id).filter(Venue.id == vid).first() is not None:
+        return vid
+    company = str(getattr(sample, "source_company_id", None) or "").strip()
+    if not company:
+        return None
+    for cfg in (
+        db.query(ConnectorConfig)
+        .filter(
+            ConnectorConfig.connector_name == "loadedhub",
+            ConnectorConfig.venue_id.isnot(None),
+            ConnectorConfig.enabled == "true",
+        )
+        .all()
+    ):
+        if _config_company_id(cfg) == company:
+            return cfg.venue_id
+    return None
+
+
 def replica_stage(
     db: Session,
     config_db: Session,
@@ -1585,11 +1589,19 @@ def replica_stage(
     extraction: dict,
     reference: dict | None = None,
 ) -> tuple[dict | None, list[dict], dict | None]:
-    """Build + score the replica for one dojo sample — returns
-    (replica, scorecard diffs, display-ready compare rows).
+    """Build the replica for one dojo sample — returns
+    (replica, [], display-ready view rows).
 
-    Requires the sample's source venue (add-to-dojo intake); hand-uploaded
-    samples return (None, []) — the panel explains why. Best-effort: an
+    The replica is our extraction resolved against the venue's Loaded
+    CATALOGUE (items, units, suppliers, tax, PO references). It is no longer
+    scored against Loaded's own read of the same invoice (removed 16 Aug
+    2026: that read is competing OCR of the same paper, not a reference), so
+    the middle element of the tuple — the old vs-Loaded scorecard — is
+    always empty; kept in the shape so stored runs from the compare era and
+    their consumers keep working.
+
+    Requires the sample's source venue (cannot-receive intake); hand-uploaded
+    samples return (None, [], None) — the panel explains why. Best-effort: an
     exception records an error replica rather than failing the run.
     ``reference`` is a venue's prefetched build_replica kwargs (batch runs).
     """
@@ -1597,32 +1609,37 @@ def replica_stage(
         return None, [], None
     if not isinstance(extraction, dict):
         return None, [], None
+    venue_id = resolve_sample_venue_id(db, sample)
+    if venue_id is None:
+        return (
+            {
+                "replica": True,
+                "error": (
+                    "this sample was filed in another environment and no "
+                    "venue here is connected to the same Loaded company — "
+                    "the invoice view needs a live connection to resolve "
+                    "against the catalogue"
+                ),
+                "lines": [],
+            },
+            [],
+            None,
+        )
     try:
         from app.services.invoice_replica import build_replica
-        from app.services.received_invoice import (
-            LoadedInvoiceClient,
-            build_received_invoice_data,
-        )
+        from app.services.received_invoice import LoadedInvoiceClient
 
-        lh = LoadedInvoiceClient(db, config_db, sample.source_venue_id)
+        lh = LoadedInvoiceClient(db, config_db, venue_id)
         replica = build_replica(
             db,
             config_db,
-            sample.source_venue_id,
+            venue_id,
             extraction,
             lh=lh,
             own_invoice_id=sample.source_invoice_id,
             **(reference or {}),
         )
-        detail = lh.invoice(sample.source_invoice_id)
-        loaded_doc = build_received_invoice_data(
-            detail if isinstance(detail, dict) else {}
-        )
-        diffs = compare_replica(
-            replica, loaded_doc, getattr(sample, "expected_replica", None)
-        )
-        compare = replica_compare_rows(replica, loaded_doc)
-        return replica, diffs, compare
+        return replica, [], replica_view_rows(replica)
     except Exception as exc:  # noqa: BLE001 — the replica must never break a run
         logger.warning("replica stage failed for sample %s: %s", sample.id, exc)
         return {"replica": True, "error": str(exc), "lines": []}, [], None
@@ -1643,124 +1660,38 @@ _COMPARE_LINE_KEYS = (
 )
 
 
-def replica_compare_rows(replica: dict, loaded_doc: dict) -> dict:
-    """Display-ready replica-vs-Loaded comparison for the dojo UI.
+def replica_view_rows(replica: dict) -> dict:
+    """Display rows for the dojo's invoice view, from the replica ALONE.
 
-    Same pairing tiers as ``compare_replica`` (resolved item id first, then
-    the shared ``plain_match``): one row per pairing, each side slimmed to
-    the display keys, with the differing fields named per row. Unpaired
-    lines render as one-sided rows.
+    Same shape ``replica_compare_rows`` produced back when Loaded's own read
+    of the invoice was fetched for comparison (removed 16 Aug 2026: Loaded's
+    read is competing OCR of the same paper, not a reference — the replica is
+    primary). The ``loaded`` side is None and nothing differs, so the
+    extracted-only invoice sheet renders unchanged and stored runs from the
+    compare era keep rendering too.
     """
-    from app.services.invoice_line_match import plain_match
-
-    def _differ(a: Any, b: Any) -> bool:
-        if a is None and b is None:
-            return False
-        try:
-            return abs(float(a) - float(b)) > 0.011
-        except (TypeError, ValueError):
-            return a != b
 
     def _slim(ln: dict | None) -> dict | None:
         if not isinstance(ln, dict):
             return None
         return {k: ln.get(k) for k in _COMPARE_LINE_KEYS}
 
-    header = []
+    def _row(field: str) -> dict:
+        return {
+            "field": field,
+            "replica": replica.get(field),
+            "loaded": None,
+            "differs": False,
+        }
+
+    header = [_row("supplier_name"), _row("reference_number")]
     for f in _REPLICA_HEADER_FIELDS:
-        rep_v, load_v = replica.get(f), loaded_doc.get(f)
-        if f in _DATE_HEADER_FIELDS:
-            differs = _differ(_date_part(load_v), _date_part(rep_v))
-        else:
-            differs = _differ(load_v, rep_v)
-        header.append(
-            {
-                "field": f,
-                "replica": rep_v,
-                "loaded": load_v,
-                "differs": differs,
-            }
-        )
-    # Names beside the ids where either side knows them.
-    header.insert(
-        0,
-        {
-            "field": "supplier_name",
-            "replica": replica.get("supplier_name"),
-            "loaded": loaded_doc.get("supplier_name"),
-            "differs": _differ(
-                loaded_doc.get("linked_supplier_id"), replica.get("linked_supplier_id")
-            ),
-        },
-    )
-    # The invoice NUMBER, display-only (the engine's invoice-number gate owns
-    # enforcement) — the invoice-styled render needs it, and a mismatch is
-    # worth seeing in the diff view.
-    header.insert(
-        1,
-        {
-            "field": "reference_number",
-            "replica": replica.get("reference_number"),
-            "loaded": loaded_doc.get("reference_number"),
-            "differs": _norm_text(replica.get("reference_number"))
-            != _norm_text(loaded_doc.get("reference_number")),
-        },
-    )
-    # The order-number REFERENCE, display-only (never scored: Loaded's field
-    # often holds the supplier's own ref, so a diff here is information, not
-    # an error). Compared with the PO-number normalization so 'po#1521145'
-    # vs '1521145' doesn't flag.
-    from app.services.received_invoice import _po_key
-
-    po_idx = next(
-        (
-            n + 1
-            for n, h in enumerate(header)
-            if h["field"] == "linked_purchase_order_id"
-        ),
-        len(header),
-    )
-    header.insert(
-        po_idx,
-        {
-            "field": "purchase_order_number",
-            "replica": replica.get("purchase_order_number"),
-            "loaded": loaded_doc.get("purchase_order_number"),
-            "differs": _po_key(replica.get("purchase_order_number"))
-            != _po_key(loaded_doc.get("purchase_order_number")),
-        },
-    )
-
-    loaded_lines = [
-        dict(ln) for ln in loaded_doc.get("lines") or [] if isinstance(ln, dict)
+        header.append(_row(f))
+        if f == "linked_purchase_order_id":
+            header.append(_row("purchase_order_number"))
+    lines = [
+        {"replica": _slim(rl), "loaded": None, "diff_fields": []}
+        for rl in replica.get("lines") or []
+        if isinstance(rl, dict)
     ]
-    unclaimed = list(loaded_lines)
-    rows = []
-    for rl in replica.get("lines") or []:
-        match = None
-        if rl.get("linked_item_id"):
-            by_item = [
-                ln
-                for ln in unclaimed
-                if ln.get("linked_item_id") == rl.get("linked_item_id")
-            ]
-            if len(by_item) == 1:
-                match = by_item[0]
-        if match is None:
-            match = plain_match(rl, unclaimed)
-        if match is not None:
-            unclaimed.remove(match)
-        rows.append(
-            {
-                "replica": _slim(rl),
-                "loaded": _slim(match),
-                "diff_fields": [
-                    f
-                    for f in _REPLICA_LINE_FIELDS
-                    if match is not None and _differ(match.get(f), rl.get(f))
-                ],
-            }
-        )
-    for ln in unclaimed:
-        rows.append({"replica": None, "loaded": _slim(ln), "diff_fields": []})
-    return {"header": header, "lines": rows}
+    return {"header": header, "lines": lines}

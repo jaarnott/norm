@@ -43,7 +43,7 @@ export interface DojoAnalysis {
   ground_truth?: ExtractionDoc | null;
   candidate_results?: {
     own?: { status?: string; diffs?: DojoDiff[]; extraction?: ExtractionDoc | null };
-    siblings?: { samples?: { id: string; label: string; status: string; diffs?: unknown[] }[]; passed?: number; failed?: number; errors?: number; new?: number };
+    siblings?: { samples?: { id: string; label: string; status: string; diffs?: DojoDiff[]; extraction?: ExtractionDoc | null }[]; passed?: number; failed?: number; errors?: number; new?: number };
   };
   model?: string;
   at?: string;
@@ -87,10 +87,44 @@ export default function SenseiProposalCard({
   onClose: () => void;
 }) {
   const [feedback, setFeedback] = useState('');
-  // The CURRENT prompts' extraction (the sample's last run) — the failing
-  // read this proposal is fixing. Shown as a third toggle in the verify
-  // table so before/proposed/corrected sit side by side.
-  const [currentRun, setCurrentRun] = useState<{ extraction: ExtractionDoc | null; diffs: DojoDiff[] } | null>(null);
+  // The CURRENT prompts' extraction (the sample's last run) and the baseline
+  // STORED on the sample today — both from the last-run endpoint. Shown as
+  // extra toggles in the verify table so stored/before/proposed/corrected
+  // sit side by side.
+  const [currentRun, setCurrentRun] = useState<{ extraction: ExtractionDoc | null; diffs: DojoDiff[]; expected: ExtractionDoc | null } | null>(null);
+  // Expanded sibling from the verification sweep: which row is open, and the
+  // sibling's STORED baseline (fetched on expand — the candidate extraction
+  // and its diffs already travel in the analysis payload). Cache per sample
+  // id so re-expanding costs nothing.
+  const [openSibling, setOpenSibling] = useState<string | null>(null);
+  const [siblingBaselines, setSiblingBaselines] = useState<Record<string, ExtractionDoc | null>>({});
+  const toggleSibling = async (id: string) => {
+    if (openSibling === id) { setOpenSibling(null); return; }
+    setOpenSibling(id);
+    if (!(id in siblingBaselines)) {
+      try {
+        const res = await apiFetch(`/api/supplier-invoice-specs/samples/${id}/last-run`);
+        const data = res.ok ? await res.json() : {};
+        setSiblingBaselines((m) => ({ ...m, [id]: (data.expected as ExtractionDoc) ?? null }));
+      } catch {
+        setSiblingBaselines((m) => ({ ...m, [id]: null }));
+      }
+    }
+  };
+  // The PDF fetch carries the auth header, so a plain <a href> can't serve
+  // it — fetch to a blob and hand the browser a download.
+  const downloadSiblingPdf = async (id: string, label: string) => {
+    try {
+      const res = await apiFetch(`/api/supplier-invoice-specs/samples/${id}/pdf`);
+      if (!res.ok) return;
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = label || 'invoice.pdf';
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch { /* button simply does nothing on a network error */ }
+  };
   useEffect(() => {
     let cancelled = false;
     setCurrentRun(null);
@@ -99,7 +133,7 @@ export default function SenseiProposalCard({
         const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/last-run`);
         if (!res.ok) return;
         const data = await res.json();
-        if (!cancelled) setCurrentRun({ extraction: data.extraction ?? null, diffs: data.diffs ?? [] });
+        if (!cancelled) setCurrentRun({ extraction: data.extraction ?? null, diffs: data.diffs ?? [], expected: data.expected ?? null });
       } catch { /* toggle simply stays hidden */ }
     })();
     return () => { cancelled = true; };
@@ -199,10 +233,13 @@ export default function SenseiProposalCard({
             readOnly
             current={currentRun ? currentRun.extraction : undefined}
             currentDiffs={currentRun?.diffs ?? []}
+            stored={currentRun ? currentRun.expected : undefined}
             labels={{
+              stored: 'Current expected values',
               expected: 'Values from this Analysis',
               extracted: 'Extracted with proposed prompt',
               current: 'Current prompt',
+              storedHint: 'the baseline stored on the sample today — what regression tests against; the analysis values replace it on Apply only if it isn’t admin-owned',
               expectedHint: 'what this analysis read off the PDF — these become the sample’s expected values',
               extractedHint: 'what the PROPOSED prompt actually pulled in the verification run — the pass/fail above compares exactly these two',
               currentHint: 'what the CURRENT prompts pull from this document today — the failing read this proposal fixes; mismatches vs the expected values are highlighted',
@@ -210,10 +247,65 @@ export default function SenseiProposalCard({
           />
         </div>
       )}
-      {sib?.samples?.map((s) => (
-        <div key={s.id} style={{ fontSize: '0.7rem', color: '#555', display: 'flex', gap: 6, alignItems: 'center', padding: '1px 0' }}>
-          <StatusBadge status={s.status} />
-          <span>{s.label} (existing baseline)</span>
+      {/* Sibling sweep: this supplier's BASELINED samples, re-extracted under
+          the candidate prompt. candidate_run skips no-baseline samples since
+          Aug 2026 — they could neither pass nor fail, and their NEW rows read
+          as regression coverage that wasn't there. Analyses stored before
+          that change still carry NEW rows in their blobs, so filter them at
+          render too: the card only ever shows what the sensei verified.
+          Each row expands into the same verify table — the sibling's stored
+          baseline beside what the PROPOSED prompt pulled from it, mismatches
+          highlighted — so a FAIL explains itself, and the correction box
+          below can be told exactly what to protect. */}
+      {sib?.samples?.filter((s) => s.status !== 'new').map((s) => (
+        <div key={s.id}>
+          <button type="button" onClick={() => toggleSibling(s.id)}
+            title="show this sample's baseline vs what the proposed prompt extracted from it"
+            style={{ fontSize: '0.7rem', color: '#555', display: 'flex', gap: 6, alignItems: 'center', padding: '2px 0', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', width: '100%', textAlign: 'left' }}>
+            <span style={{ fontSize: '0.6rem', color: '#999', width: 10 }}>{openSibling === s.id ? '▾' : '▸'}</span>
+            <StatusBadge status={s.status} />
+            <span>{s.label} (vs its baseline{s.status === 'fail' ? ` — ${s.diffs?.length ?? 0} mismatch${(s.diffs?.length ?? 0) === 1 ? '' : 'es'}` : ''})</span>
+          </button>
+          {openSibling === s.id && (
+            <div style={{ margin: '4px 0 10px 16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+                <button type="button" onClick={() => downloadSiblingPdf(s.id, s.label)}
+                  title="download this sample's invoice PDF"
+                  style={{ fontSize: '0.64rem', padding: '2px 9px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  ⤓ Download PDF
+                </button>
+              </div>
+              {/* Analyses stored before Aug 2026 kept only the diffs, not the
+                  candidate extraction — for those, the diffs alone still say
+                  exactly which fields broke. New runs carry the extraction
+                  and get the full table below instead. */}
+              {!s.extraction && (s.diffs?.length ?? 0) > 0 && (
+                <div style={{ border: '1px solid #f0c0ba', borderRadius: 6, background: '#fdf3f2', padding: '6px 10px', marginBottom: 6, fontSize: '0.7rem', color: '#7a2e24' }}>
+                  <div style={{ fontWeight: 700, marginBottom: 2 }}>What the proposed prompt broke (this analysis stored only the diffs — re-run the sensei for the full extraction):</div>
+                  {(s.diffs ?? []).map((d, i) => (
+                    <div key={i}>
+                      {d.line != null ? `line ${d.line}${d.description ? ` “${d.description}”` : ''} — ` : ''}{d.field}: expected {JSON.stringify(d.expected ?? null)}, got {JSON.stringify(d.actual ?? null)}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <DojoSampleView
+                key={`sib-${s.id}:${a.at ?? ''}`}
+                sampleId={s.id}
+                expected={s.id in siblingBaselines ? siblingBaselines[s.id] : null}
+                extraction={s.extraction ?? null}
+                diffs={s.diffs ?? []}
+                status={s.status === 'pass' ? 'pass' : s.status === 'fail' ? 'fail' : s.status === 'error' ? 'error' : 'new'}
+                readOnly
+                labels={{
+                  expected: 'Current expected values',
+                  extracted: 'Extracted with proposed prompt',
+                  expectedHint: 'the baseline stored on this sample — what the candidate run was verified against',
+                  extractedHint: 'what the PROPOSED prompt pulled from this sample in the verification run — mismatches vs its baseline are highlighted',
+                }}
+              />
+            </div>
+          )}
         </div>
       ))}
       {/* Reply to the thread: a wrong value in the proposal gets corrected

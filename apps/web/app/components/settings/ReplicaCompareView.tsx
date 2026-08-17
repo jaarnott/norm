@@ -1,21 +1,20 @@
 'use client';
 
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { type CSSProperties, type ReactNode } from 'react';
 
 /**
- * The dojo's replica view — three modes, all rendered as an actual INVOICE
- * (paper sheet, supplier header, line table, totals):
+ * The dojo's replica view, rendered as an actual INVOICE (paper sheet,
+ * supplier header, line table, totals): what our extraction says the
+ * document is, fully resolved.
  *
- * - Extracted (default): what our extraction says the document is, fully
- *   resolved.
- * - Loaded: the same render from Loaded's document.
- * - Diff: the extracted invoice with every disagreement annotated in place —
- *   red on the differing value, Loaded's value in small print beneath.
+ * Extracted-only since Aug 2026 — the replica is primary, so the Loaded and
+ * Diff modes (and their tab slider) are gone from the UI. InvoiceSheet still
+ * takes a mode because its render paths are shared, but this view never
+ * leaves 'extracted'.
  *
  * Data is the server-paired compare structure (`replica_compare`);
  * `replicaDoc` is the raw replica document, used to fill header fields for
- * runs stored before a field joined the compare payload. Read-only; the
- * bless button adjudicates "the replica is right and Loaded is wrong".
+ * runs stored before a field joined the compare payload. Read-only.
  */
 
 export interface CompareHeaderRow {
@@ -269,8 +268,6 @@ export default function ReplicaCompareView({
   replicaDoc,
   resolutionLog,
   warnings,
-  onBless,
-  blessed,
   onAnalyse,
   analysing,
 }: {
@@ -278,54 +275,23 @@ export default function ReplicaCompareView({
   replicaDoc?: Record<string, unknown> | null;
   resolutionLog?: string[] | null;
   warnings?: string[] | null;
-  onBless?: () => void;
-  blessed?: boolean;
   onAnalyse?: () => void;
   analysing?: boolean;
 }) {
-  const [mode, setMode] = useState<Mode>('extracted');
-
-  const totalDiffs =
-    compare.header.filter((h) => h.differs).length +
-    compare.lines.reduce(
-      (n, r) => n + r.diff_fields.length + (!r.replica || !r.loaded ? 1 : 0),
-      0,
-    );
-
+  // Extracted-only since Aug 2026: the replica is primary, so Loaded's own
+  // resolution (and the diff against it) is no longer shown here — the tab
+  // slider went with it. InvoiceSheet keeps its mode prop because the render
+  // paths are shared; this view simply never leaves 'extracted'.
   return (
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#f2f0ec', overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.5rem 0.7rem', background: '#faf9f7', borderBottom: '1px solid #eee', flexWrap: 'wrap' }}>
-        <span style={{ display: 'inline-flex', border: '1px solid #ccc', borderRadius: 6, overflow: 'hidden', fontSize: '0.7rem' }}>
-          {(
-            [
-              ['extracted', 'Extracted'],
-              ['loaded', 'Loaded'],
-              ['diff', `Diff${totalDiffs ? ` (${totalDiffs})` : ''}`],
-            ] as const
-          ).map(([m, label]) => (
-            <button key={m} type="button" onClick={() => setMode(m)}
-              style={{ padding: '3px 10px', border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: mode === m ? (m === 'diff' ? '#b78a2f' : '#3a3a3a') : '#fff', color: mode === m ? '#fff' : '#666', whiteSpace: 'nowrap' }}>
-              {label}
-            </button>
-          ))}
-        </span>
-        <span style={{ fontSize: '0.66rem', color: totalDiffs ? '#a02b2b' : '#2e7d4f' }}>
-          {totalDiffs ? `${totalDiffs} difference${totalDiffs === 1 ? '' : 's'}` : '✓ full resolution parity'}
-        </span>
+        <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#555' }}>Invoice — as extracted by Norm</span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {blessed && <span style={{ fontSize: '0.64rem', color: '#2e7d4f' }}>✓ adjudicated</span>}
           {onAnalyse && (
             <button type="button" onClick={onAnalyse} disabled={!!analysing}
               title="the sensei studies this invoice with full context and drafts a spec update (1–2 min) — the proposal appears above this view"
               style={{ fontSize: '0.64rem', padding: '2px 9px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: analysing ? 'default' : 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
               {analysing ? 'Sensei analysing…' : 'Ask the sensei'}
-            </button>
-          )}
-          {onBless && (
-            <button type="button" onClick={onBless}
-              title="Adjudicate: the replica is right and Loaded is wrong — later runs score against these values"
-              style={{ fontSize: '0.64rem', padding: '2px 9px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-              Bless replica
             </button>
           )}
         </span>
@@ -339,7 +305,7 @@ export default function ReplicaCompareView({
         </div>
       )}
 
-      <InvoiceSheet compare={compare} mode={mode} replicaDoc={replicaDoc} />
+      <InvoiceSheet compare={compare} mode="extracted" replicaDoc={replicaDoc} />
 
       {Array.isArray(resolutionLog) && resolutionLog.length > 0 && (
         <details style={{ padding: '0.3rem 0.7rem 0.6rem' }}>

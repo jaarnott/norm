@@ -72,7 +72,6 @@ _SNAPSHOT_HEADER_KEYS = (
     "supplier_name",
     "customer_purchase_order_number",
     "supplier_order_number",
-    "purchase_order_number",
     "subtotal_ex_tax",
     "discount_amount",
     "tax_amount",

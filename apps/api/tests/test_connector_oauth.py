@@ -274,12 +274,16 @@ class TestVenueScopedTokenSelection:
 class TestKeepAliveActuallyRedeems:
     """The keep-alive must perform a REAL redemption on every run.
 
-    LoadedHub's access and refresh tokens live ~14 days and expire TOGETHER, so
-    a lazy is-the-access-token-still-valid check redeems the refresh token at
-    the exact moment it dies. That was the Aug-2026 failure: the keep-alive
-    called get_valid_access_token (a no-op while the access token was valid),
-    production made ONE real token call per 14 days — always a 400 — and every
-    venue's connection collapsed on a 14-day cycle. force=True is the fix.
+    LoadedHub's access tokens live ~14 days but its refresh tokens live only
+    ~24 HOURS (proven Aug-2026: a fresh, never-revoked grant was "invalid or
+    expired" 26.4h after mint), so a lazy is-the-access-token-still-valid check
+    redeems the refresh token ~13 days after it died. That was the Aug-2026
+    failure: the keep-alive called get_valid_access_token (a no-op while the
+    access token was valid), production made ONE real token call per 14 days —
+    always a 400 — and every venue's connection collapsed on a 14-day cycle.
+    force=True is the fix; each real redemption makes Loaded mint a fresh
+    full-lifetime refresh token, so the chain survives while the scheduler
+    cadence beats the refresh lifetime.
     """
 
     @pytest.fixture(autouse=True)
@@ -380,6 +384,39 @@ class TestKeepAliveActuallyRedeems:
         assert summary["failed"] == []
         db_session.refresh(cfg)
         assert cfg.refresh_token == "new-refresh"
+
+    def test_refresh_merges_metadata_instead_of_replacing(self, db_session):
+        """A redemption must not wipe the stored venue binding.
+
+        LoadedHub's code-exchange response carries VenueId/VenueName (stored in
+        oauth_metadata and used by the connect card's "connected as X / wrong
+        company" display), but its refresh-grant response does NOT — it carries
+        only bookkeeping fields like ``.issued``/``.expires``. Replacing the
+        metadata wholesale on refresh would blank the venue binding on the
+        first keep-alive run after a connect.
+        """
+        from app.services.oauth_service import refresh_access_token
+
+        spec, cfg = self._setup(db_session)
+        cfg.oauth_metadata = {"venue_id": "company-123", "venue_name": "Venue A"}
+        db_session.flush()
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 1209600,
+            ".issued": "08/15/2026 01:00:00 +00:00",
+            ".expires": "08/29/2026 01:00:00 +00:00",
+        }
+        with patch("app.services.oauth_service.httpx.post", return_value=resp):
+            refresh_access_token(spec, db_session, venue_id=cfg.venue_id, force=True)
+
+        db_session.refresh(cfg)
+        assert cfg.oauth_metadata["venue_id"] == "company-123"  # preserved
+        assert cfg.oauth_metadata["venue_name"] == "Venue A"  # preserved
+        assert cfg.oauth_metadata[".issued"] == "08/15/2026 01:00:00 +00:00"  # updated
 
 
 class TestRetryOn401:
@@ -557,9 +594,10 @@ class TestKeepAliveRefresh:
     def test_live_token_is_still_force_redeemed(self, db_session):
         """A live access token must NOT skip the redemption.
 
-        The lazy path was the Aug-2026 outage: with Loaded's paired ~14-day
-        lifetimes, waiting for access-token expiry redeems the refresh token at
-        the moment it dies. Every keep-alive run redeems for real, forced.
+        The lazy path was the Aug-2026 outage: Loaded's refresh tokens live
+        ~24h while access tokens live ~14 days, so waiting for access-token
+        expiry redeems the refresh token ~13 days after it died. Every
+        keep-alive run redeems for real, forced.
         """
         from app.services.oauth_service import refresh_all_tokens
 

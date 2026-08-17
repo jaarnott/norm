@@ -14,6 +14,20 @@ export function clearToken(): void {
   localStorage.removeItem('norm_user');
 }
 
+/** A 401 means the session is gone — go to the login page.
+ *
+ * REDIRECT, never reload: reloading remounts the page, whose boot fetches
+ * (e.g. the pinned-apps nav's /api/apps) 401 again and reload forever — an
+ * incognito visit could never even reach the login form (16 Aug 2026).
+ * Already on /login (or during SSR) it does nothing, so the login page's own
+ * requests can never bounce it. */
+function redirectToLogin(): void {
+  clearToken();
+  if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    window.location.href = '/login';
+  }
+}
+
 export function getStoredUser(): { id: string; email: string; full_name: string; role: string; permissions?: string[]; org_role?: { name: string; display_name: string } | null } | null {
   if (typeof window === 'undefined') return null;
   const raw = localStorage.getItem('norm_user');
@@ -45,8 +59,7 @@ export async function apiStream(
   });
 
   if (res.status === 401) {
-    clearToken();
-    window.location.reload();
+    redirectToLogin();
     return;
   }
 
@@ -96,9 +109,13 @@ export async function apiStream(
     }
   }
 
-  // Stream ended without a complete/error event — connection was likely dropped
+  // Stream ended without a complete/error event — the socket was cut (e.g.
+  // Cloud Run's request timeout) rather than the turn actually failing. The
+  // backend worker is never cancelled: it keeps running and commits the answer
+  // moments later. Signal that distinctly (not as a hard error) so the caller
+  // can poll the thread for the result instead of showing a false failure.
   if (!receivedTerminal) {
-    onEvent({ type: 'error', message: 'Connection lost — the response may still be processing. Retrying…' });
+    onEvent({ type: 'stream_dropped', message: 'Connection lost — the response may still be processing.' });
   }
 }
 
@@ -115,8 +132,7 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
   const res = await fetch(`${API}${url}`, { ...init, headers });
 
   if (res.status === 401) {
-    clearToken();
-    window.location.reload();
+    redirectToLogin();
   }
 
   // A connector whose authorization has died surfaces the same way from every

@@ -186,6 +186,8 @@ def _ensure_config_tables() -> None:
                 "ALTER TABLE supplier_spec_samples "
                 "ADD COLUMN IF NOT EXISTS source_venue_id VARCHAR",
                 "ALTER TABLE supplier_spec_samples "
+                "ADD COLUMN IF NOT EXISTS source_company_id VARCHAR",
+                "ALTER TABLE supplier_spec_samples "
                 "ADD COLUMN IF NOT EXISTS source_invoice_id VARCHAR",
                 "ALTER TABLE supplier_spec_samples "
                 "ADD COLUMN IF NOT EXISTS analysis JSON",
@@ -254,6 +256,24 @@ def _ensure_org_subscriptions() -> None:
         log.exception("Failed to ensure org subscriptions")
     finally:
         db.close()
+
+
+@app.on_event("startup")
+def _start_sensei_worker() -> None:
+    # The durable sensei queue's worker: claims queued runs (executes them
+    # inline locally; dispatches the Cloud Run job in deployed envs) and
+    # requeues runs whose executor died. Not under pytest — tests drive
+    # worker_tick() directly and must not race a background thread.
+    import os as _os
+
+    if (
+        "PYTEST_CURRENT_TEST" in _os.environ
+        or _os.environ.get("SENSEI_WORKER") == "off"
+    ):
+        return
+    from app.services.sensei_runner import start_worker
+
+    start_worker()
 
 
 @app.on_event("startup")

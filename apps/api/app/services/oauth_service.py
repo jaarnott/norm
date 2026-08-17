@@ -81,7 +81,9 @@ def register_client(
         registration_url,
         json=body,
         headers={"Content-Type": "application/json", "Accept": "application/json"},
-        timeout=15.0,
+        # 30s, not 15: Loaded's token endpoint has slow evenings — 16 Aug 2026
+        # keep-alives lost two venues' redemptions to 15s read timeouts.
+        timeout=30.0,
     )
     if resp.status_code not in (200, 201):
         logger.error(
@@ -239,7 +241,9 @@ def exchange_code(
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
         },
-        timeout=15.0,
+        # 30s, not 15: Loaded's token endpoint has slow evenings — 16 Aug 2026
+        # keep-alives lost two venues' redemptions to 15s read timeouts.
+        timeout=30.0,
     )
 
     if resp.status_code != 200:
@@ -287,13 +291,14 @@ def refresh_access_token(
 
     ``force=True`` performs the redemption even while the stored access token is
     still valid. This is what the scheduled keep-alive uses, and it is the whole
-    point of the schedule: LoadedHub's access AND refresh tokens live ~14 days
-    and expire TOGETHER, so a lazy refresh that waits for access-token expiry is
-    structurally always too late — by then the refresh token is dead at the same
-    instant (Aug-2026 incident: every venue's connection died on a 14-day cycle,
-    with zero successful refresh redemptions in production history). Redeeming
-    early makes Loaded rotate the refresh token (their server issues a fresh one
-    on redemption), so the grant's age resets every run and never hits the cliff.
+    point of the schedule: LoadedHub's access tokens live ~14 days but the
+    REFRESH tokens for this client live only ~24 hours (proven Aug-2026: a
+    fresh, never-revoked grant was already "invalid or expired" 26.4h after
+    mint), so a lazy refresh that waits for access-token expiry is ~13 days too
+    late — and production history held zero successful redemptions ever. Every
+    successful redemption makes Loaded mint a brand-new full-lifetime refresh
+    token (their near-expiry branch always fires for short-lived grants), so the
+    chain stays alive as long as the redemption cadence beats the ~24h lifetime.
 
     Concurrency: providers such as LoadedHub *rotate* refresh tokens — each
     successful redemption returns a new refresh token and invalidates the
@@ -359,7 +364,9 @@ def refresh_access_token(
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
         },
-        timeout=15.0,
+        # 30s, not 15: Loaded's token endpoint has slow evenings — 16 Aug 2026
+        # keep-alives lost two venues' redemptions to 15s read timeouts.
+        timeout=30.0,
     )
 
     if resp.status_code != 200:
@@ -433,17 +440,18 @@ def refresh_all_tokens(
     """Redeem every OAuth connector's refresh token for fresh tokens. Summary out.
 
     This must perform a REAL redemption on every run — never a lazy
-    is-the-access-token-still-valid check. LoadedHub issues access and refresh
-    tokens that live ~14 days and expire TOGETHER, so any strategy that waits
-    for access-token expiry redeems the refresh token at the exact moment it
-    dies. That was the Aug-2026 failure mode: this function called
-    ``get_valid_access_token`` (a no-op while the access token was valid), so
-    production made one real token call per 14 days — always a 400 — and every
-    venue's connection collapsed on a 14-day cycle behind ``refreshed=N``
-    no-op summaries. Redeeming eagerly makes Loaded rotate the refresh token on
-    each run, so the grant's age resets every 6 hours and never reaches the
-    cliff. The "issued a rotated refresh token" INFO log firing on each run is
-    the operational proof of life.
+    is-the-access-token-still-valid check. LoadedHub's access tokens live ~14
+    days but its refresh tokens for this client live only ~24 HOURS, so any
+    strategy that waits for access-token expiry redeems the refresh token ~13
+    days after it died. That was the Aug-2026 failure mode: this function
+    called ``get_valid_access_token`` (a no-op while the access token was
+    valid), so production made one real token call per 14 days — always a 400 —
+    and every venue's connection collapsed on a 14-day cycle behind
+    ``refreshed=N`` no-op summaries. Each real redemption makes Loaded mint a
+    fresh full-lifetime refresh token, so the chain survives indefinitely as
+    long as the scheduler cadence stays comfortably under the ~24h refresh
+    lifetime. The "issued a rotated refresh token" INFO log firing on each run
+    is the operational proof of life.
 
     Per-connector failures are logged and collected rather than aborting the
     run, so one dead connector can't stop the others from being kept alive.
@@ -558,11 +566,18 @@ def _store_tokens(
     else:
         config_row.token_expires_at = None
 
-    # Store extra metadata (venue_id, venue_name, etc.)
+    # Store extra metadata (venue_id, venue_name, etc.). MERGE, don't replace:
+    # refresh-grant responses are thinner than the original code exchange —
+    # LoadedHub's refresh response has no VenueId/VenueName — and a replace
+    # would wipe the stored venue binding that the connect card's
+    # "connected as X / wrong company" display depends on (and Gmail/Outlook's
+    # stored "email") on the first keep-alive redemption after a connect.
     known_keys = {"access_token", "refresh_token", "expires_in", "token_type", "scope"}
     extra = {k: v for k, v in token_data.items() if k not in known_keys}
     if extra:
-        config_row.oauth_metadata = extra
+        merged = dict(config_row.oauth_metadata or {})
+        merged.update(extra)
+        config_row.oauth_metadata = merged
 
     # A fresh token means the connection is healthy again — clear any prior
     # reconnect flag so the UI stops nagging.

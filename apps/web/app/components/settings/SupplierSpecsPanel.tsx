@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import { type DojoDiff, type ExtractionDoc } from './DojoSampleView';
+import DojoSampleView, { type DojoDiff, type ExtractionDoc } from './DojoSampleView';
 import ReceiveInvoiceEditor from '../display/ReceiveInvoiceEditor';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
 import InvoicePdfPane from './InvoicePdfPane';
@@ -42,6 +42,10 @@ interface DojoSample {
   replica_warning_count?: number;
   source_venue_id?: string | null;
   analysis_status?: string | null;
+  analysis_phase?: string | null;
+  analysis_stale?: boolean;
+  analysis_attempts?: number;
+  analysis_error?: string | null;
   analysis_green?: boolean;
 }
 
@@ -62,11 +66,10 @@ interface DojoView {
   extraction: ExtractionDoc | null;
   diffs: DojoDiff[];
   // The replica: our extraction resolved into a full working document,
-  // scored against Loaded's own resolution (add-to-dojo samples only).
+  // scored against Loaded's own resolution (invoice-intake samples only).
   replica?: Record<string, unknown> | null;
   replicaDiffs?: DojoDiff[];
   replicaCompare?: ReplicaCompare | null;
-  hasExpectedReplica?: boolean;
 }
 interface DojoSummaryRow { spec_id: string; total: number; pass: number; fail: number; error: number; new: number }
 
@@ -164,7 +167,6 @@ export default function SupplierSpecsPanel() {
         replica: data.replica ?? null,
         replicaDiffs: data.replica_diffs ?? [],
         replicaCompare: data.replica_compare ?? null,
-        hasExpectedReplica: !!data.expected_replica,
       });
       await loadSamples(editing.id);
       loadSummary();
@@ -190,7 +192,6 @@ export default function SupplierSpecsPanel() {
         replica: data.replica ?? null,
         replicaDiffs: data.replica_diffs ?? [],
         replicaCompare: data.replica_compare ?? null,
-        hasExpectedReplica: !!data.expected_replica,
       });
       // A waiting proposal displays at the top of the invoice view — load it
       // with the sample; anything from another sample is stale.
@@ -201,21 +202,6 @@ export default function SupplierSpecsPanel() {
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load the last run');
-    }
-  };
-
-  const blessReplica = async (sampleId: string) => {
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/replica-expected`, { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
-      }
-      await viewSample(sampleId);
-      if (editing?.id) loadSamples(editing.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not bless the replica');
     }
   };
 
@@ -248,29 +234,23 @@ export default function SupplierSpecsPanel() {
     setAnalysing(sampleId);
     setError(null);
     const specId = editing.id;
-    // The server marks the sample 'running' immediately; refresh the row so
-    // the "analysing…" chip + the running-poll take over. The analysis takes
-    // 1–2 minutes — if THIS request's connection dies (mobile tab suspension,
-    // proxy timeout) the poll still flips the row to "proposal ready" when
-    // the server finishes, so the result is never lost.
-    setTimeout(() => {
-      loadSamples(specId);
-    }, 1500);
     try {
+      // Enqueues and returns in milliseconds; the worker executes and the
+      // running-poll flips the chip queued → analysing → proposal ready.
       const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/analyse`, {
         method: 'POST',
         ...(feedback?.trim() ? { body: JSON.stringify({ feedback: feedback.trim() }) } : {}),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
-      if (data.analysis) setAnalysisView({ sampleId, analysis: data.analysis });
+      // A queued/running entry is not a proposal — leave the view alone.
+      const st = data.analysis?.status;
+      if (data.analysis && (st === 'ready' || st === 'not_green' || st === 'applied')) {
+        setAnalysisView({ sampleId, analysis: data.analysis });
+      }
       await loadSamples(specId);
     } catch (e) {
-      setError(
-        e instanceof Error && !/fetch|network/i.test(e.message)
-          ? e.message
-          : 'Lost the connection to the sensei — it keeps working on the server; the sample row shows "sensei proposal" when it finishes.',
-      );
+      setError(e instanceof Error ? e.message : 'Could not queue the sensei — try again');
       loadSamples(specId);
     } finally {
       setAnalysing(null);
@@ -329,11 +309,12 @@ export default function SupplierSpecsPanel() {
     }
   };
 
-  // Poll while any analysis is running (Add-to-Dojo kicks them in the
-  // background) — the TestsPanel interval pattern.
+  // Poll while any analysis is queued or running (the sensei queue executes
+  // in the background) — the TestsPanel interval pattern. loadSamples is a
+  // cheap config-DB read, safe on an interval.
   useEffect(() => {
     if (!editing?.id) return;
-    if (!samples.some((s) => s.analysis_status === 'running')) return;
+    if (!samples.some((s) => s.analysis_status === 'running' || s.analysis_status === 'queued')) return;
     const specId = editing.id;
     const t = setInterval(() => { loadSamples(specId); }, 5000);
     return () => clearInterval(t);
@@ -497,7 +478,7 @@ export default function SupplierSpecsPanel() {
             </div>
             {samples.length === 0 && (
               <div style={{ fontSize: '0.75rem', color: '#aaa', padding: '6px 0' }}>
-                No sample invoices yet — add one with <strong>Add to dojo</strong> on an invoice card.
+                No sample invoices yet — file one with <strong>Can&rsquo;t receive</strong> on an invoice card.
               </div>
             )}
             {samples.map((s) => (
@@ -509,8 +490,20 @@ export default function SupplierSpecsPanel() {
                     ⚠ {s.replica_warning_count}
                   </span>
                 )}
-                {s.analysis_status === 'running' && (
-                  <span style={{ fontSize: '0.62rem', color: '#1d4ed8', background: '#dbeafe', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>sensei analysing…</span>
+                {s.analysis_status === 'queued' && (
+                  <span title="queued — the sensei worker picks it up within seconds"
+                    style={{ fontSize: '0.62rem', color: '#4c3d8f', background: '#e8e6f5', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>sensei queued</span>
+                )}
+                {s.analysis_status === 'running' && !s.analysis_stale && (
+                  <span style={{ fontSize: '0.62rem', color: '#1d4ed8', background: '#dbeafe', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>
+                    sensei analysing{s.analysis_phase ? ` — ${s.analysis_phase}` : '…'}
+                  </span>
+                )}
+                {s.analysis_status === 'running' && s.analysis_stale && (
+                  <span title="the executor died mid-run — the worker requeues and restarts it automatically"
+                    style={{ fontSize: '0.62rem', color: '#8a6d3b', background: '#fdf6e7', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>
+                    sensei restarting (attempt {(s.analysis_attempts ?? 0) + 1})…
+                  </span>
                 )}
                 {s.analysis_status === 'ready' && (
                   <button type="button" onClick={() => viewSample(s.id)}
@@ -527,8 +520,10 @@ export default function SupplierSpecsPanel() {
                   </button>
                 )}
                 {s.analysis_status === 'failed' && (
-                  <span title="the sensei run errored — ask it again from the sample view"
-                    style={{ fontSize: '0.62rem', color: '#991b1b', background: '#fee2e2', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>sensei failed</span>
+                  <span title={s.analysis_error || 'the sensei run errored — ask it again from the sample view'}
+                    style={{ fontSize: '0.62rem', color: '#991b1b', background: '#fee2e2', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap', maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    sensei failed{s.analysis_error ? ` — ${s.analysis_error}` : ''}
+                  </span>
                 )}
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
                 {s.last_run_at && <span style={{ fontSize: '0.65rem', color: '#aaa', whiteSpace: 'nowrap' }}>{new Date(s.last_run_at).toLocaleString()}</span>}
@@ -577,11 +572,11 @@ export default function SupplierSpecsPanel() {
                 />
               </div>
             )}
-                {/* The replica IS the view — Extracted | Loaded | Diff inside
-                    ReplicaCompareView. A sample with no replica (uploaded by
-                    hand, so no source venue/invoice to resolve against) gets
-                    an explanation, not the retired extraction editor —
-                    baselining still runs via the sensei. */}
+                {/* The replica IS the invoice view (extracted-only since Aug
+                    2026). A sample with no replica (uploaded by hand, so no
+                    source venue/invoice to resolve against) gets an
+                    explanation instead. The stored BASELINE lives in its own
+                    section below, independent of the replica. */}
                 {!dojoView.replica && (
                   <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#faf9f7', padding: '1rem', fontSize: '0.74rem', color: '#6b655c' }}>
                     {samples.find((x) => x.id === dojoView.sampleId)?.source_venue_id ? (
@@ -596,9 +591,9 @@ export default function SupplierSpecsPanel() {
                         so there is no source venue or Loaded invoice to resolve
                         against. Extraction pass/fail still runs against its
                         expected values (see the status badge; baseline via
-                        the sensei below). To get the full invoice view, add this
+                        the sensei below). To get the full invoice view, file this
                         supplier&rsquo;s next real invoice via
-                        <strong> Add to dojo</strong> from the invoice card.
+                        <strong> Can&rsquo;t receive</strong> from the invoice card.
                       </>
                     )}
                     <div style={{ marginTop: 8 }}>
@@ -617,14 +612,18 @@ export default function SupplierSpecsPanel() {
                         replicaDoc={dojoView.replica as Record<string, unknown>}
                         resolutionLog={(dojoView.replica as Record<string, unknown>).resolution_log as string[] | undefined}
                         warnings={(dojoView.replica as Record<string, unknown>).warnings as string[] | undefined}
-                        onBless={() => blessReplica(dojoView.sampleId)}
-                        blessed={dojoView.hasExpectedReplica}
                         onAnalyse={() => runAnalysis(dojoView.sampleId)}
                         analysing={analysing === dojoView.sampleId}
                       />
                     ) : (
                       <div style={{ fontSize: '0.72rem', color: '#8a8a8a' }}>
-                        No comparison stored for this run — re-run the sample.
+                        {(dojoView.replica as { error?: string })?.error ? (
+                          <span style={{ color: '#a02b2b' }}>
+                            The last run couldn’t build the invoice view: {(dojoView.replica as { error?: string }).error} — run the sample to try a fresh build.
+                          </span>
+                        ) : (
+                          <>No comparison stored for this run — re-run the sample.</>
+                        )}
                       </div>
                     )}
                     {/* The replica rendered as a real Receive Invoice card —
@@ -647,6 +646,33 @@ export default function SupplierSpecsPanel() {
                     </details>
                   </div>
                 )}
+                {/* The stored BASELINE — what the sensei tests against, and
+                    the only values a regression run can pass or fail on.
+                    Visible for every sample, proposal or not; editing here
+                    makes the baseline admin-owned, which the sensei never
+                    overwrites. Open by default when a baseline exists. */}
+                <details open={!!dojoView.expected} style={{ marginTop: 10 }}>
+                  <summary style={{ fontSize: '0.72rem', color: '#666', cursor: 'pointer' }}>
+                    Baseline values (expected extraction)
+                  </summary>
+                  <div style={{ marginTop: 8 }}>
+                    <DojoSampleView
+                      key={`base-${dojoView.sampleId}`}
+                      sampleId={dojoView.sampleId}
+                      expected={dojoView.expected}
+                      extraction={dojoView.extraction}
+                      diffs={dojoView.diffs}
+                      status={dojoView.status}
+                      onSaved={(res) => {
+                        setDojoView((v) => v && v.sampleId === dojoView.sampleId
+                          ? { ...v, status: res.status, diffs: res.diffs, expected: res.expected, extraction: res.extraction }
+                          : v);
+                        if (editing?.id) loadSamples(editing.id);
+                        loadSummary();
+                      }}
+                    />
+                  </div>
+                </details>
                 </div>
               </div>
             )}

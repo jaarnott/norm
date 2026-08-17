@@ -1,5 +1,12 @@
 """The Receive Invoice editor's server surface.
 
+Every endpoint here is a plain ``def``, NOT ``async def`` — deliberately.
+These handlers do sync-blocking work (LoadedHub HTTP calls, SQLAlchemy),
+and an ``async def`` runs that work ON the event loop, freezing every other
+request while Loaded is slow (this froze the whole local site during dojo
+polling, 16 Aug 2026 — same rule as routers/supplier_spec_dojo.py). Plain
+``def`` handlers run in FastAPI's threadpool, where blocking is harmless.
+
 The review itself lives in ``services/invoice_review`` (the replica as the
 single suggestion engine); this router wires it to the web editor:
 
@@ -29,7 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user, require_permission
+from app.auth.dependencies import get_current_user
 from app.db.engine import get_config_db, get_db
 from app.db.models import User
 
@@ -296,7 +303,7 @@ class AcceptFixRequest(BaseModel):
 
 
 @router.post("/invoice-fixes/accept")
-async def accept_invoice_fix(
+def accept_invoice_fix(
     body: AcceptFixRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -481,7 +488,7 @@ _UNIT_TYPE_INDEX = {"Weight": 0, "Volume": 1, "Count": 2}
 
 
 @router.post("/invoice-fixes/create-item")
-async def create_stock_item(
+def create_stock_item(
     body: CreateItemRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -579,7 +586,7 @@ class CreateUnitRequest(BaseModel):
 
 
 @router.post("/invoice-fixes/create-unit")
-async def create_stock_unit(
+def create_stock_unit(
     body: CreateUnitRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -613,7 +620,7 @@ class CreateBrandRequest(BaseModel):
 
 
 @router.post("/invoice-fixes/create-brand")
-async def create_stock_brand(
+def create_stock_brand(
     body: CreateBrandRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -670,7 +677,7 @@ class CreateSupplierRequest(BaseModel):
 
 
 @router.post("/invoice-fixes/create-supplier")
-async def create_supplier(
+def create_supplier(
     body: CreateSupplierRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -728,7 +735,7 @@ async def create_supplier(
 
 
 @router.get("/invoice-fixes/outstanding")
-async def outstanding_invoices(
+def outstanding_invoices(
     venue_id: str,
     response: Response,
     db: Session = Depends(get_db),
@@ -760,7 +767,7 @@ async def outstanding_invoices(
 
 
 @router.get("/invoice-fixes/units")
-async def list_units(
+def list_units(
     venue_id: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -784,7 +791,7 @@ async def list_units(
 
 
 @router.get("/invoice-fixes/stock-groups")
-async def list_stock_groups(
+def list_stock_groups(
     venue_id: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -796,7 +803,7 @@ async def list_stock_groups(
 
 
 @router.get("/invoice-fixes/suppliers")
-async def list_suppliers(
+def list_suppliers(
     venue_id: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -830,7 +837,7 @@ async def list_suppliers(
 
 
 @router.get("/invoice-fixes/stock-items")
-async def list_stock_items(
+def list_stock_items(
     venue_id: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -881,7 +888,7 @@ async def list_stock_items(
 
 
 @router.get("/invoice-fixes/file")
-async def invoice_file(
+def invoice_file(
     venue_id: str,
     invoice_id: str | None = None,
     file_id: str | None = None,
@@ -922,7 +929,7 @@ async def invoice_file(
 
 
 @router.get("/invoice-fixes/purchase-orders")
-async def list_purchase_orders(
+def list_purchase_orders(
     venue_id: str,
     response: Response,
     db: Session = Depends(get_db),
@@ -960,7 +967,7 @@ async def list_purchase_orders(
 
 
 @router.post("/invoice-fixes/receive")
-async def receive_invoice(
+def receive_invoice(
     body: ReceiveRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -1083,7 +1090,7 @@ def _attach_po_reference(data: dict, lh) -> None:
 
 
 @router.post("/invoice-fixes/draft")
-async def create_receive_draft(
+def create_receive_draft(
     body: DraftRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -1178,7 +1185,7 @@ async def create_receive_draft(
 
 
 @router.post("/invoice-fixes/reset-validation")
-async def reset_validation(
+def reset_validation(
     body: DraftRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -1270,7 +1277,7 @@ class ReviewRequest(BaseModel):
 
 
 @router.post("/invoice-fixes/review")
-async def review_receive_draft(
+def review_receive_draft(
     body: ReviewRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -1330,20 +1337,16 @@ async def review_receive_draft(
     return _doc_to_dict(doc)
 
 
-class AddToDojoRequest(BaseModel):
-    venue_id: str
-    invoice_id: str
-
-
 def _stage_and_analyse(
-    db: Session, venue_id: str, invoice_id: str, *, draft: bool, analyse: bool = True
+    db: Session, venue_id: str, invoice_id: str, *, draft: bool
 ) -> dict:
-    """File an invoice's PDF as a dojo sample and (optionally) kick the sensei.
+    """File an invoice's PDF as a dojo sample and kick the sensei.
 
-    Shared by Add-to-dojo (admin, analysed) and Cannot-receive (any user, not
-    analysed — an unattended Opus pass per press is real money).
+    Cannot-receive is the ONE intake into the dojo — admin and non-admin
+    alike (the separate admin-only add-to-dojo button was removed Aug 2026;
+    two intakes for the same act was pure surface area).
 
-    Both file a REAL sample, not a draft. ``draft`` is the Dojo page's
+    This files a REAL sample, not a draft. ``draft`` is the Dojo page's
     "somebody expanded this row" state, which is invisible in the UI by
     design: drafts are excluded from "awaiting review"
     (``dojo/overview``) and never show the "in dojo" chip. Filing a human's
@@ -1358,14 +1361,14 @@ def _stage_and_analyse(
 
     staged = spec_dojo.stage_invoice_sample(db, venue_id, invoice_id, draft=draft)
     sample_id = staged["sample_id"]
-    if not analyse:
-        return staged
 
-    # Out of process where a job is configured, in a thread otherwise. This
-    # used to be a bare daemon thread, which died with its container and left
-    # the sample reading "sensei analysing…" until a staleness rule noticed.
+    # Queued, never executed here: the sensei worker (inline thread locally,
+    # Cloud Run job in deployed envs) picks it up within seconds, and a run
+    # whose executor dies is requeued automatically — this used to be a bare
+    # daemon thread that died with its container and left the sample reading
+    # "sensei analysing…" until a staleness rule noticed.
     where = sensei_runner.start_analysis(sample_id)
-    logger.info("dojo analysis for %s started (%s)", sample_id, where)
+    logger.info("dojo analysis for %s: %s", sample_id, where)
     return staged
 
 
@@ -1376,14 +1379,14 @@ class CannotReceiveRequest(BaseModel):
 
 
 @router.post("/invoice-fixes/cannot-receive")
-async def cannot_receive(
+def cannot_receive(
     body: CannotReceiveRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """ "Norm can't do this one" — file it for training and record the verdict.
 
-    Deliberately NOT admin-only (unlike add-to-dojo): the person who hits the
+    Deliberately NOT admin-only — the ONE dojo intake: the person who hits the
     problem is the one who should flag it, which is also what gives the
     autopilot report its coverage. The sample joins the dojo proper so it is
     visible in "awaiting review" — a human verdict that must not be silently
@@ -1408,9 +1411,7 @@ async def cannot_receive(
         # cheerful 200 and change nothing, which is indistinguishable from a
         # broken button. The analysis runs in the sensei job, so this costs a
         # container rather than a request.
-        staged = _stage_and_analyse(
-            db, body.venue_id, body.invoice_id, draft=False, analyse=True
-        )
+        staged = _stage_and_analyse(db, body.venue_id, body.invoice_id, draft=False)
     except RuntimeError as exc:
         # No PDF attached — it cannot be staged, but the human's verdict is
         # the measurement and losing it would defeat the feature.
@@ -1449,27 +1450,7 @@ async def cannot_receive(
     }
 
 
-@router.post("/invoice-fixes/add-to-dojo")
-async def add_to_dojo(
-    body: AddToDojoRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_permission("admin:system")),
-):
-    """One click on the invoice card: file this invoice's PDF as a dojo
-    sample under its supplier's spec (created empty when the supplier has
-    none) and kick the SENSEI in the background — the training
-    loop's intake. Returns immediately; the analysis lands on the sample
-    (Settings → Supplier Specs) in a minute or two.
-    """
-    try:
-        staged = _stage_and_analyse(db, body.venue_id, body.invoice_id, draft=False)
-    except RuntimeError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return {
-        "sample_id": staged["sample_id"],
-        "spec_id": staged["spec_id"],
-        "spec_name": staged["spec_name"],
-        "created_spec": staged["created_spec"],
-        "already_in_dojo": staged["already_in_dojo"],
-        "analysis": "running",
-    }
+# The admin-only /invoice-fixes/add-to-dojo endpoint was removed Aug 2026:
+# cannot-receive (above) is the one intake into the dojo for every user, and
+# it files AND analyses on each press. Two buttons doing the same filing with
+# different auth was surface area with no behavior of its own.

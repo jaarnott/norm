@@ -75,14 +75,17 @@ resource "google_cloud_scheduler_job" "run_due_tasks" {
 }
 
 # ── OAuth token keep-alive ──────────────────────────────────────
-# LoadedHub rotates refresh tokens, and a rotation is the only thing that resets
-# the refresh token's lifetime. Lazy refresh only happens when a task actually
-# calls the connector, so an idle connector's refresh token silently expires and
-# locks us out (requiring a manual reconnect). This keeps tokens alive on a
-# cadence, independent of whether any task ran.
+# Every run performs a REAL refresh-token redemption for every connector row
+# (force=True in refresh_all_tokens), and each successful redemption makes
+# LoadedHub mint a fresh full-lifetime refresh token. That rotation is the only
+# thing that resets the refresh token's lifetime — and LoadedHub's refresh
+# tokens for our client live only ~24 HOURS (Aug-2026 incident: a fresh grant
+# was dead 26.4h after mint; access tokens live ~14 days, which hid this).
 #
-# Every 6h rather than every minute: the endpoint is a no-op for tokens that are
-# still valid, and the short access-token lifetime sets the real rotation cadence.
+# So this cadence IS the connection's lifeline: it must stay comfortably under
+# the ~24h refresh lifetime or every venue needs a manual reconnect. 15 minutes
+# gives ~96x margin and makes a dead grant visible in the logs within minutes
+# of a reconnect rather than hours.
 # ── Config drift check ──────────────────────────────────────────
 # Connector specs, agent prompts and model selections live in the database and
 # are edited through the Settings UI. CI cannot see any of it (it runs against a
@@ -126,7 +129,7 @@ resource "google_cloud_scheduler_job" "refresh_tokens" {
   name      = "norm-refresh-tokens-${var.environment}"
   project   = var.project_id
   region    = var.region
-  schedule  = "0 */6 * * *" # every 6 hours
+  schedule  = "*/15 * * * *" # every 15 minutes — must beat the ~24h refresh lifetime
   time_zone = "Etc/UTC"
 
   attempt_deadline = "180s"

@@ -63,17 +63,23 @@ PDF_SCHEMA = {
     ),
     "invoice_number": "string or null",
     "invoice_date": "string or null",
-    "purchase_order_number": "string or null",
-    # Buyer vs supplier order references — previously a second header-only
-    # extraction (PO_EXTRACT_SCHEMA). Loaded's own purchaseOrderNumber field
-    # is often the SUPPLIER's order number (e.g. Bidfood "O/N"), not the
-    # buyer PO that matches a Loaded purchase order.
+    # Buyer vs supplier order references. Loaded's own purchaseOrderNumber
+    # field is often the SUPPLIER's order number (e.g. Bidfood "O/N"), not
+    # the buyer PO that matches a Loaded purchase order — hence two explicit
+    # fields. (A third legacy catch-all `purchase_order_number` was retired
+    # 17 Aug 2026: undocumented, redundant with customer_…, and its null
+    # made passing extractions read as failures in the dojo.)
     "customer_purchase_order_number": (
         "string or null — the BUYER's / customer's purchase order number "
         "(the number the buyer raised in their own system), labelled "
         "'Customer Order No', 'Cust Order No', 'Your Order', 'Your Ref', "
         "'PO Number', 'Order No'"
     ),
+    # DECOY, kept deliberately: nothing downstream acts on this field. Its
+    # job is to give the supplier's own number an explicit home so it never
+    # gets misfiled into customer_purchase_order_number (the wrong-PO-link
+    # failure class the split exists to prevent). It also rides along in the
+    # working document's extracted_snapshot for human reference.
     "supplier_order_number": (
         "string or null — the SUPPLIER's own order/reference number "
         "(labelled 'O/N', 'Our Order', 'Sales Order', etc.), NOT the "

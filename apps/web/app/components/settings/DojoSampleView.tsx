@@ -28,7 +28,7 @@ export interface ExtractionDoc {
   supplier_name?: string | null;
   invoice_number?: string | null;
   invoice_date?: string | null;
-  purchase_order_number?: string | null;
+  customer_purchase_order_number?: string | null;
   lines?: ExtractionLine[];
   subtotal_ex_tax?: number | string | null;
   discount_amount?: number | string | null;
@@ -50,7 +50,9 @@ const HEADER_FIELDS: { key: keyof ExtractionDoc; label: string }[] = [
   { key: 'supplier_name', label: 'Supplier (as printed)' },
   { key: 'invoice_number', label: 'Invoice number' },
   { key: 'invoice_date', label: 'Invoice date' },
-  { key: 'purchase_order_number', label: 'PO number' },
+  // The buyer's PO — the only order field the pipeline resolves. The
+  // legacy catch-all purchase_order_number was retired 17 Aug 2026.
+  { key: 'customer_purchase_order_number', label: 'PO number' },
   { key: 'subtotal_ex_tax', label: 'Subtotal ex tax' },
   { key: 'discount_amount', label: 'Discount' },
   { key: 'tax_amount', label: 'Tax' },
@@ -83,6 +85,7 @@ export default function DojoSampleView({
   readOnly,
   current,
   currentDiffs,
+  stored,
   labels,
 }: {
   sampleId: string;
@@ -99,9 +102,14 @@ export default function DojoSampleView({
   // undefined hides the toggle entirely; null shows it disabled (no run yet).
   current?: ExtractionDoc | null;
   currentDiffs?: Diff[];
-  labels?: { expected?: string; extracted?: string; expectedHint?: string; extractedHint?: string; current?: string; currentHint?: string };
+  // Optional fourth value set: the baseline STORED on the sample today —
+  // in a proposal review this is what regression currently tests against,
+  // shown read-only beside the analysis's proposed values. undefined hides
+  // the toggle; null shows it disabled (no baseline stored yet).
+  stored?: ExtractionDoc | null;
+  labels?: { expected?: string; extracted?: string; expectedHint?: string; extractedHint?: string; current?: string; currentHint?: string; stored?: string; storedHint?: string };
 }) {
-  const [mode, setMode] = useState<'extracted' | 'expected' | 'current'>(extraction ? 'extracted' : 'expected');
+  const [mode, setMode] = useState<'extracted' | 'expected' | 'current' | 'stored'>(extraction ? 'extracted' : 'expected');
   const [draft, setDraft] = useState<ExtractionDoc | null>(() => deepCopy(expected));
   const [dirty, setDirty] = useState(false);
   // Re-seed when the parent hands over a DIFFERENT value set — a corrected
@@ -117,8 +125,9 @@ export default function DojoSampleView({
 
   // Mismatch lookup from the server's stored diffs: header by field name,
   // lines by (1-based line, field). The current-prompt view highlights its
-  // OWN diffs (current extraction vs the expected values).
-  const activeDiffs = mode === 'current' ? currentDiffs || [] : diffs;
+  // OWN diffs (current extraction vs the expected values); the stored
+  // baseline is the reference set itself, so it carries no highlighting.
+  const activeDiffs = mode === 'current' ? currentDiffs || [] : mode === 'stored' ? [] : diffs;
   const diffMap = useMemo(() => {
     const header = new Map<string, Diff>();
     const line = new Map<string, Diff>();
@@ -158,7 +167,11 @@ export default function DojoSampleView({
     }
   };
 
-  const doc = mode === 'expected' ? draft : mode === 'current' ? (current ?? null) : extraction;
+  const doc =
+    mode === 'expected' ? draft
+    : mode === 'current' ? (current ?? null)
+    : mode === 'stored' ? (stored ?? null)
+    : extraction;
   const editable = mode === 'expected' && !readOnly;
 
   const numOrNull = (v: string): number | string | null => {
@@ -171,6 +184,11 @@ export default function DojoSampleView({
     d ? { background: '#fdf6e7', border: '1px solid #e0b95d', borderRadius: 4 } : {};
 
   const statusChip = (() => {
+    // The stored baseline is the reference set, not a verdict — its chip
+    // says what it is rather than claiming any pass/fail.
+    if (mode === 'stored') {
+      return <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: '#e8e6f5', color: '#4c3d8f' }}>STORED BASELINE — what regression tests against today</span>;
+    }
     // The current-prompt view carries its own verdict — its diffs against the
     // expected values — so the chip must not claim the verification result.
     if (mode === 'current') {
@@ -199,18 +217,26 @@ export default function DojoSampleView({
   return (
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', padding: '12px 14px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-        {/* The toggle: which value set the table below shows. Current-prompt
-            sits FIRST (before → after reads left to right). */}
+        {/* The toggle: which value set the table below shows. Stored baseline
+            sits FIRST, then current-prompt (before → after reads left to
+            right). */}
         <div style={{ display: 'inline-flex', border: '1px solid #d8d4cc', borderRadius: 6, overflow: 'hidden' }}>
+          {stored !== undefined && (
+            <button type="button" onClick={() => setMode('stored')} disabled={!stored}
+              title={stored ? undefined : 'no baseline stored on this sample yet'}
+              style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', cursor: stored ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'stored' ? '#4c3d8f' : '#fff', color: mode === 'stored' ? '#fff' : stored ? '#666' : '#bbb', fontWeight: 600 }}>
+              {labels?.stored ?? 'Current expected values'}
+            </button>
+          )}
           {current !== undefined && (
             <button type="button" onClick={() => setMode('current')} disabled={!current}
               title={current ? undefined : 'no current-prompt run stored yet — press Run on the sample'}
-              style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', cursor: current ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'current' ? '#8a6d3b' : '#fff', color: mode === 'current' ? '#fff' : current ? '#666' : '#bbb', fontWeight: 600 }}>
+              style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', ...(stored !== undefined ? { borderLeft: '1px solid #d8d4cc' } : {}), cursor: current ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'current' ? '#8a6d3b' : '#fff', color: mode === 'current' ? '#fff' : current ? '#666' : '#bbb', fontWeight: 600 }}>
               {labels?.current ?? 'Current prompt'}
             </button>
           )}
           <button type="button" onClick={() => setMode('expected')}
-            style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', ...(current !== undefined ? { borderLeft: '1px solid #d8d4cc' } : {}), cursor: 'pointer', fontFamily: 'inherit', background: mode === 'expected' ? '#2e7d4f' : '#fff', color: mode === 'expected' ? '#fff' : '#666', fontWeight: 600 }}>
+            style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', ...(current !== undefined || stored !== undefined ? { borderLeft: '1px solid #d8d4cc' } : {}), cursor: 'pointer', fontFamily: 'inherit', background: mode === 'expected' ? '#2e7d4f' : '#fff', color: mode === 'expected' ? '#fff' : '#666', fontWeight: 600 }}>
             {labels?.expected ?? (readOnly ? 'Expected' : 'Expected (editable)')}
           </button>
           <button type="button" onClick={() => setMode('extracted')} disabled={!extraction}
@@ -233,6 +259,11 @@ export default function DojoSampleView({
         {mode === 'current' && (
           <span style={{ fontSize: '0.64rem', color: '#667' }}>
             {labels?.currentHint ?? 'what the CURRENT prompts pull from this document — mismatches vs the expected values are highlighted'}
+          </span>
+        )}
+        {mode === 'stored' && (
+          <span style={{ fontSize: '0.64rem', color: '#667' }}>
+            {labels?.storedHint ?? 'the baseline stored on the sample today — what regression currently tests against'}
           </span>
         )}
       </div>

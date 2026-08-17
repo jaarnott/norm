@@ -15,7 +15,7 @@ def _extraction(**over):
         "document_type": "invoice",
         "invoice_number": "INV-1",
         "invoice_date": "2026-08-05",
-        "purchase_order_number": "1520500",
+        "customer_purchase_order_number": "1520500",
         "subtotal_ex_tax": 100.0,
         "tax_amount": 15.0,
         "total_incl_tax": 115.0,
@@ -451,7 +451,7 @@ class TestCandidateRun:
         db_session.refresh(spec_a)
         assert spec_a.instructions == "notes"
 
-    def test_main_prompt_runs_all_samples(self, db_session, monkeypatch):
+    def test_main_prompt_runs_all_baselined_samples(self, db_session, monkeypatch):
         main = SupplierInvoiceSpec(name="Main prompt", aliases=[], instructions="m")
         spec_a = _make_spec(db_session, "Cand C")
         spec_b = _make_spec(db_session, "Cand D")
@@ -459,10 +459,16 @@ class TestCandidateRun:
         db_session.add_all(
             [
                 SupplierSpecSample(
-                    spec_id=spec_a.id, label="a.pdf", pdf_bytes=b"%PDF-a"
+                    spec_id=spec_a.id,
+                    label="a.pdf",
+                    pdf_bytes=b"%PDF-a",
+                    expected=_extraction(),
                 ),
                 SupplierSpecSample(
-                    spec_id=spec_b.id, label="b.pdf", pdf_bytes=b"%PDF-b"
+                    spec_id=spec_b.id,
+                    label="b.pdf",
+                    pdf_bytes=b"%PDF-b",
+                    expected=_extraction(),
                 ),
             ]
         )
@@ -476,7 +482,43 @@ class TestCandidateRun:
         out = spec_dojo.candidate_run(db_session, db_session, main, "NEW MAIN")
         assert sorted(r[0] for r in ran) == ["Cand C", "Cand D"]
         assert all(r[1] == "NEW MAIN" for r in ran)
-        assert out["new"] == 2  # no baselines
+        assert out["passed"] == 2
+
+    def test_samples_without_a_baseline_never_run(self, db_session, monkeypatch):
+        """The sensei only tests against baselines. A no-baseline sample
+        (including the Dojo page's hidden drafts) can neither pass nor fail,
+        so re-extracting it spends a full extraction to report 'new' — and in
+        the proposal card those rows read as regression coverage that wasn't
+        there (Bidfood, Aug 2026: 4 of 6 sibling rows were no-baseline)."""
+        spec = _make_spec(db_session, "Cand E")
+        with_base = SupplierSpecSample(
+            spec_id=spec.id,
+            label="base.pdf",
+            pdf_bytes=b"%PDF-1",
+            expected=_extraction(),
+        )
+        no_base = SupplierSpecSample(
+            spec_id=spec.id, label="loose.pdf", pdf_bytes=b"%PDF-2"
+        )
+        draft = SupplierSpecSample(
+            spec_id=spec.id, label="draft.pdf", pdf_bytes=b"%PDF-3", draft=True
+        )
+        db_session.add_all([with_base, no_base, draft])
+        db_session.flush()
+
+        ran = []
+
+        def fake_run(
+            db, cdb, spec, pdf, ctype="application/pdf", override_instructions=None
+        ):
+            ran.append(pdf)
+            return _extraction()
+
+        monkeypatch.setattr(spec_dojo, "run_extraction", fake_run)
+        out = spec_dojo.candidate_run(db_session, db_session, spec, "CANDIDATE")
+        assert ran == [b"%PDF-1"]  # only the baselined sample was extracted
+        assert [s["label"] for s in out["samples"]] == ["base.pdf"]
+        assert out["new"] == 0
 
 
 class TestAnalyseSample:
@@ -501,10 +543,10 @@ class TestAnalyseSample:
         }
 
     def test_first_run_via_analyse_carries_replica_keys(self, db_session, monkeypatch):
-        # Add-to-dojo kicks analyse in the background, making its inline
+        # The cannot-receive intake kicks analyse in the background, making its inline
         # extraction the sample's FIRST stored run — without the replica keys
         # the panel renders "no invoice view" for a perfectly good
-        # add-to-dojo sample (774238028/INV-958, 09 Aug 2026).
+        # cannot-receive sample (774238028/INV-958, 09 Aug 2026).
         spec = _make_spec(db_session, "First Run Foods")
         s = SupplierSpecSample(
             spec_id=spec.id,
@@ -903,7 +945,14 @@ class TestApplyAnalysis:
         assert res.status_code == 400
 
 
-class TestAddToDojo:
+class TestCannotReceiveIntake:
+    """Cannot-receive is the ONE intake into the dojo (the admin-only
+    add-to-dojo button and endpoint were removed Aug 2026). These pin the
+    REAL staging path behind it — spec creation, source refs, dedupe,
+    draft promotion — which test_autopilot_report (which mocks staging)
+    deliberately does not cover.
+    """
+
     def _fake_loaded(self, monkeypatch):
         # Patched at the SOURCE module: the staging helper (and the overview
         # endpoint) import LoadedInvoiceClient inside the call.
@@ -927,13 +976,16 @@ class TestAddToDojo:
                 return base64.b64encode(b"%PDF-tamar").decode(), "application/pdf"
 
         monkeypatch.setattr(RI, "LoadedInvoiceClient", FakeLoadedClient)
+        # The verdict recorder is test_autopilot_report's subject, not ours —
+        # and it opens its own session, which can't see this test's rows.
+        monkeypatch.setattr(
+            "app.routers.invoice_fixes.record_receive_outcome", lambda *a, **k: None
+        )
         return FakeLoadedClient
 
     def test_creates_spec_and_sample_with_source_refs(
-        self, client, admin_headers, db_session, monkeypatch
+        self, client, manager_headers, db_session, monkeypatch
     ):
-        import threading as _threading
-
         self._fake_loaded(monkeypatch)
         # the request handler opens its own RW config session — point the
         # factory at the shared test session (and don't let it be closed)
@@ -942,28 +994,27 @@ class TestAddToDojo:
         monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
         monkeypatch.setattr(db_session, "close", lambda: None)
 
+        # The press must hand the sample to the sensei QUEUE (the worker
+        # executes it; nothing runs in this request).
         started = []
+        monkeypatch.setattr(
+            "app.services.sensei_runner.start_analysis",
+            lambda sid, fb=None: started.append(sid) or "queued",
+        )
 
-        class FakeThread:
-            def __init__(self, *a, **k):
-                started.append(k.get("name"))
-
-            def start(self):
-                pass
-
-        monkeypatch.setattr(_threading, "Thread", FakeThread)
-
+        # A MANAGER, not an admin — filing is deliberately open to whoever
+        # hits the problem.
         res = client.post(
-            "/api/invoice-fixes/add-to-dojo",
-            headers=admin_headers,
+            "/api/invoice-fixes/cannot-receive",
+            headers=manager_headers,
             json={"venue_id": "v1", "invoice_id": "inv-42"},
         )
         assert res.status_code == 200, res.text
         body = res.json()
-        assert body["created_spec"] is True
+        assert body["staged"] is True
         assert body["spec_name"] == "Tamar Farming Company"
-        assert body["analysis"] == "running"
-        assert started  # background analysis kicked
+        assert body["already_in_dojo"] is False
+        assert started  # sensei kicked
         sample = (
             db_session.query(SupplierSpecSample)
             .filter(SupplierSpecSample.id == body["sample_id"])
@@ -972,24 +1023,23 @@ class TestAddToDojo:
         assert sample.source_invoice_id == "inv-42"
         assert sample.source_venue_id == "v1"
         assert sample.pdf_bytes == b"%PDF-tamar"
+        # The spec was created for the new supplier as part of the filing.
+        spec = (
+            db_session.query(SupplierInvoiceSpec)
+            .filter(SupplierInvoiceSpec.id == sample.spec_id)
+            .first()
+        )
+        assert spec is not None and spec.name == "Tamar Farming Company"
 
-        # same invoice again → reused, no duplicate
+        # same invoice again → reused (no duplicate), and reported as a
+        # repeat so the card can say "sent back to the sensei".
         res2 = client.post(
-            "/api/invoice-fixes/add-to-dojo",
-            headers=admin_headers,
+            "/api/invoice-fixes/cannot-receive",
+            headers=manager_headers,
             json={"venue_id": "v1", "invoice_id": "inv-42"},
         )
         assert res2.json()["already_in_dojo"] is True
         assert res2.json()["sample_id"] == body["sample_id"]
-
-    def test_requires_admin(self, client, manager_headers, monkeypatch):
-        self._fake_loaded(monkeypatch)
-        res = client.post(
-            "/api/invoice-fixes/add-to-dojo",
-            headers=manager_headers,
-            json={"venue_id": "v1", "invoice_id": "inv-42"},
-        )
-        assert res.status_code == 403
 
 
 class TestDojoTriage:
@@ -1071,12 +1121,15 @@ class TestDojoTriage:
         )
         assert [s["id"] for s in listed2.json()["samples"]] == [body["sample_id"]]
 
-    def test_add_to_dojo_promotes_existing_draft(
+    def test_cannot_receive_promotes_existing_draft(
         self, client, admin_headers, db_session, monkeypatch
     ):
         import threading as _threading
 
         self._fake(monkeypatch, db_session)
+        monkeypatch.setattr(
+            "app.routers.invoice_fixes.record_receive_outcome", lambda *a, **k: None
+        )
 
         class FakeThread:
             def __init__(self, *a, **k):
@@ -1091,8 +1144,11 @@ class TestDojoTriage:
             headers=admin_headers,
             json={"venue_id": "v1", "invoice_id": "inv-d2"},
         ).json()
+        # A "Norm can't do this one" press on an invoice somebody had merely
+        # EXPANDED on the Dojo page must upgrade the invisible draft into a
+        # real awaiting-review sample, not file a duplicate.
         res = client.post(
-            "/api/invoice-fixes/add-to-dojo",
+            "/api/invoice-fixes/cannot-receive",
             headers=admin_headers,
             json={"venue_id": "v1", "invoice_id": "inv-d2"},
         )
@@ -1397,7 +1453,7 @@ class TestChargesIgnored:
 class TestReplicaStage:
     """The replica: our extraction resolved into a full working document and
     scored against Loaded's own resolution. Venue-less (hand-uploaded)
-    samples get no replica; add-to-dojo samples get one on every run; the
+    samples get no replica; invoice-intake samples get one on every run; the
     replica keys survive every last_run rebuild site."""
 
     def _sample_with_venue(self, db, spec):
@@ -1503,91 +1559,6 @@ class TestReplicaStage:
         run2 = db_session.get(type(s), s.id).last_run
         assert run2.get("replica") == {"replica": True, "lines": []}
 
-    def test_bless_replica_route(self, client, admin_headers, db_session, monkeypatch):
-        spec = _make_spec(db_session, name="Bless Foods")
-        s = self._sample_with_venue(db_session, spec)
-        monkeypatch.setattr(spec_dojo, "run_extraction", lambda *a, **k: _extraction())
-        monkeypatch.setattr(
-            spec_dojo,
-            "replica_stage",
-            lambda *a, **k: (
-                {"replica": True, "linked_supplier_id": "sup-9", "lines": []},
-                [
-                    {
-                        "field": "linked_supplier_id",
-                        "line": None,
-                        "description": None,
-                        "expected": "sup-1",
-                        "actual": "sup-9",
-                    }
-                ],
-                None,
-            ),
-        )
-        client.post(
-            f"/api/supplier-invoice-specs/samples/{s.id}/run", headers=admin_headers
-        )
-        r = client.post(
-            f"/api/supplier-invoice-specs/samples/{s.id}/replica-expected",
-            headers=admin_headers,
-        )
-        assert r.status_code == 200
-        assert r.json()["sample"]["has_expected_replica"] is True
-        db_session.expire_all()
-        fresh = db_session.get(type(s), s.id)
-        assert fresh.expected_replica["linked_supplier_id"] == "sup-9"
-        assert (fresh.last_run or {}).get("replica_diffs") == []
-
-    def test_bless_recomputes_and_keeps_line_missing(
-        self, client, admin_headers, db_session, monkeypatch
-    ):
-        # Blessing suppresses fields the replica agrees on — but a Loaded
-        # line the replica LACKS has nothing to bless and must stay a diff
-        # (the old behavior zeroed everything).
-        import app.services.received_invoice as ri
-
-        spec = _make_spec(db_session, name="Bless Recompute Foods")
-        s = self._sample_with_venue(db_session, spec)
-        monkeypatch.setattr(spec_dojo, "run_extraction", lambda *a, **k: _extraction())
-        monkeypatch.setattr(
-            spec_dojo,
-            "replica_stage",
-            lambda *a, **k: (
-                {"replica": True, "linked_supplier_id": "sup-9", "lines": []},
-                [],
-                None,
-            ),
-        )
-
-        class _Lh:
-            def __init__(self, *a, **k):
-                pass
-
-            def invoice(self, iid):
-                return {}
-
-        monkeypatch.setattr(ri, "LoadedInvoiceClient", _Lh)
-        monkeypatch.setattr(
-            ri,
-            "build_received_invoice_data",
-            lambda d: {
-                "linked_supplier_id": "sup-9",
-                "lines": [{"code": "L1", "description": "LOADED ONLY LINE"}],
-            },
-        )
-        client.post(
-            f"/api/supplier-invoice-specs/samples/{s.id}/run", headers=admin_headers
-        )
-        r = client.post(
-            f"/api/supplier-invoice-specs/samples/{s.id}/replica-expected",
-            headers=admin_headers,
-        )
-        assert r.status_code == 200
-        db_session.expire_all()
-        fresh = db_session.get(type(s), s.id)
-        diffs = (fresh.last_run or {}).get("replica_diffs") or []
-        assert [d["field"] for d in diffs] == ["line_missing"]
-
     def test_errored_replica_not_counted_as_scored(self, db_session):
         from app.routers.supplier_spec_dojo import _sample_meta
 
@@ -1616,169 +1587,171 @@ class TestReplicaStage:
         assert meta["replica_warning_count"] == 2
 
 
-class TestCompareReplica:
-    LOADED = {
-        "linked_supplier_id": "sup-1",
-        "linked_purchase_order_id": "po-1",
-        "subtotal": 100.0,
-        "tax_amount": 15.0,
-        "total": 115.0,
-        "lines": [
-            {
-                "code": "A1",
-                "description": "HONEY LIQUID",
-                "linked_item_id": "item-h",
-                "linked_unit_id": "u-4kg",
-                "quantity_received": 1,
-                "unit_cost": 77.54,
-                "sale_tax_rate": 0.15,
-            },
-        ],
-    }
+class TestEnvVenueResolution:
+    """Samples travel between environments via the shared config DB; venue
+    ids don't. The Loaded company id stamped at filing time is the
+    env-independent key — each environment resolves its OWN venue for the
+    same company (16 Aug 2026: every prod-filed sample failed its replica
+    build locally with "not connected for venue <prod-id>")."""
 
-    def _replica(self, **line_over):
-        line = {
-            "code": "A1",
-            "description": "HONEY LIQUID",
-            "linked_item_id": "item-h",
-            "linked_unit_id": "u-4kg",
-            "quantity_received": 1,
-            "unit_cost": 77.54,
-            "sale_tax_rate": 0.15,
-        }
-        line.update(line_over)
+    def _sample(self, db, venue_id="prod-venue-x", company="co-123"):
+        spec = _make_spec(db, name=f"EnvRes {venue_id}")
+        s = SupplierSpecSample(
+            spec_id=spec.id,
+            label="e.pdf",
+            pdf_bytes=b"%PDF-e",
+            source_venue_id=venue_id,
+            source_invoice_id="inv-e",
+            source_company_id=company,
+        )
+        db.add(s)
+        db.flush()
+        return s
+
+    def test_same_env_venue_wins(self, db_session):
+        from tests.conftest import _make_venue
+
+        v = _make_venue(db_session, name="Here Venue")
+        s = self._sample(db_session, venue_id=v.id, company="ignored")
+        assert spec_dojo.resolve_sample_venue_id(db_session, s) == v.id
+
+    def test_cross_env_sample_resolves_by_company(self, db_session):
+        from app.db.models import ConnectorConfig
+        from tests.conftest import _make_venue
+
+        local = _make_venue(db_session, name="Local Twin")
+        db_session.add(
+            ConnectorConfig(
+                connector_name="loadedhub",
+                venue_id=local.id,
+                enabled="true",
+                config={"x_loaded_company_id": "co-123"},
+            )
+        )
+        db_session.flush()
+        s = self._sample(db_session, venue_id="prod-venue-x", company="co-123")
+        assert spec_dojo.resolve_sample_venue_id(db_session, s) == local.id
+
+    def test_no_company_match_is_an_honest_error(self, db_session):
+        s = self._sample(db_session, venue_id="prod-venue-x", company="co-nope")
+        assert spec_dojo.resolve_sample_venue_id(db_session, s) is None
+        replica, diffs, rows = spec_dojo.replica_stage(
+            db_session, db_session, s, {"document_type": "invoice", "lines": []}
+        )
+        assert replica["error"].startswith("this sample was filed in another")
+        assert diffs == [] and rows is None
+
+    def test_staging_stamps_the_company_id(self, db_session, monkeypatch):
+        """stage_invoice_sample must record the venue's Loaded company at
+        filing time — without it the sample is forever env-locked."""
+        import app.db.engine as engine_mod
+        import app.services.received_invoice as RI
+        from app.db.models import ConnectorConfig
+        from tests.conftest import _make_venue
+
+        v = _make_venue(db_session, name="Stamp Venue")
+        db_session.add(
+            ConnectorConfig(
+                connector_name="loadedhub",
+                venue_id=v.id,
+                enabled="true",
+                config={"x_loaded_company_id": "co-stamp"},
+            )
+        )
+        db_session.flush()
+
+        class FakeLoadedClient:
+            def __init__(self, db, config_db, venue_id):
+                pass
+
+            def invoice(self, invoice_id):
+                return {
+                    "id": invoice_id,
+                    "supplierName": "Stamp Foods",
+                    "referenceNumber": "INV-77",
+                    "fileId": "file-1",
+                }
+
+            def file_base64(self, file_id):
+                import base64
+
+                return base64.b64encode(b"%PDF-stamp").decode(), "application/pdf"
+
+        monkeypatch.setattr(RI, "LoadedInvoiceClient", FakeLoadedClient)
+        monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
+        monkeypatch.setattr(db_session, "close", lambda: None)
+        staged = spec_dojo.stage_invoice_sample(db_session, v.id, "inv-77", draft=False)
+        s = db_session.get(SupplierSpecSample, staged["sample_id"])
+        assert s.source_company_id == "co-stamp"
+
+
+class TestReplicaViewRows:
+    """The dojo invoice view is built from the replica ALONE — the
+    replica-vs-Loaded comparison (and its bless adjudication) was removed
+    16 Aug 2026: Loaded's read of the same paper is competing OCR, not a
+    reference."""
+
+    def _replica(self):
         return {
+            "supplier_name": "Honey Co",
+            "reference_number": "INV-9",
             "linked_supplier_id": "sup-1",
             "linked_purchase_order_id": "po-1",
+            "purchase_order_number": "1521145",
+            "issued_at": "2026-08-10",
             "subtotal": 100.0,
             "tax_amount": 15.0,
             "total": 115.0,
-            "lines": [line],
-        }
-
-    def test_identical_resolution_scores_clean(self):
-        assert spec_dojo.compare_replica(self._replica(), self.LOADED) == []
-
-    def test_wrong_item_link_diffs(self):
-        diffs = spec_dojo.compare_replica(
-            self._replica(linked_item_id="item-WRONG"), self.LOADED
-        )
-        assert [d["field"] for d in diffs] == ["linked_item_id"]
-        assert diffs[0]["expected"] == "item-h" and diffs[0]["actual"] == "item-WRONG"
-
-    def test_missing_and_extra_lines(self):
-        rep = self._replica()
-        rep["lines"].append(
-            {"code": "ZZ", "description": "PHANTOM", "linked_item_id": None}
-        )
-        loaded = dict(self.LOADED)
-        loaded["lines"] = self.LOADED["lines"] + [
-            {"code": "B9", "description": "UNSEEN LOADED LINE"}
-        ]
-        fields = [d["field"] for d in spec_dojo.compare_replica(rep, loaded)]
-        assert "line_extra" in fields and "line_missing" in fields
-
-    def test_pairs_by_resolved_item_id_before_text(self):
-        # Loaded's line text is the ITEM name; the copy prints the pack
-        # description — the resolved item id must pair them (live: MARKET
-        # OYSTERS vs 'Oysters Half Shell - Pacific Premium').
-        rep = self._replica(
-            code="T28076E1", description="Oysters Half Shell - Pacific Premium"
-        )
-        loaded = dict(self.LOADED)
-        loaded["lines"] = [
-            {
-                "code": "OYS1",
-                "description": "MARKET OYSTERS",
-                "linked_item_id": "item-h",
-                "linked_unit_id": "u-4kg",
-                "quantity_received": 1,
-                "unit_cost": 77.54,
-                "sale_tax_rate": 0.15,
-            }
-        ]
-        assert spec_dojo.compare_replica(rep, loaded) == []
-
-    def test_compare_rows_shape(self):
-        # Display structure: header rows with differs flags; line rows paired
-        # by item id / text with per-row diff fields; one-sided leftovers.
-        rep = self._replica(linked_unit_id="u-WRONG")
-        rep["lines"].append(
-            {"code": "NEW1", "description": "ONLY IN REPLICA", "linked_item_id": None}
-        )
-        loaded = dict(self.LOADED)
-        loaded["lines"] = self.LOADED["lines"] + [
-            {"code": "L9", "description": "ONLY IN LOADED", "linked_item_id": "item-z"}
-        ]
-        view = spec_dojo.replica_compare_rows(rep, loaded)
-        by_field = {h["field"]: h for h in view["header"]}
-        assert by_field["linked_supplier_id"]["differs"] is False
-        assert by_field["total"]["replica"] == 115.0
-        assert len(view["lines"]) == 3
-        paired = view["lines"][0]
-        assert paired["replica"]["code"] == "A1" and paired["loaded"]["code"] == "A1"
-        assert paired["diff_fields"] == ["linked_unit_id"]
-        only_rep = view["lines"][1]
-        assert only_rep["loaded"] is None and only_rep["replica"]["code"] == "NEW1"
-        only_loaded = view["lines"][2]
-        assert only_loaded["replica"] is None and only_loaded["loaded"]["code"] == "L9"
-
-    def test_blessed_values_suppress_diffs(self):
-        rep = self._replica(linked_item_id="item-adjudicated")
-        blessed = {
             "lines": [
                 {
                     "code": "A1",
                     "description": "HONEY LIQUID",
-                    "linked_item_id": "item-adjudicated",
-                }
-            ]
+                    "linked_item_id": "item-h",
+                    "linked_unit_id": "u-4kg",
+                    "quantity_received": 1,
+                    "unit_cost": 77.54,
+                    "sale_tax_rate": 0.15,
+                    "not_a_display_key": "dropped",
+                },
+            ],
         }
-        assert spec_dojo.compare_replica(rep, self.LOADED, blessed) == []
 
-    def test_compare_rows_carry_invoice_number_and_line_totals(self):
-        # Display needs of the invoice-styled render: the invoice number as a
-        # display-only header row, total_cost on each slimmed line.
-        rep = self._replica(total_cost=77.54)
-        rep["reference_number"] = "INV-1"
-        loaded = dict(self.LOADED, reference_number="inv-1")
-        view = spec_dojo.replica_compare_rows(rep, loaded)
-        row = next(h for h in view["header"] if h["field"] == "reference_number")
-        assert row["differs"] is False  # case-insensitive display comparison
-        assert "reference_number" not in spec_dojo._REPLICA_HEADER_FIELDS
-        assert view["lines"][0]["replica"]["total_cost"] == 77.54
+    def test_rows_carry_replica_values_and_no_loaded_side(self):
+        rows = spec_dojo.replica_view_rows(self._replica())
+        by_field = {h["field"]: h for h in rows["header"]}
+        # The invoice-sheet fields all present, nothing ever "differs".
+        for f in (
+            "supplier_name",
+            "reference_number",
+            "linked_supplier_id",
+            "linked_purchase_order_id",
+            "purchase_order_number",
+            "issued_at",
+            "subtotal",
+            "tax_amount",
+            "total",
+        ):
+            assert f in by_field, f
+            assert by_field[f]["loaded"] is None
+            assert by_field[f]["differs"] is False
+        assert by_field["reference_number"]["replica"] == "INV-9"
+        assert len(rows["lines"]) == 1
+        line = rows["lines"][0]
+        assert line["loaded"] is None and line["diff_fields"] == []
+        assert line["replica"]["unit_cost"] == 77.54
+        # Slimmed to display keys only.
+        assert "not_a_display_key" not in line["replica"]
 
-    def test_compare_rows_carry_the_order_reference_display_row(self):
-        # Display-only (never in _REPLICA_HEADER_FIELDS): shown with PO-number
-        # normalization so 'po#1521145' vs '1521145' doesn't flag.
-        rep = self._replica()
-        rep["purchase_order_number"] = "po#1521145"
-        loaded = dict(self.LOADED, purchase_order_number="1521145")
-        view = spec_dojo.replica_compare_rows(rep, loaded)
-        row = next(h for h in view["header"] if h["field"] == "purchase_order_number")
-        assert row["differs"] is False
-        assert "purchase_order_number" not in spec_dojo._REPLICA_HEADER_FIELDS
-
-        loaded2 = dict(self.LOADED, purchase_order_number="9999")
-        view2 = spec_dojo.replica_compare_rows(rep, loaded2)
-        row2 = next(h for h in view2["header"] if h["field"] == "purchase_order_number")
-        assert row2["differs"] is True
-
-    def test_issued_at_compares_by_calendar_day(self):
-        # Loaded returns a bare date on some venues and a full ISO datetime on
-        # others; the extraction is always a bare date. Same day → clean.
-        rep = self._replica()
-        rep["issued_at"] = "2026-08-07"
-        loaded = dict(self.LOADED, issued_at="2026-08-07T00:00:00")
-        assert spec_dojo.compare_replica(rep, loaded) == []
-        view = spec_dojo.replica_compare_rows(rep, loaded)
-        row = next(h for h in view["header"] if h["field"] == "issued_at")
-        assert row["differs"] is False
-
-        loaded_other_day = dict(self.LOADED, issued_at="2026-08-08")
-        assert [
-            d["field"] for d in spec_dojo.compare_replica(rep, loaded_other_day)
-        ] == ["issued_at"]
+    def test_bless_route_is_gone(self, client, admin_headers, db_session):
+        spec = _make_spec(db_session, name="No Bless Foods")
+        s = SupplierSpecSample(spec_id=spec.id, label="x.pdf", pdf_bytes=b"%PDF-x")
+        db_session.add(s)
+        db_session.flush()
+        res = client.post(
+            f"/api/supplier-invoice-specs/samples/{s.id}/replica-expected",
+            headers=admin_headers,
+        )
+        assert res.status_code in (404, 405)
 
 
 class TestInterruptedAnalysis:

@@ -1,545 +1,254 @@
-# Mini Apps Architecture Plan
+# Norm Apps — Strategic Review & Revised Architecture
 
-## Context
-
-Norm currently connects to external SaaS products (BambooHR, Deputy, Xero) via a spec-driven connector system. The goal is to build standalone lite apps (e.g., "HRLite", "RosterLite") that:
-
-1. **Are completely independent products** — their own brand, domain, sign-up, billing. No visible association with Norm from the user's perspective.
-2. **Have blast radius isolation** — a change in Norm cannot break HRLite, a change in HRLite cannot break RosterLite or Norm.
-3. **Integrate deeply with Norm when a user connects both** — Norm can perform all tasks within HRLite via its existing ConnectorSpec system, just like it connects to BambooHR today.
-4. **Can be fully separated** — if HRLite becomes very successful, it should be extractable into its own repo and potentially its own company with minimal friction.
-
-**Key insight:** From Norm's perspective, HRLite is just another external service — like BambooHR but one we built. Norm connects via a ConnectorSpec with template-mode HTTP calls. No changes to Norm's agent system are needed.
+*Status: this document replaces the April 2026 "Mini Apps Architecture Plan" (the lite-apps
+plan) in its entirety. Reviewed August 2026 against the live codebase, the live config DB,
+and the August cost review. The April plan was never implemented — a repo-wide search finds
+no trace of it beyond this file's own history — and its premises have since been reversed by
+owner decision. Git history preserves the original text.*
 
 ---
 
-## Recommended Architecture: Monorepo First, Extract When Shippable
+## Part 1 — Strategic review: what the April plan assumed, and what actually happened
 
-### Strategy: Two Phases
+### The April plan in one paragraph
 
-**Phase A (Development):** Build in the Norm monorepo. One Codespace, atomic commits while building the shared SDK + first app together. Fastest way to iterate.
+Build standalone "lite apps" (HRLite, RosterLite…) as **completely independent products** —
+own brand, domain, sign-up, Stripe account, GCP project, eventually own repo — integrated
+back into Norm as just-another-connector via API-key template HTTP calls, with a shared
+`packages/app-sdk` toolkit and path-filtered CI. Extraction to a separate company was a
+design goal.
 
-**Phase B (Ship):** Once a lite app is ready to ship, extract it to its own repo with its own Codespace. From that point on, it's a fully independent product.
+### What actually happened (verified, August 2026)
 
-### Monorepo Structure (During Development)
+**1. None of it was built.** No `apps/hrlite-*`, no `packages/app-sdk` (`packages/` holds 62
+lines of unimported scaffold stubs, absent from the pnpm workspace), no
+`infra/terraform/modules/lite-app`, no per-product GCP projects, no path-filtered CI (there
+is not a single `paths:` filter in any workflow), one monolithic `scripts/dev.sh`.
 
-```
-/workspaces/norm/
-  apps/
-    api/                    # Norm core API (existing, unchanged)
-    web/                    # Norm core frontend (existing, unchanged)
-    hrlite-api/             # HRLite backend (new)
-    hrlite-web/             # HRLite frontend (new, own branding)
-  packages/
-    app-sdk/                # Shared Python package (NOT Norm-branded)
-  infra/
-    terraform/
-      modules/
-        lite-app/           # Reusable Terraform module for lite app infra
-        cloud-run/          # Existing (Norm core)
-      environments/
-        hrlite-production/  # Own GCP project, own state
-        hrlite-staging/
-        hrlite-testing/
-  .github/
-    workflows/
-      deploy.yml            # Norm CI/CD (existing)
-      ci-hrlite.yml         # HRLite CI/CD (path-filtered, independent)
-  scripts/
-    dev.sh                  # Starts Postgres + Norm API + Norm Web (existing)
-    dev-hrlite.sh           # Starts Postgres + HRLite API + HRLite Web
-    dev-all.sh              # Starts everything (for integration testing)
-```
+**2. Billing shipped the opposite way — and it is the marketplace's embryo.** Norm has live
+Stripe billing (`app/services/billing_service.py`, ~520 lines, webhooks, quotas): **one org
+subscription with per-agent add-ons** — `AGENT_PRICES_CENTS = {"hr": 1000, "procurement":
+500, "reports": 0}`, per-venue pricing, per-agent Stripe price IDs in `config.py`. "HR as a
+separately-billed product" already exists as a $10/mo line item on one invoice. But note the
+gap this review found: the `Organization.hr_agent_enabled` / `procurement_agent_enabled` /
+`reports_agent_enabled` booleans are read **only by billing code** — nothing in
+`agents/router.py` or `prompt_builder.py` enforces them at runtime. Entitlement is currently
+billing math, not an access control.
 
-### Post-Extraction Structure (Steady State)
+**3. The cost posture forbids the plan's infrastructure.** The August 2026 billing outage
+(`infra/COST-CUTS-2026-08.md`) revealed ~$700/mo of fixed infrastructure serving zero human
+traffic; it was cut to ~$210/mo partly by deleting redundant capacity, and production
+Terraform is currently drift-blocked. Per-product GCP projects, load balancers, and Cloud
+SQL instances would rebuild that cost floor several times over. **One deployment is a
+constraint, not a preference.**
 
-| Repo | Codespace | What's in it |
-|------|-----------|-------------|
-| `yourorg/norm` | Norm development | Norm API + Web + infra + tests |
-| `yourorg/hrlite` | HRLite development | HRLite API + Web + infra + tests |
-| `yourorg/rosterlite` | RosterLite development | Same pattern |
-| `yourorg/app-sdk` | SDK development (rare) | Shared Python package |
+**4. The first "lite app" happened anyway — outside the plan.** The Cook Brothers App: a
+separate Supabase/Lovable product carrying **114 tools across five domains** (kitchen 38,
+functions 22, training 21, marketing 20, stock 12 — counted from the synced spec in the
+config DB). Norm consumes it as a connector — but not by the plan's API-key mechanism: via
+`execution_mode="mcp"` + OAuth 2.1 PKCE + dynamic registration + `sync-mcp-tools`
+self-description (`scripts/sync_cook_brothers_app.py`, `routers/connector_specs.py`). And it
+also exposes itself **directly to claude.ai as its own MCP server** — a topology the plan
+never imagined: Claude is the hub; Norm and the CB App are both spokes.
 
-Each repo has its own `devcontainer.json`, `./scripts/dev.sh`, Docker Compose, etc. Open a Codespace on `hrlite` to work on HRLite — clean, focused, just HRLite code.
+**5. Norm's rails became the real "app SDK".** Since July: 7 config-driven agents over one
+tool loop; working documents; display components **single-sourced** to both the web app and
+claude.ai (`apps/mcp-ui` imports the same React files — roster, PO, invoice, menu, recipe
+editors render inside Claude); an MCP server with scopes, consent, and projection; the
+shared config DB; and an org-scoped **generative app platform** (`App`/`AppVersion`/
+`AppShare`/`AppCall` tables, `app_runtime.py` sandboxed execution, `app_builder` agent)
+whose own docstring anticipates a marketplace. The reusable substrate the plan wanted to
+extract into a generic SDK turned out to be Norm itself.
 
-### Rules That Ensure Independence (Enable Clean Extraction)
+**6. A real duplication defect exists.** Hiring lives in both products (Norm:
+`HrSetup`/`Job`/`Candidate`/`Application` + `hr_service.py` + HiringBoard; CB App:
+`training_*` job openings, interviews, talent pool). Recipes read LoadedHub directly but
+write through the CB App passthrough. "Two tools answering the same question" already caused
+two production incidents at tool level (see `docs/tool-architecture-strategy.md`) — this is
+the same failure mode at product scale.
 
-1. **Apps never import from each other.** `apps/hrlite-api` depends on `packages/app-sdk` but never on `apps/api`.
-2. **The shared SDK has no Norm branding or Norm-specific logic.** It's a generic FastAPI app toolkit.
-3. **Each app has its own GCP project, domain, and Stripe account.** Nothing is shared at the infrastructure level.
+### Verdict on the April plan
 
----
-
-## 1. Local Development in the Monorepo
-
-### Ports
-
-```
-Postgres (Docker)    → localhost:5432  (one container, separate databases)
-Norm API             → localhost:8000
-Norm Web             → localhost:3000
-HRLite API           → localhost:8001
-HRLite Web           → localhost:3001
-```
-
-### Dev Scripts
-
-| Command | What it starts | When you use it |
-|---------|---------------|-----------------|
-| `./scripts/dev.sh` | Postgres + Norm API (8000) + Norm Web (3000) | Working on Norm only |
-| `./scripts/dev-hrlite.sh` | Postgres + HRLite API (8001) + HRLite Web (3001) | Working on HRLite only |
-| `./scripts/dev-all.sh` | Postgres + all services | Testing Norm ↔ HRLite integration |
-
-**Most of the time you only run the product you're working on.** You only spin up everything when testing the Norm ↔ HRLite integration (Norm's agent calling HRLite's API).
-
-### Docker Compose
-
-One Postgres container, multiple databases. Each app connects to its own database — just a different database name in the connection string:
-
-```yaml
-services:
-  postgres:
-    image: postgres:16-alpine
-    ports: ["5432:5432"]
-    environment:
-      POSTGRES_USER: norm
-      POSTGRES_PASSWORD: norm
-      POSTGRES_DB: norm
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./scripts/init-databases.sql:/docker-entrypoint-initdb.d/init.sql
-      # init.sql creates additional databases: CREATE DATABASE hrlite;
-```
-
-- Norm connects to `postgresql://norm:norm@localhost:5432/norm`
-- HRLite connects to `postgresql://norm:norm@localhost:5432/hrlite`
-- Each app runs its own Alembic migrations against its own database
-
-### Local Integration Testing
-
-When running `dev-all.sh`, Norm's ConnectorConfig for HRLite points to `http://localhost:8001`:
-
-```json
-{
-  "base_url": "http://localhost:8001",
-  "api_key": "dev-test-key"
-}
-```
-
-The same ConnectorSpec works everywhere — only the credentials (base_url + api_key) differ per environment.
+| April premise | August 2026 ruling |
+|---|---|
+| Independent brands, hidden Norm association | **Reversed by owner decision** — apps are Norm-branded ("Norm HR", "Norm Marketing"…), living in a marketplace inside Norm |
+| Separate repos / GCP projects / Stripe accounts | **Retired** — counter-indicated by the cost posture, the live single-subscription billing model, and the one-pipeline invariant |
+| `packages/app-sdk` shared toolkit (6–8 week refactor) | **Retired** — never started; the reusable substrate is Norm's own rails, not a generic SDK |
+| Lite app = external service integrated by API key + template HTTP | **Superseded twice** — MCP + OAuth self-description shipped instead; and now base apps become first-party apps *inside* Norm, not connectors at all |
+| Extraction-readiness as a design goal | **Dropped** — base apps are core product. Apple's built-in apps aren't extractable; that's the point |
+| Blast-radius isolation | **Survives, re-mechanized** — entitlement gates, config-driven exposure, and the sandboxed app runtime, instead of repo/project splits |
 
 ---
 
-## 2. Shared SDK: `packages/app-sdk`
+## Part 2 — The revised direction
 
-A generic FastAPI application toolkit. Contains no Norm business logic, no Norm branding, no Norm-specific concepts.
+**Norm is the platform and the brand. Apps are Norm apps, in a marketplace inside Norm —
+the Apple App Store model.**
 
-| Module | What it provides |
-|--------|-----------------|
-| `auth` | JWT creation/validation, `get_current_user` dependency, API key validation, service-to-service token validation |
-| `tenancy` | Base Organization/User SQLAlchemy mixins, membership patterns, venue-aware scoping |
-| `middleware` | CORS, rate limiting, request tracing, Sentry integration, metrics |
-| `api` | Standard response envelope `{"data": ..., "meta": {...}}`, error format, pagination, health check factory |
-| `billing` | Stripe subscription helpers, usage tracking primitives |
+- **Base apps** — the five Cook Brothers domains (kitchen/food safety, functions & events,
+  training & hiring, marketing, stock), **migrated into Norm's infrastructure** — play the
+  role of Apple's built-in apps (Maps, Notes): included with every Norm subscription,
+  enabled by default, toggleable off like any other app. **No Supabase and no Lovable
+  survive the migration.**
+- **Paid add-on apps** generalize the existing per-agent pricing (hr $10 / procurement $5)
+  into per-app SKUs on the same single Stripe subscription.
+- **User-built apps** (the generative app platform) are the long tail — org-scoped, built
+  conversationally via the `app_builder` agent — sitting in the same "Apps" surface.
 
-**In the monorepo:** Apps depend on it via local path (`packages/app-sdk`).
-**After extraction:** Published to GitHub Packages. Apps pin to a specific version and bump when they choose to — an SDK release never forces a deploy.
-
----
-
-## 3. Lite App Service Structure
-
-Each lite app is a fully self-contained product:
-
-```
-apps/hrlite-api/
-  Dockerfile                 # Standalone multi-stage build
-  pyproject.toml             # Depends on app-sdk
-  alembic/                   # Own migrations, own DB
-  app/
-    main.py                  # FastAPI app — "HRLite" branding
-    config.py                # Own Pydantic BaseSettings
-    db/
-      engine.py              # Own database connection
-      models.py              # Job, Application, Candidate, etc.
-    routers/
-      health.py
-      auth.py                # Uses app-sdk auth primitives
-      jobs.py
-      applications.py
-      candidates.py
-    services/
-      ...
-  tests/                     # Own test suite
-
-apps/hrlite-web/
-  Dockerfile
-  package.json               # NO dependency on apps/web
-  app/                       # Own Next.js app — own branding, own domain
-    layout.tsx               # HRLite branding, not Norm
-    ...
-```
-
-### Database: Fully separate
-
-Each lite app has its own database in its own GCP project:
-
-| Product | GCP Project | Database | Domain |
-|---------|-------------|----------|--------|
-| Norm | norm-production-491101 | norm | bettercallnorm.com |
-| HRLite | hrlite-production | hrlite | hrlite.com (example) |
-| RosterLite | rosterlite-production | rosterlite | rosterlite.com (example) |
-
-Initially, lite app databases can be on shared Cloud SQL instances for cost. The Terraform module abstracts this so switching to dedicated instances is a config change.
+The Cook Brothers App's separate claude.ai MCP server retires as its domains migrate;
+Claude ends with one server to talk to: Norm's.
 
 ---
 
-## 4. How Norm Integrates (When a User Connects Both)
+## Part 3 — Architecture
 
-From Norm's perspective, HRLite is treated identically to BambooHR. The user connects HRLite as a "connector" in Norm's settings, providing their HRLite API credentials.
+### 3.1 The unifying decision: base apps ARE platform apps
 
-### ConnectorSpec (stored in Norm's config DB)
+The Cook Brothers apps lean heavily on Loaded data **and** store a lot of their own — which
+is exactly the shape of a real platform app. So rather than building the migrated domains as
+bespoke native modules *beside* the app platform, the ruling is **one app model, two trust
+tiers**:
 
-```json
-{
-  "connector_name": "hrlite",
-  "display_name": "HRLite",
-  "category": "hr",
-  "execution_mode": "template",
-  "auth_type": "bearer",
-  "base_url_template": "{{creds.base_url}}/api/v1",
-  "credential_fields": ["api_key", "base_url"],
-  "tools": [
-    {
-      "action": "list_jobs",
-      "method": "GET",
-      "path_template": "/jobs?status={{status}}",
-      "description": "List all job postings",
-      "required_fields": [],
-      "response_transform": { "enabled": true, "root": "data" }
-    },
-    {
-      "action": "create_job",
-      "method": "POST",
-      "path_template": "/jobs",
-      "request_body_template": "{\"title\": \"{{title}}\", \"department\": \"{{department}}\"}",
-      "required_fields": ["title", "department"]
-    },
-    {
-      "action": "list_applications",
-      "method": "GET",
-      "path_template": "/jobs/{{job_id}}/applications",
-      "description": "List applications for a job",
-      "required_fields": ["job_id"]
-    }
-  ]
-}
-```
+- **Every Norm app — base or user-built — is an `App`/`AppVersion` spec**: declared
+  `actions` (connector reads), `writes`, `scopes`, UI, and server-side logic. The platform
+  runtime (`app/services/app_runtime.py`) already provides governed connector access —
+  `call_api` through the declared-action door, authorization as *viewer permissions ∩ app
+  scopes*, write actions opted into twice, every call audited in `app_calls`.
+- **Base apps run in a first-party trust tier.** Same spec shape, same authorization door,
+  but their logic and UI are version-controlled in this repo and synced to the platform —
+  the proven `config/consolidators/` pattern (reviewed code, real tests, exec'd under the
+  real sandbox namespace in CI) — with relaxed sandbox caps where a domain justifies it.
+  User apps stay fully sandboxed. The marketplace cannot tell the tiers apart; trust is an
+  implementation property, not a storefront one.
+- **Migrating through the app structure is deliberate dogfooding.** Each CB domain rebuilt
+  as a platform app forces the platform to grow the primitives real apps actually need, in
+  priority order, with ourselves as the first demanding customer. The `app_builder` agent is
+  the Norm-native analog of how these apps were Lovable-built in the first place — rebuilt
+  conversationally, kept as reviewable specs.
+- **Escape hatch, stated up front:** a domain that outgrows the sandbox (think
+  invoice-engine-scale logic) graduates to a native module — `apps/api/app/` code like
+  hiring is today — without touching the catalog, entitlements, or the marketplace. The
+  storefront doesn't care how an app is implemented.
 
-### Connection flow (from user's perspective)
+### 3.2 Storage: the app data layer (the Supabase replacement)
 
-1. User already uses HRLite standalone (posts jobs, manages applications)
-2. User signs up for Norm separately
-3. In Norm's connector settings, user adds "HRLite" connector with their HRLite API key
-4. Norm's HR agent now has HRLite tools available in its tool loop
-5. User can say "Show me all open positions in HRLite" and Norm calls the API
+This is the platform's missing primitive — `app_runtime.py` today offers apps **no storage
+at all**; their only data reach is `call_api`. It is also the direct answer to "how does
+storage work in Norm's world":
 
-This is identical to how a user connects BambooHR today. Norm doesn't "know" it's a first-party app — it's just another connector.
+- **Norm's posture changes.** Norm currently stores very little (the August production DB
+  export was 5.3 MiB) because the systems of record are external — Loaded, the CB App's
+  Supabase. Migrating the CB domains makes **Norm the system of record** for them: FCP
+  cards, temperature/cooling logs, training records, event enquiries, stocktakes. Volumes
+  remain small by database standards — operational logs for one hospitality group — and the
+  August cost review found the old disk 40,000× oversized, so the existing `db-g1-small`
+  main Postgres carries this comfortably for a long time.
+- **New primitive: app-scoped collections in Norm's main Postgres.** A single `app_records`
+  table — `(app_slug, organization_id, venue_id, collection, id, data JSONB, created_at,
+  updated_at)` with appropriate indexes — plus **declarative collection schemas in the app
+  spec**, with CRUD/query exposed to app logic and app UI through the same governed runtime
+  door as `call_api`. JSONB-first is deliberate: it is the Supabase-shaped surface the CB
+  apps were built against, it needs no per-app migrations, and a hot collection can graduate
+  to a real table later if a domain earns it.
+- **User apps get the same storage API**, scoped to their own app — this is what makes the
+  CB migration the proving ground for user apps generally. Cross-app data access is only
+  ever through the owning app's published tools and scopes — call it the **MapKit rule**:
+  nobody reads another app's tables, base apps included. Third-party apps don't read Apple
+  Maps' database; they call MapKit.
+- **Roadmap primitives after storage**, in the order the CB domains will demand them:
+  **scheduled app runs** (the CB App has cron edge functions; Norm's automated-tasks
+  scheduler — Cloud Scheduler + `SELECT … FOR UPDATE SKIP LOCKED` — is the rail to lean on),
+  then **notifications/email** through the existing `email_service` as a governed primitive.
 
-### End-to-end flow
+### 3.3 Tools and the AI surface
 
-1. User tells Norm: "Post a new kitchen manager role"
-2. HR agent tool loop calls `hrlite.create_job`
-3. `spec_executor.py` renders Jinja2 template → HTTP POST to `https://api.hrlite.com/api/v1/jobs`
-4. Request includes user's HRLite API key as Bearer token
-5. HRLite API validates, creates job, returns result
-6. Tool loop processes result, responds to user
+- Each migrated domain re-publishes its tool surface from the app spec: app actions become
+  Norm tools, exposed to claude.ai via `McpCapability` rows tagged with a **`domain`**
+  column — which lands the domain-surfaces work `docs/tool-architecture-strategy.md` §E
+  already proposed, keeping each consented surface inside the 30–50 tool band.
+- As a domain migrates, its tools are disabled in the synced `cook_brothers_app` connector
+  spec (marked superseded per the lifecycle proposal, never deleted). When the last domain
+  lands, the Supabase project and the CB App's separate claude.ai MCP server retire.
+- One canonical tool per question remains the law. The migration *ends* the current
+  worst violation (hiring existing in two products).
 
----
+### 3.4 UI
 
-## 5. Authentication Architecture
+**Rebuilt, not ported.** No Lovable React survives. Each domain's UI is rebuilt on Norm's
+patterns — working documents for drafts, display blocks, split-pane functional pages — and
+earns a place inside claude.ai via the `apps/mcp-ui` single-source build **only** where it
+does something Claude cannot do natively (editing, dragging, approving — the existing
+curation rule; Claude draws tables better than an iframe does).
 
-### User-facing auth (each app independent)
+### 3.5 Identity, tenancy, and infrastructure
 
-Each lite app manages its own user authentication. Two options:
-
-**Option A: Shared identity provider (recommended initially)**
-Use Firebase Auth / Auth0 / Clerk across all products. Users don't see this — each product has its own login page and branding, but the underlying identity is shared. This enables:
-- Single email = single identity across products (convenient for users who happen to use multiple)
-- No visible coupling (each product's UI is fully independent)
-- Easy to migrate away from if an app is extracted (switch to another auth provider or build your own)
-
-**Option B: Fully independent auth per app**
-Each app has its own user table and auth system (via `app-sdk` auth module). No shared identity.
-- Maximum independence
-- Account linking requires explicit OAuth integration if needed later
-- More work per app but simpler overall
-
-**Recommendation:** Start with Option A for development speed, but design so that switching to Option B per-app is straightforward (the `app-sdk` auth module should support both patterns).
-
-### Norm-to-lite-app auth (API integration)
-
-When a Norm user connects HRLite in their Norm settings, they provide an **HRLite API key**. This is a standard API key that HRLite generates for any user (not just Norm users). The key is stored in Norm's `ConnectorConfig` table as a credential, identical to how BambooHR API keys are stored today.
-
-HRLite doesn't need to know about Norm at all. It just sees an API request with a valid API key.
-
----
-
-## 6. Billing (Fully Independent)
-
-Each product has its own Stripe account, pricing, and subscription:
-
-| Product | Billing | Stripe Account |
-|---------|---------|---------------|
-| Norm | Own subscription, AI token-based | norm-stripe |
-| HRLite | Own subscription, seat-based or flat rate | hrlite-stripe |
-| RosterLite | Own subscription | rosterlite-stripe |
-
-No bundle discounts or cross-product billing complexity. Each product is financially independent. If bundling is desired later, it can be handled via marketing (promo codes) rather than technical coupling.
+- **One repo, one API service, one web app, one pipeline, one main DB per environment.** A
+  Norm app is a spec plus (for base apps) synced first-party code — never a service. This
+  keeps the $210/mo posture intact and keeps the deploy invariant: one commit → one image
+  pair → all environments.
+- CB App's Supabase users map to Norm users/orgs/venues — they are the same staff. Migrated
+  data lands org/venue-scoped in the app data layer. (Mechanics are a migration-planning
+  concern, deliberately out of this document's scope.)
 
 ---
 
-## 7. Infrastructure: Reusable Terraform Module
+## Part 4 — The marketplace
 
-### `infra/terraform/modules/lite-app/`
+Two small tables, three thin enforcement filters, no new machinery beyond them:
 
-```hcl
-module "hrlite" {
-  source      = "./modules/lite-app"
-  app_name    = "hrlite"
-  gcp_project = "hrlite-production"
-  region      = "australia-southeast1"
-  environment = "production"
-  api_image   = "...hrlite-api:${var.image_tag}"
-  web_image   = "...hrlite-web:${var.image_tag}"
-  domain      = "hrlite.com"
-  db_tier     = "db-f1-micro"   # start small
-}
-```
-
-Creates: own Cloud Run services, own database, own secrets, own DNS, own monitoring. Completely independent from Norm's infrastructure.
-
-### GCP Project Isolation
-
-Each lite app gets its own GCP project. This provides:
-- Billing isolation (see exactly what each product costs to run)
-- IAM isolation (HRLite team can't accidentally affect Norm infra)
-- Clean separation for extraction (just transfer the GCP project)
+- **`marketplace_apps`** (config DB, beside `agent_configs`) — the global catalog: slug,
+  name, description, icon, composition (app slug / agent slugs / playbooks / bindings / MCP
+  domain / nav pages), `price_cents` + Stripe price key, **`bundled` flag**, status.
+- **`org_app_entitlements`** (main DB, beside `subscriptions`) — per-org state: enabled,
+  Stripe subscription item id, timestamps. Absorbs and retires the three
+  `Organization.*_agent_enabled` booleans.
+- **Base apps**: `bundled: true` — in every subscription, on by default, toggleable off.
+  Paid apps: the existing `PUT /billing/{org}/agents` + Stripe-subscription-item machinery,
+  generalized to iterate the catalog instead of a hardcoded dict. User-built apps: same
+  surface, org-scoped, unpriced.
+- **Enforcement — three filters over one catalog** (this closes the real gap found in
+  review, where entitlement was billing math only):
+  1. **Hard gate at agent/app entry** (`agents/router.py`, app launch) — the security gate;
+  2. **`prompt_builder._collect_tools`** skips bindings whose app is unentitled;
+  3. **`mcp/projection.py::project_tools`** filters capabilities by entitled domains — so
+     claude.ai honors marketplace toggles with no extra work.
+- **Disabling an app is a billing/visibility act, never a deletion.** Data is retained;
+  re-enabling restores the app over its own data.
 
 ---
 
-## 8. CI/CD: Path-Filtered in Monorepo, Fully Separate After Extraction
+## Part 5 — Sequencing principles
 
-### During Monorepo Phase
+*(Principles, not a work plan — migration mechanics get their own document.)*
 
-Each app has its own CI workflow, triggered only by changes to its directory:
-
-```yaml
-# .github/workflows/ci-hrlite.yml
-name: CI - HRLite
-on:
-  push:
-    paths:
-      - 'apps/hrlite-api/**'
-      - 'apps/hrlite-web/**'
-      - 'packages/app-sdk/**'
-```
-
-- Changes to `apps/api/` (Norm) do NOT trigger HRLite CI
-- Changes to `apps/hrlite-api/` do NOT trigger Norm CI
-- Changes to `packages/app-sdk/` trigger CI for ALL apps (the one shared surface)
-- Each app deploys to its own GCP project independently
-
-**Releasing is completely separate even in the monorepo.** A PR that only touches HRLite code will only build, test, and deploy HRLite.
-
-### After Extraction
-
-Each repo has its own CI/CD — naturally independent. The `app-sdk` is a versioned package dependency. Bumping the SDK version is an explicit choice per app, not an automatic trigger.
+1. **Storage primitive first.** Nothing migrates until `app_records` + spec-declared
+   collections exist, because every domain needs them and user apps inherit them.
+2. **Training migrates first.** It resolves the hiring duplication by landing the domain in
+   exactly one place — one Norm Training app supersedes both Norm's native hiring tables
+   (frozen read-only, then retired) and the CB App's `training_*` pipeline — and at 21
+   tools it is mid-sized: big enough to prove the primitives, small enough to finish.
+3. **Then kitchen / functions / marketing / stock, by value.** Each migration follows the
+   same shape: rebuild as first-party platform app → re-point the tool surface → disable the
+   CB connector's superseded tools → migrate data → shrink the CB App's own claude.ai
+   surface.
+4. **The CB App retires by evaporation**, not by a cutover event. When the last domain
+   lands, the Supabase project and its MCP server switch off.
+5. **Explicitly parked:** the recipe write-passthrough (Norm reads LoadedHub directly but
+   writes through the CB App). This is a limitation of Loaded's API surface, not of Norm or
+   the CB App — it gets solved in the LoadedHub connector work, on its own track.
 
 ---
 
-## 9. Release Cycle (Completely Separate Per Product)
+## Part 6 — Key files and tables
 
-Each product has its own testing → staging → production pipeline. Releasing HRLite does not touch Norm. Releasing Norm does not touch HRLite. This is true both during the monorepo phase (via path filters) and after extraction (naturally).
-
-### Per-Product Environments
-
-| Product | Testing | Staging | Production | GCP Project |
-|---------|---------|---------|------------|-------------|
-| **Norm** | testing.bettercallnorm.com | staging.bettercallnorm.com | bettercallnorm.com | norm-production-491101 |
-| **HRLite** | testing.hrlite.com | staging.hrlite.com | hrlite.com | hrlite-production |
-| **RosterLite** | testing.rosterlite.com | staging.rosterlite.com | rosterlite.com | rosterlite-production |
-
-Each has its own: GCP project, CI/CD pipeline, database (own Cloud SQL), secrets (own Secret Manager), domain and SSL, Artifact Registry.
-
-### Release Flow Per App
-
-```
-Push to main (touching only hrlite paths)
-  → CI: lint, test, typecheck, docker build (HRLite only)
-  → Build & push images to HRLite's Artifact Registry
-  → Deploy to testing.hrlite.com
-  → Run E2E tests
-  → Deploy to staging.hrlite.com
-  → (manual trigger) Deploy to hrlite.com
-```
-
-This mirrors Norm's existing pipeline. The reusable Terraform module (`modules/lite-app/`) and reusable GitHub Actions workflow make standing up a new product's pipeline a config exercise.
-
----
-
-## 10. Standard API Contract for Lite Apps
-
-All lite apps follow the same API patterns (enforced by `app-sdk`):
-
-```
-# Standard REST contract
-GET    /api/v1/{resources}?page=1&per_page=20&filter[status]=active
-POST   /api/v1/{resources}
-GET    /api/v1/{resources}/{id}
-PUT    /api/v1/{resources}/{id}
-DELETE /api/v1/{resources}/{id}
-
-# Response envelope
-{"data": [...], "meta": {"page": 1, "per_page": 20, "total": 42}}
-
-# Error format
-{"error": {"code": "NOT_FOUND", "message": "Job not found"}}
-
-# API key auth
-Authorization: Bearer {api_key}
-```
-
-This standard contract means:
-- ConnectorSpecs for lite apps are predictable and can be auto-generated from OpenAPI schemas
-- Norm's agent gets consistent, LLM-friendly responses
-- Each app can evolve its API independently as long as versioned endpoints maintain compatibility
-
----
-
-## 11. Extraction Playbook (When a Lite App is Ready to Ship)
-
-### Step 1: Create new repo (~1 day)
-```bash
-# Copy app code
-cp -r apps/hrlite-api/ ~/hrlite/apps/api/
-cp -r apps/hrlite-web/ ~/hrlite/apps/web/
-cp -r packages/app-sdk/ ~/hrlite/packages/app-sdk/
-
-# Copy infra
-cp -r infra/terraform/modules/lite-app/ ~/hrlite/infra/terraform/modules/
-cp -r infra/terraform/environments/hrlite-*/ ~/hrlite/infra/terraform/environments/
-```
-
-### Step 2: Set up independent repo (~1 day)
-- Add `devcontainer.json` for Codespace support
-- Add `./scripts/dev.sh` (Postgres + HRLite API + HRLite Web)
-- Add `docker-compose.yml` (Postgres only)
-- Change `app-sdk` dependency from local path to published GitHub Package
-- Copy and adapt CI workflow from monorepo
-
-### Step 3: Verify (~1 day)
-- Run full test suite in new repo
-- Deploy from new repo's CI
-- Verify API, frontend, and database all work
-- Open a Codespace on new repo — confirm dev experience works
-
-### Step 4: Remove from monorepo
-- Delete `apps/hrlite-api/`, `apps/hrlite-web/`, `infra/terraform/environments/hrlite-*/`
-- Remove HRLite CI workflow
-- Norm's `hrlite` ConnectorSpec continues to work — it's just an HTTP connector pointing at HRLite's domain
-
-**Total extraction effort: ~2-3 days.** The key enabler is that HRLite has zero code dependencies on Norm.
-
-### What doesn't change after extraction
-- HRLite's domain, database, GCP project, users — all unchanged
-- Norm's ConnectorSpec for HRLite — still works, it's just an HTTP endpoint
-- Users of both products — unaffected, their API key connection still works
-
----
-
-## 12. Blast Radius Matrix
-
-| Change | Norm | HRLite | RosterLite |
-|--------|------|--------|------------|
-| Norm code change | Affected | Unaffected | Unaffected |
-| HRLite code change | Unaffected | Affected | Unaffected |
-| RosterLite code change | Unaffected | Unaffected | Affected |
-| `app-sdk` change | CI runs all | CI runs all | CI runs all |
-| Norm DB migration | Affected | Unaffected | Unaffected |
-| HRLite DB migration | Unaffected | Affected | Unaffected |
-| Norm deploy | Deploys | No deploy | No deploy |
-| HRLite deploy | No deploy | Deploys | No deploy |
-| HRLite extracted to own repo | No impact | Now independent | Unaffected |
-
----
-
-## Implementation Phases
-
-### Phase 1: Create Shared SDK + First Lite App in Monorepo (6-8 weeks)
-1. Create `packages/app-sdk/` — extract generic auth, tenancy, middleware from `apps/api/`
-2. Refactor `apps/api/` to use `app-sdk` — all existing tests must pass
-3. Create `apps/{app}-api/` + `apps/{app}-web/` using `app-sdk`
-4. Design data model, REST API, standalone frontend with own branding
-5. Create `infra/terraform/modules/lite-app/` reusable module
-6. Create `scripts/dev-{app}.sh` and `scripts/dev-all.sh`
-7. Add `scripts/init-databases.sql` to create the app database in Docker Postgres
-8. Create path-filtered CI workflow
-9. Write test suite
-10. Create GCP project, deploy to testing/staging
-
-### Phase 2: Norm Integration (1 week)
-1. Define ConnectorSpec in Norm's config DB
-2. Create `AgentConnectorBinding` linking it to the relevant agent
-3. Test locally with `dev-all.sh`: Norm agent calls lite app API on localhost:8001
-4. Test on staging: Norm connects to staging.{app}.com
-
-### Phase 3: Identity, Auth & Billing (2-3 weeks)
-1. Build API key generation in the lite app (for Norm and third-party integrations)
-2. Choose auth approach (shared identity provider or independent per app)
-3. Set up own Stripe account and billing
-
-### Phase 4: Extract to Own Repo + Ship (1 week)
-1. Publish `app-sdk` to GitHub Packages
-2. Create own repo with `devcontainer.json`, `dev.sh`, CI/CD
-3. Create `app-sdk` repo
-4. Remove lite app code from Norm monorepo
-5. Verify: Codespace works, Norm tests pass, integration still works
-6. Deploy production
-
-### Phase 5: Next Lite Apps (3-4 weeks per app)
-Each new app is built in the monorepo during development, then extracted when shippable. The `app-sdk` + `modules/lite-app/` + CI template make each subsequent app faster. First app repo serves as the reference implementation.
-
----
-
-## Key Files (Norm Side — No Changes Needed to Agent System)
-
-| File | Role |
-|------|------|
-| `apps/api/app/connectors/spec_executor.py` | Executes HTTP calls to external APIs — lite apps use this same path |
-| `apps/api/app/db/config_models.py` | ConnectorSpec model — defines the integration contract |
-| `apps/api/app/agents/tool_loop.py` | Agent tool loop — already handles HTTP connectors, no changes needed |
-| `apps/api/app/agents/prompt_builder.py` | Builds tool definitions from ConnectorSpecs — auto-includes lite app tools |
-| `infra/terraform/modules/cloud-run/main.tf` | Template for the new `lite-app` Terraform module |
-| `.github/workflows/deploy-env.yml` | Template for reusable lite app deployment workflow |
-| `scripts/dev.sh` | Template for lite app dev scripts |
-
----
-
-## Verification
-
-1. **Phase 1 (SDK + Lite App)**:
-   - `uv run pytest tests/ -v` — all Norm tests pass after SDK refactoring
-   - Lite app has its own passing test suite
-   - `./scripts/dev-{app}.sh` starts the app independently on ports 8001/3001
-   - `./scripts/dev-all.sh` starts everything, all services accessible
-   - No Norm branding visible anywhere in the lite app
-2. **Phase 2 (Integration)**:
-   - Norm user adds lite app connector with API key
-   - Norm agent can perform all CRUD operations via tool loop
-   - Works identically to BambooHR connector
-3. **Phase 4 (Extraction)**:
-   - Lite app Codespace works independently
-   - Lite app deploys from its own repo's CI
-   - Norm is completely unaffected by extraction
-   - Norm �� lite app integration still works (ConnectorSpec points to same domain)
+| Concern | Where it lives today |
+|---|---|
+| App platform runtime (authorization door, sandbox, `call_api`) | `apps/api/app/services/app_runtime.py`, `apps/api/app/routers/apps.py` |
+| App tables | `App`, `AppVersion`, `AppShare`, `AppCall` in `apps/api/app/db/models.py` |
+| Billing to generalize | `apps/api/app/services/billing_service.py` (`AGENT_PRICES_CENTS`), `apps/api/app/routers/billing.py`, per-agent price IDs in `apps/api/app/config.py` |
+| Entitlement gate points | `apps/api/app/agents/router.py`, `apps/api/app/agents/prompt_builder.py`, `apps/api/app/mcp/projection.py` |
+| First-party code sync pattern | `apps/api/config/consolidators/` + `apps/api/scripts/sync_*.py` |
+| CB App connector (to be progressively disabled) | `connector_specs` row `cook_brothers_app` (config DB), `apps/api/scripts/sync_cook_brothers_app.py` |
+| Single-source components for web + Claude | `apps/mcp-ui/src/registry.ts`, `apps/api/app/mcp/ui/` |
+| Tool lifecycle / domain surfaces context | `docs/tool-architecture-strategy.md` |
+| Cost constraints | `infra/COST-CUTS-2026-08.md` |

@@ -5,6 +5,14 @@ with the CURRENT prompts (main + spec) and diffs against the admin-accepted
 baseline, so prompt edits get regression-tested from Settings → Supplier Specs
 before they misread a real invoice. All admin-only; samples live in the shared
 config DB (one suite, site-wide) — see services/spec_dojo.py for the runner.
+
+Every endpoint here is a plain ``def``, NOT ``async def`` — deliberately.
+These handlers do sync-blocking work (SQLAlchemy sessions, LoadedHub HTTP
+calls, extraction runs), and an ``async def`` runs that work ON the event
+loop: one slow Loaded call in ``dojo_overview`` froze the entire local site
+(even /health) while the page polled it during a sensei run (16 Aug 2026).
+Plain ``def`` handlers run in FastAPI's threadpool, where blocking is
+harmless. Only ``upload_sample`` stays async — it awaits the file body.
 """
 
 import logging
@@ -19,7 +27,6 @@ from app.auth.dependencies import require_permission
 from app.db.config_models import SupplierInvoiceSpec, SupplierSpecSample
 from app.db.engine import SessionLocal, get_config_db_rw, get_db
 from app.db.models import User
-from app.config import settings
 from app.services import sensei_runner, spec_dojo
 
 logger = logging.getLogger(__name__)
@@ -55,14 +62,19 @@ def _sample_meta(s: SupplierSpecSample) -> dict:
         "replica_warning_count": len(
             (((s.last_run or {}).get("replica") or {}).get("warnings")) or []
         ),
-        "has_expected_replica": getattr(s, "expected_replica", None) is not None,
         # Dojo-page triage staging — excluded from regression until promoted.
         "draft": bool(getattr(s, "draft", None)),
-        # The analysis agent's state: running | ready | not_green | failed |
-        # applied | None — drives the panel's proposal UI + polling. Read
-        # through analysis_view so an interrupted run reports failed (and can
-        # be re-run) instead of spinning forever.
-        "analysis_status": (spec_dojo.analysis_view(s.analysis) or {}).get("status"),
+        # The analysis agent's state: queued | running | ready | not_green |
+        # failed | applied | None — drives the panel's proposal UI + polling.
+        # Read through analysis_view so a dead run reports stale/failed (and
+        # can be re-run) instead of spinning forever.
+        "analysis_status": (view := spec_dojo.analysis_view(s.analysis) or {}).get(
+            "status"
+        ),
+        "analysis_phase": view.get("phase"),
+        "analysis_stale": bool(view.get("stale")),
+        "analysis_attempts": int(view.get("attempts") or 0),
+        "analysis_error": view.get("error"),
         "analysis_green": bool((s.analysis or {}).get("green")),
     }
 
@@ -119,7 +131,7 @@ async def upload_sample(
 
 
 @router.get("/{spec_id}/samples")
-async def list_samples(
+def list_samples(
     spec_id: str,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -137,7 +149,7 @@ async def list_samples(
 
 
 @router.delete("/samples/{sample_id}")
-async def delete_sample(
+def delete_sample(
     sample_id: str,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -149,7 +161,7 @@ async def delete_sample(
 
 
 @router.get("/samples/{sample_id}/pdf")
-async def sample_pdf(
+def sample_pdf(
     sample_id: str,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -185,9 +197,10 @@ def _run_and_store(
             else []
         )
         status = "new" if sample.expected is None else ("pass" if not diffs else "fail")
-        # Replica: OUR extraction resolved into a full working document and
-        # scored against what Loaded resolved for the same invoice (only for
-        # add-to-dojo samples, which carry the source venue).
+        # Replica: OUR extraction resolved into a full working document
+        # against the venue's Loaded CATALOGUE (only for cannot-receive
+        # samples, which carry the source venue). Not scored against Loaded's
+        # own read of the invoice — that comparison was removed 16 Aug 2026.
         replica, replica_diffs, replica_compare = spec_dojo.replica_stage(
             db, config_db, sample, extraction, reference
         )
@@ -219,7 +232,6 @@ def _run_and_store(
         "replica": replica,
         "replica_diffs": replica_diffs,
         "replica_compare": replica_compare,
-        "expected_replica": getattr(sample, "expected_replica", None),
     }
     if extraction is None:
         out["error"] = (sample.last_run or {}).get("error")
@@ -227,7 +239,7 @@ def _run_and_store(
 
 
 @router.post("/samples/{sample_id}/run")
-async def run_sample(
+def run_sample(
     sample_id: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db_rw),
@@ -238,7 +250,7 @@ async def run_sample(
 
 
 @router.get("/samples/{sample_id}/last-run")
-async def last_run(
+def last_run(
     sample_id: str,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -259,7 +271,6 @@ async def last_run(
         "replica": run.get("replica"),
         "replica_diffs": run.get("replica_diffs") or [],
         "replica_compare": run.get("replica_compare"),
-        "expected_replica": getattr(sample, "expected_replica", None),
         "error": run.get("error"),
     }
 
@@ -269,7 +280,7 @@ class ExpectedValuesRequest(BaseModel):
 
 
 @router.put("/samples/{sample_id}/expected-values")
-async def put_expected_values(
+def put_expected_values(
     sample_id: str,
     body: ExpectedValuesRequest,
     config_db: Session = Depends(get_config_db_rw),
@@ -302,7 +313,7 @@ async def put_expected_values(
 
 
 @router.post("/samples/{sample_id}/expected")
-async def save_expected(
+def save_expected(
     sample_id: str,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -320,44 +331,10 @@ async def save_expected(
     return {"sample": _sample_meta(sample)}
 
 
-@router.post("/samples/{sample_id}/replica-expected")
-async def bless_replica(
-    sample_id: str,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db_rw),
-    user: User = Depends(require_permission("admin:system")),
-):
-    """Bless the latest replica as the adjudicated truth — used when Loaded's
-    own resolution (the scorecard's default ground truth) is itself wrong.
-    Later runs suppress diffs where the replica agrees with the blessing."""
-    sample = _sample_or_404(config_db, sample_id)
-    replica = (sample.last_run or {}).get("replica")
-    if not replica:
-        raise HTTPException(400, "no replica to bless — run the sample first")
-    sample.expected_replica = replica
-    run = sample.last_run or {}
-    # Recompute against fresh ground truth rather than zeroing: blessing
-    # suppresses fields the replica now agrees on, but a Loaded line the
-    # replica lacks (line_missing) has nothing to bless and must stay
-    # visible. Best-effort — an unreachable venue leaves the diffs empty
-    # exactly as the old behavior did.
-    diffs: list[dict] = []
-    if not replica.get("error") and sample.source_venue_id:
-        try:
-            from app.services.received_invoice import (
-                LoadedInvoiceClient,
-                build_received_invoice_data,
-            )
-
-            lh = LoadedInvoiceClient(db, config_db, sample.source_venue_id)
-            gt = build_received_invoice_data(lh.invoice(sample.source_invoice_id))
-            diffs = spec_dojo.compare_replica(replica, gt, replica)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("bless recompute failed: %s", exc)
-    run = {**run, "replica_diffs": diffs}
-    sample.last_run = run
-    config_db.commit()
-    return {"sample": _sample_meta(sample)}
+# The /samples/{id}/replica-expected "bless" endpoint was removed 16 Aug 2026
+# along with the replica-vs-Loaded scorecard it served: the replica is no
+# longer scored against Loaded's own read of the invoice, so there is nothing
+# to adjudicate. The expected_replica column keeps its historical data.
 
 
 class DojoRunRequest(BaseModel):
@@ -365,7 +342,7 @@ class DojoRunRequest(BaseModel):
 
 
 @router.post("/dojo/run")
-async def run_dojo(
+def run_dojo(
     body: DojoRunRequest,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -386,14 +363,18 @@ async def run_dojo(
     # Replica reference data fetched ONCE per venue on the request thread —
     # without this every worker pays a full catalogue + units + suppliers +
     # tax + 400-day-feed fetch per sample. Read-only dicts, safe to share.
+    # Venues are resolved per-ENVIRONMENT (a prod-filed sample maps to this
+    # env's venue for the same Loaded company).
     reference_by_venue: dict[str, dict] = {}
+    resolved_by_sample: dict[str, str] = {}
     _pref_db = SessionLocal()
     try:
-        for vid in {
-            s.source_venue_id
-            for s in samples
-            if s.source_venue_id and s.source_invoice_id
-        }:
+        for s in samples:
+            if s.source_venue_id and s.source_invoice_id:
+                rv = spec_dojo.resolve_sample_venue_id(_pref_db, s)
+                if rv:
+                    resolved_by_sample[s.id] = rv
+        for vid in set(resolved_by_sample.values()):
             reference_by_venue[vid] = spec_dojo.prefetch_replica_reference(
                 _pref_db, config_db, vid
             )
@@ -413,7 +394,7 @@ async def run_dojo(
             if not ws:
                 return {"sample": {"id": sid}, "status": "error", "diffs": []}
             out = _run_and_store(
-                wdb, wcdb, ws, reference_by_venue.get(ws.source_venue_id or "")
+                wdb, wcdb, ws, reference_by_venue.get(resolved_by_sample.get(sid, ""))
             )
             # summary only — the per-sample view fetches full values (keep
             # replica_diffs for the accuracy rollup, drop the heavy docs)
@@ -421,7 +402,6 @@ async def run_dojo(
             out.pop("extraction", None)
             out.pop("replica", None)
             out.pop("replica_compare", None)
-            out.pop("expected_replica", None)
             return out
         finally:
             wdb.close()
@@ -480,7 +460,7 @@ async def run_dojo(
 
 
 @router.get("/dojo/summary")
-async def dojo_summary(
+def dojo_summary(
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
 ):
@@ -525,12 +505,38 @@ async def dojo_summary(
 # the full toolkit works on them, regression ignores them until promoted.
 # ---------------------------------------------------------------------------
 
-# Analysis states that still need a human: pending proposal, or running/failed.
-_PENDING_ANALYSIS = ("running", "ready", "not_green", "failed")
+# Analysis states that still need a human: pending proposal, or queued/running/failed.
+_PENDING_ANALYSIS = ("queued", "running", "ready", "not_green", "failed")
+
+
+def _pending_review_rows(config_db: Session) -> list[dict]:
+    """The in-dojo samples still awaiting a human: no baseline yet, or a
+    queued/running/pending/failed analysis. Config-DB only — cheap."""
+    spec_names = {sp.id: sp.name for sp in config_db.query(SupplierInvoiceSpec).all()}
+    return [
+        {**_sample_meta(s), "spec_name": spec_names.get(s.spec_id, "?")}
+        for s in config_db.query(SupplierSpecSample)
+        .filter(SupplierSpecSample.draft.isnot(True))
+        .order_by(SupplierSpecSample.created_at.desc())
+        .all()
+        if s.expected is None or ((s.analysis or {}).get("status") in _PENDING_ANALYSIS)
+    ]
+
+
+@router.get("/dojo/pending")
+def dojo_pending(
+    config_db: Session = Depends(get_config_db_rw),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """Just the awaiting-review list — the part of the Dojo page people came
+    for. Split from /dojo/overview (16 Aug 2026) because the overview's
+    outstanding sweep calls LoadedHub per venue and takes seconds; the dojo
+    list is a config-DB read and should render immediately."""
+    return {"pending_review": _pending_review_rows(config_db)}
 
 
 @router.get("/dojo/overview")
-async def dojo_overview(
+def dojo_overview(
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -599,19 +605,9 @@ async def dojo_overview(
             logger.info("dojo overview: venue %s failed: %s", v.name, exc)
             errors.append({"venue_name": v.name, "error": str(exc)})
 
-    spec_names = {sp.id: sp.name for sp in config_db.query(SupplierInvoiceSpec).all()}
-    pending_review = [
-        {**_sample_meta(s), "spec_name": spec_names.get(s.spec_id, "?")}
-        for s in config_db.query(SupplierSpecSample)
-        .filter(SupplierSpecSample.draft.isnot(True))
-        .order_by(SupplierSpecSample.created_at.desc())
-        .all()
-        if s.expected is None or ((s.analysis or {}).get("status") in _PENDING_ANALYSIS)
-    ]
-
     return {
         "outstanding": outstanding,
-        "pending_review": pending_review,
+        "pending_review": _pending_review_rows(config_db),
         "errors": errors,
     }
 
@@ -622,7 +618,7 @@ class StageRequest(BaseModel):
 
 
 @router.post("/dojo/stage")
-async def stage_draft(
+def stage_draft(
     body: StageRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db_rw),
@@ -641,7 +637,7 @@ async def stage_draft(
 
 
 @router.post("/samples/{sample_id}/promote")
-async def promote_sample(
+def promote_sample(
     sample_id: str,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -660,7 +656,7 @@ class CandidateRunRequest(BaseModel):
 
 
 @router.post("/{spec_id}/candidate-run")
-async def candidate_run_endpoint(
+def candidate_run_endpoint(
     spec_id: str,
     body: CandidateRunRequest,
     db: Session = Depends(get_db),
@@ -689,50 +685,29 @@ class AnalyseRequest(BaseModel):
 
 
 @router.post("/samples/{sample_id}/analyse")
-async def analyse_sample_endpoint(
+def analyse_sample_endpoint(
     sample_id: str,
     body: AnalyseRequest | None = None,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
 ):
-    """Run the SENSEI on a sample: strong model + full context + candidate
-    verification. With ``feedback``, this is the admin replying to the
-    proposal thread.
+    """Queue a SENSEI run for the sample: strong model + full context +
+    candidate verification. With ``feedback``, this is the admin replying to
+    the proposal thread.
 
-    Where a sensei job is configured this DISPATCHES and returns immediately
-    with the analysis marked running; the panel already polls that state. It
-    used to run inline, which is a 1-2 minute blocking call inside a request
-    with a 300-second ceiling — and on 13 Aug it took the whole container down
-    with it (SIGABRT), leaving the sample stuck at "analysing". Without a job
-    (local, tests) it still runs inline, which is what makes it debuggable.
+    This ONLY enqueues — it returns in milliseconds with the analysis marked
+    ``queued``, and the worker (inline thread locally, Cloud Run job when
+    ``SENSEI_JOB`` is set) executes it. It used to run inline without a job,
+    a 1-4 minute blocking call that 504'd through request proxies and died
+    with every dev-server reload (16 Aug 2026); the queue survives both.
     """
-    import datetime as _dt
-
     sample = _sample_or_404(config_db, sample_id)
     feedback = body.feedback if body else None
 
-    if settings.SENSEI_JOB:
-        # Mark it running BEFORE dispatching. The job sets this itself once it
-        # starts, but a container cold start is tens of seconds and the panel
-        # would show the stale previous result in the meantime — which looks
-        # exactly like the button doing nothing.
-        prev = sample.analysis or {}
-        sample.analysis = {
-            "status": "running",
-            "thread": prev.get("thread") or [],
-            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-        }
-        config_db.commit()
-        where = sensei_runner.start_analysis(sample_id, feedback)
-        if where == "job":
-            return {"analysis": _slim_analysis(sample.analysis), "dispatched": "job"}
-        # start_analysis fell back to a thread; the sample is already marked
-        # running and the thread will finish it.
-        return {"analysis": _slim_analysis(sample.analysis), "dispatched": where}
-
-    analysis = spec_dojo.analyse_sample(db, config_db, sample_id, feedback=feedback)
-    return {"analysis": _slim_analysis(analysis), "dispatched": "inline"}
+    status = sensei_runner.enqueue(sample_id, feedback)
+    config_db.refresh(sample)
+    return {"analysis": _slim_analysis(sample.analysis), "dispatched": status}
 
 
 class ApplyAnalysisRequest(BaseModel):
@@ -743,7 +718,7 @@ class ApplyAnalysisRequest(BaseModel):
 
 
 @router.post("/samples/{sample_id}/apply-analysis")
-async def apply_analysis(
+def apply_analysis(
     sample_id: str,
     body: ApplyAnalysisRequest,
     db: Session = Depends(get_db),
@@ -773,7 +748,7 @@ async def apply_analysis(
 
 
 @router.post("/samples/{sample_id}/dismiss-analysis")
-async def dismiss_analysis(
+def dismiss_analysis(
     sample_id: str,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -785,7 +760,7 @@ async def dismiss_analysis(
 
 
 @router.get("/samples/{sample_id}/analysis")
-async def get_analysis(
+def get_analysis(
     sample_id: str,
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
@@ -817,7 +792,7 @@ def _slim_analysis(analysis: dict | None) -> dict | None:
 
 
 @router.get("/autopilot-confidence")
-async def autopilot_confidence(
+def autopilot_confidence(
     days: int = 30,
     venue_id: str | None = None,
     supplier_name: str | None = None,

@@ -31,6 +31,12 @@ class TestSchema:
         # override instruction TEXT — so a schema edit silently invalidates
         # every cached extraction with no way to score the blast radius first.
         # Teaching goes in BUILTIN_MAIN_PROMPT, which does have a harness.
+        #
+        # 17 Aug 2026: the legacy catch-all `purchase_order_number` was
+        # DELIBERATELY retired (redundant with customer_…, consumed by
+        # nothing, and its null read as phantom dojo failures). The one-time
+        # cache invalidation was accepted: invoices re-extract lazily on next
+        # touch, and readers keep a legacy fallback for pre-retirement data.
         assert set(ie.PDF_SCHEMA) == {
             "document_type",
             "invoice_number",
@@ -38,7 +44,6 @@ class TestSchema:
             "supplier_name",
             "supplier_differs",
             "customer_purchase_order_number",
-            "purchase_order_number",
             "supplier_order_number",
             "subtotal_ex_tax",
             "discount_amount",

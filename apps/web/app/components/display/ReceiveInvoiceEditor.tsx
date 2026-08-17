@@ -182,6 +182,8 @@ interface DocData {
       invoice_number?: string | null;
       supplier_name?: string | null;
       customer_purchase_order_number?: string | null;
+      // Legacy — present only on snapshots stored before the field was
+      // retired from the extraction schema (17 Aug 2026); read as fallback.
       purchase_order_number?: string | null;
       subtotal_ex_tax?: number | null;
       tax_amount?: number | null;
@@ -495,27 +497,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const uid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const isPlatformAdmin = getStoredUser()?.role === 'admin';
   const [cannotState, setCannotState] = useState<'sending' | 'filed' | null>(null);
-  const [dojoAdd, setDojoAdd] = useState<'idle' | 'adding' | 'added' | 'error'>('idle');
-  const addToDojo = async () => {
-    if (embedded || !venueId || !doc.invoice_id || dojoAdd === 'adding') return;
-    setDojoAdd('adding');
-    try {
-      const res = await apiFetch('/api/invoice-fixes/add-to-dojo', {
-        method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
-        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
-      }
-      await res.json().catch(() => ({}));
-      setDojoAdd('added');
-    } catch (e) {
-      setDojoAdd('error');
-      setStatus('error');
-      setMessage(e instanceof Error ? e.message : 'Could not add to the dojo');
-    }
-  };
 
   // Embedded uses a distinct URL so the sandbox routes it to the invoice-scoped
   // tools; the web uses the session-auth working-documents REST.
@@ -2042,26 +2023,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 </svg>
               </button>
             )}
-            {/* Add to training dojo (platform admins): files the PDF as a
-                supplier-spec sample and kicks the analysis agent. */}
-            {!embedded && isPlatformAdmin && doc.file_id && doc.invoice_id && (
-              dojoAdd === 'added' ? (
-                <span title="Analysis running — review the proposal in Settings → Supplier Specs"
-                  style={{ fontSize: '0.62rem', color: '#2e7d4f', border: '1px solid #b7d5c2', borderRadius: 4, padding: '2px 7px', whiteSpace: 'nowrap' }}>
-                  ✓ In dojo — analysing…
-                </span>
-              ) : (
-                <button type="button" onClick={addToDojo} disabled={dojoAdd === 'adding'}
-                  title="Add this invoice to the training dojo — the analysis agent studies it and drafts a supplier-prompt update for review"
-                  aria-label="Add to training dojo"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 22, padding: '0 7px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: dojoAdd === 'adding' ? 'wait' : 'pointer', fontSize: '0.62rem', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-                  </svg>
-                  {dojoAdd === 'adding' ? 'Adding…' : 'Add to dojo'}
-                </button>
-              )
-            )}
+            {/* Dojo intake is the "Can't receive" button below — one intake
+                for admin and non-admin alike; it files the PDF AND kicks the
+                sensei on every press (the admin-only Add-to-dojo button was
+                removed Aug 2026). */}
           </div>
         </div>
         {collapsed && (

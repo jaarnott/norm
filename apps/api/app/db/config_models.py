@@ -200,6 +200,14 @@ class SupplierSpecSample(ConfigBase):
     # main._ensure_config_tables (the config DB has no Alembic).
     source_venue_id = Column(String, nullable=True)
     source_invoice_id = Column(String, nullable=True)
+    # The Loaded COMPANY the source venue was bound to at filing time. Venue
+    # ids are per-environment (the config DB is shared but venues live in
+    # each env's main DB), so a sample filed in production is unreadable by
+    # local's venue id — the company id is the env-independent key that lets
+    # any environment resolve "which of MY venues talks to this company"
+    # (16 Aug 2026: every prod-filed sample failed its replica build locally
+    # with "loadedhub not connected for venue <prod-id>").
+    source_company_id = Column(String, nullable=True)
     # The analysis agent's latest output: {status, rationale,
     # proposed_instructions, ground_truth, candidate_results, green, model, at}.
     analysis = Column(JSON, nullable=True)
@@ -208,7 +216,7 @@ class SupplierSpecSample(ConfigBase):
     expected_replica = Column(JSON, nullable=True)
     # Dojo-page triage staging: a draft sample gets the full toolkit (run /
     # analyse / apply) but is EXCLUDED from the per-spec lists, Run Dojo and
-    # the summary until promoted (draft -> False) via "Add to dojo".
+    # the summary until promoted (draft -> False) via "Keep as sample".
     draft = Column(Boolean, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
