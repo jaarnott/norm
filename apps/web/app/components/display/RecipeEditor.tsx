@@ -18,7 +18,7 @@ import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
 import Combobox, { type ComboOption } from './Combobox';
 import HtmlField from './HtmlField';
-import { draftCost, lineCost, type CostTables } from './recipeCost';
+import { type CostTables } from './recipeCost';
 import { setPageDocument } from '../../lib/pageDocument';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 
@@ -35,6 +35,23 @@ interface EditLine {
   unit_name: string | null;
   unit_ratio: number;
   quantity: number;
+  // The referenced item/component's own stock unit (read-only, from Loaded) —
+  // used for the Stock Unit / Stock Cost columns, mirroring Loaded's editor.
+  stock_unit_name: string | null;
+  stock_unit_ratio: number;
+  // The stock item/component has been deleted in Loaded, but the line remains on
+  // the recipe (Loaded keeps costing it). Shown as a normal line, flagged.
+  item_deleted: boolean;
+}
+// A recipe version for the read-only viewer. Loaded returns a `versions` array
+// plus a `currentVersion`; only the current one is editable, the rest are history.
+interface RecipeVersion {
+  id: string;
+  label: string;
+  current: boolean;
+  yield_quantity: number;
+  yield_unit_name: string | null;
+  lines: EditLine[];
 }
 interface Draft {
   recipe_id: string; // '' for a not-yet-created recipe
@@ -45,6 +62,7 @@ interface Draft {
   yield_quantity: number;
   yield_unit_id: string | null;
   lines: EditLine[];
+  versions: RecipeVersion[];
 }
 interface VenueOpt { id: string; name: string }
 
@@ -53,28 +71,57 @@ function uid(): string {
 }
 const num = (v: unknown) => (typeof v === 'number' ? v : parseFloat(String(v)) || 0);
 
+// Map one raw Loaded version's lines into editable lines (DISPLAY units, quantity
+// / unitRatio). A line whose `deletedAt` is set is NOT removed from the recipe —
+// it means the referenced stock item/component was deleted in Loaded; Loaded keeps
+// the line and keeps costing it, so we keep it too and just flag it (item_deleted).
+function mapRawLines(cv: Record<string, unknown>): EditLine[] {
+  const rawLines = (cv.lines as Array<Record<string, unknown>>) || [];
+  return rawLines.map((l) => {
+    const ratio = num(l.unitRatio) || 1;
+    return {
+      key: uid(),
+      kind: l.itemId ? 'item' : 'recipe',
+      ref_id: (l.itemId as string) || (l.recipeId as string) || null,
+      name: (l.itemName as string) || (l.recipeName as string) || '',
+      unit_id: (l.unitId as string) || null,
+      unit_name: (l.unitName as string) || null,
+      unit_ratio: ratio,
+      quantity: num(l.quantity) / ratio,
+      stock_unit_name: (l.stockUnitName as string) || null,
+      stock_unit_ratio: num(l.stockUnitRatio) || 1,
+      item_deleted: !!l.deletedAt,
+    };
+  });
+}
+
+// The recipe's versions, for the read-only viewer. Loaded returns a `versions`
+// array (each with its own lines/yield) plus `currentVersion`.
+function versionsFromRaw(r: Record<string, unknown>): RecipeVersion[] {
+  const cur = (r.currentVersion as Record<string, unknown>) || {};
+  const curId = (cur.id as string) || '';
+  const raw = (r.versions as Array<Record<string, unknown>>) || (cur.id ? [cur] : []);
+  return raw.map((v, i) => {
+    const yr = num(v.yieldUnitRatio) || 1;
+    const isCurrent = (v.id as string) === curId;
+    const from = (v.validFrom as string) || '';
+    const label = isCurrent ? 'Current' : from ? `From ${from.slice(0, 10)}` : `Version ${raw.length - i}`;
+    return {
+      id: (v.id as string) || uid(),
+      label,
+      current: isCurrent,
+      yield_quantity: num(v.yieldQuantity) / yr,
+      yield_unit_name: (v.yieldUnitName as string) || null,
+      lines: mapRawLines(v),
+    };
+  });
+}
+
 // A Loaded recipe payload (from get_recipe) -> editable Draft (display units).
 function toDraft(r: Record<string, unknown>): Draft | null {
   const cv = (r.currentVersion as Record<string, unknown>) || null;
   if (!cv) return null;
   const yr = num(cv.yieldUnitRatio) || 1;
-  const rawLines = (cv.lines as Array<Record<string, unknown>>) || [];
-  const lines: EditLine[] = rawLines
-    .filter((l) => !l.deletedAt)
-    .map((l) => {
-      const ratio = num(l.unitRatio) || 1;
-      const isItem = !!l.itemId;
-      return {
-        key: uid(),
-        kind: isItem ? 'item' : 'recipe',
-        ref_id: (l.itemId as string) || (l.recipeId as string) || null,
-        name: (l.itemName as string) || (l.recipeName as string) || '',
-        unit_id: (l.unitId as string) || null,
-        unit_name: (l.unitName as string) || null,
-        unit_ratio: ratio,
-        quantity: num(l.quantity) / ratio,
-      };
-    });
   return {
     recipe_id: r.id as string,
     version_id: cv.id as string,
@@ -83,7 +130,8 @@ function toDraft(r: Record<string, unknown>): Draft | null {
     is_counted_in_stocktake: !!r.isCountedInStocktake,
     yield_quantity: num(cv.yieldQuantity) / yr,
     yield_unit_id: (cv.yieldUnitId as string) || null,
-    lines,
+    lines: mapRawLines(cv),
+    versions: versionsFromRaw(r),
   };
 }
 
@@ -98,6 +146,7 @@ function blankDraft(seed?: Partial<Draft>): Draft {
     yield_quantity: 1,
     yield_unit_id: null,
     lines: [],
+    versions: [],
     ...seed,
   };
 }
@@ -150,8 +199,23 @@ let openSession: { venueId: string | null; draft: Draft; workingDocId: string | 
 // A recipe working-document's data (built server-side by recipe_document.py) ->
 // the editable Draft. Loaded lines already carry a stable id; we key rows on it
 // so an agent edit picked up by the poll re-renders in place.
+function fdLine(l: Record<string, unknown>): EditLine {
+  return {
+    key: (l.id as string) || uid(),
+    kind: l.kind === 'recipe' ? 'recipe' : 'item',
+    ref_id: (l.ref_id as string) ?? null,
+    name: (l.name as string) || '',
+    unit_id: (l.unit_id as string) ?? null,
+    unit_name: (l.unit_name as string) ?? null,
+    unit_ratio: num(l.unit_ratio) || 1,
+    quantity: num(l.quantity),
+    stock_unit_name: (l.stock_unit_name as string) ?? null,
+    stock_unit_ratio: num(l.stock_unit_ratio) || 1,
+    item_deleted: !!l.item_deleted,
+  };
+}
 function fromDoc(d: Record<string, unknown>): Draft {
-  const lines = Array.isArray(d.lines) ? (d.lines as Array<Record<string, unknown>>) : [];
+  const arr = (v: unknown) => (Array.isArray(v) ? (v as Array<Record<string, unknown>>) : []);
   return {
     recipe_id: (d.recipe_id as string) || '',
     version_id: (d.version_id as string) || '',
@@ -160,15 +224,14 @@ function fromDoc(d: Record<string, unknown>): Draft {
     is_counted_in_stocktake: !!d.is_counted_in_stocktake,
     yield_quantity: num(d.yield_quantity),
     yield_unit_id: (d.yield_unit_id as string) || null,
-    lines: lines.map((l) => ({
-      key: (l.id as string) || uid(),
-      kind: l.kind === 'recipe' ? 'recipe' : 'item',
-      ref_id: (l.ref_id as string) ?? null,
-      name: (l.name as string) || '',
-      unit_id: (l.unit_id as string) ?? null,
-      unit_name: (l.unit_name as string) ?? null,
-      unit_ratio: num(l.unit_ratio) || 1,
-      quantity: num(l.quantity),
+    lines: arr(d.lines).map(fdLine),
+    versions: arr(d.versions).map((v) => ({
+      id: (v.id as string) || uid(),
+      label: (v.label as string) || 'Version',
+      current: !!v.current,
+      yield_quantity: num(v.yield_quantity),
+      yield_unit_name: (v.yield_unit_name as string) ?? null,
+      lines: arr(v.lines).map(fdLine),
     })),
   };
 }
@@ -193,10 +256,18 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   const [units, setUnits] = useState<Unit[]>([]);
   const [opts, setOpts] = useState<Opt[]>([]);
   const [costTables, setCostTables] = useState<CostTables | null>(null);
+  // Per-ingredient cost from Loaded's own costs endpoint (ref_id -> cost per base
+  // unit + the item/component's stock unit). This is what Loaded's editor uses, so
+  // our Stock cost / Recipe cost columns match it exactly.
+  const [costsById, setCostsById] = useState<Map<string, { cost: number; unitName: string | null; unitRatio: number }>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // The version being viewed. null = the current (editable) version; any other id
+  // is a past version shown read-only. Falls back to current if it isn't in the
+  // open recipe (e.g. after switching recipes), so no reset effect is needed.
+  const [viewVersionId, setViewVersionId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(() =>
     embedded && initialRecipe ? toDraft(initialRecipe) : openSession?.draft ?? null,
   );
@@ -283,19 +354,12 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
       const subs = rl.map((x) => ({ id: x.id, name: (x.name || '').trim(), kind: 'recipe' as const }));
       setOpts([...subs, ...items]);
 
-      // Cost tables: a recipe index (with lines, for sub-recipe costing), an item
-      // price index, and a unitId -> type map. See recipeCost.ts.
-      const recipeMap = new Map(rl.map((x) => {
-        const cv = x.currentVersion || {};
-        return [x.id, {
-          yieldQuantity: num(cv.yieldQuantity),
-          yieldUnitRatio: num(cv.yieldUnitRatio) || 1,
-          lines: (cv.lines || []).map((l) => ({ itemId: l.itemId, recipeId: l.recipeId, quantity: num(l.quantity), unitRatio: num(l.unitRatio) || 1, unitId: l.unitId, deletedAt: l.deletedAt })),
-        }] as const;
-      }));
+      // Cost tables here serve only the ingredient picker (an item's counting unit
+      // + unit types for the unit dropdown). Line COSTS come straight from Loaded's
+      // costs endpoint (see fetchCosts) so they match Loaded's editor exactly.
       const itemMap = new Map(allItems.map((i) => [i.id, { currentPrice: num(i.currentPrice), countingUnitId: i.countingUnitId }] as const));
       const unitTypeMap = new Map(rawUnits.filter((u) => u.stockUnitType).map((u) => [u.id, u.stockUnitType as string] as const));
-      setCostTables({ recipes: recipeMap, items: itemMap, unitType: unitTypeMap });
+      setCostTables({ recipes: new Map(), items: itemMap, unitType: unitTypeMap });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load recipes');
     }
@@ -303,6 +367,40 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   }, [embedded]);
 
   useEffect(() => { if (venueId) loadRefs(venueId); }, [venueId, loadRefs]);
+
+  // Pull Loaded's Live cost for every ingredient/component the recipe references
+  // (items and sub-recipes), keyed by ref_id. This is the same endpoint Loaded's
+  // own editor uses, so the Stock cost / Recipe cost columns match it exactly.
+  const fetchCosts = useCallback(async (lines: EditLine[], vid: string) => {
+    const itemIds = Array.from(new Set(lines.filter((l) => l.kind === 'item' && l.ref_id).map((l) => l.ref_id as string)));
+    const recipeIds = Array.from(new Set(lines.filter((l) => l.kind === 'recipe' && l.ref_id).map((l) => l.ref_id as string)));
+    if (!itemIds.length && !recipeIds.length) { setCostsById(new Map()); return; }
+    const ts = new Date().toISOString();
+    const parts: string[] = [];
+    for (const id of itemIds) parts.push('itemIdTimeStrings=' + encodeURIComponent(`${id},${ts}`));
+    for (const id of recipeIds) parts.push('recipeIdTimeStrings=' + encodeURIComponent(`${id},${ts}`));
+    parts.push('priceType=Live');
+    try {
+      const res = await callComponentApi('recipe_editor', 'get_costs', { q: parts.join('&') }, vid);
+      const data = res?.data as { itemCosts?: Record<string, Array<Record<string, unknown>>>; recipeCosts?: Record<string, Array<Record<string, unknown>>> } | undefined;
+      const m = new Map<string, { cost: number; unitName: string | null; unitRatio: number }>();
+      for (const src of [data?.itemCosts, data?.recipeCosts]) {
+        for (const [id, arr] of Object.entries(src || {})) {
+          const c = Array.isArray(arr) ? arr[0] : null;
+          if (c) m.set(id, { cost: num(c.cost), unitName: (c.unitName as string) ?? null, unitRatio: num(c.unitRatio) || 1 });
+        }
+      }
+      setCostsById(m);
+    } catch { /* keep last-known costs */ }
+  }, []);
+
+  // Re-fetch only when the SET of referenced ingredients changes (not on every
+  // qty/unit keystroke — those recompute locally from the cached per-base cost).
+  const costRefKey = draft ? draft.lines.map((l) => `${l.kind}:${l.ref_id ?? ''}`).sort().join('|') : '';
+  useEffect(() => {
+    if (draft && venueId) fetchCosts(draft.lines, venueId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [costRefKey, venueId, fetchCosts]);
 
   // Mirror the open recipe into module scope so a functional-page remount (which
   // happens the moment you send a chat message) restores it instead of dropping
@@ -373,23 +471,44 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     }
     return l.unit_id ? costTables?.unitType.get(l.unit_id) : undefined;
   };
-  const lineCostOf = (l: EditLine) => {
-    if (!costTables || !l.ref_id) return null;
-    return lineCost(
-      { itemId: l.kind === 'item' ? l.ref_id : null, recipeId: l.kind === 'recipe' ? l.ref_id : null, quantity: l.quantity, unitRatio: l.unit_ratio, unitId: l.unit_id },
-      costTables,
-      draft?.recipe_id ? new Set([draft.recipe_id]) : new Set(),
-    );
+  // Recipe cost of one line = qty (in the line's unit) × Loaded's per-base cost.
+  // qty × unitRatio is the base quantity; Loaded's `cost` is per base unit. A line
+  // with no cost yet (endpoint not returned, or a brand-new ingredient) is
+  // incomplete, so the total shows a "~".
+  const lineCostOf = (l: EditLine): { cost: number; complete: boolean } | null => {
+    if (!l.ref_id) return null;
+    const c = costsById.get(l.ref_id);
+    if (!c) return { cost: 0, complete: false };
+    return { cost: l.quantity * l.unit_ratio * c.cost, complete: true };
   };
-  // Total recipe cost + cost per yield unit (recomputed as the draft changes).
-  const totalCost = useMemo(() => {
-    if (!draft || !costTables) return null;
-    return draftCost(
-      draft.lines.map((l) => ({ itemId: l.kind === 'item' ? l.ref_id : null, recipeId: l.kind === 'recipe' ? l.ref_id : null, quantity: l.quantity, unitRatio: l.unit_ratio, unitId: l.unit_id })),
-      costTables,
-      draft.recipe_id || undefined,
-    );
-  }, [draft, costTables]);
+  // Loaded's "Stock cost" column: cost of ONE of the ingredient's stock units =
+  // per-base cost × stock-unit ratio.
+  const stockCostOf = (l: EditLine): number | null => {
+    const c = l.ref_id ? costsById.get(l.ref_id) : undefined;
+    if (!c) return null;
+    return c.cost * (c.unitRatio || 1);
+  };
+  // Loaded's "Stock unit" column — the ingredient's own stock unit from the costs
+  // endpoint (falls back to the recipe line's stored stock unit).
+  const stockUnitOf = (l: EditLine): string => {
+    const c = l.ref_id ? costsById.get(l.ref_id) : undefined;
+    return c?.unitName || l.stock_unit_name || '';
+  };
+  const linesTotal = (lines: EditLine[]): { cost: number; complete: boolean } => {
+    let cost = 0;
+    let complete = true;
+    for (const l of lines) {
+      if (!l.ref_id) continue;
+      const lc = lineCostOf(l);
+      if (!lc || !lc.complete) { complete = false; continue; }
+      cost += lc.cost;
+    }
+    return { cost, complete };
+  };
+  // Total recipe cost + cost per yield unit (recomputed as the draft/costs change).
+  const totalCost = useMemo(() => (draft ? linesTotal(draft.lines) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [draft, costsById]);
 
   const clearDoc = () => { setWorkingDocId(null); setDocVersion(0); lastVersionRef.current = 0; };
 
@@ -446,6 +565,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
         key: uid(), kind: 'item' as const, ref_id: null,
         name: ing.name || '', unit_id: null, unit_name: null, unit_ratio: 1,
         quantity: typeof ing.quantity === 'number' ? ing.quantity : 0,
+        stock_unit_name: null, stock_unit_ratio: 1, item_deleted: false,
       })),
     }));
   };
@@ -457,9 +577,25 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   const setNotes = (notes: string) => { touch(); setDraft((d) => (d ? { ...d, notes } : d)); };
   const setYieldQty = (q: number) => { touch(); setDraft((d) => (d ? { ...d, yield_quantity: q } : d)); };
   const setYieldUnit = (unitId: string) => { touch(); setDraft((d) => (d ? { ...d, yield_unit_id: unitId } : d)); };
-  const addLine = () => { touch(); setDraft((d) => (d ? { ...d, lines: [...d.lines, { key: uid(), kind: 'item', ref_id: null, name: '', unit_id: null, unit_name: null, unit_ratio: 1, quantity: 0 }] } : d)); };
+  const addLine = () => { touch(); setDraft((d) => (d ? { ...d, lines: [...d.lines, { key: uid(), kind: 'item', ref_id: null, name: '', unit_id: null, unit_name: null, unit_ratio: 1, quantity: 0, stock_unit_name: null, stock_unit_ratio: 1, item_deleted: false }] } : d)); };
   const removeLine = (key: string) => { touch(); setDraft((d) => (d ? { ...d, lines: d.lines.filter((l) => l.key !== key) } : d)); };
   const updateLine = (key: string, patch: Partial<EditLine>) => { touch(); setDraft((d) => (d ? { ...d, lines: d.lines.map((l) => (l.key === key ? { ...l, ...patch } : l)) } : d)); };
+  // Drag-to-reorder ingredient lines. Moves `fromKey` to just before `toKey`
+  // (dropping on the last row appends). Current version only (see the render).
+  const reorderLines = (fromKey: string, toKey: string) => {
+    if (fromKey === toKey) return;
+    touch();
+    setDraft((d) => {
+      if (!d) return d;
+      const lines = [...d.lines];
+      const from = lines.findIndex((l) => l.key === fromKey);
+      const to = lines.findIndex((l) => l.key === toKey);
+      if (from < 0 || to < 0) return d;
+      const [moved] = lines.splice(from, 1);
+      lines.splice(to, 0, moved);
+      return { ...d, lines };
+    });
+  };
 
   const pickUnit = (key: string, unitId: string) => {
     const u = unitById.get(unitId);
@@ -472,7 +608,11 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     if (o.kind !== 'recipe') {
       const it = costTables?.items.get(o.id);
       const u = it?.countingUnitId ? unitById.get(it.countingUnitId) : undefined;
-      if (u) { patch.unit_id = u.id; patch.unit_name = u.name; patch.unit_ratio = u.ratio; }
+      if (u) {
+        patch.unit_id = u.id; patch.unit_name = u.name; patch.unit_ratio = u.ratio;
+        // A stock item's stock unit IS its counting unit (Stock Cost columns).
+        patch.stock_unit_name = u.name; patch.stock_unit_ratio = u.ratio;
+      }
     }
     updateLine(key, patch);
   };
@@ -546,10 +686,10 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   // Unit picker, scoped to a stock unit type when known (so a solid ingredient
   // offers kg/g, not all 450+ units). Falls back to every unit if type unknown,
   // and always keeps the currently-selected unit visible.
-  const unitSelect = (value: string | null, onChange: (id: string) => void, type?: string) => {
+  const unitSelect = (value: string | null, onChange: (id: string) => void, type?: string, width = 120) => {
     const list = type ? units.filter((u) => !u.type || u.type === type || u.id === value) : units;
     return (
-      <select value={value || ''} onChange={(e) => onChange(e.target.value)} style={{ ...input, width: 120 }}>
+      <select value={value || ''} onChange={(e) => onChange(e.target.value)} style={{ ...input, width }}>
         {!value && <option value="">unit</option>}
         {list.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
       </select>
@@ -559,30 +699,54 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   if (draft) {
     const yieldUnitName = units.find((u) => u.id === draft.yield_unit_id)?.name || 'yield';
     const lbl: React.CSSProperties = { fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: colors.textMuted };
+    // Version viewer: a viewVersionId that isn't in this recipe (or null) means
+    // the current, editable version; any other is a past version shown read-only.
+    const curVer = draft.versions.find((v) => v.current) || null;
+    const selVer = (viewVersionId ? draft.versions.find((v) => v.id === viewVersionId) : null) || curVer;
+    const viewingPast = !!selVer && !selVer.current;
+    const viewLines = viewingPast && selVer ? selVer.lines : draft.lines;
+    const viewYieldQty = viewingPast && selVer ? selVer.yield_quantity : draft.yield_quantity;
+    const viewYieldUnit = viewingPast && selVer ? (selVer.yield_unit_name || 'yield') : yieldUnitName;
+    const viewTotal = viewingPast && selVer ? linesTotal(selVer.lines) : totalCost;
+    const versionSelect = draft.recipe_id && draft.versions.length > 0 && (
+      <select value={selVer?.id || ''} onChange={(e) => setViewVersionId(e.target.value)} style={selectStyle} title="Recipe version">
+        {draft.versions.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+      </select>
+    );
     return (
-      <div style={{ maxWidth: 760 }}>
-        {/* Header: back · title · venue · save */}
+      <div style={{ maxWidth: 1080 }}>
+        {/* Header: back · title · venue · version · save */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
           {!embedded && <button onClick={closeEditor} disabled={saving} style={ghost}>← Recipes</button>}
           <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>{draft.recipe_id ? 'Edit recipe' : 'New recipe'}</h2>
           {venueSelect}
+          {versionSelect}
           <span style={{ flex: 1 }} />
           {notes}
-          <button onClick={save} disabled={saving || !draft.name.trim()} style={btn(colors.executive_chef)}>{saving ? 'Saving…' : draft.recipe_id ? 'Save to Loaded' : 'Create in Loaded'}</button>
+          <button onClick={save} disabled={saving || viewingPast || !draft.name.trim()} title={viewingPast ? 'Switch to Current to edit' : undefined} style={btn(colors.executive_chef)}>{saving ? 'Saving…' : draft.recipe_id ? 'Save to Loaded' : 'Create in Loaded'}</button>
         </div>
+        {viewingPast && (
+          <div style={{ fontSize: '0.78rem', color: colors.textMuted, background: colors.selectedBg, border: `1px solid ${colors.borderLight}`, borderRadius: 8, padding: '0.5rem 0.7rem', marginBottom: '0.9rem' }}>
+            Viewing a past version — read-only. Switch to <strong>Current</strong> to edit.
+          </div>
+        )}
 
         {/* Details card: name · yield · live cost */}
         <div style={{ border: `1px solid ${colors.border}`, borderRadius: 10, padding: '1rem 1.1rem', marginBottom: '1.1rem', background: '#fff' }}>
           {!draft.recipe_id && <div style={{ fontSize: '0.78rem', color: colors.textMuted, marginBottom: '0.6rem' }}>This will be created in Loaded when you save.</div>}
-          <input value={draft.name} onChange={(e) => setName(e.target.value)} placeholder="Recipe name"
+          <input value={draft.name} onChange={(e) => setName(e.target.value)} readOnly={viewingPast} placeholder="Recipe name"
             style={{ fontSize: '1.2rem', fontWeight: 700, color: colors.textPrimary, width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: `1px solid ${colors.border}`, padding: '2px 0 7px', fontFamily: 'inherit', outline: 'none' }} />
           <div style={{ marginTop: '0.9rem' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', width: 'fit-content' }}>
               <span style={lbl}>Yield</span>
-              <div style={{ display: 'flex', gap: '0.4rem' }}>
-                <input type="number" step="0.01" min="0" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ ...input, width: 80, textAlign: 'right' }} />
-                {unitSelect(draft.yield_unit_id, setYieldUnit)}
-              </div>
+              {viewingPast ? (
+                <div style={{ fontSize: '0.85rem', color: colors.textPrimary }}>{+viewYieldQty.toFixed(2)} {viewYieldUnit}</div>
+              ) : (
+                <div style={{ display: 'flex', gap: '0.4rem' }}>
+                  <input type="number" step="0.01" min="0" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ ...input, width: 80, textAlign: 'right' }} />
+                  {unitSelect(draft.yield_unit_id, setYieldUnit)}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -591,46 +755,76 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
         <div style={{ ...lbl, marginBottom: '0.35rem' }}>Ingredients</div>
         <div style={{ border: `1px solid ${colors.border}`, borderRadius: 8 }}>
           <div style={{ display: 'flex', gap: '0.4rem', padding: '0.5rem 0.7rem', background: colors.selectedBg, fontSize: '0.68rem', color: colors.textMuted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', borderTopLeftRadius: 7, borderTopRightRadius: 7 }}>
-            <span style={{ flex: 1 }}>Ingredient</span><span style={{ width: 84, textAlign: 'right' }}>Qty</span><span style={{ width: 112 }}>Unit</span><span style={{ width: 72, textAlign: 'right' }}>Cost</span><span style={{ width: 28 }} />
+            <span style={{ width: 18 }} /><span style={{ width: 66 }}>Qty</span><span style={{ width: 104 }}>Unit</span><span style={{ flex: 1, paddingLeft: '0.2rem' }}>Ingredient</span><span style={{ width: 88 }}>Stock unit</span><span style={{ width: 92, textAlign: 'right' }}>Stock cost</span><span style={{ width: 84, textAlign: 'right' }}>Recipe cost</span><span style={{ width: 28 }} />
           </div>
           <div style={{ padding: '0.6rem 0.7rem' }}>
-            {draft.lines.length === 0 && (
-              <div style={{ fontSize: '0.8rem', color: colors.textMuted, padding: '0.15rem 0 0.5rem' }}>No ingredients yet — add one below.</div>
+            {viewLines.length === 0 && (
+              <div style={{ fontSize: '0.85rem', color: colors.textMuted, padding: '0.15rem 0 0.5rem' }}>No ingredients yet — add one below.</div>
             )}
-            {draft.lines.map((l) => {
-              const lc = lineCostOf(l);
-              return (
-                <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.45rem' }}>
-                  <div style={{ flex: 1 }}>
-                    <Combobox
-                      value={l.name}
-                      options={ingredientOptions}
-                      onType={(t) => updateLine(l.key, { name: t, ref_id: null })}
-                      onPick={(o) => pickIngredient(l.key, o)}
-                      placeholder="Search ingredient or sub-recipe"
-                    />
-                  </div>
-                  <input type="number" step="0.001" min="0" value={l.quantity} onChange={(e) => updateLine(l.key, { quantity: parseFloat(e.target.value) })} style={{ ...input, width: 84, textAlign: 'right' }} />
-                  {unitSelect(l.unit_id, (u) => pickUnit(l.key, u), unitTypeForLine(l))}
-                  <span style={{ width: 72, textAlign: 'right', fontSize: '0.8rem', color: lc?.complete ? colors.textPrimary : colors.textMuted }} title={lc && !lc.complete ? 'No price for this ingredient yet' : undefined}>
-                    {lc?.complete ? money(lc.cost) : '—'}
-                  </span>
-                  <button onClick={() => removeLine(l.key)} style={{ ...ghost, width: 28, padding: '5px 0', textAlign: 'center' }} title="Remove">✕</button>
-                </div>
-              );
-            })}
-            <button onClick={addLine} style={{ ...ghost, marginTop: 4 }}>+ Add ingredient</button>
+            {viewingPast
+              ? viewLines.map((l) => {
+                  const lc = lineCostOf(l);
+                  const sc = stockCostOf(l);
+                  return (
+                    <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.45rem', background: l.item_deleted ? 'rgba(229,72,77,0.08)' : undefined, borderRadius: 6 }}>
+                      <span style={{ width: 18 }} />
+                      <span style={{ width: 66, fontSize: '0.85rem', color: colors.textPrimary }}>{+l.quantity.toFixed(3)}</span>
+                      <span style={{ width: 104, fontSize: '0.85rem', color: colors.textMuted, paddingLeft: '0.2rem' }}>{l.unit_name || ''}</span>
+                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.35rem', paddingLeft: '0.2rem' }}>
+                        <span style={{ fontSize: '0.85rem', color: colors.textPrimary }}>{l.name}</span>
+                        {l.item_deleted && <span title="This stock item has been deleted in Loaded" style={{ fontSize: '0.55rem', fontWeight: 700, color: '#e5484d', border: '1px solid #e5484d', padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.03em', whiteSpace: 'nowrap' }}>deleted</span>}
+                      </div>
+                      <span style={{ width: 88, fontSize: '0.85rem', color: colors.textMuted }}>{stockUnitOf(l)}</span>
+                      <span style={{ width: 92, textAlign: 'right', fontSize: '0.85rem', color: colors.textMuted }}>{sc != null ? money(sc) : '—'}</span>
+                      <span style={{ width: 84, textAlign: 'right', fontSize: '0.85rem', color: lc?.complete ? colors.textPrimary : colors.textMuted }} title={lc && !lc.complete ? 'No price for this ingredient yet' : undefined}>{lc?.complete ? money(lc.cost) : '—'}</span>
+                      <span style={{ width: 28 }} />
+                    </div>
+                  );
+                })
+              : draft.lines.map((l) => {
+                  const lc = lineCostOf(l);
+                  const sc = stockCostOf(l);
+                  return (
+                    <div key={l.key}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => { e.preventDefault(); const from = e.dataTransfer.getData('text/plain'); if (from) reorderLines(from, l.key); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.45rem', background: l.item_deleted ? 'rgba(229,72,77,0.08)' : undefined, borderRadius: 6 }}>
+                      <span draggable onDragStart={(e) => { e.dataTransfer.setData('text/plain', l.key); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder" style={{ width: 18, textAlign: 'center', cursor: 'grab', color: colors.textMuted, fontSize: '0.85rem', userSelect: 'none' }}>⠿</span>
+                      <input type="number" step="0.001" min="0" value={l.quantity} onChange={(e) => updateLine(l.key, { quantity: parseFloat(e.target.value) })} style={{ ...input, width: 66, textAlign: 'left', fontSize: '0.85rem' }} />
+                      {unitSelect(l.unit_id, (u) => pickUnit(l.key, u), unitTypeForLine(l), 104)}
+                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <div style={{ flex: 1 }}>
+                          <Combobox
+                            value={l.name}
+                            options={ingredientOptions}
+                            onType={(t) => updateLine(l.key, { name: t, ref_id: null })}
+                            onPick={(o) => pickIngredient(l.key, o)}
+                            placeholder="Search ingredient or sub-recipe"
+                          />
+                        </div>
+                        {l.item_deleted && <span title="This stock item has been deleted in Loaded" style={{ fontSize: '0.55rem', fontWeight: 700, color: '#e5484d', border: '1px solid #e5484d', padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.03em', whiteSpace: 'nowrap' }}>deleted</span>}
+                      </div>
+                      <span style={{ width: 88, fontSize: '0.85rem', color: colors.textMuted }}>{stockUnitOf(l)}</span>
+                      <span style={{ width: 92, textAlign: 'right', fontSize: '0.85rem', color: colors.textMuted }} title="Cost per stock unit">{sc != null ? money(sc) : '—'}</span>
+                      <span style={{ width: 84, textAlign: 'right', fontSize: '0.85rem', color: lc?.complete ? colors.textPrimary : colors.textMuted }} title={lc && !lc.complete ? 'No price for this ingredient yet' : undefined}>
+                        {lc?.complete ? money(lc.cost) : '—'}
+                      </span>
+                      <button onClick={() => removeLine(l.key)} style={{ ...ghost, width: 28, padding: '5px 0', textAlign: 'center' }} title="Remove">✕</button>
+                    </div>
+                  );
+                })}
+            {!viewingPast && <button onClick={addLine} style={{ ...ghost, marginTop: 4 }}>+ Add ingredient</button>}
           </div>
-          {totalCost && draft.lines.some((l) => l.ref_id) && (
+          {viewTotal && viewLines.some((l) => l.ref_id) && (
             <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'baseline', gap: '1.25rem', padding: '0.6rem 0.75rem', borderTop: `1px solid ${colors.borderLight}`, background: colors.pageBg, borderBottomLeftRadius: 7, borderBottomRightRadius: 7 }}>
-              {draft.yield_quantity > 0 && (
-                <span style={{ fontSize: '0.8rem', color: colors.textMuted }}>{money(totalCost.cost / draft.yield_quantity)} / {yieldUnitName}</span>
+              {viewYieldQty > 0 && (
+                <span style={{ fontSize: '0.8rem', color: colors.textMuted }}>{money(viewTotal.cost / viewYieldQty)} / {viewYieldUnit}</span>
               )}
-              <span style={{ fontSize: '0.95rem', fontWeight: 700, color: colors.textPrimary }}>{totalCost.complete ? '' : '~'}{money(totalCost.cost)} total</span>
+              <span style={{ fontSize: '0.95rem', fontWeight: 700, color: colors.textPrimary }}>{viewTotal.complete ? '' : '~'}{money(viewTotal.cost)} total</span>
             </div>
           )}
         </div>
-        {totalCost && !totalCost.complete && draft.lines.some((l) => l.ref_id) && (
+        {viewTotal && !viewTotal.complete && viewLines.some((l) => l.ref_id) && (
           <div style={{ fontSize: '0.72rem', color: colors.textMuted, marginTop: '0.4rem' }}>~ Some lines have no price yet, so the total is a partial estimate.</div>
         )}
 

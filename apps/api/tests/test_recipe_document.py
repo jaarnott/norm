@@ -79,7 +79,7 @@ class TestApplyOpRecipe:
 
 
 class TestBuildRecipeDraft:
-    def test_converts_base_to_display_units_and_drops_deleted(self):
+    def test_converts_base_to_display_units_and_surfaces_deleted(self):
         payload = {
             "id": "R1",
             "name": " Roasted Carrots ",
@@ -101,6 +101,8 @@ class TestBuildRecipeDraft:
                         "unitName": "Gram",
                         "unitRatio": 0.001,
                         "quantity": 0.5,
+                        "stockUnitName": "Kilo",
+                        "stockUnitRatio": 1,
                     },
                     # a sub-recipe line
                     {
@@ -112,11 +114,13 @@ class TestBuildRecipeDraft:
                         "unitRatio": 1,
                         "quantity": 0.02,
                     },
-                    # deleted -> dropped
+                    # item deleted in Loaded, but the line stays on the recipe
                     {
                         "id": "l3",
                         "itemId": "x",
                         "itemName": "X",
+                        "unitId": "kg",
+                        "unitName": "Kilo",
                         "unitRatio": 1,
                         "quantity": 9,
                         "deletedAt": "2021-01-01",
@@ -129,14 +133,73 @@ class TestBuildRecipeDraft:
         assert d["name"] == "Roasted Carrots"  # trimmed
         assert d["is_counted_in_stocktake"] is True
         assert d["yield_quantity"] == 4
-        assert len(d["lines"]) == 2  # deleted dropped
+        # All three lines are kept — the deleted-item line stays on the recipe.
+        assert len(d["lines"]) == 3
         carrot = d["lines"][0]
         assert carrot["kind"] == "item"
         assert carrot["ref_id"] == "carrot"
         assert carrot["quantity"] == 500  # 0.5 / 0.001
+        assert carrot["stock_unit_name"] == "Kilo"  # for the Stock Unit / Stock Cost columns
+        assert carrot["stock_unit_ratio"] == 1
+        assert carrot["item_deleted"] is False
         sub = d["lines"][1]
         assert sub["kind"] == "recipe"
         assert sub["ref_id"] == "sub"
+        # The deleted-item line is kept as a normal line, just flagged.
+        deleted = d["lines"][2]
+        assert deleted["name"] == "X"
+        assert deleted["quantity"] == 9  # 9 / 1
+        assert deleted["item_deleted"] is True
+        # With no explicit versions[], the current version is the only one, marked
+        # current, and its lines mirror the editable draft (display units).
+        assert len(d["versions"]) == 1
+        assert d["versions"][0]["current"] is True
+        assert d["versions"][0]["label"] == "Current"
+        assert len(d["versions"][0]["lines"]) == 3
+
+    def test_builds_read_only_version_history(self):
+        payload = {
+            "id": "R2",
+            "name": "Sauce",
+            "currentVersion": {
+                "id": "V2",
+                "yieldQuantity": 1,
+                "yieldUnitRatio": 1,
+                "yieldUnitName": "Litre",
+                "lines": [
+                    {"id": "c1", "itemId": "i", "itemName": "Cream", "unitId": "l", "unitName": "Litre", "unitRatio": 1, "quantity": 1}
+                ],
+            },
+            "versions": [
+                {
+                    "id": "V1",
+                    "validFrom": "2024-01-05T00:00:00+00:00",
+                    "yieldQuantity": 1,
+                    "yieldUnitRatio": 1,
+                    "yieldUnitName": "Litre",
+                    "lines": [
+                        {"id": "b1", "itemId": "i", "itemName": "Cream", "unitId": "l", "unitName": "Litre", "unitRatio": 1, "quantity": 0.8}
+                    ],
+                },
+                {
+                    "id": "V2",
+                    "yieldQuantity": 1,
+                    "yieldUnitRatio": 1,
+                    "yieldUnitName": "Litre",
+                    "lines": [
+                        {"id": "c1", "itemId": "i", "itemName": "Cream", "unitId": "l", "unitName": "Litre", "unitRatio": 1, "quantity": 1}
+                    ],
+                },
+            ],
+        }
+        d = build_recipe_draft(payload)
+        assert [v["id"] for v in d["versions"]] == ["V1", "V2"]
+        v1, v2 = d["versions"]
+        assert v1["current"] is False and v1["label"] == "From 2024-01-05"
+        assert v2["current"] is True and v2["label"] == "Current"
+        # Each version carries its own display-unit lines.
+        assert v1["lines"][0]["quantity"] == 0.8
+        assert v2["lines"][0]["quantity"] == 1
 
 
 class TestApplyRecipeChanges:

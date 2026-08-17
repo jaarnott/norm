@@ -22,7 +22,7 @@ import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
 import Combobox, { type ComboOption } from './Combobox';
-import { recipeCost, type CostTables } from './recipeCost';
+import { recipeCost, costRecipeFromVersion, type CostTables } from './recipeCost';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 
 const num = (v: unknown): number => (typeof v === 'number' ? v : parseFloat(String(v)) || 0);
@@ -127,14 +127,9 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
       const allItems = (iRes?.data as Array<{ id: string; currentPrice?: unknown; countingUnitId?: string }>) || [];
       const rawUnits = ((uRes?.data as Array<{ id: string; ratio?: unknown; stockUnitType?: string; datestampDeleted?: unknown }>) || [])
         .filter((u) => !u.datestampDeleted);
-      const recipeMap = new Map(rawRecipes.map((x) => {
-        const cv = x.currentVersion || {};
-        return [x.id, {
-          yieldQuantity: num(cv.yieldQuantity),
-          yieldUnitRatio: num(cv.yieldUnitRatio) || 1,
-          lines: (cv.lines || []).map((l) => ({ itemId: l.itemId, recipeId: l.recipeId, quantity: num(l.quantity), unitRatio: num(l.unitRatio) || 1, unitId: l.unitId, deletedAt: l.deletedAt })),
-        }] as const;
-      }));
+      // costRecipeFromVersion converts Loaded's base-unit quantities/yield to the
+      // engine's display convention — without it sub-recipe costs are ~1000x off.
+      const recipeMap = new Map(rawRecipes.map((x) => [x.id, costRecipeFromVersion(x.currentVersion || {})] as const));
       const itemMap = new Map(allItems.map((i) => [i.id, { currentPrice: num(i.currentPrice), countingUnitId: i.countingUnitId }] as const));
       const unitTypeMap = new Map(rawUnits.filter((u) => u.stockUnitType).map((u) => [u.id, u.stockUnitType as string] as const));
       setCostTables({ recipes: recipeMap, items: itemMap, unitType: unitTypeMap });

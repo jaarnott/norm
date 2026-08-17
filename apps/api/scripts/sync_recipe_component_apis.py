@@ -79,6 +79,16 @@ ROWS = [
         "Units",
         "//api.loadedhub.com/1.0/stock/internal/units?includeDeleted=true",
     ),
+    # Loaded's own cost source (what Mercury calls to fill the Recipe Cost column):
+    # per item AND per recipe/component, priced Live at a timestamp. The client
+    # builds the whole query string (repeated itemIdTimeStrings/recipeIdTimeStrings
+    # params) and passes it as `q`.
+    _row(
+        "get_costs",
+        "Ingredient costs",
+        "//api.loadedhub.com/1.0/stock/internal/costs?{{ q }}",
+        required=["q"],
+    ),
 ]
 
 

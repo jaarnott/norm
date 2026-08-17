@@ -9,7 +9,9 @@ to LoadedHub via ``recipe_save.save_recipe``.
 
 ``build_recipe_draft`` mirrors the frontend ``toDraft`` (RecipeEditor.tsx): Loaded
 stores line quantities in BASE units, the draft works in DISPLAY units
-(quantity / unitRatio), and a removed line (``deletedAt``) is dropped.
+(quantity / unitRatio). A line whose ``deletedAt`` is set means its stock
+item/component was deleted in Loaded — the line stays on the recipe (Loaded keeps
+costing it) and is kept here too, flagged ``item_deleted``.
 """
 
 from __future__ import annotations
@@ -27,28 +29,74 @@ def _num(v: object) -> float:
         return 0.0
 
 
-def build_recipe_draft(r: dict) -> dict:
-    """A get_recipe payload -> the editable draft (display units)."""
-    cv = r.get("currentVersion") or {}
-    yr = _num(cv.get("yieldUnitRatio")) or 1
-    lines = []
+def _map_version_lines(cv: dict) -> list:
+    """One raw version's lines -> editable lines (display units).
+
+    A line whose ``deletedAt`` is set is NOT removed from the recipe — it means the
+    referenced stock item/component was deleted in Loaded, while the line stays on
+    the recipe (Loaded keeps costing it). We keep the line and flag it
+    (``item_deleted``) rather than dropping it.
+    """
+    lines: list = []
     for line in cv.get("lines") or []:
-        if not isinstance(line, dict) or line.get("deletedAt"):
+        if not isinstance(line, dict):
             continue
         ratio = _num(line.get("unitRatio")) or 1
-        is_item = bool(line.get("itemId"))
         lines.append(
             {
                 "id": line.get("id") or str(uuid.uuid4()),
-                "kind": "item" if is_item else "recipe",
+                "kind": "item" if line.get("itemId") else "recipe",
                 "ref_id": line.get("itemId") or line.get("recipeId"),
                 "name": (line.get("itemName") or line.get("recipeName") or "").strip(),
                 "unit_id": line.get("unitId"),
                 "unit_name": line.get("unitName"),
                 "unit_ratio": ratio,
                 "quantity": _num(line.get("quantity")) / ratio,
+                "stock_unit_name": line.get("stockUnitName"),
+                "stock_unit_ratio": _num(line.get("stockUnitRatio")) or 1,
+                "item_deleted": bool(line.get("deletedAt")),
             }
         )
+    return lines
+
+
+def _build_versions(r: dict) -> list:
+    """The recipe's versions for the read-only viewer. Loaded returns a
+    ``versions`` array (each with its own lines/yield) plus ``currentVersion``.
+    Only the current version is editable; the rest are viewable history."""
+    cur = r.get("currentVersion") or {}
+    cur_id = cur.get("id")
+    raw = r.get("versions") or ([cur] if cur.get("id") else [])
+    out: list = []
+    n = len(raw)
+    for i, v in enumerate(raw):
+        if not isinstance(v, dict):
+            continue
+        yr = _num(v.get("yieldUnitRatio")) or 1
+        is_current = v.get("id") == cur_id
+        vfrom = v.get("validFrom") or ""
+        label = (
+            "Current"
+            if is_current
+            else (f"From {vfrom[:10]}" if vfrom else f"Version {n - i}")
+        )
+        out.append(
+            {
+                "id": v.get("id") or str(uuid.uuid4()),
+                "label": label,
+                "current": is_current,
+                "yield_quantity": _num(v.get("yieldQuantity")) / yr,
+                "yield_unit_name": v.get("yieldUnitName"),
+                "lines": _map_version_lines(v),
+            }
+        )
+    return out
+
+
+def build_recipe_draft(r: dict) -> dict:
+    """A get_recipe payload -> the editable draft (display units)."""
+    cv = r.get("currentVersion") or {}
+    yr = _num(cv.get("yieldUnitRatio")) or 1
     return {
         "recipe_id": r.get("id"),
         "version_id": cv.get("id"),
@@ -58,7 +106,8 @@ def build_recipe_draft(r: dict) -> dict:
         "yield_quantity": _num(cv.get("yieldQuantity")) / yr,
         "yield_unit_id": cv.get("yieldUnitId"),
         "yield_unit_name": cv.get("yieldUnitName"),
-        "lines": lines,
+        "lines": _map_version_lines(cv),
+        "versions": _build_versions(r),
     }
 
 

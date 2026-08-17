@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { lineCost, recipeCost, draftCost, type CostTables } from './recipeCost';
+import { lineCost, recipeCost, draftCost, costRecipeFromVersion, type CostTables } from './recipeCost';
 
 // Unit types: Kilo/Gram are Weight; Litre/ml are Volume; each is Count.
 const UNIT_TYPE = new Map<string, string>([
@@ -64,12 +64,23 @@ describe('incomplete lines', () => {
     expect(c.complete).toBe(false);
   });
 
-  it('is incomplete when line unit type mismatches the item counting unit type', () => {
-    // pricing grams (Weight) against an item counted in "each" (Count) is nonsense
+  it('contributes $0 (but stays complete) for a Count mismatch, like Loaded', () => {
+    // Tap water counted "each" (Count) but used by mL (Volume) can't be converted
+    // without a pack size — Loaded treats it as ~free, so it must not blank the recipe.
     const t = tables();
-    t.items.set('widget', { currentPrice: 5, countingUnitId: 'each' });
-    const c = lineCost({ itemId: 'widget', quantity: 2, unitRatio: 0.001, unitId: 'gram' }, t);
-    expect(c.complete).toBe(false);
+    t.items.set('water', { currentPrice: 5, countingUnitId: 'each' });
+    const c = lineCost({ itemId: 'water', quantity: 150, unitRatio: 0.001, unitId: 'ml' }, t);
+    expect(c).toEqual({ cost: 0, complete: true });
+  });
+
+  it('prices a Weight<->Volume mismatch assuming density ~1 (like Loaded)', () => {
+    // Buttermilk counted per litre (Volume) but used by the gram (Weight): 500 g
+    // is costed as 0.5 L * $/L.
+    const t = tables();
+    t.items.set('buttermilk', { currentPrice: 4, countingUnitId: 'litre' }); // $4/L
+    const c = lineCost({ itemId: 'buttermilk', quantity: 500, unitRatio: 0.001, unitId: 'gram' }, t);
+    expect(c.complete).toBe(true);
+    expect(c.cost).toBeCloseTo(2.0, 6); // 0.5 (kg~L) * $4
   });
 
   it('has no cost for a line with neither item nor recipe', () => {
@@ -149,5 +160,52 @@ describe('draftCost', () => {
     const c = draftCost(lines, t, 'self');
     expect(c.cost).toBeCloseTo(0.012, 6);
     expect(c.complete).toBe(false);
+  });
+});
+
+describe('costRecipeFromVersion — the raw Loaded quantities are in BASE units', () => {
+  it('converts base line quantities + yield to the engine display convention', () => {
+    const cv = costRecipeFromVersion({
+      yieldQuantity: 0.833, // base (kg); yield unit is Gram (ratio 0.001) => 833 g
+      yieldUnitRatio: 0.001,
+      lines: [{ itemId: 'trevally', quantity: 1.0, unitRatio: 1, unitId: 'kilo' }], // 1 kg base
+    });
+    expect(cv.yieldQuantity).toBeCloseTo(833, 6); // 0.833 / 0.001
+    expect(cv.yieldUnitRatio).toBe(0.001);
+    // yieldQuantity * yieldUnitRatio must recover the base yield (0.833 kg)
+    expect(cv.yieldQuantity * cv.yieldUnitRatio).toBeCloseTo(0.833, 6);
+    expect(cv.lines[0].quantity).toBe(1.0); // 1.0 / 1
+  });
+
+  it('costs an 80 g line of a Gram-yield component correctly (the $1872 bug)', () => {
+    // A component that yields 833 g and uses 1 kg of $25/kg trevally costs $25 for
+    // 833 g. An 80 g line of it must be ~80/833 * $25 = $2.40 — NOT ~$1872, which is
+    // what feeding the base-unit yield straight in (double-applying the 0.001 ratio)
+    // produced.
+    const kingfish = costRecipeFromVersion({
+      yieldQuantity: 0.833,
+      yieldUnitRatio: 0.001,
+      lines: [{ itemId: 'trevally', quantity: 1.0, unitRatio: 1, unitId: 'kilo' }],
+    });
+    const t = tables({ recipes: new Map([['kingfish', kingfish]]) });
+    t.items.set('trevally', { currentPrice: 25, countingUnitId: 'kilo' }); // $25/kg
+
+    const c = lineCost({ recipeId: 'kingfish', quantity: 80, unitRatio: 0.001, unitId: 'gram' }, t);
+    expect(c.complete).toBe(true);
+    expect(c.cost).toBeCloseTo(2.401, 2);
+    expect(c.cost).toBeLessThan(10); // decisively not the ~1000x ($2400) regression
+  });
+
+  it('leaves a component whose yield unit IS the base (ratio 1) unchanged', () => {
+    // GUINDILLA-style: yield unit Kilo (ratio 1) was always correct; the fix must
+    // not disturb it.
+    const guindilla = costRecipeFromVersion({
+      yieldQuantity: 2, // base kg, yield unit Kilo
+      yieldUnitRatio: 1,
+      lines: [{ itemId: 'salt', quantity: 10, unitRatio: 1, unitId: 'kilo' }], // $12
+    });
+    const t = tables({ recipes: new Map([['guindilla', guindilla]]) });
+    const c = lineCost({ recipeId: 'guindilla', quantity: 0.5, unitRatio: 1, unitId: 'kilo' }, t);
+    expect(c.cost).toBeCloseTo(3, 6); // 0.5 * ($12 / 2 kg)
   });
 });

@@ -12,10 +12,11 @@
  *   item line cost   = quantity * unitRatio * currentPrice
  *   subrecipe line   = quantity * unitRatio * (subRecipeCost / subYieldBase)
  *
- * A line is only costed when its unit and the referenced item's counting unit are
- * the same unit *type* (you can't price grams against a "each"-counted item), and
- * when a price exists. Anything uncomputable leaves `complete = false` so callers
- * can flag the total as partial rather than quietly under-reporting.
+ * A line whose unit *type* differs from the item's counting unit is still costed
+ * the way Loaded does: Weight<->Volume is priced assuming density ~1, and a Count
+ * ("each") side — which has no measure to convert — contributes $0. Only a missing
+ * price leaves `complete = false`, so callers can flag the total as partial rather
+ * than quietly under-reporting.
  */
 
 export interface CostLine {
@@ -55,6 +56,49 @@ export function lineBaseQty(l: CostLine): number {
   return num(l.quantity) * num(l.unitRatio);
 }
 
+/** A raw Loaded recipe version (currentVersion / a versions[] element), as far as
+ *  costing needs it. */
+export interface RawCostVersion {
+  yieldQuantity?: unknown;
+  yieldUnitRatio?: unknown;
+  lines?: Array<{
+    itemId?: string | null;
+    recipeId?: string | null;
+    quantity?: unknown;
+    unitRatio?: unknown;
+    unitId?: string | null;
+    deletedAt?: unknown;
+  }>;
+}
+
+/** Build a CostRecipe (for the sub-recipe index) from a raw Loaded recipe version.
+ *
+ *  The engine's convention is `quantity * unitRatio = base` — i.e. `quantity` is a
+ *  DISPLAY quantity, exactly what the editor's `toDraft` produces. But Loaded gives
+ *  a version's line quantities AND its yield ALREADY in base units, so they must be
+ *  divided by the unit ratio here to match. Feeding the raw base quantities in
+ *  directly (the old behaviour) double-applied the ratio: a sub-recipe whose yield
+ *  unit isn't the base — e.g. a Gram-yield component, ratio 0.001 — was costed
+ *  ~1000x too high (an 80 g line read $1872 instead of $2.14). */
+export function costRecipeFromVersion(cv: RawCostVersion | null | undefined): CostRecipe {
+  const yr = num(cv?.yieldUnitRatio) || 1;
+  return {
+    yieldQuantity: num(cv?.yieldQuantity) / yr,
+    yieldUnitRatio: yr,
+    lines: (cv?.lines || []).map((l) => {
+      const r = num(l.unitRatio) || 1;
+      return {
+        itemId: l.itemId ?? null,
+        recipeId: l.recipeId ?? null,
+        quantity: num(l.quantity) / r,
+        unitRatio: r,
+        unitId: l.unitId ?? null,
+        deletedAt: l.deletedAt,
+      };
+    }),
+  };
+}
+
 /** Cost of one line. `seen` guards sub-recipe recursion against cycles. */
 export function lineCost(l: CostLine, t: CostTables, seen: Set<string> = new Set()): CostResult {
   const baseQty = lineBaseQty(l);
@@ -62,11 +106,19 @@ export function lineCost(l: CostLine, t: CostTables, seen: Set<string> = new Set
   if (l.itemId) {
     const item = t.items.get(l.itemId);
     if (!item || !num(item.currentPrice)) return { cost: 0, complete: false };
-    // Only cost when the line's unit and the item's counting unit share a type,
-    // so the two ratios are on the same base scale.
+    // Loaded still costs a line whose unit *type* differs from the item's counting
+    // unit (e.g. buttermilk counted per "600 mL" but used by the gram). Weight and
+    // Volume are both continuous measures on a shared numeric base scale, so it
+    // prices them assuming density ~1 (1 kg ~ 1 L) — we fall through to the normal
+    // baseQty * price for that. But a Count ("Each") on either side has no measure
+    // to convert (you can't turn grams into "each" without a pack size), so it
+    // contributes nothing — matching Loaded treating e.g. tap water counted "each"
+    // as ~free — while still counting as costed so it doesn't blank the recipe.
     const lineType = l.unitId ? t.unitType.get(l.unitId) : undefined;
     const itemType = item.countingUnitId ? t.unitType.get(item.countingUnitId) : undefined;
-    if (lineType && itemType && lineType !== itemType) return { cost: 0, complete: false };
+    if (lineType && itemType && lineType !== itemType) {
+      if (lineType === 'Count' || itemType === 'Count') return { cost: 0, complete: true };
+    }
     // currentPrice is already per base unit — the counting unit does not scale it.
     return { cost: baseQty * num(item.currentPrice), complete: true };
   }
