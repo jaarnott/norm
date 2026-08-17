@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import DojoSampleView, { type DojoDiff, type ExtractionDoc } from './DojoSampleView';
+import DojoSampleView, { type DojoDiff, type ExtractionDoc, type ReplicaDoc } from './DojoSampleView';
 import InvoicePdfPane from './InvoicePdfPane';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
 import SenseiProposalCard, { type DojoAnalysis } from './SenseiProposalCard';
@@ -373,32 +373,31 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
               )}
             </div>
           )}
-          {/* The stored BASELINE — what the sensei tests against, and the
-              only values a regression run can pass or fail on. Editing here
-              makes the baseline admin-owned, which the sensei never
-              overwrites. Open by default when a baseline exists. */}
+          {/* The last run: stored baseline, extracted values and the built
+              replica — always visible. The baseline is what the sensei tests
+              against; editing here makes it admin-owned, which the sensei
+              never overwrites. */}
           {view && (
-            <details open={!!view.expected} style={{ marginTop: 10 }}>
-              <summary style={{ fontSize: '0.72rem', color: '#666', cursor: 'pointer' }}>
-                Baseline values (expected extraction)
-              </summary>
-              <div style={{ marginTop: 8 }}>
-                <DojoSampleView
-                  key={`base-${sampleId}`}
-                  sampleId={sampleId}
-                  expected={view.expected}
-                  extraction={view.extraction}
-                  diffs={view.diffs}
-                  status={view.status}
-                  onSaved={(res) => {
-                    setOpen((o) => o && o.view
-                      ? { ...o, view: { ...o.view, status: res.status, diffs: res.diffs, expected: res.expected, extraction: res.extraction } }
-                      : o);
-                    loadPending();
-                  }}
-                />
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', marginBottom: 8 }}>
+                Last run
               </div>
-            </details>
+              <DojoSampleView
+                key={`base-${sampleId}`}
+                sampleId={sampleId}
+                expected={view.expected}
+                extraction={view.extraction}
+                diffs={view.diffs}
+                status={view.status}
+                replica={(view.replicaCompare && view.replica ? view.replica : null) as ReplicaDoc | null}
+                onSaved={(res) => {
+                  setOpen((o) => o && o.view
+                    ? { ...o, view: { ...o.view, status: res.status, diffs: res.diffs, expected: res.expected, extraction: res.extraction } }
+                    : o);
+                  loadPending();
+                }}
+              />
+            </div>
           )}
           <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
             <button type="button" onClick={() => open && runSample(sampleId, open.key, open.draft)}

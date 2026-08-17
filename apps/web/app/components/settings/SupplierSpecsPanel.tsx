@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import DojoSampleView, { type DojoDiff, type ExtractionDoc } from './DojoSampleView';
+import DojoSampleView, { type DojoDiff, type ExtractionDoc, type ReplicaDoc } from './DojoSampleView';
 import ReceiveInvoiceEditor from '../display/ReceiveInvoiceEditor';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
 import InvoicePdfPane from './InvoicePdfPane';
@@ -646,33 +646,31 @@ export default function SupplierSpecsPanel() {
                     </details>
                   </div>
                 )}
-                {/* The stored BASELINE — what the sensei tests against, and
-                    the only values a regression run can pass or fail on.
-                    Visible for every sample, proposal or not; editing here
-                    makes the baseline admin-owned, which the sensei never
-                    overwrites. Open by default when a baseline exists. */}
-                <details open={!!dojoView.expected} style={{ marginTop: 10 }}>
-                  <summary style={{ fontSize: '0.72rem', color: '#666', cursor: 'pointer' }}>
-                    Baseline values (expected extraction)
-                  </summary>
-                  <div style={{ marginTop: 8 }}>
-                    <DojoSampleView
-                      key={`base-${dojoView.sampleId}`}
-                      sampleId={dojoView.sampleId}
-                      expected={dojoView.expected}
-                      extraction={dojoView.extraction}
-                      diffs={dojoView.diffs}
-                      status={dojoView.status}
-                      onSaved={(res) => {
-                        setDojoView((v) => v && v.sampleId === dojoView.sampleId
-                          ? { ...v, status: res.status, diffs: res.diffs, expected: res.expected, extraction: res.extraction }
-                          : v);
-                        if (editing?.id) loadSamples(editing.id);
-                        loadSummary();
-                      }}
-                    />
+                {/* The last run: stored baseline, extracted values and the
+                    built replica — always visible, proposal or not. The
+                    baseline is what the sensei tests against; editing here
+                    makes it admin-owned, which the sensei never overwrites. */}
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', marginBottom: 8 }}>
+                    Last run
                   </div>
-                </details>
+                  <DojoSampleView
+                    key={`base-${dojoView.sampleId}`}
+                    sampleId={dojoView.sampleId}
+                    expected={dojoView.expected}
+                    extraction={dojoView.extraction}
+                    diffs={dojoView.diffs}
+                    status={dojoView.status}
+                    replica={(dojoView.replicaCompare && dojoView.replica ? dojoView.replica : null) as ReplicaDoc | null}
+                    onSaved={(res) => {
+                      setDojoView((v) => v && v.sampleId === dojoView.sampleId
+                        ? { ...v, status: res.status, diffs: res.diffs, expected: res.expected, extraction: res.extraction }
+                        : v);
+                      if (editing?.id) loadSamples(editing.id);
+                      loadSummary();
+                    }}
+                  />
+                </div>
                 </div>
               </div>
             )}

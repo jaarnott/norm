@@ -11,6 +11,10 @@ import { apiFetch } from '../../lib/api';
 //   EXTRACTED — what the last run actually pulled under the current prompts.
 // The toggle compares them; mismatched fields on the Extracted side are
 // highlighted with the expected value alongside.
+// An optional REPLICA view shows the Loaded-ready document the run built,
+// with the unit trail surfaced per line: as printed → interpreted → resolved
+// (replica lines map 1:1 to extraction lines by index — the builder emits
+// one out-line per extraction line).
 
 export interface ExtractionLine {
   code?: string | null;
@@ -36,6 +40,29 @@ export interface ExtractionDoc {
   total_incl_tax?: number | string | null;
 }
 
+// The slice of a replica out-line this view renders (invoice_replica.py
+// emits far more — linkage ids, tax, suggestions — all irrelevant here).
+export interface ReplicaLine {
+  code?: string | null;
+  description?: string | null;
+  quantity_received?: number | string | null;
+  unit?: string | null;
+  unit_cost?: number | string | null;
+  total_cost?: number | string | null;
+  linked_item_id?: string | null;
+  item_name?: string | null;
+  matched_by?: string | null;
+}
+
+export interface ReplicaDoc {
+  reference_number?: string | null;
+  supplier_name?: string | null;
+  issued_at?: string | null;
+  subtotal?: number | string | null;
+  total?: number | string | null;
+  lines?: ReplicaLine[];
+}
+
 export interface DojoDiff {
   field: string;
   line?: number | null;
@@ -59,11 +86,15 @@ const HEADER_FIELDS: { key: keyof ExtractionDoc; label: string }[] = [
   { key: 'total_incl_tax', label: 'Total incl tax' },
 ];
 
-const LINE_COLS: { key: keyof ExtractionLine; label: string; width?: number; numeric?: boolean }[] = [
+const LINE_COLS: { key: keyof ExtractionLine; label: string; width?: number; numeric?: boolean; hint?: string }[] = [
   { key: 'code', label: 'Code', width: 90 },
   { key: 'description', label: 'Description' },
   { key: 'quantity', label: 'Qty', width: 70, numeric: true },
-  { key: 'unit_of_measure', label: 'Unit', width: 90 },
+  // The raw unit column exactly as printed — NOT graded (the dojo compares
+  // unit_of_measure only); shown so the extraction can be matched against
+  // the replica's unit trail.
+  { key: 'unit', label: 'Unit (printed)', width: 90, hint: 'the unit field exactly as printed on the document — informational, not graded' },
+  { key: 'unit_of_measure', label: 'Unit of measure', width: 90, hint: 'the interpreted delivered unit of one item — the field the dojo grades' },
   { key: 'unit_price_ex_tax', label: 'Unit price', width: 85, numeric: true },
   { key: 'line_total_ex_tax', label: 'Line total', width: 85, numeric: true },
 ];
@@ -86,6 +117,7 @@ export default function DojoSampleView({
   current,
   currentDiffs,
   stored,
+  replica,
   labels,
 }: {
   sampleId: string;
@@ -107,9 +139,14 @@ export default function DojoSampleView({
   // shown read-only beside the analysis's proposed values. undefined hides
   // the toggle; null shows it disabled (no baseline stored yet).
   stored?: ExtractionDoc | null;
+  // Optional replica view: the Loaded-ready document the last run built.
+  // Surfaces the unit trail (printed → interpreted → resolved) that the
+  // extraction table hides. undefined hides the toggle; null shows it
+  // disabled (no invoice view stored for this run).
+  replica?: ReplicaDoc | null;
   labels?: { expected?: string; extracted?: string; expectedHint?: string; extractedHint?: string; current?: string; currentHint?: string; stored?: string; storedHint?: string };
 }) {
-  const [mode, setMode] = useState<'extracted' | 'expected' | 'current' | 'stored'>(extraction ? 'extracted' : 'expected');
+  const [mode, setMode] = useState<'extracted' | 'expected' | 'current' | 'stored' | 'replica'>(extraction ? 'extracted' : 'expected');
   const [draft, setDraft] = useState<ExtractionDoc | null>(() => deepCopy(expected));
   const [dirty, setDirty] = useState(false);
   // Re-seed when the parent hands over a DIFFERENT value set — a corrected
@@ -127,7 +164,7 @@ export default function DojoSampleView({
   // lines by (1-based line, field). The current-prompt view highlights its
   // OWN diffs (current extraction vs the expected values); the stored
   // baseline is the reference set itself, so it carries no highlighting.
-  const activeDiffs = mode === 'current' ? currentDiffs || [] : mode === 'stored' ? [] : diffs;
+  const activeDiffs = mode === 'current' ? currentDiffs || [] : mode === 'stored' || mode === 'replica' ? [] : diffs;
   const diffMap = useMemo(() => {
     const header = new Map<string, Diff>();
     const line = new Map<string, Diff>();
@@ -171,6 +208,7 @@ export default function DojoSampleView({
     mode === 'expected' ? draft
     : mode === 'current' ? (current ?? null)
     : mode === 'stored' ? (stored ?? null)
+    : mode === 'replica' ? null // the replica renders its own table below
     : extraction;
   const editable = mode === 'expected' && !readOnly;
 
@@ -184,6 +222,11 @@ export default function DojoSampleView({
     d ? { background: '#fdf6e7', border: '1px solid #e0b95d', borderRadius: 4 } : {};
 
   const statusChip = (() => {
+    // The replica is a derived document, not a graded value set — its chip
+    // says what it is.
+    if (mode === 'replica') {
+      return <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: '#e2ecf5', color: '#2d5a83' }}>REPLICA — the Loaded-ready document this run built</span>;
+    }
     // The stored baseline is the reference set, not a verdict — its chip
     // says what it is rather than claiming any pass/fail.
     if (mode === 'stored') {
@@ -244,6 +287,13 @@ export default function DojoSampleView({
             style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', borderLeft: '1px solid #d8d4cc', cursor: extraction ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'extracted' ? '#4a5568' : '#fff', color: mode === 'extracted' ? '#fff' : extraction ? '#666' : '#bbb', fontWeight: 600 }}>
             {labels?.extracted ?? 'Extracted (last run)'}
           </button>
+          {replica !== undefined && (
+            <button type="button" onClick={() => setMode('replica')} disabled={!replica}
+              title={replica ? undefined : 'no invoice view stored for this run — press Run to build it'}
+              style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', borderLeft: '1px solid #d8d4cc', cursor: replica ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'replica' ? '#2d5a83' : '#fff', color: mode === 'replica' ? '#fff' : replica ? '#666' : '#bbb', fontWeight: 600 }}>
+              Replica
+            </button>
+          )}
         </div>
         {statusChip}
         {mode === 'expected' && (
@@ -264,6 +314,11 @@ export default function DojoSampleView({
         {mode === 'stored' && (
           <span style={{ fontSize: '0.64rem', color: '#667' }}>
             {labels?.storedHint ?? 'the baseline stored on the sample today — what regression currently tests against'}
+          </span>
+        )}
+        {mode === 'replica' && (
+          <span style={{ fontSize: '0.64rem', color: '#667' }}>
+            the extraction resolved against the Loaded catalogue — each line shows the unit as printed, the interpreted delivered unit, and the unit the replica settled on
           </span>
         )}
       </div>
@@ -322,7 +377,7 @@ export default function DojoSampleView({
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
             <thead>
               <tr style={{ textAlign: 'left', color: '#999', fontSize: '0.58rem', textTransform: 'uppercase' }}>
-                {LINE_COLS.map((c) => <th key={c.key as string} style={{ padding: '3px 6px', width: c.width }}>{c.label}</th>)}
+                {LINE_COLS.map((c) => <th key={c.key as string} style={{ padding: '3px 6px', width: c.width }} title={c.hint}>{c.label}</th>)}
                 <th style={{ padding: '3px 6px', width: 86 }} title="the document shows size info that can't be read">Unreadable unit</th>
                 {editable && <th style={{ width: 26 }} />}
               </tr>
@@ -414,6 +469,83 @@ export default function DojoSampleView({
               )}
             </div>
           )}
+        </>
+      )}
+
+      {mode === 'replica' && replica && (
+        <>
+          {/* Replica header — the document the run would hand to Loaded */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '6px 12px', marginBottom: 10 }}>
+            {([
+              ['Supplier (resolved)', replica.supplier_name],
+              ['Invoice number', replica.reference_number],
+              ['Invoice date', replica.issued_at],
+              ['Subtotal ex tax', replica.subtotal],
+              ['Total incl tax', replica.total],
+            ] as [string, unknown][]).map(([label, val]) => (
+              <label key={label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={microLabel}>{label}</span>
+                <span style={{ fontSize: '0.74rem', color: '#333', padding: '3px 6px', minHeight: 18 }}>
+                  {val == null || val === '' ? '—' : String(val)}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {/* Lines with the unit trail: printed → interpreted → resolved.
+              Replica line i is built FROM extraction line i, so the printed
+              and interpreted columns read straight from the extraction. */}
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: '#999', fontSize: '0.58rem', textTransform: 'uppercase' }}>
+                <th style={{ padding: '3px 6px', width: 90 }}>Code</th>
+                <th style={{ padding: '3px 6px' }}>Description</th>
+                <th style={{ padding: '3px 6px', width: 60 }}>Qty</th>
+                <th style={{ padding: '3px 6px', width: 90 }} title="the unit field exactly as printed on the document">Unit (printed)</th>
+                <th style={{ padding: '3px 6px', width: 90 }} title="the interpreted delivered unit of one item — the field the dojo grades">Unit of measure</th>
+                <th style={{ padding: '3px 6px', width: 90 }} title="the Loaded unit the replica settled on">Resolved unit</th>
+                <th style={{ padding: '3px 6px', width: 80, textAlign: 'right' }}>Unit price</th>
+                <th style={{ padding: '3px 6px', width: 80, textAlign: 'right' }}>Line total</th>
+                <th style={{ padding: '3px 6px', width: 140 }}>Stock item</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(replica.lines || []).map((l, i) => {
+                const el = extraction?.lines?.[i];
+                const show = (v: unknown) => (v == null || v === '' ? '—' : String(v));
+                // The case that bites: no interpreted unit, yet the replica
+                // resolved one anyway (from the printed unit or the linked
+                // variant) — flag it so the gap doesn't hide behind the
+                // resolved value.
+                const resolvedWithoutUom = (el?.unit_of_measure == null || el?.unit_of_measure === '') && l.unit != null && l.unit !== '';
+                return (
+                  <tr key={i} style={{ borderTop: '1px solid #f3f3f3' }}>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>{show(l.code)}</td>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>{show(l.description)}</td>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>{show(l.quantity_received)}</td>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top', color: '#667' }}>{show(el?.unit)}</td>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>{show(el?.unit_of_measure)}</td>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>
+                      <span style={resolvedWithoutUom ? { background: '#fdf6e7', border: '1px solid #e0b95d', borderRadius: 4, padding: '1px 4px' } : {}}
+                        title={resolvedWithoutUom ? 'the interpreted delivered unit was NOT extracted — this unit was resolved from the printed unit or the linked variant' : undefined}>
+                        {show(l.unit)}
+                      </span>
+                    </td>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top', textAlign: 'right' }}>{show(l.unit_cost)}</td>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top', textAlign: 'right' }}>{show(l.total_cost)}</td>
+                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }} title={l.matched_by ? `matched by ${l.matched_by}` : undefined}>
+                      {l.linked_item_id
+                        ? show(l.item_name)
+                        : <span style={{ color: '#8a6d3b' }}>new item — not in the catalogue</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ fontSize: '0.62rem', color: '#999', marginTop: 8 }}>
+            Resolved unit precedence: the linked variant&apos;s default unit, else the unit of measure, else the unit as printed — each matched against the venue&apos;s Loaded unit list.
+          </div>
         </>
       )}
     </div>
