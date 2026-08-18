@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, Clock, Blocks, LayoutGrid, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, Clock, Blocks, LayoutGrid, Grid2x2, type LucideIcon } from 'lucide-react';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -230,6 +230,15 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     icon: ChefHat,
     agent: 'executive_chef',
     component: 'recipe_editor',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    // Self-loading: MenuEngineering fetches the COGS-products report + menus itself.
+    id: 'menu-engineering',
+    label: 'Menu Engineering',
+    icon: Grid2x2,
+    agent: 'executive_chef',
+    component: 'menu_engineering',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {

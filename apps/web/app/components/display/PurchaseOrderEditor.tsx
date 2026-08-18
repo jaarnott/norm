@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch, callComponentApi, getStoredUser } from '../../lib/api';
+import { formatMoney } from '../../lib/format';
 
 // --- Types ---
 
@@ -120,7 +121,7 @@ function extractOrder(data: Record<string, unknown>): {
 }
 
 function formatCurrency(n: number): string {
-  return `$${n.toFixed(2)}`;
+  return formatMoney(n);
 }
 
 const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string; border: string }> = {

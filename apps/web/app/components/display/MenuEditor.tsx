@@ -23,10 +23,11 @@ import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
 import Combobox, { type ComboOption } from './Combobox';
 import { recipeCost, costRecipeFromVersion, type CostTables } from './recipeCost';
+import { formatMoney } from '../../lib/format';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 
 const num = (v: unknown): number => (typeof v === 'number' ? v : parseFloat(String(v)) || 0);
-const money = (n: number): string => `$${n.toFixed(2)}`;
+const money = (n: number): string => formatMoney(n);
 
 interface MenuLine {
   id: string;

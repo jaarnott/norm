@@ -5,6 +5,7 @@ import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
+import { formatMoney } from '../../lib/format';
 import PurchaseOrderEditor from './PurchaseOrderEditor';
 
 interface OrderSummary {
@@ -41,7 +42,7 @@ function extractOrders(data: Record<string, unknown>): OrderSummary[] {
 }
 
 function formatCurrency(n: number): string {
-  return `$${n.toFixed(2)}`;
+  return formatMoney(n);
 }
 
 function formatDate(iso: string): string {

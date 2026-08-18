@@ -1,6 +1,7 @@
 'use client';
 
 import { type CSSProperties, type ReactNode } from 'react';
+import { formatMoney } from '../../lib/format';
 
 /**
  * The dojo's replica view, rendered as an actual INVOICE (paper sheet,
@@ -57,7 +58,7 @@ const MATCHED_BY_LABEL: Record<string, string> = {
 };
 
 const money = (v: unknown) =>
-  typeof v === 'number' ? `$${v.toFixed(2)}` : v == null ? '—' : String(v);
+  typeof v === 'number' ? formatMoney(v) : v == null ? '—' : String(v);
 
 function niceDate(v: unknown): string {
   if (typeof v !== 'string' || !v) return '—';

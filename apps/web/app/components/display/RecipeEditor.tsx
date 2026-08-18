@@ -20,6 +20,7 @@ import Combobox, { type ComboOption } from './Combobox';
 import HtmlField from './HtmlField';
 import { type CostTables } from './recipeCost';
 import { setPageDocument } from '../../lib/pageDocument';
+import { formatMoney } from '../../lib/format';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 
 interface Unit { id: string; name: string; ratio: number; type?: string }
@@ -172,7 +173,7 @@ interface RawRecipe {
   } | null;
 }
 
-const money = (n: number): string => `$${n.toFixed(2)}`;
+const money = (n: number): string => formatMoney(n);
 
 // Summarise a list-payload recipe for the table (ingredient count uses the same
 // deletedAt filter the editor's toDraft uses, so the count matches what you'd
@@ -195,6 +196,12 @@ function summarizeRecipe(x: RawRecipe): RecipeRow {
 // keeps them on it (and the working-doc id/version, so the agent-edit poll keeps
 // running). Cleared when the user returns to the list (draft → null).
 let openSession: { venueId: string | null; draft: Draft; workingDocId: string | null; docVersion: number } | null = null;
+
+// A recipe another page (e.g. Menu Engineering) asked us to open. Set before the
+// Recipes page mounts; consumed once the editor has a venue. Module scope so it
+// survives the navigation remount, like openSession.
+let pendingOpenRecipeId: string | null = null;
+export function requestOpenRecipe(recipeId: string) { pendingOpenRecipeId = recipeId; }
 
 // A recipe working-document's data (built server-side by recipe_document.py) ->
 // the editable Draft. Loaded lines already carry a stable id; we key rows on it
@@ -546,6 +553,16 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     }
   };
   const closeEditor = () => { setDraft(null); clearDoc(); };
+
+  // Consume a cross-page "open this recipe" request (Menu Engineering row click)
+  // once we have a venue. Runs on the Recipes page mount after navigation.
+  useEffect(() => {
+    if (!embedded && venueId && pendingOpenRecipeId) {
+      const id = pendingOpenRecipeId;
+      pendingOpenRecipeId = null;
+      openRecipe(id);
+    }
+  }, [venueId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Start a blank new recipe (the save creates it in Loaded). No working doc yet
   // — it doesn't exist to share until it's been created.

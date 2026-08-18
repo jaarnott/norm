@@ -11,6 +11,7 @@ import LoginForm from '../components/auth/LoginForm';
 import FunctionalPage from '../components/pages/FunctionalPage';
 import QuotaExceededModal from '../components/layout/QuotaExceededModal';
 import ConnectorConnectCard from '../components/display/ConnectorConnectCard';
+import { requestOpenRecipe } from '../components/display/RecipeEditor';
 import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
 import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
@@ -570,6 +571,16 @@ export default function Home() {
     if (action.action === 'tool_approve' || action.action === 'tool_reject') {
       const targetAction = action.action === 'tool_approve' ? 'approve' : 'reject';
       await handleAction(threadId, targetAction);
+      return { ok: true };
+    }
+
+    // Open a recipe from another page (Menu Engineering row click) — hand the
+    // recipe id to the RecipeEditor and switch to the chef Recipes page.
+    if (action.action === 'open_recipe' && action.params?.recipe_id) {
+      requestOpenRecipe(action.params.recipe_id as string);
+      setActiveAgent('executive_chef');
+      setActivePage('recipes');
+      setSelectedThreadId(null);
       return { ok: true };
     }
 

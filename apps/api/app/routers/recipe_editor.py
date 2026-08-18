@@ -35,6 +35,31 @@ class OpenRecipeRequest(BaseModel):
     recipe_id: str
 
 
+class RecipeLinksRequest(BaseModel):
+    venue_id: str
+    start: str
+    end: str
+
+
+@router.post("/menu-engineering/recipe-links")
+def recipe_links_route(
+    req: RecipeLinksRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """POS product name -> recipe id for the Menu Engineering table's click-through.
+
+    Sourced from the Cook Brothers App (the one place the posItem->recipe link is
+    reachable); ``{}`` when the venue isn't CB-connected, so the client falls back
+    to name-matching against the menus."""
+    if not user_can_access_venue(db, user.id, req.venue_id):
+        raise HTTPException(status_code=403, detail="You don't have access to that venue.")
+    from app.services.menu_engineering import product_recipe_links
+
+    return {"links": product_recipe_links(req.venue_id, req.start, req.end, db, config_db)}
+
+
 @router.post("/recipe-editor/open")
 def open_recipe_route(
     req: OpenRecipeRequest,

@@ -103,6 +103,12 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       return onWidgetAction(thread?.id || '_nav', action);
     }
 
+    // Open a recipe (Menu Engineering row click) — pass through to the page handler
+    // which switches to the Recipes page and preloads it.
+    if (action.action === 'open_recipe' && action.params?.recipe_id && onWidgetAction) {
+      return onWidgetAction(thread?.id || '_nav', action);
+    }
+
     if (thread && onWidgetAction) {
       return onWidgetAction(thread.id, action);
     }

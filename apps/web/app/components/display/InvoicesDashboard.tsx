@@ -19,6 +19,7 @@ import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { colors } from '../../lib/theme';
+import { formatMoney } from '../../lib/format';
 import ReceiveInvoiceEditor, { INVOICE_ACTIONED_EVENT } from './ReceiveInvoiceEditor';
 
 interface OutstandingInvoice {
@@ -40,7 +41,7 @@ function extractInvoices(data: Record<string, unknown>): OutstandingInvoice[] {
   return [];
 }
 
-const cur = (n: number | null | undefined) => `$${(n ?? 0).toFixed(2)}`;
+const cur = (n: number | null | undefined) => formatMoney(n ?? 0);
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
