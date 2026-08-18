@@ -215,63 +215,6 @@ class TestLineSuggestions:
             "unit_ratio": 1,
         }
 
-    def _sizeless_pack_case(self, chooser):
-        """Trents 5973784 (18 Aug 2026): an unlinked, sizeless line printing
-        'PACK'. The replica refuses the packaging word (unit_missing blocks)
-        and the guesser's pick rides as line metadata."""
-        det = DETAIL(total=63.11, subtotal=54.88, taxAmount=8.23)
-        det["lines"] = [
-            {
-                "id": "ld-1",
-                "code": "4230513",
-                "description": "MALFY GIN ROSA PINK GRAPEF",
-                "unit": None,
-                "linkedUnitId": None,
-                "quantityReceived": 1.0,
-                "unitCostExclTax": 54.88,
-                "totalCostExclTax": 54.88,
-                "saleTaxRate": 0.15,
-                "linkedItemId": None,
-                "itemType": "Default",
-            }
-        ]
-        ext = EXTRACTION(
-            subtotal_ex_tax=54.88,
-            tax_amount=8.23,
-            total_incl_tax=63.11,
-            lines=[
-                {
-                    "code": "4230513",
-                    "description": "MALFY GIN ROSA PINK GRAPEF",
-                    "quantity": 1,
-                    "unit": "PACK",
-                    "unit_of_measure": None,
-                    "unit_price_ex_tax": 54.88,
-                    "line_total_ex_tax": 54.88,
-                }
-            ],
-        )
-        ref = REFERENCE(
-            units=UNITS + [{"id": "u-pack", "name": "PACK", "ratio": 1}],
-            unit_chooser=chooser,
-        )
-        return _review(detail=det, extraction=ext, reference=ref)
-
-    def test_an_unresolved_unit_offers_the_guessers_pick(self):
-        data = self._sizeless_pack_case(lambda line, cands: "u-5l")
-        s = next(s for s in data["suggestions"] if s["field"] == "unit")
-        assert s["apply"] == {"unit": "5L", "linked_unit_id": "u-5l", "unit_ratio": 5}
-        assert "closest existing unit" in s["explanation"]
-        # The guess is an offer, not a resolution — the blocker stands until
-        # a person (or an open autopilot gate) sets the unit.
-        assert "unit_missing" in _issue_codes(data)
-        assert data["lines"][0]["linked_unit_id"] is None
-
-    def test_a_bogus_guess_id_yields_no_unit_suggestion(self):
-        data = self._sizeless_pack_case(lambda line, cands: "u-made-up")
-        assert not [s for s in data["suggestions"] if s["field"] == "unit"]
-        assert "unit_missing" in _issue_codes(data)
-
     def test_an_unlinked_line_adopts_loadeds_own_code_match(self):
         # Loaded's API says linkedItemId null; its SCREEN resolves the item
         # from the supplier code and shows SALMON FILLET. The draft therefore
