@@ -54,10 +54,14 @@ def recipe_links_route(
     reachable); ``{}`` when the venue isn't CB-connected, so the client falls back
     to name-matching against the menus."""
     if not user_can_access_venue(db, user.id, req.venue_id):
-        raise HTTPException(status_code=403, detail="You don't have access to that venue.")
+        raise HTTPException(
+            status_code=403, detail="You don't have access to that venue."
+        )
     from app.services.menu_engineering import product_recipe_links
 
-    return {"links": product_recipe_links(req.venue_id, req.start, req.end, db, config_db)}
+    return {
+        "links": product_recipe_links(req.venue_id, req.start, req.end, db, config_db)
+    }
 
 
 @router.post("/recipe-editor/open")
