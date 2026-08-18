@@ -2,6 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import InvoiceAutopilotPanel from './InvoiceAutopilotPanel';
+
+// Receiving invoices is set per VENUE now, not per user — venues differ in how
+// tidy their Loaded catalogue is. It still belongs in this section, because
+// "how much does Norm do on its own for X" is one question and having it
+// answered in two places is how you get two answers.
+const VENUE_SCOPED = 'review_and_receive_invoices';
 
 interface Mode { id: string; label: string; description: string }
 interface Workflow { key: string; label: string; description: string }
@@ -45,10 +52,13 @@ export default function WorkflowModesTab() {
     <div style={{ maxWidth: 720 }}>
       <h3 style={{ margin: '0 0 0.35rem', fontSize: '0.95rem', fontWeight: 600 }}>Workflow modes</h3>
       <p style={{ margin: '0 0 1.25rem', fontSize: '0.8rem', color: '#777' }}>
-        Choose how much Norm does on its own for each workflow. These are your personal
-        settings — you can also change them by asking Norm in a conversation.
+        Choose how much Norm does on its own for each workflow. Receiving is set per
+        venue; the rest are your personal settings, and you can change those by asking
+        Norm in a conversation.
       </p>
-      {workflows.map((w) => {
+      <InvoiceAutopilotPanel />
+      <div style={{ height: '1.5rem' }} />
+      {workflows.filter((w) => w.key !== VENUE_SCOPED).map((w) => {
         const current = selected[w.key] || 'unset';
         return (
           <div key={w.key} style={{ border: '1px solid #eee', borderRadius: 10, padding: '0.9rem 1rem', marginBottom: '0.85rem' }}>

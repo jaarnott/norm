@@ -381,6 +381,55 @@ async def update_venue(
     }
 
 
+@router.get("/venues/{venue_id}/invoice-autopilot")
+def get_invoice_autopilot(
+    venue_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """How far this venue lets Norm go when receiving invoices."""
+    from app.services import venue_autopilot as VA
+
+    venue = db.query(Venue).filter(Venue.id == venue_id).first()
+    if not venue:
+        raise HTTPException(404, "Venue not found")
+    return {
+        "venue_id": venue.id,
+        "settings": VA.settings_for(venue),
+        # The toggles in the user's own words, so the UI and the blocker rows
+        # in the receive card read from one list rather than each keeping a
+        # copy of the wording.
+        "gates": VA.GATES,
+        "modes": list(VA.MODES),
+    }
+
+
+@router.put("/venues/{venue_id}/invoice-autopilot")
+def set_invoice_autopilot(
+    venue_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("org:venues")),
+):
+    """Move this venue up or down the ladder.
+
+    Permissioned like any other venue change: every rung above `approve_all`
+    authorises Norm to write into Loaded unattended, and those writes cannot be
+    undone from here.
+    """
+    from app.services import venue_autopilot as VA
+
+    venue = db.query(Venue).filter(Venue.id == venue_id).first()
+    if not venue:
+        raise HTTPException(404, "Venue not found")
+    try:
+        venue.invoice_autopilot = VA.normalise(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.commit()
+    return {"venue_id": venue.id, "settings": VA.settings_for(venue)}
+
+
 @router.delete("/venues/{venue_id}")
 async def delete_venue(
     venue_id: str,

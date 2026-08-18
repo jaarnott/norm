@@ -384,7 +384,11 @@ class TestCopyUnitPrecedence:
         # unit still needs a human eye — the warning stays.
         doc = _build(self._line(unit_of_measure=None, unit_unrecognisable=True))
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"  # variant's unit
-        assert any("confirm the unit" in w for w in doc["warnings"])
+        # The replica reports what IT could see. Which unit will actually be
+        # used is appended by the review, once the working line is in hand —
+        # saying it here produced "no unit on the Loaded variant" above a
+        # dropdown showing one.
+        assert any("can't be read from the copy" in w for w in doc["warnings"])
 
     def test_unreadable_unit_with_no_variant_warns(self):
         # Nothing authoritative to fall back on → the unit-confirm warning.
@@ -398,7 +402,7 @@ class TestCopyUnitPrecedence:
             )
         )
         assert doc["lines"][0]["linked_unit_id"] is None
-        assert any("confirm the unit" in w for w in doc["warnings"])
+        assert any("can't be read from the copy" in w for w in doc["warnings"])
 
     def test_unknown_copy_unit_keeps_variant_and_logs(self):
         # The copy names a pack the venue has no unit record for.
@@ -410,6 +414,121 @@ class TestCopyUnitPrecedence:
         # 'ctn' is not a delivered unit (the engine's _delivered_unit rule).
         doc = _build(self._line(unit_of_measure="ctn"))
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+
+
+class TestPackagingWordNeverLinks:
+    """Trents 5973784 (18 Aug 2026): a sizeless line printing 'PACK' linked
+    the venue's literal PACK unit and read as resolved — a meaningless unit
+    with nothing flagging it. Bare packaging words are bundling, not a
+    measure, so the line must stay unit-less (unit_missing) and carry the
+    guesser's closest EXISTING unit as metadata for the review to offer."""
+
+    UNITS_WITH_PACK = UNITS + [
+        {"id": "u-pack", "name": "PACK", "ratio": 1, "stockUnitType": "Count"}
+    ]
+
+    def _sizeless_pack_line(self):
+        return dict(
+            EXTRACTION,
+            lines=[
+                {
+                    "code": "4230513",
+                    "description": "MALFY GIN ROSA PINK GRAPEF",
+                    "quantity": 1,
+                    "unit": "PACK",
+                    "unit_of_measure": None,
+                    "unit_price_ex_tax": 54.88,
+                    "line_total_ex_tax": 54.88,
+                }
+            ],
+        )
+
+    def test_bare_pack_stays_unlinked_and_raises_unit_missing(self):
+        doc = _build(self._sizeless_pack_line(), units=self.UNITS_WITH_PACK)
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] is None
+        assert any(i["code"] == "unit_missing" for i in doc["issues"])
+
+    def test_ea_never_magnitude_matches_a_unit_named_pack(self):
+        # The live shape: Trents prints 'EA', and 'EA' parses as a count of 1
+        # — exactly like a unit literally named PACK. Magnitude equivalence
+        # must not launder identity: EA resolves to Each (also count-1) even
+        # when PACK sits first in the venue's list.
+        units = [
+            {"id": "u-pack", "name": "PACK", "ratio": 1, "stockUnitType": "Count"}
+        ] + UNITS
+        assert _resolve_unit_record("EA", units)["id"] == "u-each"
+        # With no Each-like unit at all, EA resolves nothing rather than PACK.
+        assert (
+            _resolve_unit_record(
+                "EA",
+                [{"id": "u-pack", "name": "PACK", "ratio": 1}],
+            )
+            is None
+        )
+        # Printing the packaging word exactly still reaches it by name — the
+        # guard is about magnitude laundering, not about hiding the unit.
+        assert _resolve_unit_record("pack", units)["id"] == "u-pack"
+
+    def test_the_guess_rides_as_metadata_and_pack_is_never_offered(self):
+        seen: dict = {}
+
+        def chooser(line, cands):
+            seen["names"] = [c["name"] for c in cands]
+            return "u-6x750"
+
+        doc = _build(
+            self._sizeless_pack_line(),
+            units=self.UNITS_WITH_PACK,
+            unit_chooser=chooser,
+        )
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] is None  # a guess never links by itself
+        assert ln["unit_guess"]["id"] == "u-6x750"
+        assert ln["unit_guess"]["name"] == "6x750mL"
+        assert "PACK" not in seen["names"]
+        assert any("closest existing unit" in e for e in doc["resolution_log"])
+
+    def test_ea_never_magnitude_matches_a_pack_named_unit(self):
+        # 'EA' parses as a count of 1 — and so does a unit literally NAMED
+        # 'PACK', which is how Dunedin's PACK unit swallowed every EA line on
+        # Trents 5973784. Identity must not be laundered through magnitude:
+        # EA may match Each, never PACK; PACK itself is reachable only by
+        # printing its exact name.
+        assert _resolve_unit_record("EA", self.UNITS_WITH_PACK)["id"] == "u-each"
+        only_pack = [{"id": "u-pack", "name": "PACK", "ratio": 1}]
+        assert _resolve_unit_record("EA", only_pack) is None
+
+    def test_a_variant_that_genuinely_says_pack_still_wins(self):
+        # The refusal is about copy EVIDENCE; a supplier variant registered
+        # in PACK is authoritative for its linked item.
+        catalogue = [
+            {
+                "id": "item-packed",
+                "name": "PACKED THING",
+                "suppliers": [
+                    {
+                        "supplierId": "sup-akaroa",
+                        "stockCode": "PB1",
+                        "unitId": "u-pack",
+                    }
+                ],
+            }
+        ]
+        ext = dict(
+            EXTRACTION,
+            lines=[
+                {
+                    "code": "PB1",
+                    "description": "Packed Thing",
+                    "quantity": 1,
+                    "unit_price_ex_tax": 5.0,
+                    "line_total_ex_tax": 5.0,
+                }
+            ],
+        )
+        doc = _build(ext, units=self.UNITS_WITH_PACK, catalogue=catalogue)
+        assert doc["lines"][0]["linked_unit_id"] == "u-pack"
 
 
 class TestDocumentFlags:
@@ -840,34 +959,74 @@ class TestCreditNoteSigns:
         assert any(i["code"] == "duplicate_invoice" for i in doc["issues"])
 
 
-class TestCopyUnitBeatsAVagueVariant:
-    """Hancocks 4362108, 13 Aug 2026.
+class TestTheInvoicesUnitIsTheUnit:
+    """The copy is the delivery; a variant default is user-entered data in
+    Loaded. Receiving accurately means booking what the paper says — a venue
+    counting wine bottles as 'Each' is the venue's business, not a reason to
+    book 'Each' against a copy that says 750 mL.
 
-    The copy printed 'CITY OF LONDON DRY GIN (6X1000ML)' and the extraction
-    read '6x1000ml' correctly. Loaded's supplier variant said '6 Pack'.
-    units_equivalent calls those the same pack — rightly, since a copy that
-    prints only a count must not displace a variant that knows the size — so
-    the variant was kept. The working value then MATCHED the replica exactly,
-    which meant no suggestion was raised: the right answer was on the page and
-    the user had no way to reach it.
+    The override used to be gated on the two units not being
+    `units_equivalent`, plus a `copy_is_more_specific` exception carved out for
+    Hancocks 4362108 (a sized multipack vs a bare '6 Pack'). Everything outside
+    that exception's shape fell through to Loaded. Both are gone: the copy wins
+    whenever it reads confidently, and `_resolve_unit_record` — which already
+    matches by name, by multipack components and by parsed magnitude — decides
+    which venue unit that is.
     """
 
-    def test_a_sized_copy_unit_overrides_a_bare_count_variant(self):
-        from app.services.invoice_units import copy_is_more_specific
+    #: A venue whose variant default for this item is a bare count.
+    EACH_CATALOGUE = [
+        dict(
+            CATALOGUE[0],
+            suppliers=[dict(CATALOGUE[0]["suppliers"][0], unitId="u-each")],
+        ),
+        *CATALOGUE[1:],
+    ]
 
-        assert copy_is_more_specific("6x1000ml", "6 Pack") is True
+    def _line(self, **over):
+        line = dict(EXTRACTION["lines"][0])
+        line.update(over)
+        return dict(EXTRACTION, lines=[line])
 
-    def test_a_bare_count_copy_never_displaces_a_sized_variant(self):
-        """The asymmetry is the whole point — reversing it would let a vague
-        copy throw away the size Loaded already knows."""
-        from app.services.invoice_units import copy_is_more_specific
+    def test_a_sized_copy_unit_beats_an_each_variant(self):
+        """The case that was losing to Loaded: `units_equivalent` calls 'Each'
+        and a single sized-volume unit the same pack, so the variant was kept
+        and the size on the paper was unreachable."""
+        units = [*UNITS, {"id": "u-750", "name": "750 mL", "ratio": 0.75}]
+        doc = _build(
+            self._line(unit_of_measure="750 mL"),
+            catalogue=self.EACH_CATALOGUE,
+            units=units,
+        )
+        assert doc["lines"][0]["linked_unit_id"] == "u-750"
+        assert any("per the copy" in e for e in doc["resolution_log"])
 
-        assert copy_is_more_specific("6 Pack", "6x750ml") is False
+    def test_a_sized_multipack_beats_a_bare_count(self):
+        """Hancocks 4362108, still true — now by the general rule rather than
+        by an exception written for it."""
+        doc = _build(
+            self._line(unit_of_measure="6x 750ml"), catalogue=self.EACH_CATALOGUE
+        )
+        assert doc["lines"][0]["linked_unit_id"] == "u-6x750"
 
-    def test_equivalent_and_equally_specific_units_keep_the_variant(self):
-        """Unchanged behaviour: same pack, same information, so the variant's
-        unit id wins for stability against Loaded."""
-        from app.services.invoice_units import copy_is_more_specific, units_equivalent
+    def test_the_same_pack_spelled_differently_moves_nothing(self):
+        """What the equivalence check was protecting, done by the resolution
+        itself: '1 kg' and 'Kilo' land on the one record, so there is nothing
+        to change and no suggestion to raise."""
+        doc = _build(self._line(unit_of_measure="1 kg"))
+        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+        assert not any("per the copy" in e for e in doc["resolution_log"])
 
-        assert units_equivalent("700ml", "700 mL") is True
-        assert copy_is_more_specific("700ml", "700 mL") is False
+    def test_a_unit_the_venue_lacks_is_flagged_to_create(self):
+        """The copy still wins — it just has to exist first. The variant's unit
+        stays on the line so there is something to receive against once it
+        does."""
+        doc = _build(self._line(unit_of_measure="12x375ml"))
+        assert doc["lines"][0]["unit_create_name"] == "12x375ml"
+        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+
+    def test_an_unreadable_copy_unit_displaces_nothing(self):
+        """`confident` is the only guard left on the override, so it has to
+        stay load-bearing."""
+        doc = _build(self._line(unit_of_measure=None, unit_unrecognisable=True))
+        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"

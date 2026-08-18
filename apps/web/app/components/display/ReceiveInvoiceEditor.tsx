@@ -104,6 +104,27 @@ interface ClearsWhen {
   op: 'not_null' | 'truthy' | 'equals';
   value?: unknown;
 }
+// The button on a blocker row, and the venue toggle each one maps to. Kept
+// beside the Issue type because they describe the same contract: a blocker
+// says what is missing, offers the one action that supplies it, and names the
+// setting that would let Norm do it without being asked.
+const ISSUE_ACTION_LABELS: Record<string, string> = {
+  create_item: 'Create item',
+  create_unit: 'Create unit',
+  create_brand: 'Create brand',
+  create_supplier: 'Create supplier',
+  guess_unit: 'Choose a unit',
+};
+const gateLabels: Record<string, string> = {
+  auto_create_units: 'auto-create units',
+  auto_create_items: 'auto-create stock items',
+  auto_create_brands: 'auto-create brands',
+  auto_create_suppliers: 'auto-create suppliers',
+  receive_without_unit: 'receive when no unit can be found',
+  receive_with_unconfirmed_unit: 'receive when the unit came from Loaded rather than the copy',
+  receive_without_po: 'receive without a valid purchase order',
+};
+
 interface Issue {
   id: string;
   code: string;
@@ -112,6 +133,13 @@ interface Issue {
   message: string;
   data?: Record<string, unknown> | null;
   clears_when?: ClearsWhen;
+  // What clears this blocker, and which venue toggle lets Norm do it alone.
+  // The create actions used to ride as SUGGESTIONS as well, so one
+  // un-catalogued line showed a suggestion row, a blocking issue, a NEW badge
+  // and a disabled button — four things for one decision. Now the blocker is
+  // the single place it appears, and it carries the button.
+  action?: { kind: string; payload?: Record<string, string | undefined> } | null;
+  gate?: string | null;
 }
 // THE RECORD: every accept/dismiss/undo, human or autopilot (by: "norm").
 interface SuggestionAction {
@@ -1121,6 +1149,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     return stateOf(i.id) === 'pending' ? 'open' : 'checked';
   };
   const blockingIssues = issues.filter((i) => i.blocking);
+  const warningIssues = issues.filter((i) => !i.blocking);
   const blockingOpen = blockingIssues.filter((i) => issueStateOf(i) === 'open');
   const liveConfidence: 'ready' | 'needs_review' | null =
     reviewed ? (blockingOpen.length ? 'needs_review' : 'ready') : null;
@@ -1184,6 +1213,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // Nothing to receive: an empty draft (a statement/letter uploaded as an
   // invoice, or every line struck). Deleting the draft is the action.
   const noLines = !doneState && !!doc.invoice_id && !doc.lines.some((l) => !l.struck);
+  // Everything standing between the user and a receive, counted ONCE — the
+  // per-line NEW badges and the blocked list are two views of the same set.
+  const blockedCount = useMemo(
+    () => new Set([...unresolved.map((l) => String(l.id)), ...blockingOpen.map((i) => i.id)]).size,
+    [unresolved, blockingOpen],
+  );
   const receiveBlocked = status === 'saving' || unresolved.length > 0
     || supplierBlocking || noLines || blockingOpen.length > 0;
 
@@ -1867,17 +1902,80 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       </div>
     );
   };
+  // Each blocker's remedy, run from the blocker itself. These are the same
+  // Loaded writes the old create SUGGESTIONS performed — moved here so a
+  // decision appears once, on the row that says why it matters.
+  const [actioningIssue, setActioningIssue] = useState<string | null>(null);
+  const runIssueAction = async (i: Issue) => {
+    if (!i.action || actioningIssue || doneState) return;
+    const p = (i.action.payload || {}) as Record<string, string | undefined>;
+    const lineId = String(i.line_id || '');
+    setActioningIssue(i.id);
+    try {
+      if (i.action.kind === 'create_brand') {
+        await createBrandAndApply(lineId, p.brand_name || '');
+      } else if (i.action.kind === 'create_item') {
+        await createItemAndApply(lineId, p.name || '', p.group_id || '');
+      } else if (i.action.kind === 'create_unit') {
+        const idx = docRef.current.lines.findIndex((l) => String(l.id) === lineId);
+        if (idx >= 0) await createUnitAndApply(idx, p.unit_name || '');
+      } else if (i.action.kind === 'create_supplier') {
+        await createSupplierAndApply();
+      }
+      // Record it against the ISSUE, exactly as the server's own gate walk
+      // does. Most blockers also clear themselves through clears_when once the
+      // link lands, but `unit_missing` deliberately has none — a unit already
+      // on Loaded's line is Loaded's OCR of the same paper — so without this
+      // the blocker would outlive the unit that resolved it.
+      const [log, logOp] = recordOp({
+        suggestion_id: i.id, action: 'accepted', by: 'user', at: nowIso(),
+      });
+      setDoc((prev) => ({ ...prev, suggestion_actions: log }));
+      if (workingDocId) patchDoc([logOp]);
+    } finally {
+      setActioningIssue(null);
+    }
+  };
+
+  // The unit the copy names, when Loaded has no such unit yet. Read off the
+  // blocker that already carries it — one source, so the chip and the blocked
+  // row can never disagree about which unit is meant.
+  const pendingUnitIssue = (lineId: string | number): Issue | undefined =>
+    blockingIssues.find(
+      (i) => String(i.line_id) === String(lineId)
+        && i.action?.kind === 'create_unit'
+        && issueStateOf(i) === 'open',
+    );
+  const pendingUnitName = (lineId: string | number): string | null =>
+    (pendingUnitIssue(lineId)?.action?.payload?.unit_name as string | undefined) || null;
+  const runPendingUnit = (lineId: string | number) => {
+    const issue = pendingUnitIssue(lineId);
+    if (issue) void runIssueAction(issue);
+  };
+
   const issueRow = (i: Issue) => {
     const st = issueStateOf(i);
     const open = st === 'open';
     const color = !i.blocking ? '#8a6d3b' : open ? '#c0392b' : '#9ca3af';
+    const gateLabel = i.gate ? gateLabels[i.gate] : undefined;
     return (
-      <div key={i.id} style={{ fontSize: '0.66rem', color, display: 'flex', gap: 6, padding: '1px 0', alignItems: 'baseline' }}>
+      <div key={i.id} style={{ fontSize: '0.66rem', color, padding: '1px 0' }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
         <span>{i.blocking ? (open ? '✗' : '✓') : '•'}</span>
         <span style={{ flex: 1, ...(st !== 'open' ? { textDecoration: 'line-through' } : {}) }}>
           {i.message}
           {st === 'checked' && <span style={{ fontStyle: 'italic', textDecoration: 'none' }}> — checked</span>}
         </span>
+        {/* The blocker's own remedy. This is the create that used to sit in
+            Suggested changes as well — one decision, one button, here. */}
+        {open && i.action && !doneState && !embedded && (
+          <button type="button" onClick={() => runIssueAction(i)}
+            disabled={actioningIssue === i.id}
+            title={gateLabel ? `Norm can do this unattended once "${gateLabel}" is on for this venue` : undefined}
+            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #b78a2f', background: '#fff8e8', color: '#8a6d1f', borderRadius: 4, cursor: actioningIssue === i.id ? 'default' : 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+            {actioningIssue === i.id ? 'working…' : ISSUE_ACTION_LABELS[i.action.kind] || 'Fix it'}
+          </button>
+        )}
         {i.line_id && viewMode === 'norm' && doc.lines.some((l) => String(l.id) === String(i.line_id)) && (
           <button type="button" onClick={() => jumpToLine(String(i.line_id))}
             style={{ fontSize: '0.6rem', padding: 0, border: 'none', background: 'none', color: '#2563a8', textDecoration: 'underline', cursor: 'pointer', whiteSpace: 'nowrap' }}>
@@ -1897,6 +1995,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             Undo
           </button>
         )}
+      </div>
+      {/* Why autopilot stopped, in the words of the setting that would change
+          it — so "why didn't this receive?" is answered on the row itself. */}
+      {open && gateLabel && (
+        <div style={{ marginLeft: 14, fontSize: '0.6rem', color: '#9ca3af', fontStyle: 'italic' }}>
+          Auto-receive needs “{gateLabel}” switched on for this venue
+        </div>
+      )}
       </div>
     );
   };
@@ -2338,6 +2444,25 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   {/* The server's unit suggestion (the copy's delivered unit
                       resolves to a different Loaded unit). */}
                   {!struck && viewMode === 'norm' && suggChip(unitSuggFor(l.id))}
+                  {/* Same delta, for a unit Loaded does not have yet. The
+                      Norm view always shows what LOADED holds and puts the
+                      change in a chip beneath it — so this reads
+                      "6 X 750ML" with "→ 12x375ml (new)" under it, exactly
+                      like the quantity and tax chips, rather than the row
+                      quietly displaying a unit that does not exist. */}
+                  {!struck && viewMode === 'norm' && pendingUnitName(l.id) && (
+                    <div>
+                      <span style={chipStyle}
+                        title={`the copy's delivered unit '${pendingUnitName(l.id)}' doesn't exist in Loaded — create it`}>
+                        <span>{`→ ${pendingUnitName(l.id)} (new)`}</span>
+                        <button type="button" onClick={() => runPendingUnit(l.id)}
+                          disabled={!!actioningIssue}
+                          title={`Create '${pendingUnitName(l.id)}' in Loaded and use it`}
+                          aria-label="Create this unit"
+                          style={{ ...chipBtn, color: '#2e7d4f' }}>✓</button>
+                      </span>
+                    </div>
+                  )}
                   {/* Create-in-Loaded is offered ONLY for a unit the REPLICA
                       read off the copy (unit_not_in_loaded / unit_missing
                       with a unit_name) — never for a bare unlinked string
@@ -2711,6 +2836,18 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               {blockingIssues.map(issueRow)}
             </div>
           )}
+          {/* Non-blocking issues had nowhere to render at all — only
+              `blockingIssues` was ever mapped — so making something a warning
+              instead of a blocker made it disappear rather than soften. These
+              are the things worth knowing that are nobody's fault: an order
+              belonging to the supplier who sells through this one, a credit
+              note that will reverse stock. */}
+          {warningIssues.length > 0 && (
+            <div style={{ marginTop: blockingIssues.length > 0 ? 8 : 0 }}>
+              <div style={{ ...microLabel, color: '#8a6d3b', marginBottom: 3 }}>Worth knowing</div>
+              {warningIssues.map(issueRow)}
+            </div>
+          )}
           {issues.length === 0 && (
             <div style={{ fontSize: '0.64rem', color: '#9ca3af' }}>
               {reviewing ? 'Reviewing the invoice against the attached copy…' : 'Not yet reviewed.'}
@@ -2746,19 +2883,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               ? 'Nothing to receive — this draft has no line items. If it isn’t an invoice, accept the delete suggestion instead.'
             : supplierBlocking
               ? 'No Loaded supplier linked — pick the supplier before receiving.'
-            // Deliberately silent: the NEW badge sits on each line that needs
-            // resolving, and the disabled button says why on hover. The branch
-            // stays so the cascade can't fall through to "Ready to receive."
-            // beside a receive that is blocked.
-            : unresolved.length > 0
-              ? ''
-              // Deliberately silent: each blocker is listed in its own words
-              // under "Blocked from auto receive", and the disabled button
-              // explains itself on hover. The branch stays so the cascade
-              // can't fall through to "Ready to receive." beside a gated
-              // button (same rule as the NEW-item line above).
-              : blockingOpen.length > 0
-                ? ''
+            // These two branches were deliberately silent, on the reasoning
+            // that the per-line NEW badge and the button's hover title said
+            // enough. They didn't: whenever anything was blocked the footer
+            // printed NOTHING, so the line most likely to be read went blank
+            // at exactly the moment the user needed to know why they could
+            // not receive. Say how many, and point at the list that says
+            // what each one needs.
+            : blockedCount > 0
+              ? `${blockedCount} thing${blockedCount > 1 ? 's' : ''} to sort out first — each is listed above with what it needs.`
                 : deleteSugg && stateOf(deleteSugg.id) === 'pending'
                   ? 'This looks like a duplicate — review the delete suggestion before receiving.'
                   : pendingSuggestions.length > 0
@@ -2780,11 +2913,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 ? 'This draft has no line items — nothing to receive'
                 : supplierBlocking
                 ? 'Pick the supplier first — Loaded can’t receive a supplier-less invoice'
-                : unresolved.length > 0
-                  ? 'Create the NEW items/units in Loaded first'
-                  : blockingOpen.length > 0
-                    ? 'Blocking issues remain — fix each, or mark it checked'
-                    : undefined
+                // It used to say "items/units" whatever was actually wrong —
+                // including a brand, which is neither.
+                : blockedCount > 0
+                  ? `${blockedCount} thing${blockedCount > 1 ? 's' : ''} to sort out above — each row says what it needs`
+                  : undefined
             }
             style={{ padding: '0.4rem 1.1rem', fontSize: '0.78rem', fontWeight: 500, border: 'none', borderRadius: 6, cursor: receiveBlocked ? 'not-allowed' : 'pointer', background: '#2e7d4f', color: '#fff', fontFamily: 'inherit', opacity: receiveBlocked ? 0.5 : 1, whiteSpace: 'nowrap' }}>
             {status === 'saving' ? 'Receiving…' : isCredit ? 'Accept & Receive credit' : 'Accept & Receive'}

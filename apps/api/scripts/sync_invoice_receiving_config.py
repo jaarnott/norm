@@ -220,6 +220,12 @@ RECONCILE_CONSOLIDATOR_TOOL = {
         "allowed_write_actions": [
             "update_supplier_statement",
             "create_supplier_statement",
+            # A READ, but it is a norm.* action the consolidator reaches
+            # internally via call_api, so it needs declaring here alongside the
+            # writes. It returns what the RECEIVE flow already extracted for
+            # each invoice and reads fresh only what is missing — with that
+            # supplier's own spec instructions, onto the same cache row.
+            "invoice_copy_evidence",
         ],
     },
     # NOTE: deliberately NO display_component. A display block triggers the

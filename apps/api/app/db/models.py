@@ -134,6 +134,12 @@ class Venue(Base):
     location = Column(String)
     timezone = Column(String, nullable=True)  # IANA timezone e.g. "Pacific/Auckland"
     day_start_time = Column(String, nullable=True)  # HH:MM e.g. "07:00"
+    #: How far this venue lets Norm go when receiving invoices — the tier plus
+    #: the per-action toggles. See services/venue_autopilot for the shape and
+    #: the defaults. Venue-scoped rather than per-user because invoices are, and
+    #: because venues differ in how clean their Loaded catalogue is: one can run
+    #: on autopilot while another is still approving every line by hand.
+    invoice_autopilot = Column(JSON, nullable=True)
 
     organization = relationship("Organization", back_populates="venues")
 

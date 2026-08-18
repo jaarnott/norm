@@ -1865,7 +1865,14 @@ def execute_consolidator(
     if action and "mode" not in input_params:
         from app.services.workflow_modes import WORKFLOW_KEYS, user_mode
 
-        if action in WORKFLOW_KEYS and thread_id:
+        # Receiving is the VENUE's decision now, resolved server-side in
+        # review_invoices. Injecting the triggering user's personal mode as
+        # well made it a second, invisible setting: a venue put on autopilot
+        # would quietly run at whatever rung that person had once chosen, with
+        # no UI showing it and no way to tell why.
+        from app.services.workflow_modes import MODE_VENUE_SCOPED
+
+        if action in WORKFLOW_KEYS and action not in MODE_VENUE_SCOPED and thread_id:
             from app.db.models import Thread, User
 
             thread = db.query(Thread).filter(Thread.id == thread_id).first()
@@ -2327,6 +2334,52 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
         return {"success": True, "data": out}
     except Exception as exc:  # noqa: BLE001 — the consolidator reports the failure
         logger.warning("review_invoices failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+
+
+@register("norm", "invoice_copy_evidence")
+def _invoice_copy_evidence(params: dict, db: Session, thread_id: str | None) -> dict:  # noqa: ARG001
+    """What the invoice COPIES say — from whatever Norm already knows.
+
+    A READ, and deliberately the only thing reconciliation needs from the
+    receive side. It looks up the extraction the receive flow already stored on
+    each invoice's working document, and reads fresh only what is missing —
+    with the same PDF_SCHEMA and the same per-supplier spec instructions, so
+    the cache row is shared instead of paid for twice.
+
+    Params: ``venue``/``venue_id``; ``invoices`` — a list of
+    ``{id, fileId?, supplierName?}``.
+    Returns ``{invoice_id: header}`` where header is a PDF_SCHEMA header plus
+    ``_source`` (stored | extracted), or ``error``.
+    """
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.models import Venue
+    from app.services.invoice_evidence import copy_headers
+    from app.services.received_invoice import LoadedInvoiceClient
+
+    venue_id = params.get("venue_id")
+    if not venue_id and params.get("venue"):
+        venue_obj = (
+            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
+        )
+        venue_id = venue_obj.id if venue_obj else None
+    if not venue_id:
+        return {"success": False, "error": "venue not found"}
+
+    invoices = params.get("invoices")
+    if not isinstance(invoices, list):
+        return {"success": False, "error": "invoices must be a list"}
+
+    try:
+        cdb = _ConfigSessionLocal()
+        try:
+            lh = LoadedInvoiceClient(db, cdb, str(venue_id))
+            out = copy_headers(db, cdb, lh, str(venue_id), invoices)
+        finally:
+            cdb.close()
+        return {"success": True, "data": out}
+    except Exception as exc:  # noqa: BLE001 — the consolidator reports the failure
+        logger.warning("invoice_copy_evidence failed: %s", exc)
         return {"success": False, "error": str(exc)}
 
 

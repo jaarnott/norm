@@ -817,6 +817,13 @@ def autopilot_confidence(
     q = db.query(InvoiceAutopilotOutcome).filter(
         InvoiceAutopilotOutcome.created_at >= since
     )
+    # Scoped to the caller's own organisation. This read the WHOLE table for
+    # any admin:system holder — every other tenant's suppliers, reference
+    # numbers and receive history — which is a cross-tenant leak, not a
+    # reporting nicety. Platform admins have no organisation, and keep the
+    # cross-tenant view they need for support.
+    if getattr(user, "organization_id", None):
+        q = q.filter(InvoiceAutopilotOutcome.organization_id == user.organization_id)
     if venue_id:
         q = q.filter(InvoiceAutopilotOutcome.venue_id == venue_id)
     if supplier_name:

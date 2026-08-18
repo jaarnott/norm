@@ -88,20 +88,36 @@ class TestRequestPlumbing:
         run_consolidator(api, require_valid_po=False)
         assert api.calls[0][2]["require_valid_po"] is False
 
-    def test_unset_mode_reviews_read_only_and_asks(self):
+    def test_an_unset_personal_mode_lets_the_venue_decide(self):
+        """Receiving is the venue's setting now. Substituting approve_all here
+        looked like a safe default and was an override: the server treats what
+        this sends as a CEILING, so a hard-coded approve_all pinned every venue
+        to it and the ladder could never take effect."""
         api = Api()
         out = run_consolidator(api, mode=None)
-        assert api.calls[0][2]["mode"] == "approve_all"
+        assert api.calls[0][2]["mode"] == "unset"
         assert out["mode"] == "unset"
         assert out["mode_unset"] is True
-        assert out["dry_run"] is True
+        # Reported from what came back, not predicted from the mode.
+        assert out["dry_run"] is True  # this fixture receives nothing
         assert out["auto_submit"] is False
 
     def test_approve_fixes_passes_through(self):
         api = Api()
         out = run_consolidator(api, mode="approve_fixes")
         assert api.calls[0][2]["mode"] == "approve_fixes"
-        assert out["dry_run"] is False and out["auto_submit"] is False
+        assert out["auto_submit"] is False
+        # dry_run reports whether anything was WRITTEN, not whether writing was
+        # permitted — this engine no longer knows the latter, since the venue
+        # owns the rung. Nothing came back received, so nothing was written.
+        assert out["dry_run"] is True
+
+    def test_dry_run_is_false_once_something_is_actually_received(self):
+        api = Api(
+            {"cards": [], "received": [_verdict(outcome="received")], "skipped": []}
+        )
+        out = run_consolidator(api, mode="autopilot")
+        assert out["dry_run"] is False
 
     def test_autopilot_sets_auto_submit(self):
         api = Api()

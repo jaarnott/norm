@@ -22,13 +22,15 @@
 # `create_missing_statements=true` (the playbook requires explicit user
 # consent first).
 
-PDF_HEADER_SCHEMA = {
-    "supplier_name": "string or null",
-    "invoice_number": "string or null — the invoice number exactly as printed",
-    "purchase_order_number": "string or null — the PO / order number exactly as printed",
-    "invoice_date": "string or null — the invoice date as YYYY-MM-DD",
-    "total_incl_tax": "number or null — the total including tax/GST",
-}
+# No private extraction schema here any more. Reading the copy is
+# norm.invoice_copy_evidence's job: it returns what the RECEIVE flow already
+# extracted for an invoice, and reads fresh only what is missing — with the
+# same PDF_SCHEMA and the same per-supplier spec instructions that the dojo
+# trains. The five-field schema this file used to carry asked for a single
+# `purchase_order_number`, which is why an invoice printing the supplier's own
+# order number above our PO read as a mismatch: 27 of 67 failures on 17 Aug
+# 2026. It also hashed to a different cache key, so every copy the receive flow
+# had already read was read and paid for again.
 
 TOTALS_TOL = "0.02"  # user decision: differences <= 2c count as matching
 
@@ -156,11 +158,14 @@ def run(params, call_api, log, call_api_parallel=None):
     def evaluate(inv):
         """Run the four user checks.
 
-        Returns (reasons, checks, comparison) — `comparison` holds the ACTUAL
+        Returns (reasons, checks, comparison, notes) — `comparison` holds the ACTUAL
         values read from each side (the received invoice in Loaded vs the
         attached invoice copy) so the report can prove what was compared.
         """
-        reasons, checks = [], {}
+        # `reasons` stop a reconcile; `notes` explain one that went through
+        # (e.g. "matched on the supplier's own order number"). Keeping them
+        # apart is what lets an invoice reconcile AND still say why.
+        reasons, notes, checks = [], [], {}
         comparison = {
             "invoice_number": {"loaded": inv.get("invoiceNumber"), "document": None},
             "po_number": {"loaded": inv.get("purchaseOrderNumber"), "document": None},
@@ -190,7 +195,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 comparison[field]["match"] = (
                     True if state == "pass" else (False if state == "fail" else None)
                 )
-            return reasons, checks, comparison
+            return reasons, checks, comparison, notes
 
         if inv.get("creditRequest") or (dec(inv.get("total")) or D(0)) < 0:
             checks["credit"] = "fail"
@@ -208,16 +213,7 @@ def run(params, call_api, log, call_api_parallel=None):
             return finalize()
         checks["file_attached"] = "pass"
 
-        pdf = extract_document(
-            "loadedhub",
-            "download_invoice_file",
-            dict(base, file_id=inv["fileId"]),
-            schema=PDF_HEADER_SCHEMA,
-            instructions=(
-                "Extract the header fields from this supplier invoice. "
-                "Return the invoice date as YYYY-MM-DD."
-            ),
-        )
+        pdf = evidence.get(str(inv.get("id"))) or {}
         if not isinstance(pdf, dict) or pdf.get("error"):
             err = pdf.get("error") if isinstance(pdf, dict) else "unreadable"
             checks["pdf_readable"] = "fail"
@@ -228,7 +224,9 @@ def run(params, call_api, log, call_api_parallel=None):
 
         # Record the document's actual values verbatim for the report
         comparison["invoice_number"]["document"] = pdf.get("invoice_number")
-        comparison["po_number"]["document"] = pdf.get("purchase_order_number")
+        comparison["po_number"]["document"] = pdf.get(
+            "customer_purchase_order_number"
+        ) or pdf.get("supplier_order_number")
         comparison["invoice_date"]["document"] = (
             date_only(pdf.get("invoice_date")) or None
         )
@@ -266,38 +264,20 @@ def run(params, call_api, log, call_api_parallel=None):
         else:
             checks["invoice_number_match"] = "pass"
 
-        # Check 2 — PO number (STRICT: both sides must exist and match)
-        loaded_po, pdf_po = (
-            po_norm(inv.get("purchaseOrderNumber")),
-            po_norm(pdf.get("purchase_order_number")),
-        )
-        if not loaded_po and not pdf_po:
-            checks["po_match"] = "fail"
-            reasons.append("No PO number on the received invoice or the invoice copy")
-        elif not loaded_po:
-            checks["po_match"] = "fail"
-            reasons.append(
-                "Received invoice has no PO number (invoice copy shows "
-                + str(pdf.get("purchase_order_number"))
-                + ")"
-            )
-        elif not pdf_po:
-            checks["po_match"] = "fail"
-            reasons.append(
-                "Invoice copy shows no PO number (received invoice has PO#"
-                + str(inv.get("purchaseOrderNumber"))
-                + ")"
-            )
-        elif loaded_po != pdf_po:
-            checks["po_match"] = "fail"
-            reasons.append(
-                "PO number mismatch: received invoice PO#"
-                + str(inv.get("purchaseOrderNumber"))
-                + " vs invoice copy "
-                + str(pdf.get("purchase_order_number"))
-            )
-        else:
+        # Check 2 — PO number. The copy carries OUR number and the supplier's
+        # separately, so "sure" means Norm can tell them apart and one of them
+        # equals what Loaded holds. Loaded's own purchaseOrderNumber is often
+        # the supplier's number rather than a Loaded order, so a match on that
+        # is still both sides naming the same document — it just says so.
+        po_state = pdf.get("_po_verdict") or "mismatch"
+        po_note = pdf.get("_po_note") or ""
+        if po_state == "match":
             checks["po_match"] = "pass"
+            if po_note:
+                notes.append(po_note)
+        else:
+            checks["po_match"] = "fail"
+            reasons.append(po_note or "PO number could not be matched")
 
         # Check 3 — invoice date
         inv_date, pdf_date = (
@@ -337,12 +317,39 @@ def run(params, call_api, log, call_api_parallel=None):
         return finalize()
 
     reconciled, not_reconciled, needs_statement_rows = [], [], []
+    # Read every copy ONCE, up front, through the receive path's eyes: what
+    # Norm already extracted when the invoice was received, and only what is
+    # missing read fresh — with that supplier's own spec instructions, in
+    # parallel, onto the same cache row the receive flow uses. This replaced a
+    # serial per-invoice extraction with a private schema that could not tell
+    # our PO number from the supplier's.
+    ev = call_api(
+        "norm",
+        "invoice_copy_evidence",
+        {
+            "venue": venue,
+            "invoices": [
+                {
+                    "id": c.get("id"),
+                    "fileId": c.get("fileId"),
+                    "supplierName": c.get("supplierName"),
+                    "purchaseOrderNumber": c.get("purchaseOrderNumber"),
+                }
+                for c in candidates
+            ],
+        },
+    )
+    evidence = (ev or {}).get("data") if isinstance(ev, dict) else None
+    if not isinstance(evidence, dict):
+        evidence = {}
+        log("Could not read the invoice copies: " + str((ev or {}).get("error")))
+
     by_statement = {}  # statement id -> {"statement": s, "items": [inv...], "verdicts": []}
     orphans = {}  # supplierId -> {"supplier": name, "passing": [], "failing": []}
 
     for inv in candidates:
         stmt = covering_statement(inv)
-        reasons, checks, comparison = evaluate(inv)
+        reasons, checks, comparison, notes = evaluate(inv)
         verdict = {
             "invoice_id": inv.get("id"),
             "invoice_number": inv.get("invoiceNumber") or "(no number)",
@@ -352,6 +359,7 @@ def run(params, call_api, log, call_api_parallel=None):
             "total": money(inv.get("total")),
             "statement_number": stmt.get("statementNumber") if stmt else None,
             "reasons": reasons,
+            "notes": notes,
             "checks": checks,
             "comparison": comparison,
         }
@@ -517,7 +525,7 @@ def run(params, call_api, log, call_api_parallel=None):
             "total_loaded": cell(v, "total_incl_tax", "loaded"),
             "total_doc": doc_cell(v, "total_incl_tax"),
             "outcome": v.get("outcome", "not reconciled"),
-            "notes": " • ".join(v["reasons"]) if v.get("reasons") else "—",
+            "notes": " • ".join(v.get("reasons") or v.get("notes") or []) or "—",
         }
         for v in reconciled + not_reconciled + needs_statement_rows
     ]

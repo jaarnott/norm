@@ -22,8 +22,15 @@ FUNCTION_CODE = (
 
 class Api:
     def __init__(
-        self, statements, received, pdfs=None, update_error=None, create_error=None
+        self,
+        statements,
+        received,
+        pdfs=None,
+        update_error=None,
+        create_error=None,
+        evidence_error=None,
     ):
+        self.evidence_error = evidence_error
         self.statements = statements
         self.received = received
         self.pdfs = pdfs or {}
@@ -48,7 +55,41 @@ class Api:
                 return {"error": self.create_error}
             self.created.append(params["statement"])
             return dict(params["statement"], id="new-stmt-1")
+        if action == "invoice_copy_evidence":
+            return self.copy_evidence(params)
         raise AssertionError(f"unexpected action {action}")
+
+    def copy_evidence(self, params):
+        """Stand in for norm.invoice_copy_evidence.
+
+        Deliberately calls the REAL `po_verdict` rather than re-deciding here:
+        the rule for telling OUR purchase order from the supplier's own order
+        number is the thing these tests exist to protect, so a fake that
+        reimplemented it would prove nothing.
+        """
+        from app.services.invoice_evidence import SOURCE_EXTRACTED, po_verdict
+
+        if self.evidence_error:
+            return {"success": False, "error": self.evidence_error}
+        out = {}
+        for inv in params.get("invoices") or []:
+            iid, file_id = str(inv.get("id")), inv.get("fileId")
+            if not file_id:
+                out[iid] = {"error": "no invoice copy attached"}
+                continue
+            pdf = self.pdfs.get(file_id)
+            if not isinstance(pdf, dict) or pdf.get("error"):
+                out[iid] = {
+                    "error": (pdf or {}).get("error", "unreadable")
+                    if isinstance(pdf, dict)
+                    else "unreadable"
+                }
+                continue
+            header = {**pdf, "_source": SOURCE_EXTRACTED}
+            state, note = po_verdict(inv.get("purchaseOrderNumber"), header)
+            header["_po_verdict"], header["_po_note"] = state, note
+            out[iid] = header
+        return {"success": True, "data": out}
 
     def extract_document(
         self, connector, action, params=None, schema=None, instructions=None
@@ -125,7 +166,9 @@ def make_pdf(**over):
     pdf = {
         "supplier_name": "Angus Meats Ltd",
         "invoice_number": "1008102",
-        "purchase_order_number": "PO#1521021",
+        # The receive path's schema splits these two on purpose.
+        "customer_purchase_order_number": "PO#1521021",
+        "supplier_order_number": None,
         "invoice_date": "2026-07-13",
         "total_incl_tax": 182.09,
     }
@@ -186,7 +229,7 @@ class TestReconciles:
     def test_po_normalisation_matches(self):
         # Loaded "1521021" vs PDF "PO#1521021" — must match after normalisation.
         api = api_for(
-            make_received(), pdf=make_pdf(purchase_order_number="po# 1521021")
+            make_received(), pdf=make_pdf(customer_purchase_order_number="po# 1521021")
         )
         assert run_consolidator(api)["summary"]["reconciled"] == 1
 
@@ -244,24 +287,63 @@ class TestFailures:
         assert verdict["checks"]["invoice_number_match"] == "fail"
 
     def test_po_conflict_fails_with_both_values(self):
-        api = api_for(make_received(), pdf=make_pdf(purchase_order_number="1520999"))
+        api = api_for(
+            make_received(), pdf=make_pdf(customer_purchase_order_number="1520999")
+        )
         verdict = sole_fail(run_consolidator(api))
         assert any("1521021" in r and "1520999" in r for r in verdict["reasons"])
 
-    def test_po_missing_on_loaded_side_fails_strict(self):
+    def test_po_missing_on_loaded_side_fails_and_names_what_was_found(self):
+        """Still a failure, but the report now carries the number the copy
+        shows — that is the whole value of having read the copy."""
         api = api_for(make_received(purchaseOrderNumber=None))
         verdict = sole_fail(run_consolidator(api))
-        assert any("Received invoice has no PO number" in r for r in verdict["reasons"])
+        assert any(
+            "has no PO number" in r and "1521021" in r for r in verdict["reasons"]
+        )
 
     def test_po_missing_on_pdf_side_fails_strict(self):
-        api = api_for(make_received(), pdf=make_pdf(purchase_order_number=None))
+        api = api_for(
+            make_received(), pdf=make_pdf(customer_purchase_order_number=None)
+        )
         verdict = sole_fail(run_consolidator(api))
-        assert any("Invoice copy shows no PO number" in r for r in verdict["reasons"])
+        assert any("PO number mismatch" in r for r in verdict["reasons"])
+
+    def test_the_suppliers_own_order_number_is_not_a_mismatch(self):
+        """Service Foods, 17 Aug 2026 — 27 of 67 failures. The copy prints the
+        supplier's ORD… number beside our PO; Loaded holds ours. Reading a
+        single `purchase_order_number` made those look like a conflict."""
+        api = api_for(
+            make_received(),
+            pdf=make_pdf(
+                customer_purchase_order_number="1521021",
+                supplier_order_number="ORD10658598",
+            ),
+        )
+        out = run_consolidator(api)
+        assert out["summary"]["reconciled"] == 1, out["not_reconciled"]
+
+    def test_loaded_holding_the_suppliers_number_reconciles_and_says_so(self):
+        """Loaded's purchaseOrderNumber is often the supplier's own number
+        rather than a Loaded order — both sides then name the same document."""
+        api = api_for(
+            make_received(purchaseOrderNumber="ORD10658598"),
+            pdf=make_pdf(
+                customer_purchase_order_number="1521021",
+                supplier_order_number="ORD10658598",
+            ),
+        )
+        out = run_consolidator(api)
+        assert out["summary"]["reconciled"] == 1, out["not_reconciled"]
+        assert any(
+            "supplier's own order number" in (r.get("notes") or "")
+            for r in out["results"]
+        )
 
     def test_po_missing_both_sides_fails_strict(self):
         api = api_for(
             make_received(purchaseOrderNumber=None),
-            pdf=make_pdf(purchase_order_number=None),
+            pdf=make_pdf(customer_purchase_order_number=None),
         )
         verdict = sole_fail(run_consolidator(api))
         assert any(
@@ -473,7 +555,9 @@ class TestComparisonEvidence:
 
     def test_missing_document_value_renders_dash_with_cross(self):
         # Strict PO policy: PDF showing no PO number is a failed check.
-        api = api_for(make_received(), pdf=make_pdf(purchase_order_number=None))
+        api = api_for(
+            make_received(), pdf=make_pdf(customer_purchase_order_number=None)
+        )
         row = run_consolidator(api)["results"][0]
         assert row["po_doc"] == "— ✗"
         assert row["po_loaded"] == "1521021"

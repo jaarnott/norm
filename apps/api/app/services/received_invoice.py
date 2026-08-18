@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import uuid
 
 import httpx
 from fastapi import HTTPException
@@ -637,15 +638,22 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
                     ln[dst] = e[src]
 
     # New lines the editor added (Add Item): a request line whose id matches no
-    # existing invoice line is appended as a NEW Loaded line. The client's temp
-    # id is dropped — Loaded assigns the real one. Only append a line that names
-    # a real stock item, so a stray empty row can't create rubbish.
+    # existing invoice line is appended as a NEW Loaded line. Only append a line
+    # that names a real stock item, so a stray empty row can't create rubbish.
+    #
+    # The id is OURS to generate. This used to drop the editor's temp id on the
+    # belief that "Loaded assigns the real one" — it does not. A line with no
+    # id is silently ignored by the invoice PUT: no error, no line, nothing in
+    # the response to notice. Verified live on Red and White Cellars INV562277
+    # (Glass Goose, 17 Aug 2026) — the same payload with a client-generated
+    # GUID persisted, without one it vanished. That invoice went to Loaded
+    # $12 light with its freight line deleted and nothing in its place.
     for e in body.lines:
         if e.get("id") in existing_ids:
             continue
         if not (e.get("code") or e.get("linked_item_id")):
             continue
-        new_line = {}
+        new_line = {"id": str(uuid.uuid4())}
         for src, dsts in _LINE_FIELDS.items():
             if e.get(src) is not None:
                 for dst in dsts:

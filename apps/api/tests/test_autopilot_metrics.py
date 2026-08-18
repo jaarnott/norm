@@ -43,11 +43,17 @@ def _doc(*, lines=None, snapshot_lines=None, suggestions=None, actions=None, **o
         "suggestions": suggestions or [],
         "suggestion_actions": actions or [],
         "issues": [],
+        # Shaped exactly as received_invoice.loaded_snapshot() builds it:
+        # header fields NESTED, lines alongside. The flat version this fixture
+        # used to carry is what let the header comparison read nothing and mark
+        # every invoice hand-edited in production.
         "loaded_snapshot": {
-            "reference_number": "F100",
-            "linked_supplier_id": "sup-1",
-            "total": 252.75,
-            "tax_amount": 32.97,
+            "header": {
+                "reference_number": "F100",
+                "linked_supplier_id": "sup-1",
+                "total": 252.75,
+                "tax_amount": 32.97,
+            },
             "lines": snap,
         },
     }
@@ -249,6 +255,147 @@ class TestManualEdits:
     def test_money_tolerance(self):
         assert AM.manual_edits(_doc(total=252.755)) == []
         assert AM.manual_edits(_doc(total=253.75)) == ["header.total"]
+
+
+class TestTheBaselineIsWhereItActuallyLives:
+    """Autopilot readiness read 0% from the day it shipped.
+
+    `loaded_snapshot()` nests the baseline as {"header": {...}, "lines": [...]},
+    but the header comparison read `snap.get(field)` — top level — and found
+    nothing, so every populated header field always "differed". The first 31
+    production receives were all recorded as hand-edited, 29 of them with
+    manual_fields containing ONLY header entries, the same ones every time:
+    reference_number 30x, linked_supplier_id 30x, issued_at 30x, tax_amount 29x.
+    `clean` was therefore unreachable and the rate was structurally 0/31 —
+    the number the user was asked to trust before turning autopilot on.
+
+    Recomputed over 8 live documents at the time of the fix: 4-8 "manual edits"
+    each as shipped, zero once the header is read from where it lives.
+    """
+
+    #: The exact set production reported, in production's own order.
+    PHANTOM = [
+        "header.reference_number",
+        "header.linked_supplier_id",
+        "header.purchase_order_number",
+        "header.linked_purchase_order_id",
+        "header.issued_at",
+        "header.total",
+        "header.tax_amount",
+    ]
+
+    def _untouched(self):
+        """A document nobody edited: header identical to Loaded's snapshot."""
+        header = {
+            "reference_number": "IN11413982",
+            "linked_supplier_id": "sup-1",
+            "purchase_order_number": "1520987",
+            "linked_purchase_order_id": "po-1",
+            "issued_at": "2026-08-15",
+            "total": 252.75,
+            "tax_amount": 32.97,
+        }
+        return {
+            **header,
+            "reviewed_at": "2026-08-15T00:00:00Z",
+            "confidence": "ready",
+            "lines": [_line()],
+            "suggestions": [],
+            "suggestion_actions": [],
+            "issues": [],
+            "loaded_snapshot": {"header": dict(header), "lines": [_line()]},
+        }
+
+    def test_an_untouched_header_is_not_seven_manual_edits(self):
+        assert AM.manual_edits(self._untouched()) == []
+
+    def test_the_flat_shape_is_not_mistaken_for_a_baseline(self):
+        """Defence in depth: if a doc ever carries the old flat snapshot, the
+        header simply has no baseline — say nothing rather than invent seven
+        edits from it."""
+        doc = self._untouched()
+        doc["loaded_snapshot"] = {
+            **doc["loaded_snapshot"]["header"],
+            "lines": doc["loaded_snapshot"]["lines"],
+        }
+        assert [f for f in AM.manual_edits(doc) if f.startswith("header.")] == []
+
+    def test_a_real_header_edit_is_still_caught(self):
+        doc = self._untouched()
+        doc["reference_number"] = "TYPED-BY-HAND"
+        assert AM.manual_edits(doc) == ["header.reference_number"]
+
+    def test_such_an_invoice_can_finally_be_clean(self):
+        """The verdict is what the report actually counts. With suggestions
+        that were all accepted and nothing typed, this is `clean` — the outcome
+        that never once occurred in production."""
+        doc = self._untouched()
+        s = _sugg()
+        doc["suggestions"] = [s]
+        doc["suggestion_actions"] = [_act(s["id"], after={"quantity_received": 4.95})]
+        out = AM.classify_outcome(doc, received=True)
+        assert out["manual_edit_count"] == 0
+        assert out["outcome"] == "clean"
+
+
+class TestNormsOwnFillsAreNotHandEdits:
+    """Service Foods IN11437881, 17 Aug 2026 — received with no suggestions and
+    nothing typed, recorded as EDITED on four fields of one line:
+    unit, linked_unit_id, unit_ratio, linked_item_id.
+
+    Loaded's own line named "KG" and linked neither item nor unit. Norm then
+    resolved the supplier variant and completed the line itself
+    (invoice_po_reference.seed_working_from_loaded) — but the baseline,
+    `loaded_snapshot`, is captured from Loaded's raw draft BEFORE that runs. So
+    every field the server filled read as a person typing.
+
+    Second instance of one mistake: comparing values against a baseline taken
+    at a different moment. The header version of it (fixed above) pinned
+    readiness at 0%; this one would have kept every invoice with an unlinked
+    Loaded line out of `clean` forever.
+    """
+
+    def _seeded(self):
+        """Loaded's line as it arrived, and the line after Norm completed it."""
+        raw = _line(
+            unit="KG", linked_unit_id=None, unit_ratio=None, linked_item_id=None
+        )
+        done = _line(unit="Kilo", linked_unit_id="u-kilo", unit_ratio=1.0)
+        doc = _doc(lines=[done], snapshot_lines=[raw])
+        doc["server_filled"] = {
+            "ld-1": {
+                "unit": "Kilo",
+                "linked_unit_id": "u-kilo",
+                "unit_ratio": 1.0,
+                "linked_item_id": "item-salmon",
+            }
+        }
+        return doc
+
+    def test_what_norm_completed_is_not_what_a_person_typed(self):
+        assert AM.manual_edits(self._seeded()) == []
+
+    def test_so_an_untouched_invoice_is_not_edited(self):
+        assert AM.classify_outcome(self._seeded(), received=True)["outcome"] == (
+            "no_suggestions"
+        )
+
+    def test_changing_it_afterwards_is_still_a_hand_edit(self):
+        """Same contract as an accepted suggestion: explained only while the
+        value is still the one that was filled. Retyping the unit means
+        autopilot would have produced a different invoice."""
+        doc = self._seeded()
+        doc["lines"][0]["unit"] = "Each"
+        doc["lines"][0]["linked_unit_id"] = "u-each"
+        assert sorted(AM.manual_edits(doc)) == [
+            "line:ld-1.linked_unit_id",
+            "line:ld-1.unit",
+        ]
+
+    def test_a_field_norm_never_filled_is_still_measured(self):
+        doc = self._seeded()
+        doc["lines"][0]["quantity_received"] = 99.0
+        assert "line:ld-1.quantity_received" in AM.manual_edits(doc)
 
 
 class TestRecorder:

@@ -1414,6 +1414,9 @@ export default function SettingsPanel() {
         {/* ============ PREFERENCES TAB (all users) ============ */}
         {activeTab === 'preferences' && (
           <>
+            {/* Receiving lives INSIDE WorkflowModesTab — one section, one
+                control per workflow. Rendering it here as well is how the
+                same setting ended up with two homes. */}
             <WorkflowModesTab />
             <div style={{ height: '2rem' }} />
             <MemoryTab />

@@ -66,7 +66,14 @@ def run(params, call_api, log, call_api_parallel=None):
     else:
         request["from_date"] = from_date
         request["to_date"] = to_date
-        request["mode"] = mode if not mode_unset else "approve_all"
+        # Pass the mode through, including "unset". Substituting approve_all
+        # here looked like a safe default and was really an override: the
+        # server resolves the VENUE's setting and treats this as a ceiling, so
+        # a hard-coded approve_all pinned every venue to it — the ladder could
+        # be set to autopilot and never once take effect. The single-invoice
+        # branch above still passes approve_all deliberately, which is a real
+        # narrowing and still honoured.
+        request["mode"] = mode
 
     result = call_api("norm", "review_invoices", request)
     if not isinstance(result, dict) or result.get("error"):
@@ -157,7 +164,11 @@ def run(params, call_api, log, call_api_parallel=None):
 
     return {
         "venue": venue,
-        "dry_run": dry_run,
+        # What actually happened, not what this file guessed would. The venue
+        # owns the rung and the server applies it, so predicting "dry run" from
+        # a personal mode this workflow no longer reads would report "nothing
+        # was received" over a batch that received.
+        "dry_run": not received_in,
         "from_date": from_date,
         "to_date": to_date,
         "reviewed": len(received_in) + len(skipped_in),

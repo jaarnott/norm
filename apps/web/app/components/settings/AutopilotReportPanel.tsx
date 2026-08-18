@@ -96,6 +96,10 @@ const sectionLabel: React.CSSProperties = {
 export default function AutopilotReportPanel({ onBack }: { onBack: () => void }) {
   const [report, setReport] = useState<Report | null>(null);
   const [days, setDays] = useState(30);
+  // Whose receives to score. The panel never sent this, so it always showed
+  // the humans-only scope — and a venue where Norm receives everything read
+  // "Nothing recorded yet" however many rows it had.
+  const [actor, setActor] = useState<'user' | 'norm'>('user');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,7 +107,7 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
     setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch(`/api/supplier-invoice-specs/autopilot-confidence?days=${days}`);
+      const res = await apiFetch(`/api/supplier-invoice-specs/autopilot-confidence?days=${days}&actor=${actor}`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
       setReport(data as Report);
@@ -112,7 +116,7 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
     } finally {
       setLoading(false);
     }
-  }, [days]);
+  }, [days, actor]);
   useEffect(() => { load(); }, [load]);
 
   const t = report?.totals || {};
@@ -140,6 +144,16 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
             {d} days
           </button>
         ))}
+        <span style={{ width: 10 }} />
+        {([['user', 'Received by people'], ['norm', 'Received by Norm']] as const).map(([a, label]) => (
+          <button key={a} type="button" onClick={() => setActor(a)}
+            title={a === 'user'
+              ? 'Every invoice a person received — the only honest test of what autopilot would have done'
+              : 'What autopilot has actually received. Volume, not correctness: it accepted its own suggestions a moment earlier.'}
+            style={{ fontSize: '0.7rem', padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit', border: '1px solid #d8d4cc', background: actor === a ? '#8a6d3b' : '#fff', color: actor === a ? '#fff' : '#666' }}>
+            {label}
+          </button>
+        ))}
         <button type="button" onClick={load} disabled={loading}
           style={{ fontSize: '0.7rem', padding: '3px 10px', borderRadius: 4, border: '1px solid #d8d4cc', background: '#fff', color: '#666', cursor: loading ? 'default' : 'pointer', fontFamily: 'inherit' }}>
           {loading ? 'Loading…' : 'Refresh'}
@@ -150,8 +164,9 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
 
       {!loading && attempts === 0 && (
         <div style={{ fontSize: '0.78rem', color: '#777', border: '1px dashed #ddd', borderRadius: 8, padding: '14px 16px', maxWidth: 720 }}>
-          Nothing recorded yet — this fills up as invoices are received from now on (there is no history to
-          backfill). Come back after a week or so of normal receiving.
+          {actor === 'user'
+            ? 'No invoices received by a person in this window. If Norm is receiving them, switch to “Received by Norm”.'
+            : 'Norm hasn’t received anything itself in this window — that starts once a venue is moved off “Approve all”.'}
         </div>
       )}
 

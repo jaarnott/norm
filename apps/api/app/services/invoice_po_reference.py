@@ -538,6 +538,23 @@ def seed_working_from_loaded(
         str(i.get("id")): i for i in catalogue if isinstance(i, dict) and i.get("id")
     }
 
+    # What NORM derived, per line, so it is never mistaken for typing. The
+    # baseline for "did a human change this?" is `loaded_snapshot`, captured
+    # from Loaded's raw draft before this function runs — so every field filled
+    # in below read as a hand edit. One Service Foods invoice nobody touched
+    # was recorded with four (unit, linked_unit_id, unit_ratio,
+    # linked_item_id), because Loaded's line named "KG" and linked nothing,
+    # while this resolved the variant and filled the rest in.
+    #
+    # Same contract as an accepted suggestion: the value is explained only
+    # while it still matches what was filled, so changing it afterwards reads
+    # as manual again.
+    filled: dict[str, dict] = data.setdefault("server_filled", {})
+
+    def _fill(ln: dict, field: str, value: object) -> None:
+        ln[field] = value
+        filled.setdefault(str(ln.get("id")), {})[field] = value
+
     for ln in lines:
         if ln.get("linked_item_id"):
             # Already linked — Loaded shows THAT item, so only fill in its
@@ -550,7 +567,7 @@ def seed_working_from_loaded(
         else:
             item, variant = resolve_loaded_line(catalogue, supplier_id, ln.get("code"))
             if item is not None:
-                ln["linked_item_id"] = item.get("id")
+                _fill(ln, "linked_item_id", item.get("id"))
                 ln["item_name"] = item.get("name")
                 # attach_item_names' cache marker: the name is resolved, so it
                 # does not spend a fetch re-resolving it.
@@ -561,10 +578,10 @@ def seed_working_from_loaded(
 
         unit = unit_by_id.get(str((variant or {}).get("unitId") or ""))
         if unit and not ln.get("linked_unit_id"):
-            ln["linked_unit_id"] = unit.get("id")
-            ln["unit"] = unit.get("name") or ln.get("unit")
+            _fill(ln, "linked_unit_id", unit.get("id"))
+            _fill(ln, "unit", unit.get("name") or ln.get("unit"))
             if unit.get("ratio") is not None:
-                ln["unit_ratio"] = unit.get("ratio")
+                _fill(ln, "unit_ratio", unit.get("ratio"))
 
 
 _REFERENCE_TTL = 300.0

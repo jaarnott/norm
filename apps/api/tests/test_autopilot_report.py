@@ -226,6 +226,44 @@ class TestCannotReceive:
         assert row.outcome == "dojo" and row.detail["dojo"]["staged"] is False
 
 
+class TestTheSupplierIsAttributed:
+    def test_a_dojo_row_with_no_draft_still_names_the_supplier(
+        self, client, manager_headers, db_session, monkeypatch, bind_recorder
+    ):
+        """Pressing "Can't receive" on an invoice that was never opened has no
+        working document to read the supplier from, so the row used to land in
+        the report's "(no supplier)" bucket — losing exactly the attribution a
+        supplier's training history is for. Staging has already resolved it."""
+        v = _venue(db_session, "Freeman")
+
+        monkeypatch.setattr(
+            "app.services.spec_dojo.stage_invoice_sample",
+            lambda db, venue_id, invoice_id, *, draft: {
+                "sample_id": "s-9",
+                "spec_id": "sp-9",
+                "spec_name": "Bidfood",
+                "created_spec": False,
+                "already_in_dojo": False,
+            },
+        )
+        monkeypatch.setattr(
+            "app.services.sensei_runner.start_analysis", lambda sid, fb=None: "job"
+        )
+        res = client.post(
+            "/api/invoice-fixes/cannot-receive",
+            headers=manager_headers,
+            json={"venue_id": v.id, "invoice_id": "inv-nodoc"},
+        )
+        assert res.status_code == 200, res.text
+
+        row = (
+            db_session.query(InvoiceAutopilotOutcome)
+            .filter(InvoiceAutopilotOutcome.invoice_id == "inv-nodoc")
+            .first()
+        )
+        assert row.supplier_name == "Bidfood"
+
+
 class TestAFiledInvoiceIsVisible:
     """The bug behind "Can't receive isn't adding invoices to the dojo".
 

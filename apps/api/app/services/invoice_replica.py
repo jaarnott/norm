@@ -47,11 +47,10 @@ from app.services.supplier_identity import (
 )
 from app.services.invoice_units import (
     _unit_norm,
-    copy_is_more_specific,
     is_multipack,
+    is_packaging_word,
     multipack_equal,
     parse_unit,
-    units_equivalent,
 )
 
 logger = logging.getLogger(__name__)
@@ -252,6 +251,14 @@ def _resolve_unit_record(name: object, units: list[dict]) -> dict | None:
     parsed = parse_unit(name)
     if parsed:
         for u in live:
+            # Magnitude equivalence must not launder identity: 'EA' parses as
+            # a count of 1 and so does a unit literally named 'PACK', but
+            # receiving each-lines in PACK is meaningless (Trents 5973784,
+            # 18 Aug 2026 — Dunedin's PACK unit swallowed every EA line). A
+            # packaging-word-NAMED unit can only be chosen by printing its
+            # name exactly (the name tier above).
+            if is_packaging_word(u.get("name")):
+                continue
             pu = parse_unit(u.get("name"))
             if pu and pu[0] == parsed[0] and abs(pu[1] - parsed[1]) < 0.001:
                 return u
@@ -319,6 +326,7 @@ def build_replica(
     tax_rates: dict[int, float] | None = None,
     aliases_by_id: dict[str, list[str]] | None = None,
     item_matcher=None,
+    unit_chooser=None,
     own_invoice_id: str | None = None,
     received_feed: list | None = None,
     loaded_total: object = None,
@@ -506,6 +514,9 @@ def build_replica(
                 if supplier_printed
                 else "the copy names no supplier — pick the supplier by hand"
             ),
+            # The printed name is what a create would use, so it travels with
+            # the blocker rather than being re-parsed out of the message.
+            data={"supplier_name": supplier_printed} if supplier_printed else None,
         )
 
     # ---- Lines: deterministic pass ----
@@ -631,20 +642,23 @@ def build_replica(
             unit_rec = next(
                 (u for u in units if u.get("id") == variant.get("unitId")), None
             ) or {"id": variant.get("unitId"), "name": None, "ratio": None}
-            # The unit-fix doctrine: the copy's confidently-delivered unit
-            # overrides a variant default that names a DIFFERENT pack —
-            # equivalent names keep the variant's unit (id-stable vs Loaded).
+            # The unit is whatever the INVOICE says. A variant default is
+            # user-entered data in Loaded; the copy is the delivery, and
+            # receiving it accurately is the job. If a venue counts wine
+            # bottles as 'Each', that is the venue's business — it is not a
+            # reason to book 'Each' against a copy that says 750 mL.
             #
-            # ...with one asymmetry. Equivalence is a two-way test, but "same
-            # pack" does not mean "as informative": '6 Pack' and '6x1000ml'
-            # are equivalent, yet only one says how big the bottles are. When
-            # the COPY is the specific one the copy wins, otherwise the right
-            # answer sits on the page with no way to reach it — the working
-            # value matches the replica, so nothing is even suggested.
-            if confident and (
-                not units_equivalent(unit_rec.get("name"), derived)
-                or copy_is_more_specific(derived, unit_rec.get("name"))
-            ):
+            # This used to be gated on the two units not being `units_equivalent`,
+            # plus a `copy_is_more_specific` exception carved out for one
+            # Hancocks invoice (multipack vs bare count). Everything outside
+            # that exception's shape fell through to Loaded, so '750 mL' lost
+            # to 'Each'. The gate is gone: `_resolve_unit_record` already
+            # matches by name, by multipack components and by parsed magnitude,
+            # so a copy saying '0.7 L' against a variant saying '700 mL' still
+            # lands on the same record and nothing moves. The equivalence check
+            # was doing that job a second time, and the second copy is what let
+            # Loaded win.
+            if confident:
                 copy_rec = _resolve_unit_record(derived, units)
                 if copy_rec and copy_rec.get("id") != unit_rec.get("id"):
                     log.append(
@@ -665,7 +679,22 @@ def build_replica(
                     # — never a bare unlinked string Loaded's OCR left behind.
                     unit_create_name = str(derived)
         if unit_rec is None:
-            unit_rec = _resolve_unit_record(derived or el.get("unit"), units)
+            # A bare packaging word ('PACK', 'CARTON') says how the goods were
+            # bundled, not what ONE delivered item is — and venues often carry
+            # a unit literally named PACK, so it resolves "successfully" and a
+            # sizeless line silently receives in a meaningless unit (Trents
+            # 5973784, 18 Aug 2026: two lines with no size on the page linked
+            # PACK). Refuse the word as evidence so the line stays unit-less
+            # and enters the unit_missing confirm/guess flow instead.
+            fallback_name = next(
+                (
+                    c
+                    for c in (derived, el.get("unit"))
+                    if c and not is_packaging_word(c)
+                ),
+                None,
+            )
+            unit_rec = _resolve_unit_record(fallback_name, units)
         rate = None
         if item and tax_rates and item.get("globalSalesTaxSortOrder") is not None:
             rate = tax_rates.get(int(item["globalSalesTaxSortOrder"]))
@@ -679,7 +708,7 @@ def build_replica(
             # needs a human eye, even when a variant supplies the unit.
             msg = (
                 f"line {i + 1} '{el.get('description')}': unit can't be read "
-                "from the copy — confirm the unit before receiving"
+                "from the copy"
             )
             warnings.append(msg)
             _issue("unit_unconfirmed", msg, line_id=f"rep-{i}")
@@ -761,6 +790,43 @@ def build_replica(
                 line_id=f"rep-{i}",
                 data={"unit_name": str(derived)} if confident and derived else None,
             )
+            # Best-effort pick from the venue's EXISTING units so the review
+            # card can offer an Accept-able suggestion instead of only the
+            # blocker. Chooses, never creates; stashed as metadata — the line
+            # itself stays unit-less so unit_missing (and autopilot's gate
+            # semantics) are unchanged. Skipped when the copy DOES carry size
+            # info that couldn't be read: that is a human's call, not a guess.
+            if not el.get("unit_unrecognisable"):
+                from app.services.unit_guess import guess_unit, llm_chooser
+
+                chosen, why = guess_unit(
+                    {
+                        "id": f"rep-{i}",
+                        "description": el.get("description"),
+                        "code": el.get("code"),
+                        "unit": el.get("unit"),
+                        "unit_of_measure": el.get("unit_of_measure"),
+                        "quantity_received": qty,
+                    },
+                    units or [],
+                    # No db (unit tests build with reference data only) →
+                    # heuristics alone; guess_unit answers honestly when only
+                    # the model could have chosen.
+                    ask_llm=unit_chooser
+                    or (llm_chooser(db) if db is not None else None),
+                )
+                if chosen is not None:
+                    out_lines[-1]["unit_guess"] = {
+                        "id": chosen.get("id"),
+                        "name": chosen.get("name"),
+                        "ratio": chosen.get("ratio"),
+                        "why": why,
+                    }
+                    log.append(
+                        f"line {i + 1} unit: nothing usable on the copy — "
+                        f"closest existing unit is '{chosen.get('name')}' "
+                        "(suggested, not applied)"
+                    )
 
     # ---- Totals reconciliation (the engine's `totals` gate, copy-side) ----
     # Loaded's own entry validation absorbs up to 10c of rounding on
@@ -918,9 +984,19 @@ def build_replica(
                             else " (open order)"
                         )
                     )
-                # Gate L4's rule: the order must belong to this supplier.
-                # Alias-aware — duplicate supplier records with matching
-                # names (Ellesmere vs Tamar style) don't false-flag.
+                # The order belonging to another supplier is worth SAYING and
+                # not worth stopping for. Soho is supplied by Procure: ordering
+                # from Soho in Loaded while the invoice arrives from Procure is
+                # the arrangement, not a mistake. And the comparison is against
+                # the supplier the replica is PROPOSING — the order is usually
+                # perfectly consistent with the supplier Loaded holds right
+                # now, so this fires for a state that does not exist yet.
+                #
+                # Receiving does not touch the order's ownership either
+                # (do_receive has no PO guard at all), so blocking bought
+                # nothing and cost every through-supplier invoice a manual
+                # override — plus an "unlink it" suggestion that would have
+                # thrown away a correct link.
                 po_sup = r.get("supplier_id")
                 if po_sup and supplier_id and po_sup != supplier_id:
                     po_sup_name = next(
@@ -931,24 +1007,37 @@ def build_replica(
                         ),
                         None,
                     )
-                    ours = _norm((supplier or {}).get("name") or supplier_printed)
-                    theirs = _norm(po_sup_name)
-                    same_name = (
-                        len(ours) >= 3
-                        and len(theirs) >= 3
-                        and (ours in theirs or theirs in ours)
+                    # Loaded's OWN alias lists are already in hand (fetched for
+                    # supplier resolution above) and were not being consulted
+                    # here, so a venue that had recorded the relationship still
+                    # got flagged. Ask the identity module, which is the one
+                    # place that knows what counts as the same business.
+                    ours_names = [
+                        (supplier or {}).get("name"),
+                        supplier_printed,
+                    ]
+                    same_business = bool(
+                        po_sup_name
+                        and resolve_supplier(
+                            [n for n in ours_names if n],
+                            [{"id": po_sup, "name": po_sup_name}],
+                            aliases_by_id,
+                        )[0]
                     )
-                    if not same_name:
+                    if not same_business:
                         msg = (
-                            f"order {order_no} belongs to "
-                            f"{po_sup_name or 'a different supplier'} in Loaded, "
-                            f"not {(supplier or {}).get('name') or supplier_printed}"
-                            " — check the order reference"
+                            f"the copy names "
+                            f"{(supplier or {}).get('name') or supplier_printed} "
+                            f"and order {order_no} belongs to "
+                            f"{po_sup_name or 'a different supplier'} in Loaded "
+                            "— normal if one supplies through the other. "
+                            "Receiving won't change the order."
                         )
                         warnings.append(msg)
                         _issue(
                             "po_supplier_mismatch",
                             msg,
+                            blocking=False,
                             data={
                                 "po_supplier_id": po_sup,
                                 "po_supplier_name": po_sup_name,

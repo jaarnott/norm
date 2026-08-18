@@ -32,6 +32,7 @@ import re
 from sqlalchemy.orm import Session
 
 from app.services import invoice_line_match as line_match
+from app.services import venue_autopilot as _VA
 from app.services.invoice_extraction import (
     extract_invoice_copy,
     extract_invoice_copies_parallel,
@@ -173,6 +174,39 @@ def pair_lines(
 
         (ambiguous if contested else unpaired_rep).append(rl)
 
+    # Last resort: MONEY. A Loaded line with no code and no description matches
+    # nothing above, so a copy line describing the same delivery looks like two
+    # separate problems — "a Loaded line not on the copy" (strike it) and "a
+    # copy line not in Loaded" (add it). Both were suggested on Red and White
+    # Cellars INV562277, and the outcome was the worst of both: Loaded's own
+    # freight line was deleted and the replacement never arrived, because
+    # Loaded's invoice PUT does not create lines from an entry with no id.
+    #
+    # Quantity AND cost agreeing to the cent is strong evidence it is the same
+    # line — and only when exactly one candidate matches on each side, because
+    # two lines at the same price is exactly when a guess would be wrong.
+    if unpaired_rep and unclaimed:
+        for rl in list(unpaired_rep):
+            qty, cost = _f(rl.get("quantity_received")), _f(rl.get("unit_cost"))
+            if qty is None or cost is None:
+                continue
+            hits = [
+                ln
+                for ln in unclaimed.values()
+                if not _differ(ln.get("quantity_received"), qty, _QTY_TOL)
+                and not _differ(ln.get("unit_cost"), cost, _MONEY_TOL)
+            ]
+            if len(hits) != 1:
+                continue
+            # And only into a line that names nothing — a Loaded line WITH a
+            # code or description that failed every match above is a different
+            # product that happens to cost the same.
+            other = hits[0]
+            if other.get("code") or other.get("description"):
+                continue
+            _claim(str(rl.get("id")), other)
+            unpaired_rep.remove(rl)
+
     return pairs, ambiguous, unpaired_rep, list(unclaimed.values())
 
 
@@ -263,6 +297,35 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
                 "unit": rl.get("unit"),
                 "linked_unit_id": rl.get("linked_unit_id"),
                 "unit_ratio": rl.get("unit_ratio"),
+            },
+        )
+    # No unit resolved at all, but the replica's guesser found the closest
+    # EXISTING unit (heuristics, else the model picking from the venue's real
+    # list — it never creates). Surface it as an ordinary Accept-able
+    # suggestion so a person reviewing gets the sensible pick, not just the
+    # unit_missing blocker. Only when Loaded's line has no unit either —
+    # a guess must not fight a unit Loaded already holds.
+    guess = rl.get("unit_guess")
+    if (
+        isinstance(guess, dict)
+        and guess.get("id")
+        and not rl.get("linked_unit_id")
+        and not ln.get("linked_unit_id")
+    ):
+        _sugg(
+            suggestions,
+            "line_value",
+            field="unit",
+            line_id=lid,
+            current=ln.get("unit"),
+            proposed=guess.get("name"),
+            explanation=(
+                f"no unit is readable on the copy for '{desc}' — {guess.get('why')}"
+            ),
+            apply={
+                "unit": guess.get("name"),
+                "linked_unit_id": guess.get("id"),
+                "unit_ratio": guess.get("ratio"),
             },
         )
     if rl.get("linked_item_id") and rl["linked_item_id"] != ln.get("linked_item_id"):
@@ -369,6 +432,40 @@ _HEADER_VALUE_FIELDS = (
     ("discount_amount", "discount"),
     ("total", "total"),
 )
+
+
+def brand_issues(data: dict, issues: list[dict]) -> None:
+    """A brand Loaded names but has no record for STOPS the receive.
+
+    `do_receive` refuses such a line — Loaded won't take it — but nothing said
+    so before the attempt: there was a create_brand suggestion and no issue, so
+    `confidence` read "ready", autopilot called do_receive and collected a 400,
+    and the card showed the brand in three places while its "Blocked from auto
+    receive" list stayed empty. Bidfood 109944512 sat unreceivable on exactly
+    this. The create still happens from here — `fold_remedies_into_blockers`
+    hangs the action off this row.
+    """
+    for ln in data.get("lines") or []:
+        if not isinstance(ln, dict) or ln.get("struck"):
+            continue
+        brand = str(ln.get("brand") or "").strip()
+        if not brand or ln.get("linked_brand_id"):
+            continue
+        lid = str(ln.get("id"))
+        name = ln.get("item_name") or ln.get("description") or ln.get("code") or "line"
+        issues.append(
+            {
+                "id": f"brand_unknown:{lid}",
+                "code": "brand_unknown",
+                "blocking": True,
+                "line_id": lid,
+                "message": (
+                    f"brand '{brand}' on '{name}' isn't in Loaded — Loaded won't "
+                    "receive a line naming a brand it doesn't have"
+                ),
+                "data": {"brand_name": brand},
+            }
+        )
 
 
 def brand_suggestions(data: dict, suggestions: list[dict]) -> None:
@@ -710,21 +807,11 @@ def build_suggestions(
                 "po_unlinked": bool(data.get("linked_purchase_order_id")),
             },
         )
-    mismatch = rep_issues.get("po_supplier_mismatch")
-    if mismatch and data.get("linked_purchase_order_id"):
-        _sugg(
-            suggestions,
-            "unlink_po",
-            field="linked_purchase_order_id",
-            current=data.get("purchase_order_number"),
-            proposed=None,
-            explanation=(
-                "the linked order belongs to "
-                f"{(mismatch.get('data') or {}).get('po_supplier_name') or 'another supplier'}"
-                " — unlink it"
-            ),
-            apply={"linked_purchase_order_id": None, "po_unlinked": True},
-        )
+    # No unlink for a supplier mismatch. An order owned by another Loaded
+    # supplier is usually a through-supplier arrangement (Soho ordered, Procure
+    # delivers), so detaching a correct link was the wrong remedy for a
+    # question that only deserved a warning — and the warning itself now says
+    # so. See po_supplier_mismatch in invoice_replica.
     dup = rep_issues.get("duplicate_invoice")
     if dup:
         d = dup.get("data") or {}
@@ -750,10 +837,31 @@ def build_suggestions(
 
 _LINE_ISSUE_CLEARS = {
     "item_unmatched": ("linked_item_id", "not_null"),
+    "brand_unknown": ("linked_brand_id", "not_null"),
     # unit_missing / unit_unconfirmed deliberately have NO clears_when: a unit
     # value already sitting on Loaded's line is Loaded's OCR of the same paper
     # — the very thing we don't trust. Only an explicit confirm/dismiss
     # (recorded in suggestion_actions) clears them.
+}
+
+#: Which venue toggle would let autopilot get past this blocker on its own.
+#: ONE mapping, stamped onto the issue as `gate`, so the card can say "this
+#: needs a brand created, and auto-create brands is off" without keeping its
+#: own copy of the rules to drift out of step with these.
+#: An issue with no entry here is a judgement no toggle can authorise
+#: (a duplicate invoice, inconsistent totals) — a person has to look.
+_ISSUE_GATES = {
+    "item_unmatched": _VA.AUTO_CREATE_ITEMS,
+    "unit_missing": _VA.AUTO_CREATE_UNITS,
+    "unit_would_be_created": _VA.AUTO_CREATE_UNITS,
+    "brand_unknown": _VA.AUTO_CREATE_BRANDS,
+    "supplier_unresolved": _VA.AUTO_CREATE_SUPPLIERS,
+    "unit_unknown": _VA.RECEIVE_WITHOUT_UNIT,
+    # A unit Loaded supplied but the copy never confirmed. name_the_unit_in_use
+    # re-points unit_missing here too when the working line already has one.
+    "unit_unconfirmed": _VA.RECEIVE_WITH_UNCONFIRMED_UNIT,
+    "po_missing": _VA.RECEIVE_WITHOUT_PO,
+    "po_unresolved": _VA.RECEIVE_WITHOUT_PO,
 }
 
 
@@ -805,7 +913,321 @@ def _finalise_issues(
             i["blocking"] = False
         out.append(i)
     out.extend(extra_issues)
+    for i in out:
+        gate = _ISSUE_GATES.get(i.get("code"))
+        if gate:
+            i["gate"] = gate
     return out
+
+
+#: remedy suggestion kind -> the blocker it belongs to, and the gate that
+#: authorises Norm to apply it unattended (None = no toggle can; a person
+#: decides).
+#:
+#: A suggestion CHANGES A VALUE. A blocker STOPS A RECEIVE. A suggestion that
+#: exists only to clear a blocker is neither — it is that blocker's remedy, and
+#: it belongs on the same row. The creates were the obvious case; `unlink_po`
+#: is the one that proved the rule, showing up as "unlink it" in Suggested
+#: changes beside "order 1520559 belongs to Soho" in the blocked list (Soho
+#: 00162798, 17 Aug 2026).
+_REMEDY_BLOCKERS = {
+    "create_item": ("item_unmatched", _VA.AUTO_CREATE_ITEMS),
+    "create_unit": ("unit_missing", _VA.AUTO_CREATE_UNITS),
+    "create_brand": ("brand_unknown", _VA.AUTO_CREATE_BRANDS),
+    # No gate: an order already fully invoiced by a sibling is a judgement,
+    # not a create, so no toggle authorises it.
+    "unlink_po": ("po_doubled_up", None),
+}
+
+
+def fold_remedies_into_blockers(
+    suggestions: list[dict], issues: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Move every "create this in Loaded" out of the suggestion list and onto
+    the blocker it belongs to. Returns ``(suggestions, issues)``.
+
+    A suggestion CHANGES A VALUE; a blocker STOPS A RECEIVE. Creates were both
+    at once and it showed: an un-catalogued line rendered a create_item
+    suggestion, an `item_unmatched` blocking issue, a NEW badge and a disabled
+    button — four things for one decision — while an unknown brand rendered
+    three of those and nothing in the blocked list at all, so `confidence` read
+    "ready" and the receive 400'd at Loaded's own guard.
+
+    After this every create appears exactly once, on a row that says what it
+    needs, carries the button that does it, and names the venue toggle that
+    would let Norm do it alone.
+    """
+    kept: list[dict] = []
+    # The supplier blocker has no suggestion behind it (there is no
+    # create_supplier kind), but it is the same shape of decision, so it
+    # carries its action from here too.
+    for i in issues:
+        if i.get("code") == "supplier_unresolved":
+            name = (i.get("data") or {}).get("supplier_name")
+            if name:
+                i["action"] = {
+                    "kind": "create_supplier",
+                    "payload": {"supplier_name": name},
+                }
+    # `or ""` on BOTH sides: a header-level blocker (po_doubled_up) has no
+    # line_id, and keying it "None" here while the suggestion side keyed it ""
+    # meant the remedy never found its blocker and stayed a suggestion —
+    # exactly the duplicate this function exists to remove.
+    by_line: dict[tuple[str, str], dict] = {
+        (str(i.get("code")), str(i.get("line_id") or "")): i for i in issues
+    }
+    # A unit blocker with no create name behind it is the "no unit could be
+    # found" case: nothing to create, so the only way past is to CHOOSE one
+    # Loaded already has — a different toggle, and a different action.
+    for i in issues:
+        if i.get("code") == "unit_missing" and not i.get("action"):
+            i["gate"] = _VA.RECEIVE_WITHOUT_UNIT
+            i["action"] = {"kind": "guess_unit", "payload": {}}
+    for s in suggestions:
+        pair = _REMEDY_BLOCKERS.get(str(s.get("kind")))
+        if not pair:
+            kept.append(s)
+            continue
+        code, gate = pair
+        lid = str(s.get("line_id") or "")
+        # A create carries its arguments in `payload`; a remedy that is just a
+        # value change (unlink_po) carries them in `apply`, and the card needs
+        # whichever one the kind actually uses.
+        payload = dict(s.get("payload") or {})
+        apply_now = s.get("apply") if isinstance(s.get("apply"), dict) else None
+        target = by_line.get((code, lid))
+        if target is None and code == "unit_missing":
+            # The copy names a unit Loaded lacks while the line still holds a
+            # variant DEFAULT, so no unit_missing was raised — and autopilot
+            # therefore received with the variant's unit instead of the one on
+            # the paper. Its own blocker, so it stops rather than guesses.
+            target = {
+                "id": f"unit_would_be_created:{lid}",
+                "code": "unit_would_be_created",
+                "blocking": True,
+                "line_id": lid or None,
+                "message": s.get("explanation") or "the copy's unit isn't in Loaded",
+            }
+            issues.append(target)
+        if target is None:
+            target = {
+                "id": f"{code}:{lid}",
+                "code": code,
+                "blocking": True,
+                "line_id": lid or None,
+                "message": s.get("explanation") or "needs creating in Loaded",
+            }
+            issues.append(target)
+        if gate:
+            target["gate"] = gate
+        target["action"] = {"kind": s.get("kind"), "payload": payload}
+        if apply_now is not None:
+            target["action"]["apply"] = apply_now
+        # Carry the wording the suggestion had: it is written for a person
+        # ("the copy's delivered unit '6x1000mL' doesn't exist in Loaded"),
+        # where the replica's issue message is written for triage.
+        if s.get("explanation"):
+            target["message"] = s["explanation"]
+    return kept, issues
+
+
+def apply_open_gates(
+    db, config_db, venue_id: str, invoice_id: str, data: dict, settings: dict
+) -> list[str]:
+    """Do the creates this venue has authorised, and only those.
+
+    Every blocker carries the gate that governs it; a ticked gate means Norm
+    may clear that blocker on its own. Anything unticked stays blocking, which
+    is what parks the invoice for a person — and the blocker still names the
+    toggle that would have let it through, so the answer to "why didn't this
+    receive?" is on the row itself.
+
+    The creates run through the SAME endpoint functions the buttons call, so
+    autopilot and a human produce byte-identical Loaded writes; there is no
+    second implementation to drift. A create that fails leaves its blocker
+    standing — the invoice parks instead of receiving half-built.
+    """
+    from app.routers import invoice_fixes as IF
+    from app.services import supplier_identity
+
+    lines = {str(ln.get("id")): ln for ln in data.get("lines") or [] if ln.get("id")}
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    actions = data.setdefault("suggestion_actions", [])
+    done: list[str] = []
+
+    def _cleared(issue: dict, after: dict) -> None:
+        """Record it against the ISSUE id — the same log the card shows, so
+        "Norm created this" is visible next to what a person did, and
+        compute_confidence stops treating the blocker as open."""
+        actions.append(
+            {
+                "suggestion_id": issue.get("id"),
+                "action": "accepted",
+                "by": "norm",
+                "at": now,
+                "before": {},
+                "after": after,
+            }
+        )
+
+    for issue in data.get("issues") or []:
+        action = issue.get("action")
+        if not isinstance(action, dict) or not issue.get("blocking"):
+            continue
+        if not _VA.gate_open(settings, issue.get("gate")):
+            continue
+        kind = action.get("kind")
+        payload = action.get("payload") or {}
+        ln = lines.get(str(issue.get("line_id") or ""))
+        try:
+            if kind == "create_brand" and ln is not None:
+                out = IF.create_stock_brand(
+                    IF.CreateBrandRequest(
+                        venue_id=venue_id, name=payload.get("brand_name") or ""
+                    ),
+                    db,
+                    config_db,
+                    None,
+                )
+                ln["linked_brand_id"] = out.get("brand_id")
+                _cleared(issue, {"linked_brand_id": out.get("brand_id")})
+                done.append(f"created brand '{out.get('brand_name')}'")
+            elif kind == "create_unit" and ln is not None:
+                out = IF.create_stock_unit(
+                    IF.CreateUnitRequest(
+                        venue_id=venue_id, name=payload.get("unit_name") or ""
+                    ),
+                    db,
+                    config_db,
+                    None,
+                )
+                ln["linked_unit_id"] = out.get("unit_id")
+                ln["unit"] = out.get("unit_name")
+                if out.get("unit_ratio") is not None:
+                    ln["unit_ratio"] = out.get("unit_ratio")
+                _cleared(issue, {"linked_unit_id": out.get("unit_id")})
+                done.append(f"created unit '{out.get('unit_name')}'")
+            elif kind == "guess_unit" and ln is not None:
+                from app.services.unit_guess import guess_unit, llm_chooser
+
+                lh = LoadedInvoiceClient(db, config_db, venue_id)
+                chosen, why = guess_unit(
+                    ln,
+                    lh.get("/1.0/stock/internal/units") or [],
+                    ask_llm=llm_chooser(db),
+                )
+                if chosen is None:
+                    logger.info("no unit could be chosen on %s: %s", invoice_id, why)
+                    continue
+                ln["linked_unit_id"] = chosen.get("id")
+                ln["unit"] = chosen.get("name")
+                if chosen.get("ratio") is not None:
+                    ln["unit_ratio"] = chosen.get("ratio")
+                _cleared(issue, {"linked_unit_id": chosen.get("id")})
+                done.append(f"matched unit '{chosen.get('name')}' ({why})")
+            elif kind == "create_supplier":
+                # The riskiest of the four by a distance. A duplicate supplier
+                # row does not just clutter Loaded: supplier identity is what
+                # picks the extraction spec, so a second 'SERVICE FOODS' sends
+                # every future invoice from that business to a prompt written
+                # for someone else — which is precisely what happened on 10 Aug
+                # 2026 and took a day to unpick. So autopilot may only create a
+                # supplier nothing plausibly matches; a near miss is a human
+                # decision, and the invoice parks with the blocker on it.
+                name = payload.get("supplier_name") or ""
+                lh = LoadedInvoiceClient(db, config_db, venue_id)
+                rows = lh.get("/1.0/stock/internal/suppliers")
+                rows = rows if isinstance(rows, list) else []
+                live = [
+                    s
+                    for s in rows
+                    if isinstance(s, dict)
+                    and not s.get("removedAt")
+                    and not s.get("datestampDeleted")
+                ]
+                if supplier_identity.alias_candidates([name], live):
+                    logger.info(
+                        "autopilot will not create supplier '%s' on %s: an "
+                        "existing supplier is a plausible match",
+                        name,
+                        invoice_id,
+                    )
+                    continue
+                out = IF.create_supplier(
+                    IF.CreateSupplierRequest(venue_id=venue_id, name=name),
+                    db,
+                    config_db,
+                    None,
+                )
+                data["linked_supplier_id"] = out.get("supplier_id")
+                _cleared(issue, {"linked_supplier_id": out.get("supplier_id")})
+                done.append(f"created supplier '{out.get('supplier_name')}'")
+            elif kind == "create_item" and ln is not None:
+                out = IF.create_stock_item(
+                    IF.CreateItemRequest(
+                        venue_id=venue_id,
+                        invoice_id=invoice_id,
+                        line_id=str(issue.get("line_id")),
+                        group_id=payload.get("group_id") or "",
+                        name=payload.get("name"),
+                        unit_id=ln.get("linked_unit_id"),
+                        brand_id=ln.get("linked_brand_id"),
+                    ),
+                    db,
+                    config_db,
+                    None,
+                )
+                ln["linked_item_id"] = out.get("item_id") or out.get("linked_item_id")
+                _cleared(issue, {"linked_item_id": ln.get("linked_item_id")})
+                done.append(f"created stock item '{payload.get('name')}'")
+        except Exception as exc:  # noqa: BLE001 — the blocker simply stands
+            logger.info(
+                "autopilot gate %s could not be cleared on %s: %s",
+                issue.get("gate"),
+                invoice_id,
+                exc,
+            )
+    return done
+
+
+_UNIT_ISSUES = ("unit_missing", "unit_unconfirmed")
+
+
+def name_the_unit_in_use(data: dict, issues: list[dict]) -> None:
+    """Finish a unit blocker's sentence with the unit that will be used.
+
+    The replica raises these; it can only see its own resolution, so it says
+    "no unit could be read from the copy" and stops. The WORKING line usually
+    has one anyway — Loaded's own `linkedUnitId`, or the supplier variant
+    filled in by `seed_working_from_loaded` — and that is what the dropdown
+    shows and what the receive will send.
+
+    Saying nothing about it produced the contradiction this exists to fix: a
+    blocker reading "no unit could be determined ... set the unit before
+    receiving" above a dropdown displaying 750 mL (Soho 00162798). Report the
+    outcome instead, and let the venue decide whether a unit Loaded supplied
+    rather than the paper is good enough to receive on.
+    """
+    lines = {str(ln.get("id")): ln for ln in data.get("lines") or [] if ln.get("id")}
+    for issue in issues:
+        if issue.get("code") not in _UNIT_ISSUES:
+            continue
+        ln = lines.get(str(issue.get("line_id") or ""))
+        unit_name = (ln or {}).get("unit")
+        if not (ln or {}).get("linked_unit_id"):
+            # Nothing anywhere — now the imperative is the honest ending.
+            issue["message"] = f"{issue['message']} — set one before receiving"
+            continue
+        chosen = (issue.get("data") or {}).get("unit_chosen_by")
+        how = {
+            "guess": "matched",
+            "created": "created",
+        }.get(chosen, "using Loaded's")
+        issue["message"] = f"{issue['message']} — {how} '{unit_name}'"
+        # A unit Loaded supplied is not the same claim as a unit the paper
+        # confirmed, so it is its own decision rather than folded into
+        # "receive without a unit", which means something else entirely.
+        issue["gate"] = _VA.RECEIVE_WITH_UNCONFIRMED_UNIT
 
 
 def _clears(data: dict, issue: dict) -> bool:
@@ -1064,7 +1486,11 @@ def review_invoice(
             suggestions, extra_issues, pairs = build_suggestions(data, replica)
             # Last word on an ambiguous supplier code: the order.
             order_item_suggestions(data, suggestions, catalogue)
-            # A brand Loaded names but has no record for blocks its own receive.
+            # A brand Loaded names but has no record for blocks its own
+            # receive — a blocker, listed with the other gates. The
+            # create_brand suggestion still supplies the action; the fold below
+            # moves it onto this row so it appears exactly once.
+            brand_issues(data, extra_issues)
             brand_suggestions(data, suggestions)
             # Cache the rows of the order we're about to SUGGEST, so accepting
             # that suggestion is instant: the projection (order date, per-line
@@ -1096,13 +1522,19 @@ def review_invoice(
                         )
                     except Exception as exc:  # noqa: BLE001 — a pre-cache only
                         logger.info("suggested order pre-cache failed: %s", exc)
-            data["suggestions"] = suggestions
-            data["issues"] = _finalise_issues(
+            issues = _finalise_issues(
                 replica.get("issues") or [],
                 extra_issues,
                 pairs,
                 require_valid_po=require_valid_po,
             )
+            # Each remedy belongs in ONE list — the blocked one.
+            suggestions, issues = fold_remedies_into_blockers(suggestions, issues)
+            # ...and a unit blocker says which unit will be used, now that the
+            # working lines are in hand.
+            name_the_unit_in_use(data, issues)
+            data["suggestions"] = suggestions
+            data["issues"] = issues
             # The old po_linked gate: an invoice with no purchase order at
             # all (none linked in Loaded, none resolvable from the copy).
             # Blocking only under the require_valid_po policy — the batch
@@ -1220,7 +1652,24 @@ def review_invoices(
     cards are full replica_v1 doc payloads (they ride into ``fix_invoices``
     verbatim for the working-document fan-out).
     """
+    from app.services import venue_autopilot as VA
     from app.services.spec_dojo import prefetch_replica_reference
+
+    # The VENUE decides how far Norm may go; the caller's `mode` is a ceiling
+    # it can lower but never raise. Reviewing a single invoice passes
+    # `approve_all` for exactly this reason — opening one in the card must
+    # never write to Loaded — and a chat request cannot talk a venue onto a
+    # rung it was never put on.
+    from app.db.models import Venue
+
+    venue = db.query(Venue).filter(Venue.id == venue_id).first()
+    settings = VA.settings_for(venue)
+    mode = VA.at_most(settings["mode"], mode)
+    settings["mode"] = mode
+    if settings[VA.RECEIVE_WITHOUT_PO]:
+        # The venue has said a missing order is not a reason to stop. The
+        # per-task override stays honoured for anyone who set it.
+        require_valid_po = False
 
     lh = LoadedInvoiceClient(db, config_db, venue_id)
 
@@ -1323,8 +1772,13 @@ def review_invoices(
             )
             continue
 
+        gated: list[str] = []
         if mode == "autopilot":
             auto_accept_all(data, actor="norm")
+            # Then the gates: create the units/items/brands this venue has
+            # authorised, and leave every other blocker standing so the
+            # invoice parks with its reason on it.
+            gated = apply_open_gates(db, config_db, venue_id, iid, data, settings)
             data["confidence"] = compute_confidence(data)
 
         blocking = [
@@ -1332,6 +1786,16 @@ def review_invoices(
             for i in data.get("issues") or []
             if i.get("blocking") and not _clears(data, i)
         ]
+        # Which toggle would have let each remaining blocker through. This is
+        # the answer to "why didn't this receive?", and it is the difference
+        # between a venue climbing the ladder on evidence and guessing.
+        gates_wanted = sorted(
+            {
+                i.get("gate")
+                for i in data.get("issues") or []
+                if i.get("blocking") and not _clears(data, i) and i.get("gate")
+            }
+        )
         verdict = {
             "invoice_id": iid,
             "reference_number": data.get("reference_number"),
@@ -1341,6 +1805,8 @@ def review_invoices(
             "confidence": data.get("confidence"),
             "suggestions": len(data.get("suggestions") or []),
             "reasons": blocking,
+            "gates_needed": gates_wanted,
+            "created": gated,
         }
 
         should_receive = (

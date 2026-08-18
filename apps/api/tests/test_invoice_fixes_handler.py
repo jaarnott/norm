@@ -6,6 +6,8 @@ no DB — asserting the exact LoadedHub request sequence each fix produces.
 
 import re
 
+import uuid
+
 import pytest
 
 from app.routers import invoice_fixes as IF
@@ -743,7 +745,10 @@ class TestReceive:
         assert added["linkedItemId"] == "item-oil"
         assert added["quantityReceived"] == 1
         assert added["unitCost"] == 49.95
-        assert "id" not in added  # temp id dropped; Loaded assigns the real one
+        # The id is OURS to generate: Loaded does not assign one, it silently
+        # ignores a line that has none. This assertion used to say the
+        # opposite, which is how the belief survived (INV562277, 17 Aug 2026).
+        uuid.UUID(str(added["id"]))
 
     def test_add_item_ignores_an_empty_row(self):
         lh = self._lh()
@@ -837,6 +842,51 @@ class TestReceive:
         IF._do_receive(lh, self._req())
         put = next(w for w in lh.writes if w[0] == "PUT")
         assert "linkedBrandId" not in put[2]["lines"][0]
+
+    def test_an_added_line_carries_an_id_loaded_will_accept(self):
+        """Red and White Cellars INV562277, 17 Aug 2026 — freight went missing.
+
+        The append used to drop the editor's temp id, on the belief that
+        "Loaded assigns the real one". It does not: a line with no id is
+        SILENTLY ignored by the invoice PUT — no error, no line, nothing in the
+        response to notice. Verified live against the same payload, which
+        persisted with a client-generated GUID and vanished without one. That
+        invoice went to Loaded $12 light with its own freight line deleted and
+        nothing in its place.
+        """
+        lh = self._lh()
+        IF._do_receive(
+            lh,
+            self._req(
+                lines=[
+                    {
+                        "id": "rep-1",  # the editor's temp id
+                        "description": "FREIGHT - BEVERAGE",
+                        "linked_item_id": "item-freight",
+                        "linked_unit_id": "u-each",
+                        "quantity_received": 1,
+                        "unit_cost": 12,
+                    }
+                ]
+            ),
+        )
+        put = next(w for w in lh.writes if w[0] == "PUT")
+        added = next(
+            ln for ln in put[2]["lines"] if ln.get("linkedItemId") == "item-freight"
+        )
+        assert added.get("id"), "Loaded drops a line with no id, without saying so"
+        # A real GUID, not the editor's temp id — Loaded's own line ids are
+        # uuids and the temp one means nothing to it.
+        uuid.UUID(str(added["id"]))
+        assert added["id"] != "rep-1"
+
+    def test_an_empty_added_row_is_still_not_appended(self):
+        """The id is generated AFTER the "names a real item" guard, so giving
+        every appended line an id must not start creating rubbish."""
+        lh = self._lh()
+        IF._do_receive(lh, self._req(lines=[{"id": "rep-9", "quantity_received": 1}]))
+        put = next(w for w in lh.writes if w[0] == "PUT")
+        assert len(put[2]["lines"]) == 1  # the original line only
 
     def test_receive_not_blocked_when_only_saving(self):
         # The guard is receive-only: a save (receive=False) of an unresolved line
@@ -1963,7 +2013,8 @@ class TestStruckAndAddedLines:
         )
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         added = body["lines"][1]
-        assert "id" not in added  # Loaded assigns the real id
+        # Ours to generate — see test_an_added_line_carries_an_id_loaded_will_accept.
+        uuid.UUID(str(added["id"]))
         assert added["saleTaxRate"] == 0.15
         assert added["linkedItemId"] == "item-2"
         assert added["unitCostExclTax"] == 340.0

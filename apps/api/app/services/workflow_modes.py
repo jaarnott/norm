@@ -57,6 +57,13 @@ WORKFLOWS: list[dict] = [
 
 WORKFLOW_KEYS = {w["key"] for w in WORKFLOWS}
 
+#: Workflows whose mode is NOT a personal setting. Receiving moved to the venue
+#: (services/venue_autopilot) because invoices belong to a venue and venues
+#: differ in how tidy their Loaded catalogue is. The entry stays in WORKFLOWS so
+#: `get_workflow_mode` and the playbooks keep resolving the name, but nothing
+#: reads the per-user value for it — one setting, one home.
+MODE_VENUE_SCOPED = {"review_and_receive_invoices"}
+
 
 def user_mode(user, workflow_key: str) -> str | None:
     """The user's mode for a workflow, or None if unset."""

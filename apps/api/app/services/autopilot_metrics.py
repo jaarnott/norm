@@ -122,9 +122,37 @@ def manual_edits(data: dict) -> list[str]:
     snap = data.get("loaded_snapshot")
     if not isinstance(snap, dict):
         return []  # no baseline → say nothing rather than guess
+    # `loaded_snapshot` is {"header": {...}, "lines": [...]} — see
+    # received_invoice.loaded_snapshot. Reading header fields off `snap` itself
+    # found nothing, so every populated header field always "differed" and every
+    # receive was recorded as hand-edited: 29 of the first 31 production rows
+    # carried 4-9 "manual edits" that were ONLY header fields, the same ones
+    # each time (reference_number 30x, linked_supplier_id 30x, issued_at 30x).
+    # `clean` therefore never happened and autopilot readiness read 0% from the
+    # day it shipped. The lines below were always read correctly, which is why
+    # only the header was affected.
+    # No header baseline is NOT the same as "Loaded held nothing": treating it
+    # as empty is precisely what produced the phantom edits, so say nothing
+    # about the header instead — the same rule the missing-snapshot case above
+    # already follows.
+    snap_header = snap.get("header")
+    header_fields = _HEADER_FIELDS if isinstance(snap_header, dict) else ()
+    snap_header = snap_header if isinstance(snap_header, dict) else {}
 
     # What the accepted suggestions account for: {(scope, key, field): value}.
     explained: dict[tuple, Any] = {}
+    # ...and what NORM filled in before anyone looked. `loaded_snapshot` is
+    # Loaded's raw draft, but the server then resolves the supplier variant and
+    # completes the line (invoice_po_reference.seed_working_from_loaded), so
+    # those fields differ from the baseline without a person having touched
+    # them: a Service Foods invoice received untouched was recorded as
+    # hand-edited on unit, linked_unit_id, unit_ratio and linked_item_id.
+    # Same rule as an accepted suggestion — explained only while the value is
+    # still the one that was filled.
+    for lid, fields in (data.get("server_filled") or {}).items():
+        if isinstance(fields, dict):
+            for field, value in fields.items():
+                explained[("line", str(lid), field)] = value
     added_line_ids: set[str] = set()
     struck_by_suggestion: set[str] = set()
     by_id = {str(s.get("id")): s for s in _live_suggestions(data)}
@@ -157,9 +185,9 @@ def manual_edits(data: dict) -> list[str]:
 
     out: list[str] = []
 
-    for field in _HEADER_FIELDS:
+    for field in header_fields:
         cur = data.get(field)
-        if not _differs(field, cur, snap.get(field)):
+        if not _differs(field, cur, snap_header.get(field)):
             continue
         key = ("header", field)
         if key in explained and not _differs(field, cur, explained[key]):
@@ -303,6 +331,7 @@ def record_receive_outcome(
     received: bool = True,
     outcome_override: str | None = None,
     dojo: dict | None = None,
+    supplier_name: str | None = None,
 ) -> None:
     """Write one outcome row. Never raises, never touches the caller's session.
 
@@ -351,7 +380,12 @@ def record_receive_outcome(
                     venue_id=venue_id,
                     invoice_id=invoice_id,
                     reference_number=data.get("reference_number"),
-                    supplier_name=data.get("supplier_name"),
+                    # The document is the best source, but "Can't receive" can be
+                    # pressed on an invoice that was never opened as a draft — there is
+                    # no document then, and the row landed in the report's
+                    # "(no supplier)" bucket, which is the one place a supplier's
+                    # training history most needs to be attributed.
+                    supplier_name=data.get("supplier_name") or supplier_name,
                     linked_supplier_id=data.get("linked_supplier_id"),
                     outcome=outcome,
                     received=bool(received),

@@ -8,6 +8,7 @@ All reference data injected — no network, no LLM.
 """
 
 from app.services import invoice_review as IR
+from app.services import venue_autopilot as VA
 from app.services.invoice_review import (
     apply_suggestion,
     auto_accept_all,
@@ -213,6 +214,63 @@ class TestLineSuggestions:
             "linked_unit_id": "u-kilo",
             "unit_ratio": 1,
         }
+
+    def _sizeless_pack_case(self, chooser):
+        """Trents 5973784 (18 Aug 2026): an unlinked, sizeless line printing
+        'PACK'. The replica refuses the packaging word (unit_missing blocks)
+        and the guesser's pick rides as line metadata."""
+        det = DETAIL(total=63.11, subtotal=54.88, taxAmount=8.23)
+        det["lines"] = [
+            {
+                "id": "ld-1",
+                "code": "4230513",
+                "description": "MALFY GIN ROSA PINK GRAPEF",
+                "unit": None,
+                "linkedUnitId": None,
+                "quantityReceived": 1.0,
+                "unitCostExclTax": 54.88,
+                "totalCostExclTax": 54.88,
+                "saleTaxRate": 0.15,
+                "linkedItemId": None,
+                "itemType": "Default",
+            }
+        ]
+        ext = EXTRACTION(
+            subtotal_ex_tax=54.88,
+            tax_amount=8.23,
+            total_incl_tax=63.11,
+            lines=[
+                {
+                    "code": "4230513",
+                    "description": "MALFY GIN ROSA PINK GRAPEF",
+                    "quantity": 1,
+                    "unit": "PACK",
+                    "unit_of_measure": None,
+                    "unit_price_ex_tax": 54.88,
+                    "line_total_ex_tax": 54.88,
+                }
+            ],
+        )
+        ref = REFERENCE(
+            units=UNITS + [{"id": "u-pack", "name": "PACK", "ratio": 1}],
+            unit_chooser=chooser,
+        )
+        return _review(detail=det, extraction=ext, reference=ref)
+
+    def test_an_unresolved_unit_offers_the_guessers_pick(self):
+        data = self._sizeless_pack_case(lambda line, cands: "u-5l")
+        s = next(s for s in data["suggestions"] if s["field"] == "unit")
+        assert s["apply"] == {"unit": "5L", "linked_unit_id": "u-5l", "unit_ratio": 5}
+        assert "closest existing unit" in s["explanation"]
+        # The guess is an offer, not a resolution — the blocker stands until
+        # a person (or an open autopilot gate) sets the unit.
+        assert "unit_missing" in _issue_codes(data)
+        assert data["lines"][0]["linked_unit_id"] is None
+
+    def test_a_bogus_guess_id_yields_no_unit_suggestion(self):
+        data = self._sizeless_pack_case(lambda line, cands: "u-made-up")
+        assert not [s for s in data["suggestions"] if s["field"] == "unit"]
+        assert "unit_missing" in _issue_codes(data)
 
     def test_an_unlinked_line_adopts_loadeds_own_code_match(self):
         # Loaded's API says linkedItemId null; its SCREEN resolves the item
@@ -572,8 +630,36 @@ class _BatchLh:
         return []
 
 
+class _VenueDb:
+    """Just enough session for review_invoices to read the venue's settings.
+
+    The venue now decides how far Norm may go, so a batch test has to say which
+    rung the venue is on — passing `mode=` alone can only ever lower it.
+    """
+
+    class _Venue:
+        def __init__(self, settings):
+            self.id = "v-1"
+            self.invoice_autopilot = settings
+
+    def __init__(self, settings):
+        self._venue = self._Venue(settings)
+
+    def query(self, *_a):
+        return self
+
+    def filter(self, *_a, **_k):
+        return self
+
+    def first(self):
+        return self._venue
+
+
 class TestBatchModes:
-    def _run(self, monkeypatch, details, extractions, mode, received):
+    def _run(self, monkeypatch, details, extractions, mode, received, gates=None):
+        # The venue is on the rung the test is exercising; `mode` is the
+        # caller's ceiling, which is how production passes it too.
+        db = _VenueDb({"mode": mode, **(gates or {})})
         lh = _BatchLh(details)
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda db, cdb, vid: lh)
         monkeypatch.setattr(
@@ -594,7 +680,7 @@ class TestBatchModes:
             lambda lh_, req: received.append(req) or {"received": True},
         )
         monkeypatch.setattr(IR, "invalidate_conflicting_drafts", lambda *a, **k: None)
-        return review_invoices(None, None, "v-1", mode=mode)
+        return review_invoices(db, None, "v-1", mode=mode)
 
     def test_autopilot_accepts_and_receives_despite_diffs(self, monkeypatch):
         # "Trust the replica now": a qty diff never blocks autopilot — it is
@@ -636,6 +722,35 @@ class TestBatchModes:
             monkeypatch, {"inv-1": det}, [EXTRACTION()], "approve_fixes", received2
         )
         assert received2 == [] and out2["cards"]
+
+    def test_a_venue_on_approve_all_is_not_talked_into_receiving(self, monkeypatch):
+        """The venue decides; the caller can only ask for less.
+
+        Before this the rung came from the USER who happened to trigger the
+        run, so a scheduled task or a chat request could receive at a venue
+        that had never opted in. Norm creating stock items and receiving
+        invoices somewhere nobody enabled it is the failure worth refusing.
+        """
+        received = []
+        db = _VenueDb({"mode": "approve_all"})
+        lh = _BatchLh({"inv-1": DETAIL()})
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda d, c, v: lh)
+        monkeypatch.setattr(
+            IR, "extract_invoice_copies_parallel", lambda d, l_, r: [EXTRACTION()]
+        )
+        monkeypatch.setattr(IR, "extraction_instructions", lambda c, l_, d_: "INSTR")
+        monkeypatch.setattr(
+            "app.services.spec_dojo.prefetch_replica_reference",
+            lambda d, c, v: REFERENCE(),
+        )
+        monkeypatch.setattr(
+            IR, "do_receive", lambda l_, req: received.append(req) or {"received": True}
+        )
+        monkeypatch.setattr(IR, "invalidate_conflicting_drafts", lambda *a, **k: None)
+
+        review_invoices(db, None, "v-1", mode="autopilot")
+
+        assert received == []
 
     def test_approve_all_never_receives(self, monkeypatch):
         received = []
@@ -1087,12 +1202,24 @@ class TestSuggestedOrderIsPreCached:
         assert data["po_reference"]["po_id"] == "po-1"
 
 
+def _blocker(data, code, line_id=None):
+    return next(
+        (
+            i
+            for i in data["issues"]
+            if i["code"] == code and (line_id is None or i.get("line_id") == line_id)
+        ),
+        None,
+    )
+
+
 class TestCreateItemSuggestion:
-    """A product the catalogue has never seen is the stock-item twin of
-    create_unit: no applyable value (Loaded must CREATE it first), so it rides
-    as a suggestion carrying the replica's proposed name and stock group.
-    Before this it was only a blocking issue plus a "link or create" button —
-    the one Norm proposal you couldn't accept, dismiss, or have recorded.
+    """A product the catalogue has never seen must be CREATED before the
+    invoice can be received, so it belongs in the blocked list, once.
+
+    It used to be a suggestion AND a blocking `item_unmatched` issue AND a NEW
+    badge AND a disabled button — four surfaces for one decision, because the
+    suggestion was added later and the issue was never removed.
     """
 
     def _unmatched(self, **over):
@@ -1125,27 +1252,466 @@ class TestCreateItemSuggestion:
             (s for s in data["suggestions"] if s["kind"] == "create_item"), None
         )
 
-    def test_an_unmatched_product_offers_creation(self):
+    def test_an_unmatched_product_blocks_and_carries_its_own_create(self):
         data = self._unmatched()
-        s = self._create_sugg(data)
-        assert s is not None
-        assert s["field"] == "linked_item_id" and s["line_id"] == "ld-1"
-        assert s["proposed"] == "ALPHA DOMUS SYRAH 2022"
-        assert s["payload"] == {
-            "name": "ALPHA DOMUS SYRAH 2022",
-            "group_id": "grp-wine",
+        b = _blocker(data, "item_unmatched", "ld-1")
+        assert b is not None and b["blocking"] is True
+        assert b["action"] == {
+            "kind": "create_item",
+            "payload": {"name": "ALPHA DOMUS SYRAH 2022", "group_id": "grp-wine"},
         }
-        assert "create it" in s["explanation"]
+        assert "create it" in b["message"]
 
-    def test_no_stock_group_means_no_offer(self):
+    def test_it_names_the_toggle_that_would_let_norm_do_it(self):
+        assert _blocker(self._unmatched(), "item_unmatched")["gate"] == (
+            "auto_create_items"
+        )
+
+    def test_it_appears_in_exactly_one_list(self):
+        """The whole point: one decision, one row."""
+        assert self._create_sugg(self._unmatched()) is None
+
+    def test_no_stock_group_means_no_one_click_create(self):
         # Loaded's create REQUIRES a group; a name alone is not actionable, so
-        # the line falls back to the blocking issue and the manual form.
-        assert self._create_sugg(self._unmatched(group=None)) is None
-        assert "item_unmatched" in _issue_codes(self._unmatched(group=None))
+        # the blocker stays but offers no button — the manual form instead.
+        data = self._unmatched(group=None)
+        assert self._create_sugg(data) is None
+        assert _blocker(data, "item_unmatched").get("action") is None
 
     def test_a_matched_line_is_never_offered_creation(self):
         # The stock salmon invoice: Loaded's own code match linked it.
         assert self._create_sugg(_review()) is None
+
+
+class TestANamelessLoadedLineIsTheSameLine:
+    """Red and White Cellars INV562277, 17 Aug 2026 — freight went missing.
+
+    Loaded's OCR had produced a line carrying qty 1 and cost 12 and nothing
+    else: no code, no description, no item. Every matching tier needs one of
+    those, so the copy's freight line paired with nothing, and Norm proposed
+    two things at once — strike the Loaded line, add the copy's line.
+
+    The user accepted both. The strike landed; the append did not, because
+    Loaded's invoice PUT does not create a line from an entry with no id. Net
+    result: Loaded's own freight line deleted, nothing in its place, and an
+    invoice $12 light with no error anywhere.
+
+    Money is the evidence those tiers lack. Quantity and cost agreeing, into a
+    line that names nothing, is the same line — so it is UPDATED, which Loaded
+    honours, instead of being replaced, which it does not.
+    """
+
+    def _nameless(self, **over):
+        det = DETAIL()
+        det["lines"].append(
+            {
+                "id": "ld-blank",
+                "code": None,
+                "description": None,
+                "linkedItemId": None,
+                "linkedUnitId": None,
+                "quantityReceived": over.get("qty", 1.0),
+                "unitCostExclTax": over.get("cost", 12.0),
+                "saleTaxRate": 0.15,
+            }
+        )
+        ext = EXTRACTION()
+        ext["lines"].append(
+            {
+                "code": None,
+                "description": "Freight",
+                "quantity": 1,
+                "unit": None,
+                "unit_of_measure": None,
+                "unit_price_ex_tax": 12.0,
+                "line_total_ex_tax": 12.0,
+            }
+        )
+        ext["subtotal_ex_tax"] = 231.78
+        ext["tax_amount"] = 34.77
+        ext["total_incl_tax"] = 266.55
+        return _review(detail=det, extraction=ext)
+
+    def test_it_updates_the_line_instead_of_replacing_it(self):
+        data = self._nameless()
+        kinds = {s["kind"] for s in data["suggestions"]}
+        assert "add_line" not in kinds, "a replacement line Loaded would silently drop"
+        assert "strike" not in kinds, "Loaded's own freight line was being deleted"
+
+    def test_a_different_price_is_not_the_same_line(self):
+        """The pairing is only safe because the money agrees; without that it
+        must stay two separate findings."""
+        data = self._nameless(cost=99.0)
+        kinds = {s["kind"] for s in data["suggestions"]}
+        assert "add_line" in kinds
+
+    def test_a_named_loaded_line_is_never_paired_on_money_alone(self):
+        """A line that names a product and failed every earlier tier is a
+        DIFFERENT product that happens to cost the same."""
+        det = DETAIL()
+        det["lines"].append(
+            {
+                "id": "ld-other",
+                "code": "ZZZ",
+                "description": "SOMETHING ELSE ENTIRELY",
+                "linkedItemId": None,
+                "linkedUnitId": None,
+                "quantityReceived": 1.0,
+                "unitCostExclTax": 12.0,
+                "saleTaxRate": 0.15,
+            }
+        )
+        ext = EXTRACTION()
+        ext["lines"].append(
+            {
+                "code": None,
+                "description": "Freight",
+                "quantity": 1,
+                "unit": None,
+                "unit_of_measure": None,
+                "unit_price_ex_tax": 12.0,
+                "line_total_ex_tax": 12.0,
+            }
+        )
+        ext["subtotal_ex_tax"] = 231.78
+        ext["tax_amount"] = 34.77
+        ext["total_incl_tax"] = 266.55
+        data = _review(detail=det, extraction=ext)
+        assert "add_line" in {s["kind"] for s in data["suggestions"]}
+
+
+class TestAnOrderOwnedByAnotherSupplierIsJustWorthKnowing:
+    """Soho 00162798, 17 Aug 2026. Soho is supplied by Procure: ordering from
+    Soho in Loaded while the invoice arrives from Procure is the arrangement,
+    not a fault. Norm blocked the receive AND offered to unlink the order —
+    which would have thrown away a correct link.
+
+    Two more reasons it was wrong. The comparison is against the supplier the
+    replica PROPOSES, so it fired for a state that did not exist yet; and
+    receiving never touches the order's ownership (do_receive has no PO guard),
+    so blocking bought nothing.
+    """
+
+    def _mismatched(self):
+        return {
+            "linked_purchase_order_id": "po-1",
+            "purchase_order_number": "1520559",
+            "lines": [],
+        }
+
+    def _issues(self):
+        return [
+            {
+                "id": "po_supplier_mismatch",
+                "code": "po_supplier_mismatch",
+                "blocking": False,
+                "message": "the copy names Procure wines and order 1520559 belongs to Soho",
+                "data": {"po_supplier_name": "Soho"},
+            }
+        ]
+
+    def test_it_no_longer_offers_to_unlink_the_order(self):
+        suggestions, issues = IR.fold_remedies_into_blockers([], self._issues())
+        assert [s for s in suggestions if s.get("kind") == "unlink_po"] == []
+        assert [i for i in issues if i["code"] == "po_supplier_mismatch"]
+
+    def test_it_does_not_stop_the_receive(self):
+        data = {
+            **self._mismatched(),
+            "issues": self._issues(),
+            "suggestion_actions": [],
+        }
+        assert IR.compute_confidence(data) == "ready"
+
+
+class TestAFoldedRemedyAppearsOnceAndActuallyClearsIt:
+    """`unlink_po` sat in Suggested changes next to its own blocker — and
+    because the issue id never equals the suggestion id and the issue carries
+    no clears_when, ACCEPTING it did not clear the blocker. Autopilot
+    auto-accepted the unlink and then parked the invoice citing the thing it
+    had just remedied.
+    """
+
+    def _doubled(self):
+        return [
+            {
+                "id": "po_doubled_up",
+                "code": "po_doubled_up",
+                "blocking": True,
+                "message": "order 1520987 is already fully invoiced by INV-2",
+            }
+        ]
+
+    def _unlink(self):
+        return {
+            "id": "unlink_po:purchase_order_number",
+            "kind": "unlink_po",
+            "field": "purchase_order_number",
+            "line_id": None,
+            "explanation": "order 1520987 is already fully invoiced — remove the reference",
+            "apply": {"purchase_order_number": None, "linked_purchase_order_id": None},
+        }
+
+    def test_the_remedy_moves_onto_its_blocker(self):
+        suggestions, issues = IR.fold_remedies_into_blockers(
+            [self._unlink()], self._doubled()
+        )
+        assert suggestions == []
+        blocker = next(i for i in issues if i["code"] == "po_doubled_up")
+        assert blocker["action"]["kind"] == "unlink_po"
+        assert blocker["action"]["apply"]["linked_purchase_order_id"] is None
+
+    def test_no_toggle_authorises_it(self):
+        """An order already invoiced by a sibling is a judgement, not a create
+        — no venue setting should be able to wave it through."""
+        _s, issues = IR.fold_remedies_into_blockers([self._unlink()], self._doubled())
+        assert issues[0].get("gate") is None
+
+    def test_applying_it_clears_the_blocker(self):
+        _s, issues = IR.fold_remedies_into_blockers([self._unlink()], self._doubled())
+        data = {
+            "lines": [],
+            "issues": issues,
+            "suggestion_actions": [
+                {"suggestion_id": "po_doubled_up", "action": "accepted", "by": "user"}
+            ],
+        }
+        assert IR.compute_confidence(data) == "ready"
+
+
+class TestAUnitBlockerSaysWhichUnitWillBeUsed:
+    """The blocker read "no unit could be determined (nothing recognisable on
+    the copy and no unit on the Loaded variant) — set the unit before
+    receiving" while the dropdown plainly showed 750 mL. Both halves were
+    "true" of different objects: the replica's own resolution failed, while the
+    working line kept Loaded's unit. The user was asked to do something already
+    done, on the strength of a claim that was false for the row in front of
+    them.
+    """
+
+    def _issue(self, code="unit_missing"):
+        return {
+            "id": f"{code}:ld-1",
+            "code": code,
+            "blocking": True,
+            "line_id": "ld-1",
+            "message": "line 1 'SOHO Harry Rose 2025': no unit could be read from the copy",
+        }
+
+    def test_it_names_the_unit_loaded_supplied(self):
+        data = {"lines": [{"id": "ld-1", "unit": "750 mL", "linked_unit_id": "u-750"}]}
+        issues = [self._issue()]
+        IR.name_the_unit_in_use(data, issues)
+        assert issues[0]["message"].endswith("— using Loaded's '750 mL'")
+        assert "no unit on the Loaded variant" not in issues[0]["message"]
+
+    def test_it_becomes_its_own_decision(self):
+        """A unit Loaded supplied is not "no unit" — it is a different question
+        with a different answer, so it gets its own toggle."""
+        data = {"lines": [{"id": "ld-1", "unit": "750 mL", "linked_unit_id": "u-750"}]}
+        issues = [self._issue()]
+        IR.name_the_unit_in_use(data, issues)
+        assert issues[0]["gate"] == VA.RECEIVE_WITH_UNCONFIRMED_UNIT
+
+    def test_with_nothing_anywhere_the_instruction_is_the_honest_ending(self):
+        data = {"lines": [{"id": "ld-1", "unit": None, "linked_unit_id": None}]}
+        issues = [self._issue()]
+        IR.name_the_unit_in_use(data, issues)
+        assert issues[0]["message"].endswith("— set one before receiving")
+
+    def test_an_unreadable_copy_unit_is_named_too(self):
+        data = {"lines": [{"id": "ld-1", "unit": "Kilo", "linked_unit_id": "u-kilo"}]}
+        issues = [self._issue("unit_unconfirmed")]
+        IR.name_the_unit_in_use(data, issues)
+        assert "using Loaded's 'Kilo'" in issues[0]["message"]
+
+
+class TestAutopilotHonoursTheVenuesToggles:
+    """Autopilot may create things in Loaded — but only the kinds this venue
+    has ticked, and a stock item, unit or brand created there cannot be taken
+    back from Norm. So the tests that matter are the refusals.
+
+    Before this, autopilot could not create anything at all: create_item /
+    create_unit / create_brand carried no `apply`, so auto_accept_all skipped
+    them silently. An unknown brand then left confidence reading "ready",
+    do_receive was called, and Loaded answered 400 — every time, forever.
+    """
+
+    def _data(self, gate_on=None):
+        det = DETAIL()
+        det["lines"][0].update({"brand": "BIOZYME", "linkedBrandId": None})
+        data = _review(detail=det)
+        settings = {"mode": "autopilot", **{g: False for g in VA.GATES}}
+        if gate_on:
+            settings[gate_on] = True
+        return data, settings
+
+    def test_an_unticked_gate_leaves_the_blocker_standing(self, monkeypatch):
+        from app.routers import invoice_fixes as IF
+
+        # Recorded rather than raised: apply_open_gates swallows exceptions by
+        # design (a failed create must park the invoice, not crash the batch),
+        # so an assertion thrown in here would be caught and the test would
+        # pass for the wrong reason.
+        calls: list = []
+        monkeypatch.setattr(
+            IF, "create_stock_brand", lambda *a, **k: calls.append(a) or {}
+        )
+        data, settings = self._data()
+
+        assert IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings) == []
+
+        assert calls == [], "autopilot created a brand the venue had not allowed"
+        assert IR.compute_confidence(data) == "needs_review"
+
+    def test_a_ticked_gate_creates_it_and_the_invoice_becomes_ready(self, monkeypatch):
+        from app.routers import invoice_fixes as IF
+
+        monkeypatch.setattr(
+            IF,
+            "create_stock_brand",
+            lambda body, db, cdb, user: {
+                "brand_id": "brand-new",
+                "brand_name": body.name,
+            },
+        )
+        data, settings = self._data(VA.AUTO_CREATE_BRANDS)
+
+        done = IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings)
+
+        assert done == ["created brand 'BIOZYME'"]
+        line = next(ln for ln in data["lines"] if ln["id"] == "ld-1")
+        assert line["linked_brand_id"] == "brand-new"
+        assert IR.compute_confidence(data) == "ready"
+
+    def test_norm_signs_its_own_work(self, monkeypatch):
+        """The action log is what the card shows and what the readiness report
+        reads, so an unattended create has to appear in it as Norm's."""
+        from app.routers import invoice_fixes as IF
+
+        monkeypatch.setattr(
+            IF,
+            "create_stock_brand",
+            lambda body, db, cdb, user: {"brand_id": "b-1", "brand_name": body.name},
+        )
+        data, settings = self._data(VA.AUTO_CREATE_BRANDS)
+        IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings)
+
+        act = next(
+            a
+            for a in data["suggestion_actions"]
+            if a["suggestion_id"] == "brand_unknown:ld-1"
+        )
+        assert act["by"] == "norm" and act["action"] == "accepted"
+
+    def test_a_failed_create_parks_the_invoice_rather_than_receiving_it(
+        self, monkeypatch
+    ):
+        """Half-built is the one outcome worse than stopping: the line would
+        reach Loaded without the brand it names and be refused there anyway."""
+        from app.routers import invoice_fixes as IF
+
+        def _boom(*a, **k):
+            raise RuntimeError("Loaded said no")
+
+        monkeypatch.setattr(IF, "create_stock_brand", _boom)
+        data, settings = self._data(VA.AUTO_CREATE_BRANDS)
+
+        assert IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings) == []
+        assert IR.compute_confidence(data) == "needs_review"
+
+    def test_a_blocker_no_toggle_can_authorise_is_never_cleared(self, monkeypatch):
+        """Every gate on, and a duplicate invoice still stops. Toggles buy
+        creates, not judgement."""
+        data, settings = self._data()
+        settings.update({g: True for g in VA.GATES})
+        data["issues"].append(
+            {
+                "id": "duplicate_invoice",
+                "code": "duplicate_invoice",
+                "blocking": True,
+                "message": "this looks like a duplicate",
+            }
+        )
+        IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings)
+        assert IR.compute_confidence(data) == "needs_review"
+
+
+class TestAutopilotWillNotInventADuplicateSupplier:
+    """Supplier identity picks the extraction spec, so a duplicate supplier row
+    is not clutter — it is every future invoice from that business being read
+    with another supplier's prompt. That is exactly what happened on 10 Aug
+    2026 (Service Foods invoices extracted with the Eurovintage wine spec) and
+    it took a day to unpick. Autopilot may only create a supplier that nothing
+    plausibly matches.
+    """
+
+    def _data(self):
+        data = {
+            "lines": [],
+            "suggestions": [],
+            "suggestion_actions": [],
+            "issues": [
+                {
+                    "id": "supplier_unresolved",
+                    "code": "supplier_unresolved",
+                    "blocking": True,
+                    "gate": VA.AUTO_CREATE_SUPPLIERS,
+                    "message": "no Loaded supplier matches 'SERVICE FOODS LTD'",
+                    "action": {
+                        "kind": "create_supplier",
+                        "payload": {"supplier_name": "SERVICE FOODS LTD"},
+                    },
+                }
+            ],
+        }
+        settings = {
+            "mode": "autopilot",
+            **{g: False for g in VA.GATES},
+            VA.AUTO_CREATE_SUPPLIERS: True,
+        }
+        return data, settings
+
+    def _lh(self, monkeypatch, suppliers):
+        class _Lh:
+            def get(self, _path):
+                return suppliers
+
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda d, c, v: _Lh())
+
+    def test_a_near_match_is_a_human_decision(self, monkeypatch):
+        from app.routers import invoice_fixes as IF
+
+        calls: list = []
+        self._lh(monkeypatch, [{"id": "sup-1", "name": "SERVICE FOODS AUCKLAND"}])
+        monkeypatch.setattr(
+            IF, "create_supplier", lambda *a, **k: calls.append(a) or {}
+        )
+        data, settings = self._data()
+
+        assert IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings) == []
+
+        assert calls == [], "autopilot created a supplier that already exists"
+        assert data.get("linked_supplier_id") is None
+
+    def test_a_genuinely_new_supplier_is_created(self, monkeypatch):
+        from app.routers import invoice_fixes as IF
+
+        self._lh(monkeypatch, [{"id": "sup-9", "name": "Hancocks Wine & Spirits"}])
+        monkeypatch.setattr(
+            IF,
+            "create_supplier",
+            lambda body, db, cdb, user: {
+                "supplier_id": "sup-new",
+                "supplier_name": body.name,
+            },
+        )
+        data, settings = self._data()
+
+        done = IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings)
+
+        assert done == ["created supplier 'SERVICE FOODS LTD'"]
+        assert data["linked_supplier_id"] == "sup-new"
 
 
 class TestSplitOrderClearsItsOwnRemedy:
@@ -1208,19 +1774,32 @@ class TestBrandSuggestion:
             (s for s in data["suggestions"] if s["kind"] == "create_brand"), None
         )
 
-    def test_an_unknown_brand_offers_creation(self):
-        s = self._brand_sugg(self._with_brand())
-        assert s is not None
-        assert s["field"] == "linked_brand_id" and s["line_id"] == "ld-1"
-        assert s["proposed"] == "BIOZYME"
-        assert s["payload"] == {"brand_name": "BIOZYME"}
-        assert "isn't a brand in Loaded" in s["explanation"]
+    def test_an_unknown_brand_blocks_the_receive(self):
+        """It always did — at Loaded's own guard, as a 400, after autopilot had
+        already decided the invoice was ready. Now it says so first."""
+        data = self._with_brand()
+        b = _blocker(data, "brand_unknown", "ld-1")
+        assert b is not None and b["blocking"] is True
+        assert b["action"] == {
+            "kind": "create_brand",
+            "payload": {"brand_name": "BIOZYME"},
+        }
+        assert b["gate"] == "auto_create_brands"
+
+    def test_it_appears_in_exactly_one_list(self):
+        assert self._brand_sugg(self._with_brand()) is None
+
+    def test_an_unknown_brand_is_not_ready_to_receive(self):
+        """The bug this closes: confidence read "ready" with an unknown brand,
+        so autopilot called do_receive and collected a 400 every time."""
+        assert self._with_brand()["confidence"] == "needs_review"
 
     def test_a_known_brand_is_left_alone(self):
-        assert self._brand_sugg(self._with_brand(brand_id="brand-akaroa")) is None
+        data = self._with_brand(brand_id="brand-akaroa")
+        assert _blocker(data, "brand_unknown") is None
 
-    def test_no_brand_no_suggestion(self):
-        assert self._brand_sugg(self._with_brand(brand="")) is None
+    def test_no_brand_no_blocker(self):
+        assert _blocker(self._with_brand(brand=""), "brand_unknown") is None
 
     def test_the_created_brand_reaches_the_receive_request(self):
         """Bidfood 109944512, 15 Aug 2026. Creating the brand wrote the id
@@ -1291,5 +1870,5 @@ class TestBrandSuggestion:
             }
         )
         data = _review(detail=det)
-        brands = [s for s in data["suggestions"] if s["kind"] == "create_brand"]
-        assert [s["line_id"] for s in brands] == ["ld-2"]
+        brands = [i for i in data["issues"] if i["code"] == "brand_unknown"]
+        assert [i["line_id"] for i in brands] == ["ld-2"]
