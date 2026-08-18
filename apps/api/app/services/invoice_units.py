@@ -56,6 +56,26 @@ _UOM_VAGUE = {
     "un",
 }
 
+# Bare words that say how goods were BUNDLED, never what one delivered item
+# is. Includes bare 'pack' — which parse_unit reads as ('count', 1), so it
+# looks measurable — but NOT 'each'/'ea': a count of one genuinely is the
+# delivered unit for charge-style lines (Bidfood CARTONS→Each, 17 Aug 2026).
+# A counted pack ('12 pack', '6pk') is real information and never matches
+# here because matching is whole-name only.
+_PACKAGING_WORDS = _UOM_VAGUE | {"pack", "packs", "pk", "item", "each item"}
+
+
+def is_packaging_word(text: object) -> bool:
+    """True when the whole name is a bare packaging word ('PACK', 'CTN').
+
+    Venues often carry a unit literally named PACK, so such a word resolves
+    "successfully" by name and a sizeless line silently receives in a
+    meaningless unit (Trents 5973784, 18 Aug 2026). Callers use this to
+    refuse the word as unit EVIDENCE and to keep magnitude equivalence from
+    laundering an each-line into a packaging-named unit.
+    """
+    return " ".join(str(text or "").strip().lower().split()) in _PACKAGING_WORDS
+
 
 def parse_unit(text: object) -> tuple[str, float] | None:
     """'500g' -> ('weight', 500); '5L' -> ('volume', 5000); '12 pack' ->

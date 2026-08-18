@@ -412,6 +412,84 @@ class TestCopyUnitPrecedence:
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
 
 
+class TestPackagingWordNeverLinks:
+    """Trents 5973784 (18 Aug 2026): Trents prints 'EA' on every line; two
+    sizeless lines resolved to the venue's literal PACK unit via count-of-1
+    magnitude equivalence and read as healthy. Bare packaging words are
+    bundling, not a measure — they are refused as evidence, and a
+    packaging-NAMED unit is reachable only by printing its name exactly."""
+
+    UNITS_WITH_PACK = [
+        {"id": "u-pack", "name": "PACK", "ratio": 1, "stockUnitType": "Count"}
+    ] + UNITS
+
+    def test_ea_never_magnitude_matches_a_unit_named_pack(self):
+        # PACK sits FIRST in the list and must still lose to Each.
+        assert _resolve_unit_record("EA", self.UNITS_WITH_PACK)["id"] == "u-each"
+        # With no Each-like unit at all, EA resolves nothing rather than PACK.
+        assert (
+            _resolve_unit_record(
+                "EA",
+                [{"id": "u-pack", "name": "PACK", "ratio": 1}],
+            )
+            is None
+        )
+        # Printing the packaging word exactly still reaches it by name — the
+        # guard is about magnitude laundering, not about hiding the unit.
+        assert _resolve_unit_record("pack", self.UNITS_WITH_PACK)["id"] == "u-pack"
+
+    def test_bare_pack_stays_unlinked_and_raises_unit_missing(self):
+        ext = dict(
+            EXTRACTION,
+            lines=[
+                {
+                    "code": "4230513",
+                    "description": "MALFY GIN ROSA PINK GRAPEF",
+                    "quantity": 1,
+                    "unit": "PACK",
+                    "unit_of_measure": None,
+                    "unit_price_ex_tax": 54.88,
+                    "line_total_ex_tax": 54.88,
+                }
+            ],
+        )
+        doc = _build(ext, units=self.UNITS_WITH_PACK)
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] is None
+        assert any(i["code"] == "unit_missing" for i in doc["issues"])
+
+    def test_a_variant_that_genuinely_says_pack_still_wins(self):
+        # The refusal is about copy EVIDENCE; a supplier variant registered
+        # in PACK is authoritative for its linked item.
+        catalogue = [
+            {
+                "id": "item-packed",
+                "name": "PACKED THING",
+                "suppliers": [
+                    {
+                        "supplierId": "sup-akaroa",
+                        "stockCode": "PB1",
+                        "unitId": "u-pack",
+                    }
+                ],
+            }
+        ]
+        ext = dict(
+            EXTRACTION,
+            lines=[
+                {
+                    "code": "PB1",
+                    "description": "Packed Thing",
+                    "quantity": 1,
+                    "unit_price_ex_tax": 5.0,
+                    "line_total_ex_tax": 5.0,
+                }
+            ],
+        )
+        doc = _build(ext, units=self.UNITS_WITH_PACK, catalogue=catalogue)
+        assert doc["lines"][0]["linked_unit_id"] == "u-pack"
+
+
 class TestDocumentFlags:
     """The engine's credit-note/statement gates, mirrored as warnings."""
 

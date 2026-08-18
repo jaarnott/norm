@@ -131,6 +131,7 @@ def _resolve_unit(lh: _Loaded, proposed: str) -> dict | None:
     from app.services.invoice_units import (
         _unit_norm,
         is_multipack,
+        is_packaging_word,
         multipack_equal,
         parse_unit,
     )
@@ -154,6 +155,13 @@ def _resolve_unit(lh: _Loaded, proposed: str) -> dict | None:
     target = parse_unit(proposed)
     if target:
         for u in units:
+            # Same guard as the replica's _resolve_unit_record: 'EA' and a
+            # unit literally named 'PACK' both parse as a count of 1, but
+            # magnitude equivalence must not hand an each-line a packaging
+            # word (Trents 5973784, 18 Aug 2026). Packaging-named units are
+            # reachable only by printing their name exactly (the tier above).
+            if is_packaging_word(u.get("name")):
+                continue
             pu = parse_unit(u.get("name"))
             if pu and pu[0] == target[0] and abs(pu[1] - target[1]) < 0.001:
                 return u

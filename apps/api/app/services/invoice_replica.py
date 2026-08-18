@@ -49,6 +49,7 @@ from app.services.invoice_units import (
     _unit_norm,
     copy_is_more_specific,
     is_multipack,
+    is_packaging_word,
     multipack_equal,
     parse_unit,
     units_equivalent,
@@ -252,6 +253,14 @@ def _resolve_unit_record(name: object, units: list[dict]) -> dict | None:
     parsed = parse_unit(name)
     if parsed:
         for u in live:
+            # Magnitude equivalence must not launder identity: 'EA' parses as
+            # a count of 1 and so does a unit literally named 'PACK', but
+            # receiving each-lines in PACK is meaningless (Trents 5973784,
+            # 18 Aug 2026 — Dunedin's PACK unit swallowed every EA line). A
+            # packaging-word-NAMED unit can only be chosen by printing its
+            # name exactly (the name tier above).
+            if is_packaging_word(u.get("name")):
+                continue
             pu = parse_unit(u.get("name"))
             if pu and pu[0] == parsed[0] and abs(pu[1] - parsed[1]) < 0.001:
                 return u
@@ -665,7 +674,19 @@ def build_replica(
                     # — never a bare unlinked string Loaded's OCR left behind.
                     unit_create_name = str(derived)
         if unit_rec is None:
-            unit_rec = _resolve_unit_record(derived or el.get("unit"), units)
+            # A bare packaging word ('PACK', 'CARTON') says how the goods
+            # were bundled, not what ONE delivered item is. Refuse it as
+            # evidence so the line raises unit_missing and parks for a person
+            # instead of silently linking a meaningless unit.
+            fallback_name = next(
+                (
+                    c
+                    for c in (derived, el.get("unit"))
+                    if c and not is_packaging_word(c)
+                ),
+                None,
+            )
+            unit_rec = _resolve_unit_record(fallback_name, units)
         rate = None
         if item and tax_rates and item.get("globalSalesTaxSortOrder") is not None:
             rate = tax_rates.get(int(item["globalSalesTaxSortOrder"]))
