@@ -1021,6 +1021,12 @@ def receive_invoice(
         req = receive_request_from_doc(data, body.venue_id, body.invoice_id)
     out = _do_receive(lh, req)
     if req.receive and isinstance(out, dict) and out.get("received"):
+        if data:
+            # The units this receive actually used → the catalogue's
+            # practice tier (advisory; the divergence detector).
+            from app.services import supplier_catalog
+
+            supplier_catalog.observe_practice_from_doc(config_db, data)
         # Sibling drafts may now be duplicates (same number, just received) or
         # reference a PO that just got invoiced — mark twins received and clear
         # conflicting cached reviews so their cards re-review, not re-receive.

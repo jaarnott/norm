@@ -215,6 +215,103 @@ class TestLineSuggestions:
             "unit_ratio": 1,
         }
 
+    def _sizeless_case(self, ask, unit=None):
+        """A sizeless, unlinked line (the Trents Malfy shape): nothing on the
+        page, in the catalogue or on a variant says the size — the batched
+        resolver is the only voice, and it may only ever OFFER."""
+        det = DETAIL(total=63.11, subtotal=54.88, taxAmount=8.23)
+        det["lines"] = [
+            {
+                "id": "ld-1",
+                "code": "4230513",
+                "description": "MALFY GIN ROSA PINK GRAPEF",
+                "unit": None,
+                "linkedUnitId": None,
+                "quantityReceived": 1.0,
+                "unitCostExclTax": 54.88,
+                "totalCostExclTax": 54.88,
+                "saleTaxRate": 0.15,
+                "linkedItemId": None,
+                "itemType": "Default",
+            }
+        ]
+        ext = EXTRACTION(
+            subtotal_ex_tax=54.88,
+            tax_amount=8.23,
+            total_incl_tax=63.11,
+            lines=[
+                {
+                    "code": "4230513",
+                    "description": "MALFY GIN ROSA PINK GRAPEF",
+                    "quantity": 1,
+                    "unit": unit,
+                    "unit_of_measure": None,
+                    "unit_price_ex_tax": 54.88,
+                    "line_total_ex_tax": 54.88,
+                }
+            ],
+        )
+        return _review(
+            detail=det,
+            extraction=ext,
+            reference=REFERENCE(unit_resolver_ask=ask),
+        )
+
+    def _resolver_answer(self, **over):
+        row = {
+            "line_id": "rep-0",
+            "unit_id": "u-5l",
+            "confidence": "high",
+            "why": "sibling lines print 5L at the same price",
+        }
+        row.update(over)
+        return lambda payload: {"lines": [row]}
+
+    def test_resolver_pick_is_a_suggestion_and_the_gate_gets_it(self):
+        data = self._sizeless_case(self._resolver_answer())
+        s = next(s for s in data["suggestions"] if s["field"] == "unit")
+        assert s["apply"]["linked_unit_id"] == "u-5l"
+        assert s["confidence"] == "high"
+        assert "sibling lines" in s["explanation"]
+        # the line itself is untouched — an offer, not a resolution
+        assert data["lines"][0]["linked_unit_id"] is None
+        issue = next(i for i in data["issues"] if i["code"] == "unit_missing")
+        # HIGH confidence rides in the gate action, so autopilot's
+        # receive_without_unit gate applies exactly what the suggestion shows
+        assert issue["action"]["kind"] == "guess_unit"
+        assert issue["action"]["apply"]["linked_unit_id"] == "u-5l"
+
+    def test_medium_confidence_suggests_but_the_gate_gets_no_apply(self):
+        data = self._sizeless_case(self._resolver_answer(confidence="medium"))
+        s = next(s for s in data["suggestions"] if s["field"] == "unit")
+        assert s["confidence"] == "medium"
+        issue = next(i for i in data["issues"] if i["code"] == "unit_missing")
+        assert "apply" not in issue["action"]
+
+    def test_low_confidence_stays_silent(self):
+        data = self._sizeless_case(self._resolver_answer(confidence="low"))
+        assert not [s for s in data["suggestions"] if s["field"] == "unit"]
+        assert "unit_missing" in _issue_codes(data)
+
+    def test_charge_word_upgrade_replaces_the_each_suggestion(self):
+        # The Trents shape proper: 'EA' printed → the replica resolves Each
+        # (how the line is CHARGED); the resolver names the real pack. ONE
+        # unit suggestion — the upgrade — not two competing ones, and no
+        # blocker (Each is honest, just vague).
+        data = self._sizeless_case(self._resolver_answer(), unit="EA")
+        unit_suggs = [s for s in data["suggestions"] if s["field"] == "unit"]
+        assert len(unit_suggs) == 1
+        s = unit_suggs[0]
+        assert s["apply"]["linked_unit_id"] == "u-5l"
+        assert "is charged" in s["explanation"]
+        assert s["confidence"] == "high"
+        assert "unit_missing" not in _issue_codes(data)
+
+    def test_without_a_resolver_answer_the_each_suggestion_stands(self):
+        data = self._sizeless_case(lambda p: {"lines": []}, unit="EA")
+        s = next(s for s in data["suggestions"] if s["field"] == "unit")
+        assert s["apply"]["linked_unit_id"] == "u-each"
+
     def test_an_unlinked_line_adopts_loadeds_own_code_match(self):
         # Loaded's API says linkedItemId null; its SCREEN resolves the item
         # from the supplier code and shows SALMON FILLET. The draft therefore

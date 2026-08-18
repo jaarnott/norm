@@ -984,6 +984,14 @@ def _receive_invoice(
         logger.warning("receive_invoice failed: %s", e)
         return {"submitted": False, "detail": str(e)}
     if req.receive and isinstance(result, dict) and result.get("received"):
+        if received_doc is not None:
+            # The units this receive actually used → the catalogue's
+            # practice tier (advisory; the divergence detector).
+            from app.services import supplier_catalog
+
+            supplier_catalog.observe_practice_from_doc(
+                config_db, received_doc.data or {}
+            )
         from app.services.received_invoice import invalidate_conflicting_drafts
 
         invalidate_conflicting_drafts(

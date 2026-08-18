@@ -51,6 +51,7 @@ from app.routers import (
     oauth,
     supplier_specs,
     supplier_spec_dojo,
+    catalog_hygiene,
     invoice_fixes,
     recipe_editor,
     uploads,
@@ -81,6 +82,7 @@ _test_app.include_router(connector_specs.router, prefix="/api")
 _test_app.include_router(oauth.router, prefix="/api")
 _test_app.include_router(supplier_specs.router, prefix="/api")
 _test_app.include_router(supplier_spec_dojo.router, prefix="/api")
+_test_app.include_router(catalog_hygiene.router, prefix="/api")
 _test_app.include_router(invoice_fixes.router, prefix="/api")
 _test_app.include_router(recipe_editor.router, prefix="/api")
 _test_app.include_router(uploads.router, prefix="/api")

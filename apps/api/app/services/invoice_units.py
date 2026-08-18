@@ -77,6 +77,28 @@ def is_packaging_word(text: object) -> bool:
     return " ".join(str(text or "").strip().lower().split()) in _PACKAGING_WORDS
 
 
+# Category → the unit TYPES a delivered unit may be. Validators independent
+# of any venue's data — a beverage stocked as a count is a setup error, not a
+# preference (the user's rule, 18 Aug 2026: beverages are always volumes).
+# Deliberately small and data-driven; enforced only where the category is
+# KNOWN (dojo/enrichment set categories — 'unknown' constrains nothing).
+CATEGORY_UNIT_TYPES: dict[str, set[str]] = {
+    "beverage": {"volume"},
+    # food is NOT constrained: fixed packs (weight/volume), random weight
+    # (Kilo) and genuine counts (each pie) are all legitimate.
+    "packaging": {"count"},
+    "fee": {"count"},
+}
+
+
+def unit_type_allowed(category: object, unit_type: object) -> bool:
+    """False only when the category is known AND forbids this unit type."""
+    allowed = CATEGORY_UNIT_TYPES.get(str(category or "").strip().lower())
+    if not allowed or not unit_type:
+        return True
+    return str(unit_type).strip().lower() in allowed
+
+
 def parse_unit(text: object) -> tuple[str, float] | None:
     """'500g' -> ('weight', 500); '5L' -> ('volume', 5000); '12 pack' ->
     ('count', 12); 'Kilo' -> ('weight', 1000); 'pkt' -> None."""

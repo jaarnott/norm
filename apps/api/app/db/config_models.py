@@ -307,3 +307,55 @@ class E2ETest(ConfigBase):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
     last_run_status = Column(String, nullable=True)
     last_run_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class SupplierProduct(ConfigBase):
+    """Norm's own supplier-product catalogue — global physical facts.
+
+    Keyed by (supplier_key, code): Trents code 4230513 is the same 700ml
+    bottle at every venue, so what one delivered item IS lives here once,
+    venue-independent. ``supplier_key`` is the SupplierInvoiceSpec name — the
+    spec registry is deliberately the cross-venue supplier identity gate.
+
+    Truth never comes from venue practice (all venues can share one mistake —
+    a venue stocking a syrup as Each is an error, not a preference).
+    ``provenance`` ranks where the current unit came from and lower tiers can
+    NEVER overwrite higher ones:
+      human    — a Norm admin verified it (dojo baselines seed this)
+      printed  — the supplier printed the size on an invoice page
+      enriched — LLM/world-knowledge enrichment (later phase)
+      practice — what venues chose at receive time (advisory only, later)
+
+    ``pack_type`` keeps food honest: 'fixed' (one physical size — resolvable
+    from here), 'random_weight' (meat/produce — the unit is Kilo, always),
+    'variable' (case sizes change — read each invoice; this table only
+    contributes the type), 'unknown'. Conflicting evidence within a tier is
+    a QUESTION (unit_name null, both sightings kept in ``evidence``), never
+    a majority vote.
+    """
+
+    __tablename__ = "supplier_products"
+    __table_args__ = (
+        UniqueConstraint("supplier_key", "code", name="uq_supplier_product"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    supplier_key = Column(String, nullable=False, index=True)
+    code = Column(String, nullable=False)
+    # Latest printed description — display + drift detection (a code whose
+    # description stops resembling this one has been REUSED by the supplier).
+    description = Column(String, nullable=False, default="")
+    pack_type = Column(String, nullable=False, default="unknown")
+    # The physical delivered unit as printed (e.g. '700ml', '5x3kg') — null
+    # while unknown or in conflict. Compare via invoice_units._unit_norm.
+    unit_name = Column(String, nullable=True)
+    unit_type = Column(String, nullable=True)  # volume | weight | count
+    category = Column(String, nullable=False, default="unknown")
+    provenance = Column(String, nullable=False, default="printed")
+    # {"printed": {"<unit_norm>": {"count": N, "invoices": [...], "name": ...}},
+    #  "human": {...}, "descriptions": [...], "count_only": N}
+    evidence = Column(JSON, nullable=False, default=dict)
+    first_seen = Column(DateTime(timezone=True), default=_now)
+    last_seen = Column(DateTime(timezone=True), default=_now)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)

@@ -227,6 +227,7 @@ def _sugg(
     apply: dict | None = None,
     payload: dict | None = None,
     sid: str | None = None,
+    confidence: str | None = None,
 ) -> None:
     parts = [kind] + [p for p in (field, line_id) if p]
     entry: dict = {
@@ -242,6 +243,11 @@ def _sugg(
         entry["apply"] = apply
     if payload is not None:
         entry["payload"] = payload
+    # Model-produced suggestions carry their confidence (high|medium) so
+    # autopilot's gates can apply only decisive answers and the UI can show
+    # how sure the resolver was. Deterministic suggestions omit it.
+    if confidence is not None:
+        entry["confidence"] = confidence
     out.append(entry)
 
 
@@ -279,8 +285,29 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
             ),
             apply={"unit_cost": rl.get("unit_cost")},
         )
-    if rl.get("linked_unit_id") and rl.get("linked_unit_id") != ln.get(
-        "linked_unit_id"
+    # The batched unit resolver's answer (sibling lines, catalogue/item
+    # context, product knowledge — see unit_resolver.py) OVERRIDES the
+    # deterministic unit suggestion when it disagrees with the replica's own
+    # resolution: two competing unit suggestions on one line would be noise.
+    # Two shapes share this branch:
+    #   - nothing anywhere said the size (unit_missing stands beside it);
+    #   - the line resolved only via a bare charge word (EA → Each) and the
+    #     resolver names the real pack — the upgrade the user asked for.
+    # High and medium confidence suggest; low stays silent (a person
+    # decides). Never against a unit Loaded already holds, and create_name
+    # rides the existing unit_create_name → create_unit path instead.
+    ur = rl.get("unit_resolved")
+    override = (
+        isinstance(ur, dict)
+        and ur.get("unit_id")
+        and ur.get("confidence") in ("high", "medium")
+        and ur.get("unit_id") != rl.get("linked_unit_id")
+        and not ln.get("linked_unit_id")
+    )
+    if (
+        not override
+        and rl.get("linked_unit_id")
+        and rl.get("linked_unit_id") != ln.get("linked_unit_id")
     ):
         _sugg(
             suggestions,
@@ -299,34 +326,28 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
                 "unit_ratio": rl.get("unit_ratio"),
             },
         )
-    # No unit resolved at all, but the replica's guesser found the closest
-    # EXISTING unit (heuristics, else the model picking from the venue's real
-    # list — it never creates). Surface it as an ordinary Accept-able
-    # suggestion so a person reviewing gets the sensible pick, not just the
-    # unit_missing blocker. Only when Loaded's line has no unit either —
-    # a guess must not fight a unit Loaded already holds.
-    guess = rl.get("unit_guess")
-    if (
-        isinstance(guess, dict)
-        and guess.get("id")
-        and not rl.get("linked_unit_id")
-        and not ln.get("linked_unit_id")
-    ):
+    if override:
         _sugg(
             suggestions,
             "line_value",
             field="unit",
             line_id=lid,
             current=ln.get("unit"),
-            proposed=guess.get("name"),
+            proposed=ur.get("unit_name"),
             explanation=(
-                f"no unit is readable on the copy for '{desc}' — {guess.get('why')}"
+                f"no size is printed for '{desc}' — {ur.get('why')}"
+                if not rl.get("linked_unit_id")
+                else (
+                    f"'{rl.get('unit')}' is how '{desc}' is charged, not the "
+                    f"pack size — {ur.get('why')}"
+                )
             ),
             apply={
-                "unit": guess.get("name"),
-                "linked_unit_id": guess.get("id"),
-                "unit_ratio": guess.get("ratio"),
+                "unit": ur.get("unit_name"),
+                "linked_unit_id": ur.get("unit_id"),
+                "unit_ratio": ur.get("unit_ratio"),
             },
+            confidence=ur.get("confidence"),
         )
     if rl.get("linked_item_id") and rl["linked_item_id"] != ln.get("linked_item_id"):
         # Both halves matter. Unlinked → the plain "link this item". LINKED to
@@ -978,11 +999,23 @@ def fold_remedies_into_blockers(
     }
     # A unit blocker with no create name behind it is the "no unit could be
     # found" case: nothing to create, so the only way past is to CHOOSE one
-    # Loaded already has — a different toggle, and a different action.
+    # Loaded already has — a different toggle, and a different action. When
+    # the batched resolver already answered with HIGH confidence, its pick
+    # rides in `apply` so the gate applies exactly what the suggestion shows
+    # (and skips a second model call); medium stays suggestion-only — the
+    # gate must not act on a "likely".
+    resolver_by_line = {
+        str(s.get("line_id") or ""): s
+        for s in suggestions
+        if s.get("field") == "unit" and s.get("confidence") == "high"
+    }
     for i in issues:
         if i.get("code") == "unit_missing" and not i.get("action"):
             i["gate"] = _VA.RECEIVE_WITHOUT_UNIT
             i["action"] = {"kind": "guess_unit", "payload": {}}
+            picked = resolver_by_line.get(str(i.get("line_id") or ""))
+            if picked and isinstance(picked.get("apply"), dict):
+                i["action"]["apply"] = dict(picked["apply"])
     for s in suggestions:
         pair = _REMEDY_BLOCKERS.get(str(s.get("kind")))
         if not pair:
@@ -1108,6 +1141,19 @@ def apply_open_gates(
                 _cleared(issue, {"linked_unit_id": out.get("unit_id")})
                 done.append(f"created unit '{out.get('unit_name')}'")
             elif kind == "guess_unit" and ln is not None:
+                # The batched resolver's HIGH-confidence pick rides in the
+                # action's `apply` — use it verbatim so autopilot applies
+                # exactly what the suggestion showed. Fall back to the
+                # single-line chooser only when no resolver answer exists.
+                pre = action.get("apply")
+                if isinstance(pre, dict) and pre.get("linked_unit_id"):
+                    ln["linked_unit_id"] = pre.get("linked_unit_id")
+                    ln["unit"] = pre.get("unit")
+                    if pre.get("unit_ratio") is not None:
+                        ln["unit_ratio"] = pre.get("unit_ratio")
+                    _cleared(issue, {"linked_unit_id": pre.get("linked_unit_id")})
+                    done.append(f"set unit '{pre.get('unit')}' (unit resolver)")
+                    continue
                 from app.services.unit_guess import guess_unit, llm_chooser
 
                 lh = LoadedInvoiceClient(db, config_db, venue_id)
@@ -1456,6 +1502,22 @@ def review_invoice(
             )
         else:
             data["extracted_snapshot"] = _extracted_snapshot(extraction)
+            # Feed the Norm supplier-product catalogue: every successful
+            # extraction's printed sizes are supplier-stated physical facts
+            # (provenance 'printed'). Best-effort — never fails the review.
+            try:
+                from app.services import supplier_catalog
+
+                supplier_catalog.observe_extraction(
+                    config_db, extraction, provenance="printed"
+                )
+                config_db.commit()
+            except Exception as exc:  # noqa: BLE001
+                logger.info("catalogue observe failed: %s", exc)
+                try:
+                    config_db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
             replica = build_replica(
                 db,
                 config_db,
@@ -1822,6 +1884,11 @@ def review_invoices(
                 data["is_received"] = True
                 data["status"] = "received"
                 received.append({**verdict, "outcome": "received"})
+                # The units this receive actually used → the catalogue's
+                # practice tier (advisory; the divergence detector).
+                from app.services import supplier_catalog
+
+                supplier_catalog.observe_practice_from_doc(config_db, data)
                 # Norm's own receives are self-fulfilling (auto_accept_all ran
                 # a moment ago), so they measure VOLUME, not correctness — the
                 # report keeps actor="norm" out of its readiness rates.

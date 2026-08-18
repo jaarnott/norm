@@ -490,6 +490,220 @@ class TestPackagingWordNeverLinks:
         assert doc["lines"][0]["linked_unit_id"] == "u-pack"
 
 
+class TestCatalogueTierAndResolver:
+    """The Norm supplier-product catalogue answers sizeless lines it KNOWS;
+    the batched resolver offers (never links) for the rest."""
+
+    def _seed(self, db):
+        from app.db.config_models import SupplierInvoiceSpec
+        from app.services import supplier_catalog as sc
+
+        db.add(SupplierInvoiceSpec(name="Akaroa Salmon", aliases=[], instructions="x"))
+        db.flush()
+        sc.observe_extraction(
+            db,
+            {
+                "supplier_name": "Akaroa Salmon NZ Ltd",
+                "invoice_number": "PAST-1",
+                "lines": [
+                    {
+                        "code": "NEW1",
+                        "description": "CIDER MYSTERY PACK",
+                        "unit_of_measure": "6x 750ml",
+                    }
+                ],
+            },
+            provenance="printed",
+        )
+
+    def _sizeless_line(self, **over):
+        line = {
+            "code": "NEW1",
+            "description": "CIDER MYSTERY PACK",
+            "quantity": 1,
+            "unit": None,
+            "unit_of_measure": None,
+            "unit_price_ex_tax": 54.88,
+            "line_total_ex_tax": 54.88,
+        }
+        line.update(over)
+        return dict(EXTRACTION, lines=[line])
+
+    def _build_cfg(self, db, ext, **over):
+        kwargs = dict(
+            lh=object(),
+            catalogue=CATALOGUE,
+            units=UNITS,
+            suppliers=SUPPLIERS,
+            tax_rates=TAX,
+            aliases_by_id={},
+            item_matcher=lambda *a, **k: {},
+        )
+        kwargs.update(over)
+        return build_replica(None, db, "v-1", ext, **kwargs)
+
+    def test_catalogue_answers_a_sizeless_line_it_knows(self, db_session):
+        self._seed(db_session)
+        doc = self._build_cfg(db_session, self._sizeless_line())
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] == "u-6x750"  # 6x 750ml ≡ the venue's pack
+        assert any("Norm catalogue" in e for e in doc["resolution_log"])
+        assert not any(i["code"] == "unit_missing" for i in doc["issues"])
+
+    def test_the_page_outranks_the_catalogue(self, db_session):
+        self._seed(db_session)
+        doc = self._build_cfg(db_session, self._sizeless_line(unit_of_measure="1 kg"))
+        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+        assert not any("Norm catalogue" in e for e in doc["resolution_log"])
+
+    def test_catalogue_names_a_unit_the_venue_lacks(self, db_session):
+        # The catalogue knows 6x 750ml but the venue has no such unit —
+        # the existing create-unit suggestion path carries the name.
+        self._seed(db_session)
+        units = [u for u in UNITS if u["id"] != "u-6x750"]
+        doc = self._build_cfg(db_session, self._sizeless_line(), units=units)
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] is None
+        assert ln["unit_create_name"] == "6x 750ml"
+
+    def test_resolver_offers_but_never_links(self):
+        seen = {}
+
+        def ask(payload):
+            seen.update(payload)
+            return {
+                "lines": [
+                    {
+                        "line_id": "rep-0",
+                        "unit_id": "u-6x750",
+                        "confidence": "high",
+                        "why": "sibling lines print 6x750mL at the same price",
+                    }
+                ]
+            }
+
+        doc = _build(self._sizeless_line(), unit_resolver_ask=ask)
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] is None  # an offer, not a resolution
+        assert ln["unit_resolved"]["unit_id"] == "u-6x750"
+        assert ln["unit_resolved"]["confidence"] == "high"
+        assert any(i["code"] == "unit_missing" for i in doc["issues"])
+        # the whole invoice rode as context
+        assert seen["resolve"] == ["rep-0"]
+
+    def test_a_bare_charge_word_line_still_consults_the_resolver(self):
+        # 'EA' resolves Each (honest but vague — it is how the line is
+        # CHARGED). The resolver may offer the real pack as an upgrade; the
+        # line keeps Each until someone accepts.
+        doc = _build(
+            self._sizeless_line(unit="EA"),
+            unit_resolver_ask=lambda p: {
+                "lines": [
+                    {
+                        "line_id": "rep-0",
+                        "unit_id": "u-6x750",
+                        "confidence": "high",
+                        "why": "sibling lines print 6x750mL at the same price",
+                    }
+                ]
+            },
+        )
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] == "u-each"  # the charge word still holds
+        assert ln["unit_resolved"]["unit_id"] == "u-6x750"
+        assert not any(i["code"] == "unit_missing" for i in doc["issues"])
+
+    def test_resolver_agreeing_with_the_charge_word_is_not_news(self):
+        # A crate charge really IS Each — agreement stashes nothing.
+        doc = _build(
+            self._sizeless_line(unit="EA"),
+            unit_resolver_ask=lambda p: {
+                "lines": [
+                    {
+                        "line_id": "rep-0",
+                        "unit_id": "u-each",
+                        "confidence": "high",
+                        "why": "a per-item charge line",
+                    }
+                ]
+            },
+        )
+        assert "unit_resolved" not in doc["lines"][0]
+
+    def test_a_real_measure_in_the_unit_column_never_consults_the_resolver(self):
+        def ask(payload):
+            raise AssertionError("a sized printed unit needs no resolver")
+
+        doc = _build(self._sizeless_line(unit="Kilo"), unit_resolver_ask=ask)
+        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+
+    def test_cross_supplier_catalogue_evidence_reaches_the_resolver(self, db_session):
+        # Bidfood's printed 1L for a SHOTT syrup informs a sizeless Trents
+        # SHOTT line — evidence in the resolver payload, never authority.
+        from app.db.config_models import SupplierInvoiceSpec
+        from app.services import supplier_catalog as sc
+
+        db_session.add(
+            SupplierInvoiceSpec(name="Bidfood", aliases=[], instructions="x")
+        )
+        db_session.flush()
+        sc.observe_extraction(
+            db_session,
+            {
+                "supplier_name": "Bidfood Limited",
+                "invoice_number": "X",
+                "lines": [
+                    {
+                        "code": "70951",
+                        "description": "SYRUP BUTTERSCOTCH SHOTT",
+                        "unit_of_measure": "1L",
+                    }
+                ],
+            },
+            provenance="printed",
+        )
+        seen = {}
+
+        def ask(payload):
+            seen.update(payload)
+            return {"lines": []}
+
+        self._build_cfg(
+            db_session,
+            self._sizeless_line(code="9999", description="SHOTT NATURAL SYRUP ELDERF"),
+            unit_resolver_ask=ask,
+        )
+        assert "BUTTERSCOTCH SHOTT" in seen["evidence"]["rep-0"]
+        assert "1L" in seen["evidence"]["rep-0"]
+
+    def test_resolver_create_name_feeds_the_create_path(self):
+        doc = _build(
+            self._sizeless_line(),
+            unit_resolver_ask=lambda p: {
+                "lines": [
+                    {
+                        "line_id": "rep-0",
+                        "unit_id": None,
+                        "create_name": "750ml",
+                        "confidence": "high",
+                        "why": "standard bottle",
+                    }
+                ]
+            },
+        )
+        assert doc["lines"][0]["unit_create_name"] == "750ml"
+
+    def test_unreadable_units_stay_a_humans_call(self):
+        def ask(payload):
+            raise AssertionError("resolver must not run for unreadable units")
+
+        doc = _build(
+            self._sizeless_line(unit_unrecognisable=True),
+            unit_resolver_ask=ask,
+        )
+        assert "unit_resolved" not in doc["lines"][0]
+
+
 class TestDocumentFlags:
     """The engine's credit-note/statement gates, mirrored as warnings."""
 
@@ -989,5 +1203,3 @@ class TestTheInvoicesUnitIsTheUnit:
         stay load-bearing."""
         doc = _build(self._line(unit_of_measure=None, unit_unrecognisable=True))
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
-
-
