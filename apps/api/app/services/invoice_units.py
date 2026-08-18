@@ -71,8 +71,8 @@ def is_packaging_word(text: object) -> bool:
     Venues often carry a unit literally named PACK, so such a word resolves
     "successfully" by name and a sizeless line silently receives in a
     meaningless unit (Trents 5973784, 18 Aug 2026). Callers use this to
-    refuse the word as unit EVIDENCE and to keep such units out of guess
-    candidate lists.
+    refuse the word as unit EVIDENCE and to keep magnitude equivalence from
+    laundering an each-line into a packaging-named unit.
     """
     return " ".join(str(text or "").strip().lower().split()) in _PACKAGING_WORDS
 

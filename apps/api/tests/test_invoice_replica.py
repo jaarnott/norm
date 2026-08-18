@@ -384,10 +384,6 @@ class TestCopyUnitPrecedence:
         # unit still needs a human eye — the warning stays.
         doc = _build(self._line(unit_of_measure=None, unit_unrecognisable=True))
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"  # variant's unit
-        # The replica reports what IT could see. Which unit will actually be
-        # used is appended by the review, once the working line is in hand —
-        # saying it here produced "no unit on the Loaded variant" above a
-        # dropdown showing one.
         assert any("can't be read from the copy" in w for w in doc["warnings"])
 
     def test_unreadable_unit_with_no_variant_warns(self):
@@ -417,18 +413,33 @@ class TestCopyUnitPrecedence:
 
 
 class TestPackagingWordNeverLinks:
-    """Trents 5973784 (18 Aug 2026): a sizeless line printing 'PACK' linked
-    the venue's literal PACK unit and read as resolved — a meaningless unit
-    with nothing flagging it. Bare packaging words are bundling, not a
-    measure, so the line must stay unit-less (unit_missing) and carry the
-    guesser's closest EXISTING unit as metadata for the review to offer."""
+    """Trents 5973784 (18 Aug 2026): Trents prints 'EA' on every line; two
+    sizeless lines resolved to the venue's literal PACK unit via count-of-1
+    magnitude equivalence and read as healthy. Bare packaging words are
+    bundling, not a measure — they are refused as evidence, and a
+    packaging-NAMED unit is reachable only by printing its name exactly."""
 
-    UNITS_WITH_PACK = UNITS + [
+    UNITS_WITH_PACK = [
         {"id": "u-pack", "name": "PACK", "ratio": 1, "stockUnitType": "Count"}
-    ]
+    ] + UNITS
 
-    def _sizeless_pack_line(self):
-        return dict(
+    def test_ea_never_magnitude_matches_a_unit_named_pack(self):
+        # PACK sits FIRST in the list and must still lose to Each.
+        assert _resolve_unit_record("EA", self.UNITS_WITH_PACK)["id"] == "u-each"
+        # With no Each-like unit at all, EA resolves nothing rather than PACK.
+        assert (
+            _resolve_unit_record(
+                "EA",
+                [{"id": "u-pack", "name": "PACK", "ratio": 1}],
+            )
+            is None
+        )
+        # Printing the packaging word exactly still reaches it by name — the
+        # guard is about magnitude laundering, not about hiding the unit.
+        assert _resolve_unit_record("pack", self.UNITS_WITH_PACK)["id"] == "u-pack"
+
+    def test_bare_pack_stays_unlinked_and_raises_unit_missing(self):
+        ext = dict(
             EXTRACTION,
             lines=[
                 {
@@ -442,62 +453,10 @@ class TestPackagingWordNeverLinks:
                 }
             ],
         )
-
-    def test_bare_pack_stays_unlinked_and_raises_unit_missing(self):
-        doc = _build(self._sizeless_pack_line(), units=self.UNITS_WITH_PACK)
+        doc = _build(ext, units=self.UNITS_WITH_PACK)
         ln = doc["lines"][0]
         assert ln["linked_unit_id"] is None
         assert any(i["code"] == "unit_missing" for i in doc["issues"])
-
-    def test_ea_never_magnitude_matches_a_unit_named_pack(self):
-        # The live shape: Trents prints 'EA', and 'EA' parses as a count of 1
-        # — exactly like a unit literally named PACK. Magnitude equivalence
-        # must not launder identity: EA resolves to Each (also count-1) even
-        # when PACK sits first in the venue's list.
-        units = [
-            {"id": "u-pack", "name": "PACK", "ratio": 1, "stockUnitType": "Count"}
-        ] + UNITS
-        assert _resolve_unit_record("EA", units)["id"] == "u-each"
-        # With no Each-like unit at all, EA resolves nothing rather than PACK.
-        assert (
-            _resolve_unit_record(
-                "EA",
-                [{"id": "u-pack", "name": "PACK", "ratio": 1}],
-            )
-            is None
-        )
-        # Printing the packaging word exactly still reaches it by name — the
-        # guard is about magnitude laundering, not about hiding the unit.
-        assert _resolve_unit_record("pack", units)["id"] == "u-pack"
-
-    def test_the_guess_rides_as_metadata_and_pack_is_never_offered(self):
-        seen: dict = {}
-
-        def chooser(line, cands):
-            seen["names"] = [c["name"] for c in cands]
-            return "u-6x750"
-
-        doc = _build(
-            self._sizeless_pack_line(),
-            units=self.UNITS_WITH_PACK,
-            unit_chooser=chooser,
-        )
-        ln = doc["lines"][0]
-        assert ln["linked_unit_id"] is None  # a guess never links by itself
-        assert ln["unit_guess"]["id"] == "u-6x750"
-        assert ln["unit_guess"]["name"] == "6x750mL"
-        assert "PACK" not in seen["names"]
-        assert any("closest existing unit" in e for e in doc["resolution_log"])
-
-    def test_ea_never_magnitude_matches_a_pack_named_unit(self):
-        # 'EA' parses as a count of 1 — and so does a unit literally NAMED
-        # 'PACK', which is how Dunedin's PACK unit swallowed every EA line on
-        # Trents 5973784. Identity must not be laundered through magnitude:
-        # EA may match Each, never PACK; PACK itself is reachable only by
-        # printing its exact name.
-        assert _resolve_unit_record("EA", self.UNITS_WITH_PACK)["id"] == "u-each"
-        only_pack = [{"id": "u-pack", "name": "PACK", "ratio": 1}]
-        assert _resolve_unit_record("EA", only_pack) is None
 
     def test_a_variant_that_genuinely_says_pack_still_wins(self):
         # The refusal is about copy EVIDENCE; a supplier variant registered
@@ -1030,3 +989,5 @@ class TestTheInvoicesUnitIsTheUnit:
         stay load-bearing."""
         doc = _build(self._line(unit_of_measure=None, unit_unrecognisable=True))
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+
+

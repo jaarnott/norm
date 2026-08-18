@@ -326,7 +326,6 @@ def build_replica(
     tax_rates: dict[int, float] | None = None,
     aliases_by_id: dict[str, list[str]] | None = None,
     item_matcher=None,
-    unit_chooser=None,
     own_invoice_id: str | None = None,
     received_feed: list | None = None,
     loaded_total: object = None,
@@ -642,22 +641,16 @@ def build_replica(
             unit_rec = next(
                 (u for u in units if u.get("id") == variant.get("unitId")), None
             ) or {"id": variant.get("unitId"), "name": None, "ratio": None}
-            # The unit is whatever the INVOICE says. A variant default is
-            # user-entered data in Loaded; the copy is the delivery, and
-            # receiving it accurately is the job. If a venue counts wine
-            # bottles as 'Each', that is the venue's business — it is not a
-            # reason to book 'Each' against a copy that says 750 mL.
+            # The unit-fix doctrine: the copy's confidently-delivered unit
+            # overrides a variant default that names a DIFFERENT pack —
+            # equivalent names keep the variant's unit (id-stable vs Loaded).
             #
-            # This used to be gated on the two units not being `units_equivalent`,
-            # plus a `copy_is_more_specific` exception carved out for one
-            # Hancocks invoice (multipack vs bare count). Everything outside
-            # that exception's shape fell through to Loaded, so '750 mL' lost
-            # to 'Each'. The gate is gone: `_resolve_unit_record` already
-            # matches by name, by multipack components and by parsed magnitude,
-            # so a copy saying '0.7 L' against a variant saying '700 mL' still
-            # lands on the same record and nothing moves. The equivalence check
-            # was doing that job a second time, and the second copy is what let
-            # Loaded win.
+            # ...with one asymmetry. Equivalence is a two-way test, but "same
+            # pack" does not mean "as informative": '6 Pack' and '6x1000ml'
+            # are equivalent, yet only one says how big the bottles are. When
+            # the COPY is the specific one the copy wins, otherwise the right
+            # answer sits on the page with no way to reach it — the working
+            # value matches the replica, so nothing is even suggested.
             if confident:
                 copy_rec = _resolve_unit_record(derived, units)
                 if copy_rec and copy_rec.get("id") != unit_rec.get("id"):
@@ -679,13 +672,10 @@ def build_replica(
                     # — never a bare unlinked string Loaded's OCR left behind.
                     unit_create_name = str(derived)
         if unit_rec is None:
-            # A bare packaging word ('PACK', 'CARTON') says how the goods were
-            # bundled, not what ONE delivered item is — and venues often carry
-            # a unit literally named PACK, so it resolves "successfully" and a
-            # sizeless line silently receives in a meaningless unit (Trents
-            # 5973784, 18 Aug 2026: two lines with no size on the page linked
-            # PACK). Refuse the word as evidence so the line stays unit-less
-            # and enters the unit_missing confirm/guess flow instead.
+            # A bare packaging word ('PACK', 'CARTON') says how the goods
+            # were bundled, not what ONE delivered item is. Refuse it as
+            # evidence so the line raises unit_missing and parks for a person
+            # instead of silently linking a meaningless unit.
             fallback_name = next(
                 (
                     c
@@ -785,48 +775,10 @@ def build_replica(
             _issue(
                 "unit_missing",
                 f"line {i + 1} '{el.get('description')}': no unit could be "
-                "determined (nothing recognisable on the copy and no unit on "
-                "the Loaded variant) — set the unit before receiving",
+                "read from the copy",
                 line_id=f"rep-{i}",
                 data={"unit_name": str(derived)} if confident and derived else None,
             )
-            # Best-effort pick from the venue's EXISTING units so the review
-            # card can offer an Accept-able suggestion instead of only the
-            # blocker. Chooses, never creates; stashed as metadata — the line
-            # itself stays unit-less so unit_missing (and autopilot's gate
-            # semantics) are unchanged. Skipped when the copy DOES carry size
-            # info that couldn't be read: that is a human's call, not a guess.
-            if not el.get("unit_unrecognisable"):
-                from app.services.unit_guess import guess_unit, llm_chooser
-
-                chosen, why = guess_unit(
-                    {
-                        "id": f"rep-{i}",
-                        "description": el.get("description"),
-                        "code": el.get("code"),
-                        "unit": el.get("unit"),
-                        "unit_of_measure": el.get("unit_of_measure"),
-                        "quantity_received": qty,
-                    },
-                    units or [],
-                    # No db (unit tests build with reference data only) →
-                    # heuristics alone; guess_unit answers honestly when only
-                    # the model could have chosen.
-                    ask_llm=unit_chooser
-                    or (llm_chooser(db) if db is not None else None),
-                )
-                if chosen is not None:
-                    out_lines[-1]["unit_guess"] = {
-                        "id": chosen.get("id"),
-                        "name": chosen.get("name"),
-                        "ratio": chosen.get("ratio"),
-                        "why": why,
-                    }
-                    log.append(
-                        f"line {i + 1} unit: nothing usable on the copy — "
-                        f"closest existing unit is '{chosen.get('name')}' "
-                        "(suggested, not applied)"
-                    )
 
     # ---- Totals reconciliation (the engine's `totals` gate, copy-side) ----
     # Loaded's own entry validation absorbs up to 10c of rounding on
@@ -985,18 +937,14 @@ def build_replica(
                         )
                     )
                 # The order belonging to another supplier is worth SAYING and
-                # not worth stopping for. Soho is supplied by Procure: ordering
-                # from Soho in Loaded while the invoice arrives from Procure is
-                # the arrangement, not a mistake. And the comparison is against
-                # the supplier the replica is PROPOSING — the order is usually
-                # perfectly consistent with the supplier Loaded holds right
-                # now, so this fires for a state that does not exist yet.
-                #
-                # Receiving does not touch the order's ownership either
-                # (do_receive has no PO guard at all), so blocking bought
-                # nothing and cost every through-supplier invoice a manual
-                # override — plus an "unlink it" suggestion that would have
-                # thrown away a correct link.
+                # not worth stopping for. Soho is supplied by Procure:
+                # ordering from Soho in Loaded while the invoice arrives from
+                # Procure is the arrangement, not a mistake. The comparison is
+                # also against the supplier the replica is PROPOSING, so it
+                # fires for a state that does not exist yet — and receiving
+                # never touches the order's ownership (do_receive has no PO
+                # guard at all), so blocking bought nothing and cost every
+                # through-supplier invoice a manual override.
                 po_sup = r.get("supplier_id")
                 if po_sup and supplier_id and po_sup != supplier_id:
                     po_sup_name = next(
@@ -1007,19 +955,22 @@ def build_replica(
                         ),
                         None,
                     )
-                    # Loaded's OWN alias lists are already in hand (fetched for
-                    # supplier resolution above) and were not being consulted
+                    # Loaded's OWN alias lists are already in hand (fetched
+                    # for supplier resolution above) and were not consulted
                     # here, so a venue that had recorded the relationship still
-                    # got flagged. Ask the identity module, which is the one
-                    # place that knows what counts as the same business.
-                    ours_names = [
-                        (supplier or {}).get("name"),
-                        supplier_printed,
-                    ]
+                    # got flagged. Ask the identity module — the one place that
+                    # knows what counts as the same business.
                     same_business = bool(
                         po_sup_name
                         and resolve_supplier(
-                            [n for n in ours_names if n],
+                            [
+                                n
+                                for n in (
+                                    (supplier or {}).get("name"),
+                                    supplier_printed,
+                                )
+                                if n
+                            ],
                             [{"id": po_sup, "name": po_sup_name}],
                             aliases_by_id,
                         )[0]
