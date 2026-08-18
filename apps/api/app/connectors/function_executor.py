@@ -5,6 +5,7 @@ via the `call_api` helper. No file I/O, no imports, no network access
 except through `call_api`.
 """
 
+import ast
 import datetime
 import decimal
 import hashlib
@@ -93,7 +94,57 @@ def _extraction_cache_put(
 _DEFAULT_MAX_API_CALLS = 20
 _HARD_MAX_API_CALLS = 200
 
+
 # Builtins allowed in function execution
+def _safe_getattr(obj, name, *default):
+    """`getattr` that cannot be used to reach private attributes.
+
+    The static guard below refuses `x.__class__` in the source, so without
+    this a caller would just write `getattr(x, "__class__")` instead.
+    """
+    if isinstance(name, str) and name.startswith("_"):
+        raise ValueError(f"attribute '{name}' is not available in this sandbox")
+    return getattr(obj, name, *default)
+
+
+#: Constructs that turn this sandbox from a restriction into a suggestion.
+#:
+#: The namespace handed to ``exec`` necessarily contains real objects — the
+#: json/math/datetime/decimal modules, and the very functions the code is meant
+#: to call. Python lets you walk from ANY of them to the interpreter:
+#: ``json.__builtins__`` hands back the genuine builtins (so ``__import__`` and
+#: therefore ``os``, the DB engine, every venue's stored credentials), and
+#: ``().__class__.__base__.__subclasses__()`` reaches 644 live classes. Both
+#: were verified working before this guard existed.
+#:
+#: Restricting the namespace cannot fix that — the escape routes are attributes
+#: of objects the code legitimately holds. So the source is parsed and refused
+#: instead: no imports, and no private/dunder attribute access. Real
+#: consolidators use leading-underscore *local names* (`_rows_of`,
+#: `_summarise`) freely, and those are untouched — it is attribute access that
+#: is blocked.
+#:
+#: This is hardening, not a boundary. The durable fix is running untrusted
+#: logic out-of-process with no database credentials and no app package on
+#: sys.path; this buys time for that.
+def _reject_unsafe_source(function_code: str) -> None:
+    try:
+        tree = ast.parse(function_code)
+    except SyntaxError as exc:
+        raise ValueError(f"could not parse function: {exc}") from exc
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise ValueError(
+                "imports are not available in this sandbox — the data you need "
+                "comes through call_api/store"
+            )
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            raise ValueError(
+                f"attribute '{node.attr}' is not available in this sandbox"
+            )
+
+
 _SAFE_BUILTINS = {
     # Types
     "True": True,
@@ -127,7 +178,7 @@ _SAFE_BUILTINS = {
     # Checks
     "isinstance": isinstance,
     "hasattr": hasattr,
-    "getattr": getattr,
+    "getattr": _safe_getattr,
     "any": any,
     "all": all,
     # String/format
@@ -159,6 +210,7 @@ def execute_function(
     thread_id: str | None,
     options: dict | None = None,
     call_api_override=None,
+    storage_override=None,
 ) -> dict:
     """Execute a consolidator Python function.
 
@@ -670,14 +722,49 @@ def execute_function(
                 log(f"API call {connector}.{action} failed: {exc}")
                 return {"error": str(exc)}
 
+        # EVERY route to the network must go through the override, not just the
+        # one named `call_api`. The sandbox widens run() by arity, so logic
+        # declaring a 4th parameter is handed `call_api_parallel` — which used
+        # to reach `_do_api_call` directly, resolving venue credentials itself
+        # and skipping the caller's allowlist, permission and audit checks.
+        # Naming a fourth parameter was therefore enough to read any action on
+        # any connector, unaudited. It now fans out over the same door.
+        #
+        # Sequential on purpose: the door writes an audit row per call using
+        # the caller's request-scoped session, which is not safe to share
+        # across threads. Callers that need real concurrency should widen the
+        # door, not step around it.
+        def call_api_parallel(calls: list) -> list:  # type: ignore[misc]
+            out = []
+            for call_tuple in calls or []:
+                connector, action, api_params = call_tuple
+                out.append(call_api(connector, action, api_params))
+            log(f"Batch: {len(calls or [])} calls through the caller's door")
+            return out
+
     # Execute the function
     try:
         namespace: dict[str, Any] = {
             "__builtins__": _SAFE_BUILTINS,
             **_SAFE_MODULES,
-            "extract_document": extract_document,
-            "extract_documents_parallel": extract_documents_parallel,
         }
+        if call_api_override is None:
+            # Document extraction also calls out directly, and a caller that
+            # supplied its own door has no way to authorize it — so it is
+            # absent rather than ungoverned. Consolidators (no override) keep
+            # it unchanged.
+            namespace["extract_document"] = extract_document
+            namespace["extract_documents_parallel"] = extract_documents_parallel
+        if storage_override is not None:
+            # A NAMESPACE global rather than another positional argument:
+            # arity 4 and 5 already mean call_api_parallel and options, so
+            # adding a 6th would be invisible to anything written today and
+            # ambiguous for anything written tomorrow. `store` is only present
+            # when the caller supplied a door for it.
+            namespace["store"] = storage_override
+        # Refuse the source BEFORE running it. At exec time rather than at
+        # save time, so logic stored before this guard existed is covered too.
+        _reject_unsafe_source(function_code)
         exec(function_code, namespace)
 
         run_fn = namespace.get("run")

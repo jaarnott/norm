@@ -1,0 +1,29 @@
+{
+  "slug": "hiring",
+  "name": "Hiring",
+  "icon": "🧑‍🍳",
+  "agent": "hr",
+  "description": "Job openings and the candidate pipeline — from application to hired and onboarding.",
+  "purpose": "The management surface for recruitment: open roles, a per-job pipeline of candidates through user-defined stages, candidate detail with answers, notes and activity, and the talent pool. Hiring someone creates their person record in the shared HR namespace, so the Training app can enrol them immediately.",
+  "spec": {
+    "actions": [],
+    "writes": [],
+    "scopes": ["mcp:hr:read"],
+    "storage": {
+      "namespace": "hr_suite",
+      "collections": [
+        "people",
+        "job_openings",
+        "pipeline_stages",
+        "application_fields",
+        "candidates",
+        "applications",
+        "answers",
+        "notes",
+        "activity",
+        "interviews"
+      ]
+    },
+    "max_api_calls": 0
+  }
+}

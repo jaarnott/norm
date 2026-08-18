@@ -1,7 +1,8 @@
 """Install (or update) a fixture app for one organization.
 
-The fixture pair lives in ``app/fixtures/apps/<slug>.{json,html}`` — the JSON
-is the app row + spec, the HTML is the version's ``ui_source``. Installing goes
+The fixture lives in ``app/fixtures/apps/<slug>.{json,html,py}`` — the JSON is
+the app row + spec, the HTML is the version's ``ui_source``, and the optional
+``.py`` is its ``logic_source`` (the server-side ``run()``). Installing goes
 through the same shape the save endpoint produces: a new immutable AppVersion
 each run, ``current_version_id`` moved forward, visibility untouched.
 
@@ -25,11 +26,15 @@ FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "fixtures" /
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("slug")
-    ap.add_argument("--org-email", required=True, help="a member; their org gets the app")
+    ap.add_argument(
+        "--org-email", required=True, help="a member; their org gets the app"
+    )
     args = ap.parse_args()
 
     meta = json.loads((FIXTURES / f"{args.slug}.json").read_text())
     ui = (FIXTURES / f"{args.slug}.html").read_text()
+    logic_path = FIXTURES / f"{args.slug}.py"
+    logic = logic_path.read_text() if logic_path.exists() else None
 
     from app.db.engine import SessionLocal
     from app.db.models import App, AppVersion, OrganizationMembership, User
@@ -49,6 +54,16 @@ def main() -> int:
             print(f"{args.org_email} has no organization membership")
             return 1
 
+        # Fixtures build the rows directly rather than going through
+        # save_app, so the namespace rule has to be applied explicitly — a
+        # first-party app must not be able to claim a namespace another app
+        # owns just because it skipped the front door.
+        from app.services.app_runtime import _check_namespace_claim
+
+        _check_namespace_claim(
+            db, membership.organization_id, meta["slug"], meta["spec"]
+        )
+
         app = (
             db.query(App)
             .filter(
@@ -65,6 +80,7 @@ def main() -> int:
                 name=meta["name"],
                 description=meta.get("description"),
                 icon=meta.get("icon"),
+                agent=meta.get("agent"),
                 purpose=meta.get("purpose"),
                 visibility="private",
             )
@@ -74,6 +90,8 @@ def main() -> int:
             app.name = meta["name"]
             app.description = meta.get("description")
             app.icon = meta.get("icon")
+            if meta.get("agent"):
+                app.agent = meta["agent"]
 
         last = (
             db.query(AppVersion)
@@ -86,6 +104,7 @@ def main() -> int:
             version=(last.version + 1) if last else 1,
             spec=meta["spec"],
             ui_source=ui,
+            logic_source=logic,
             changelog="fixture install",
             created_by=user.id,
         )
@@ -93,7 +112,9 @@ def main() -> int:
         db.flush()
         app.current_version_id = version.id
         db.commit()
-        print(f"installed '{app.name}' v{version.version} for org {app.organization_id}")
+        print(
+            f"installed '{app.name}' v{version.version} for org {app.organization_id}"
+        )
         return 0
     finally:
         db.close()

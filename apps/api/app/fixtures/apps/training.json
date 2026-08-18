@@ -1,0 +1,31 @@
+{
+  "slug": "training",
+  "name": "Training",
+  "icon": "🎓",
+  "agent": "hr",
+  "description": "Programs, enrolments and completion across the group — who has been trained on what.",
+  "purpose": "The management surface for staff training: the program catalogue and its module/section/content structure, who is enrolled on which instance (program + variant + venue), and a member × program tracker showing where everyone is. Ported from Orbit, with Norm as the system of record.",
+  "spec": {
+    "actions": [],
+    "writes": [],
+    "scopes": ["mcp:hr:read"],
+    "storage": {
+      "namespace": "hr_suite",
+      "collections": [
+        "people",
+        "programs",
+        "modules",
+        "sections",
+        "content",
+        "assignments",
+        "completions",
+        "signoffs",
+        "plans",
+        "plan_sections",
+        "capability_frameworks"
+      ],
+      "shared_with": ["hiring"]
+    },
+    "max_api_calls": 0
+  }
+}

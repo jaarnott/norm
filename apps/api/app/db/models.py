@@ -12,7 +12,9 @@ from sqlalchemy import (
     Boolean,
     LargeBinary,
     UniqueConstraint,
+    Index,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -1146,6 +1148,13 @@ class App(Base):
     description = Column(Text, nullable=True)
     #: Emoji or lucide icon name — apps sit beside Norm's own pages in the nav.
     icon = Column(String, nullable=True)
+    #: Which agent's menu this app's pages join — "hr", "procurement", … NULL
+    #: means the App Builder, which is where apps lived before they could
+    #: choose. Validated against the registered agents on save: a slug with no
+    #: agent behind it would be unreachable (no sidebar button can select it)
+    #: AND would silently break chat, because page_context.agent is taken on
+    #: faith by the supervisor.
+    agent = Column(String, nullable=True)
     #: The plain-language brief the user gave the builder. Kept verbatim: it is
     #: what the builder re-reads to revise the app, and the honest answer to
     #: "what was this meant to do".
@@ -1238,6 +1247,128 @@ class AppShare(Base):
     #: this audience is a second, explicit decision naming the actions.
     write_actions_approved = Column(Boolean, nullable=False, default=False)
     granted_by = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+
+class AppRecord(Base):
+    """A row an app owns — the platform's storage primitive.
+
+    Until this existed an app could only ever be a VIEW over connector actions:
+    a training sign-off or a candidate note had nowhere to live, so every
+    non-trivial app needed someone else's system of record behind it (which is
+    exactly why the Cook Brothers domains still sit in Supabase). This is the
+    table that makes Norm the system of record for them.
+
+    **Keyed by namespace, not by app.** Two apps that belong to one domain —
+    Hiring and Training over the same people — must share rows, and the honest
+    way to allow that is an explicit shared name rather than one app reaching
+    into another's tables. A namespace is owned by whichever app claims it
+    first; another app may join only if the owner's spec names it in
+    ``storage.shared_with`` (enforced in ``app_runtime.save_app``). Nobody
+    reads a namespace they did not declare.
+
+    ``data`` is JSONB and deliberately schemaless: it is the Supabase-shaped
+    surface the migrating apps were written against, it needs no per-app
+    migration, and a collection that earns a real table can graduate later.
+
+    Scoping mirrors the rest of Norm: ``organization_id`` is the hard tenancy
+    boundary and is never optional; ``venue_id`` is nullable because plenty of
+    real rows are group-wide — Orbit's training programs are exactly that, and
+    a venue filter that cannot express "global" is the bug that hides them from
+    its own API.
+    """
+
+    __tablename__ = "app_records"
+    __table_args__ = (
+        Index(
+            "ix_app_records_org_collection",
+            "namespace",
+            "collection",
+            "organization_id",
+        ),
+        Index("ix_app_records_venue_collection", "namespace", "collection", "venue_id"),
+        # Containment index: what makes `where={"program_id": …}` an index hit
+        # rather than a sequential scan with a per-row JSON parse.
+        Index("ix_app_records_data", "data", postgresql_using="gin"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    namespace = Column(String, nullable=False, index=True)
+    organization_id = Column(
+        String,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    #: NULL means the row belongs to the whole organization, not one venue.
+    venue_id = Column(
+        String, ForeignKey("venues.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    collection = Column(String, nullable=False)
+    #: JSONB, not the generic JSON the rest of Norm uses: this is the one
+    #: table that is QUERIED THROUGH its document, and `astext`, nested paths
+    #: and a GIN index are all impossible on plain JSON.
+    data = Column(JSONB, nullable=False, default=dict)
+    created_by = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_by = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class AppFile(Base):
+    """A file an app owns — evidence, a CV, an attachment.
+
+    Apps had storage for rows and nowhere at all to put bytes, so a training
+    sign-off photo or a candidate's CV could only live in someone else's
+    bucket. That is what kept Orbit's Supabase alive: 412 completion records
+    point at evidence in a **public** bucket, referenced from inside a JSONB
+    blob with no table, no signed URLs and no way to delete.
+
+    Bytes in the column, following ``UploadedDocument`` and
+    ``SupplierSpecSample`` — the only binary precedent in this repo — because
+    the volumes are operational (a few MB per file, a few thousand files) and a
+    bucket would add an access-control surface separate from the one that
+    already guards everything else here. A file is reached through the same
+    door as a record, so "who may see this" has exactly one answer.
+
+    ``namespace`` (not app slug) for the same reason records use it: a suite of
+    apps shares its files. ``collection``/``record_id`` tie a file to the row it
+    belongs to, so deleting that row can take its files with it.
+    """
+
+    __tablename__ = "app_files"
+    __table_args__ = (
+        Index("ix_app_files_owner", "namespace", "collection", "record_id"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    namespace = Column(String, nullable=False, index=True)
+    organization_id = Column(
+        String,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    venue_id = Column(
+        String, ForeignKey("venues.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    #: Which record this file belongs to, so it can be found and cleaned up.
+    collection = Column(String, nullable=True)
+    record_id = Column(String, nullable=True)
+    filename = Column(String, nullable=False)
+    content_type = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    data = Column(LargeBinary, nullable=False)
+    #: Where this came from if it was not uploaded here — e.g. the Orbit URL a
+    #: migration pulled it from, kept so a re-run can recognise it.
+    source_ref = Column(String, nullable=True, index=True)
+    created_by = Column(
         String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at = Column(DateTime(timezone=True), default=_now)

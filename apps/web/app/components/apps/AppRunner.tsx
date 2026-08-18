@@ -17,6 +17,7 @@
  *                    {type:'norm:call', id, connector, action, params, venueId?}
  *                    {type:'norm:run',  id, params, venueId?}
  *                    {type:'norm:resize', height}
+ *                    {type:'norm:store', id, op, collection, recordId?, body}
  *   parent → iframe  {type:'norm:init', context}
  *                    {type:'norm:result', id, ok, data|error}
  *
@@ -75,7 +76,40 @@ const HOST_RUNTIME = `
     resize: function () {
       parent.postMessage({ type: 'norm:resize', height: document.documentElement.scrollHeight }, '*');
     },
+    files: {
+      // The picker and the upload live here so an app never has to hold a
+      // token or build a URL — it asks the host, which is the only side that
+      // can authenticate.
+      pick: function (collection, recordId, accept) {
+        return new Promise(function (resolve, reject) {
+          var id = 'f' + (++seq);
+          pending[id] = { resolve: resolve, reject: reject };
+          parent.postMessage({ type: 'norm:file-pick', id: id, collection: collection,
+                               recordId: recordId || null, accept: accept || '' }, '*');
+        });
+      },
+      list: function (collection, recordId) { return _store('files', collection, recordId, {}); },
+      remove: function (fileId) { return _store('file-delete', null, fileId, {}); },
+      // A src for an <img>/<a>. Same-origin to the host, so the browser sends
+      // the session cookie-less request through the parent's fetch instead —
+      // hence the blob handed back by pick/list rather than a raw URL.
+      urlFor: function (fileId) { return _store('file-url', null, fileId, {}); },
+    },
+    storage: {
+      list: function (collection, query) { return _store('list', collection, null, query || {}); },
+      get: function (collection, id) { return _store('get', collection, id, {}); },
+      create: function (collection, data, venueId) { return _store('create', collection, null, { data: data, venueId: venueId }); },
+      update: function (collection, id, data, venueId) { return _store('update', collection, id, { data: data, venueId: venueId }); },
+      remove: function (collection, id) { return _store('delete', collection, id, {}); },
+    },
   };
+  function _store(op, collection, id, body) {
+    return new Promise(function (resolve, reject) {
+      var rid = 's' + (++seq);
+      pending[rid] = { resolve: resolve, reject: reject };
+      parent.postMessage({ type: 'norm:store', id: rid, op: op, collection: collection, recordId: id, body: body || {} }, '*');
+    });
+  }
   window.addEventListener('message', function (ev) {
     var m = ev.data || {};
     if (m.type === 'norm:init') {
@@ -165,6 +199,104 @@ export default function AppRunner({ slug }: { slug: string }) {
         });
       } else if (m.type === 'norm:resize' && typeof m.height === 'number') {
         setHeight(Math.min(Math.max(m.height, 120), 4000));
+      } else if (m.type === 'norm:file-pick') {
+        // The host owns the file dialog: the sandbox has no session and
+        // cannot upload on its own.
+        const input = document.createElement('input');
+        input.type = 'file';
+        if (m.accept) input.accept = String(m.accept);
+        input.onchange = async () => {
+          const chosen = input.files?.[0];
+          if (!chosen) { post({ type: 'norm:result', id: m.id, ok: false, error: 'no file chosen' }); return; }
+          const form = new FormData();
+          form.append('file', chosen);
+          if (m.recordId) form.append('record_id', String(m.recordId));
+          if (venueRef.current) form.append('venue_id', venueRef.current);
+          try {
+            const res = await apiFetch(
+              `/api/apps/${app.slug}/files/${encodeURIComponent(String(m.collection))}`,
+              { method: 'POST', body: form },
+            );
+            const json = await res.json().catch(() => ({}));
+            post(res.ok
+              ? { type: 'norm:result', id: m.id, ok: true, data: json }
+              : { type: 'norm:result', id: m.id, ok: false, error: json?.detail || `Error ${res.status}` });
+          } catch (e) {
+            post({ type: 'norm:result', id: m.id, ok: false, error: e instanceof Error ? e.message : 'upload failed' });
+          }
+        };
+        input.click();
+      } else if (m.type === 'norm:store') {
+        // The app's own rows. Same shape of forwarding as norm:call — the
+        // server-side door decides what this app may touch; this side just
+        // carries the message and never interprets the collection.
+        const q = m.body || {};
+        // ENCODED, because these come from untrusted app markup. Interpolated
+        // raw, a collection of '../../other-app/records/people' is normalised
+        // by fetch into a path against a DIFFERENT app — which the server
+        // would then authorize as that app, using this viewer's token, and
+        // audit against the innocent app. Encoding keeps it one segment, so
+        // the server refuses it as an undeclared collection.
+        const col = encodeURIComponent(String(m.collection ?? ''));
+        const rid = encodeURIComponent(String(m.recordId ?? ''));
+        const paths: Record<string, [string, string]> = {
+          list: ['POST', `/api/apps/${app.slug}/records/${col}/query`],
+          get: ['GET', `/api/apps/${app.slug}/records/${col}/${rid}`],
+          create: ['POST', `/api/apps/${app.slug}/records/${col}`],
+          update: ['PUT', `/api/apps/${app.slug}/records/${col}/${rid}`],
+          delete: ['DELETE', `/api/apps/${app.slug}/records/${col}/${rid}`],
+        };
+        // File ops share the bridge but not the record paths.
+        if (m.op === 'files' || m.op === 'file-delete' || m.op === 'file-url') {
+          const fileId = encodeURIComponent(String(m.recordId ?? ''));
+          try {
+            if (m.op === 'files') {
+              const q = m.recordId ? `?record_id=${fileId}` : '';
+              const res = await apiFetch(`/api/apps/${app.slug}/files/${encodeURIComponent(String(m.collection))}${q}`);
+              const json = await res.json().catch(() => ({}));
+              post(res.ok
+                ? { type: 'norm:result', id: m.id, ok: true, data: json.files }
+                : { type: 'norm:result', id: m.id, ok: false, error: json?.detail || `Error ${res.status}` });
+            } else if (m.op === 'file-delete') {
+              const res = await apiFetch(`/api/apps/${app.slug}/file/${fileId}`, { method: 'DELETE' });
+              post({ type: 'norm:result', id: m.id, ok: res.ok, data: { deleted: m.recordId } });
+            } else {
+              // Fetched here and handed over as a blob URL: the iframe has an
+              // opaque origin and no token, so it cannot fetch this itself.
+              const res = await apiFetch(`/api/apps/${app.slug}/file/${fileId}`);
+              if (!res.ok) { post({ type: 'norm:result', id: m.id, ok: false, error: `Error ${res.status}` }); return; }
+              const blob = await res.blob();
+              post({ type: 'norm:result', id: m.id, ok: true, data: URL.createObjectURL(blob) });
+            }
+          } catch (e) {
+            post({ type: 'norm:result', id: m.id, ok: false, error: e instanceof Error ? e.message : 'file call failed' });
+          }
+          return;
+        }
+        const entry = paths[m.op as string];
+        if (!entry) {
+          post({ type: 'norm:result', id: m.id, ok: false, error: `unknown storage op ${m.op}` });
+          return;
+        }
+        const [method, path] = entry;
+        const venue = q.venueId ?? venueRef.current ?? null;
+        const body =
+          m.op === 'list'
+            ? JSON.stringify({ where: q.where ?? null, venue_id: q.venueId ?? venueRef.current ?? null, include_global: q.includeGlobal !== false, limit: q.limit ?? 200, offset: q.offset ?? 0 })
+            : m.op === 'create' || m.op === 'update'
+              ? JSON.stringify({ data: q.data ?? {}, venue_id: venue })
+              : undefined;
+        try {
+          const res = await apiFetch(path, { method, ...(body ? { body } : {}) });
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            post({ type: 'norm:result', id: m.id, ok: false, error: json?.detail || `Error ${res.status}` });
+          } else {
+            post({ type: 'norm:result', id: m.id, ok: true, data: m.op === 'list' ? json.records : json });
+          }
+        } catch (e) {
+          post({ type: 'norm:result', id: m.id, ok: false, error: e instanceof Error ? e.message : 'storage call failed' });
+        }
       } else if (m.type === 'norm:call' || m.type === 'norm:run') {
         const isCall = m.type === 'norm:call';
         try {

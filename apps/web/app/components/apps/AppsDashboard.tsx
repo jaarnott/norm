@@ -13,10 +13,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { setPageDocument } from '../../lib/pageDocument';
+import { AGENTS } from '../layout/Sidebar';
 import AppRunner from './AppRunner';
 import type { DisplayBlockProps } from '../display/DisplayBlockRenderer';
 
 export const APP_PAGES_CHANGED_EVENT = 'norm:app-pages-changed';
+
+/** Where a pinned app's page link appears. Apps can join another agent's menu
+ *  now, so a bare "in nav" would leave people hunting for it. */
+const agentLabel = (slug: string) =>
+  AGENTS.find((a) => a.id === slug)?.label ?? 'nav';
 
 interface AppRow {
   slug: string;
@@ -27,6 +33,7 @@ interface AppRow {
   mine: boolean;
   access: string;
   pinned: boolean;
+  agent: string;
 }
 
 export default function AppsDashboard({ props }: DisplayBlockProps) {
@@ -119,11 +126,11 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
                 {a.description}
               </div>
             </div>
-            <label title="show this app as a page link in the nav (only for you)"
+            <label title={`show this app as a page link under ${agentLabel(a.agent)} (only for you)`}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.66rem', color: '#6b655c', whiteSpace: 'nowrap', cursor: 'pointer' }}>
               <input type="checkbox" checked={a.pinned} disabled={busy === a.slug}
                 onChange={() => { void togglePin(a); }} />
-              in nav
+              in {agentLabel(a.agent)}
             </label>
             <button type="button" onClick={() => setOpenSlug(a.slug)}
               style={{ fontSize: '0.72rem', border: 'none', borderRadius: 5, background: '#2e7d4f', color: '#fff', cursor: 'pointer', padding: '4px 14px', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>

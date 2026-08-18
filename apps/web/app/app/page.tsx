@@ -24,6 +24,18 @@ import type { Thread, WidgetAction, VenueDetail } from '../types';
 
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null };
 
+// True once a re-fetched thread's turn has settled with a final answer — the
+// backend worker commits the answer even when the send's stream was cut, so
+// this is what both the send-time recovery and the open-thread poll wait for.
+function threadHasSettledAnswer(fresh: Thread): boolean {
+  if (fresh.status === 'in_progress') return false;
+  const conv = fresh.conversation || [];
+  for (let i = conv.length - 1; i >= 0; i--) {
+    if (conv[i].role === 'assistant') return (conv[i].text || '').trim().length > 0;
+  }
+  return false;
+}
+
 export default function Home() {
   const [token, setTokenState] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -45,7 +57,7 @@ export default function Home() {
       apiFetch('/api/apps')
         .then((r) => (r.ok ? r.json() : { apps: [] }))
         .then((d) => setAppPages(
-          ((d.apps ?? []) as { slug: string; name: string; icon?: string | null; pinned?: boolean }[])
+          ((d.apps ?? []) as { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null }[])
             .filter((a) => a.pinned)
             .map(appPageConfig),
         ))
@@ -54,9 +66,22 @@ export default function Home() {
     loadAppPages();
     window.addEventListener(APP_PAGES_CHANGED_EVENT, loadAppPages);
     return () => window.removeEventListener(APP_PAGES_CHANGED_EVENT, loadAppPages);
-  }, []);
+    // Re-runs when auth resolves: on a cold load this effect fires before the
+    // token exists, and without the dep a fresh login showed no app pages at
+    // all until something happened to re-trigger it.
+  }, [token]);
   const findPage = (id: string | null) =>
     id ? (FUNCTIONAL_PAGES.find(p => p.id === id) ?? appPages.find(p => p.id === id)) : undefined;
+  // An app page can stop existing under you — archived, unshared, or unpinned
+  // in another tab. Both render sites bail with `return null` on a missing
+  // config, which paints an empty panel with no way out, so drop back to the
+  // conversation instead. Guarded on appPages having loaded, or this would
+  // clear a valid page during the first render pass.
+  useEffect(() => {
+    if (!activePage?.startsWith('app:')) return;
+    if (appPages.length === 0) return;
+    if (!appPages.some(p => p.id === activePage)) setActivePage(null);
+  }, [activePage, appPages]);
   const [venues, setVenues] = useState<VenueDetail[]>([]);
   // Shared, persisted "which venue am I looking at" for the functional pages.
   // Page-scoped only — never passed into sendMessage, so conversations keep
@@ -211,6 +236,44 @@ export default function Home() {
       .catch(() => {});
   }, [selectedThreadId]);
 
+  // Poll an open thread whose turn is still running server-side. The load effect
+  // above fetches once, so a thread left `in_progress` — its send's stream cut
+  // (common on mobile, where the OS suspends the tab on screen-lock) while the
+  // backend worker keeps running and commits the answer — never picks that answer
+  // up on its own. Here the answer appears without the user retrying, on any
+  // device, including after reopening the thread later. `loading` gates out the
+  // active send in this tab, which is already streaming/recovering the same turn.
+  useEffect(() => {
+    if (loading) return;
+    if (!selectedThreadId || selectedThreadId.startsWith('_pending_')) return;
+    if (selectedThread?.status !== 'in_progress') return;
+
+    // Let the user know work is still happening while we wait.
+    setThreads(prev => prev.map(t =>
+      t.id === selectedThreadId && !(t.thinking_steps && t.thinking_steps.length)
+        ? { ...t, thinking_steps: ['Still working on this…'] }
+        : t
+    ));
+
+    let cancelled = false;
+    let ticks = 0;
+    const maxTicks = 100; // ~5 min at 3s — comfortably past the backend's own ceiling
+    const id = setInterval(async () => {
+      if (cancelled || ++ticks > maxTicks) { clearInterval(id); return; }
+      try {
+        const res = await apiFetch(`/api/threads/${selectedThreadId}`);
+        if (!res.ok) return;
+        const full: Thread = await res.json();
+        if (threadHasSettledAnswer(full)) {
+          clearInterval(id);
+          if (!cancelled) setThreads(prev => prev.map(t => t.id === selectedThreadId ? full : t));
+        }
+      } catch { /* transient network error — keep polling */ }
+    }, 3000);
+
+    return () => { cancelled = true; clearInterval(id); };
+  }, [selectedThreadId, selectedThread?.status, loading]);
+
   // Thread counts per agent
   const threadCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -276,6 +339,7 @@ export default function Home() {
       setSelectedThreadId(freshThread.id);
     };
     let streamErrored = false;
+    let streamDropped = false;
     let tokenBuffer = '';
     let displayedLength = 0;
     let animFrameId: number | null = null;
@@ -328,6 +392,36 @@ export default function Home() {
             : kept,
         };
       }));
+    };
+
+    // A dropped SSE (e.g. Cloud Run's 300s request timeout cutting the socket)
+    // is recoverable: the backend worker is never cancelled — it keeps running
+    // and commits the answer moments later. Poll the thread until its turn
+    // settles, then show the real answer, instead of the old single racing
+    // re-fetch that usually lost the race and left a false "Something went
+    // wrong" on screen. applyFreshThread only changes the selected thread when
+    // the backend genuinely migrated the conversation, so a plain turn recovers
+    // in place.
+    const recoverByPolling = async (): Promise<boolean> => {
+      if (!realThreadId) return false;
+      const deadline = Date.now() + 60000;
+      let delay = 1200;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, delay));
+        delay = Math.min(Math.round(delay * 1.4), 4000);
+        try {
+          const res = await apiFetch(`/api/threads/${realThreadId}`);
+          if (res.ok) {
+            const fresh: Thread = await res.json();
+            if (threadHasSettledAnswer(fresh)) {
+              stopTypewriter();
+              applyFreshThread(fresh);
+              return true;
+            }
+          }
+        } catch (e) { console.error(e); }
+      }
+      return false;
     };
 
     try {
@@ -415,6 +509,11 @@ export default function Home() {
           } else if (event.type === 'error') {
             console.error('Stream error:', event.message);
             streamErrored = true;
+          } else if (event.type === 'stream_dropped') {
+            // The socket was cut mid-turn (not a real failure). The worker keeps
+            // running server-side; recover by polling for the answer below.
+            console.warn('Stream dropped:', event.message);
+            streamDropped = true;
           }
         },
       );
@@ -437,9 +536,35 @@ export default function Home() {
         };
       };
 
-      // If the stream errored, try to recover by re-fetching the real thread.
-      // realThreadId is set from the thread_created event, so this works for both
-      // new conversations and follow-ups.
+      // A dropped socket is recoverable: poll for the answer the still-running
+      // worker will commit, rather than declaring failure after one racing
+      // re-fetch. Only fall back to a message if polling genuinely exhausts.
+      if (streamDropped) {
+        stopTypewriter();
+        setThreads(prev => prev.map(t =>
+          t.id === currentId ? { ...t, thinking_steps: ['Reconnecting…'] } : t
+        ));
+        const recovered = await recoverByPolling();
+        if (!recovered) {
+          setThreads(prev => prev.map(t =>
+            t.id === currentId
+              ? {
+                  ...t,
+                  thinking_steps: [],
+                  status: t.status === 'in_progress' ? 'completed' : t.status,
+                  conversation: [
+                    ...(t.conversation || []).filter(m => m.role !== 'streaming'),
+                    { role: 'assistant' as const, text: 'The connection dropped while I was working on this. Your message is saved — reopen this chat in a moment to see the answer.' },
+                  ],
+                }
+              : t
+          ));
+        }
+      }
+
+      // A real backend error (or quota) persists a failure note synchronously,
+      // so a single re-fetch recovers it. realThreadId is set from the
+      // thread_created event, so this works for new conversations and follow-ups.
       if (streamErrored && realThreadId) {
         try {
           const res = await apiFetch(`/api/threads/${realThreadId}`);
@@ -467,25 +592,11 @@ export default function Home() {
       }
     } catch (err) {
       console.error('Failed to send message:', err);
-      let recovered = false;
-      if (realThreadId) {
-        try {
-          const res = await apiFetch(`/api/threads/${realThreadId}`);
-          if (res.ok) {
-            const fresh: Thread = await res.json();
-            const conv = fresh.conversation || [];
-            if (!conv.some(m => m.role === 'user' && m.text === messageText)) {
-              fresh.conversation = [
-                ...conv,
-                { role: 'user' as const, text: messageText },
-                { role: 'assistant' as const, text: 'Something went wrong. Please try again.' },
-              ];
-            }
-            applyFreshThread(fresh);
-            recovered = true;
-          }
-        } catch (e) { console.error(e); }
-      }
+      // apiStream threw before a terminal event (network error). Same recovery
+      // as a dropped socket: the worker may still be committing the answer, so
+      // poll for it before giving up.
+      stopTypewriter();
+      const recovered = await recoverByPolling();
       if (!recovered) {
         // No server thread to fall back on (the connection died before
         // thread_created). Keep the optimistic bubble and settle the thread

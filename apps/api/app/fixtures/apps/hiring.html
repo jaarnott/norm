@@ -1,0 +1,241 @@
+<style>
+  :root { --line:#e5e2dc; --muted:#8a8a8a; --ink:#2a2a2a; --green:#2e7d4f; }
+  body { font-size: 13px; }
+  .wrap { max-width: 1150px; margin: 0 auto; padding: 14px 16px 40px; }
+  h1 { font-size: 1.05rem; margin: 0; }
+  .sub { color: var(--muted); font-size: .72rem; }
+  .tabs { display:flex; gap:4px; margin:12px 0 14px; border-bottom:1px solid var(--line); }
+  .tab { border:none; background:none; padding:6px 12px; font:inherit; font-size:.78rem; color:var(--muted);
+         cursor:pointer; border-bottom:2px solid transparent; }
+  .tab[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--green); font-weight:600; }
+  .card { border:1px solid var(--line); border-radius:10px; background:#fff; padding:.7rem .9rem; margin-top:8px; }
+  .row { display:flex; align-items:center; gap:12px; }
+  .grow { flex:1; min-width:0; }
+  .name { font-weight:600; }
+  .pill { font-size:.6rem; padding:1px 7px; border-radius:99px; white-space:nowrap; }
+  .ok { background:#d1fae5; color:#065f46; }
+  .go { background:#fef3c7; color:#92400e; }
+  .no { background:#fee2e2; color:#991b1b; }
+  .off { background:#f3f4f6; color:#6b7280; }
+  button.act { font-size:.7rem; padding:3px 11px; border:1px solid var(--line); border-radius:5px;
+               background:#fff; cursor:pointer; font-family:inherit; color:#555; }
+  button.primary { background:var(--green); color:#fff; border-color:var(--green); }
+  .board { display:flex; gap:10px; overflow-x:auto; padding-bottom:6px; }
+  .col { min-width:210px; flex:0 0 210px; }
+  .colhead { font-size:.64rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted);
+             font-weight:600; padding:0 2px 5px; display:flex; justify-content:space-between; }
+  .cand { border:1px solid var(--line); border-radius:8px; background:#fff; padding:.45rem .6rem;
+          margin-bottom:6px; cursor:pointer; }
+  .cand:hover { border-color:#bbb; }
+  .cand .who { font-size:.76rem; font-weight:600; }
+  select { font:inherit; font-size:.7rem; padding:2px 5px; border:1px solid var(--line); border-radius:5px; }
+  .empty { border:1px dashed var(--line); border-radius:10px; padding:26px; text-align:center; color:var(--muted); }
+  .back { font-size:.7rem; color:#6b6b6b; background:none; border:none; cursor:pointer; padding:0; font-family:inherit; }
+  .kv { display:flex; gap:8px; font-size:.74rem; padding:2px 0; }
+  .kv b { min-width:120px; color:var(--muted); font-weight:600; font-size:.68rem; }
+  .feed { font-size:.72rem; color:#555; padding:3px 0; border-bottom:1px solid #f4f2ee; }
+  .err { color:#b91c1c; font-size:.75rem; }
+  textarea { width:100%; font:inherit; font-size:.75rem; border:1px solid var(--line); border-radius:6px;
+             padding:6px; box-sizing:border-box; }
+</style>
+
+<div class="wrap">
+  <h1>Hiring</h1>
+  <div class="sub" id="scope">—</div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-view="jobs" aria-selected="true">Openings</button>
+    <button class="tab" role="tab" data-view="pool" aria-selected="false">Talent pool</button>
+  </div>
+
+  <div id="body"><div class="sub">Loading…</div></div>
+</div>
+
+<script>
+(function () {
+  var ctx = null, view = 'jobs';
+  var body = document.getElementById('body');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function run(op, extra) {
+    var p = { op: op, actor: 'Norm' };
+    for (var k in (extra || {})) p[k] = extra[k];
+    return norm.run(p).then(function (d) {
+      if (d && d.error) throw new Error(d.error);
+      return d;
+    });
+  }
+  function loading() { body.innerHTML = '<div class="sub">Loading…</div>'; }
+  function fail(e) { body.innerHTML = '<div class="card err">' + esc(e && e.message ? e.message : e) + '</div>'; }
+
+  function statusPill(s) {
+    var cls = s === 'hired' ? 'ok' : (s === 'rejected' ? 'no' : 'go');
+    return '<span class="pill ' + cls + '">' + esc(s || 'active') + '</span>';
+  }
+
+  // ---- Openings ----------------------------------------------------------
+  function showJobs() {
+    loading();
+    run('board').then(function (d) {
+      var jobs = d.jobs || [];
+      if (!jobs.length) { body.innerHTML = '<div class="empty">No job openings yet.</div>'; return; }
+      body.innerHTML = jobs.map(function (j) {
+        return '<div class="card row">' +
+          '<div class="grow" style="cursor:pointer" data-job="' + esc(j.id) + '">' +
+            '<div class="row" style="gap:8px">' +
+              '<span class="name">' + esc(j.title) + '</span>' +
+              '<span class="pill ' + (j.status === 'open' ? 'ok' : 'off') + '">' + esc(j.status || 'draft') + '</span>' +
+              (j.is_published ? '<span class="pill off">published</span>' : '') +
+            '</div>' +
+            '<div class="sub">' + j.application_count + ' applicant' + (j.application_count === 1 ? '' : 's') +
+              ' · ' + j.active_count + ' active · ' + j.hired_count + ' hired' +
+              (j.employment_type ? ' · ' + esc(j.employment_type.replace('_', ' ')) : '') + '</div>' +
+          '</div>' +
+          '<button class="act" data-job="' + esc(j.id) + '">Pipeline</button>' +
+        '</div>';
+      }).join('');
+      body.querySelectorAll('[data-job]').forEach(function (el) {
+        el.addEventListener('click', function () { showPipeline(el.getAttribute('data-job')); });
+      });
+    }).catch(fail);
+  }
+
+  // ---- One job's pipeline -------------------------------------------------
+  function showPipeline(jobId) {
+    loading();
+    run('pipeline', { job_id: jobId }).then(function (d) {
+      var stages = d.stages || [];
+      var cols = stages.map(function (s) {
+        var cards = (s.applications || []).map(function (a) {
+          return '<div class="cand" data-app="' + esc(a.id) + '">' +
+            '<div class="who">' + esc(a.candidate_name) + '</div>' +
+            '<div class="sub">' + esc(a.source || 'manual') +
+              (a.knockout_flag ? ' · <span class="pill no">knockout</span>' : '') + '</div>' +
+          '</div>';
+        }).join('');
+        return '<div class="col">' +
+          '<div class="colhead"><span>' + esc(s.name) + '</span><span>' + (s.applications || []).length + '</span></div>' +
+          (cards || '<div class="sub" style="padding:2px">—</div>') +
+        '</div>';
+      }).join('');
+      body.innerHTML =
+        '<button class="back" id="back">← All openings</button>' +
+        '<div class="card"><div class="name">' + esc(d.job.title) + '</div>' +
+        '<div class="sub">' + esc(d.job.department || '') +
+          (d.job.positions_to_fill ? ' · ' + d.job.positions_filled + '/' + d.job.positions_to_fill + ' filled' : '') +
+        '</div></div>' +
+        '<div class="board" style="margin-top:10px">' + cols + '</div>';
+      document.getElementById('back').addEventListener('click', showJobs);
+      body.querySelectorAll('[data-app]').forEach(function (el) {
+        el.addEventListener('click', function () { showCandidate(el.getAttribute('data-app'), jobId); });
+      });
+    }).catch(fail);
+  }
+
+  // ---- One candidate ------------------------------------------------------
+  function showCandidate(applicationId, jobId) {
+    loading();
+    run('candidate', { application_id: applicationId }).then(function (d) {
+      var a = d.application, c = d.candidate;
+      var options = (d.stages || []).map(function (s) {
+        return '<option value="' + esc(s.id) + '"' + (s.id === a.stage_id ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+      }).join('');
+      var answers = (d.answers || []).map(function (x) {
+        return '<div class="kv"><b>' + esc(x.label || x.field_key) + '</b><span>' + esc(x.value) + '</span></div>';
+      }).join('') || '<div class="sub">No application answers.</div>';
+      var notes = (d.notes || []).map(function (n) {
+        return '<div class="feed">' + esc(n.body) + ' <span class="sub">— ' + esc(n.author || '') + '</span></div>';
+      }).join('') || '<div class="sub">No notes yet.</div>';
+      var feed = (d.activity || []).map(function (x) {
+        return '<div class="feed">' + esc(x.summary) + ' <span class="sub">' + esc((x.at || '').slice(0, 16).replace('T', ' ')) + '</span></div>';
+      }).join('') || '<div class="sub">Nothing yet.</div>';
+
+      body.innerHTML =
+        '<button class="back" id="back">← Pipeline</button>' +
+        '<div class="card"><div class="row">' +
+          '<div class="grow"><div class="name">' + esc(c.name) + '</div>' +
+          '<div class="sub">' + esc(c.email || '') + (c.phone ? ' · ' + esc(c.phone) : '') + '</div></div>' +
+          statusPill(a.status) +
+        '</div>' +
+        '<div class="row" style="margin-top:10px;gap:8px">' +
+          '<select id="stage">' + options + '</select>' +
+          '<button class="act" id="move">Move</button>' +
+          (a.status === 'hired' ? '' :
+            '<select id="hire-role" title="role on the team">' +
+              '<option value="team_member">Team member</option>' +
+              '<option value="manager">Manager</option>' +
+              '<option value="head_office">Head office</option>' +
+            '</select>' +
+            '<input type="date" id="hire-start" title="start date" style="font:inherit;font-size:.7rem;padding:2px 5px;border:1px solid var(--line);border-radius:5px">' +
+            '<button class="act primary" id="hire">Hire</button>') +
+          (a.person_id ? '<span class="sub">on the team — Training can enrol them</span>' : '') +
+        '</div></div>' +
+        '<div class="card"><div class="name" style="font-size:.78rem">Application</div>' + answers + '</div>' +
+        '<div class="card"><div class="name" style="font-size:.78rem">Notes</div>' + notes +
+          '<textarea id="note" rows="2" placeholder="Add a note…" style="margin-top:6px"></textarea>' +
+          '<button class="act" id="addnote" style="margin-top:5px">Add note</button></div>' +
+        '<div class="card"><div class="name" style="font-size:.78rem">Activity</div>' + feed + '</div>';
+
+      document.getElementById('back').addEventListener('click', function () { showPipeline(jobId); });
+      document.getElementById('move').addEventListener('click', function () {
+        run('move', { application_id: applicationId, stage_id: document.getElementById('stage').value })
+          .then(function () { showCandidate(applicationId, jobId); }).catch(fail);
+      });
+      var hire = document.getElementById('hire');
+      if (hire) hire.addEventListener('click', function () {
+        // The op has always accepted these; the UI never sent them, so every
+        // hire landed as a team member with no start date.
+        run('hire', {
+          application_id: applicationId,
+          venue_id: ctx && ctx.venueId,
+          role: document.getElementById('hire-role').value,
+          start_date: document.getElementById('hire-start').value || null,
+        }).then(function () { showCandidate(applicationId, jobId); }).catch(fail);
+      });
+      document.getElementById('addnote').addEventListener('click', function () {
+        var body_ = document.getElementById('note').value;
+        if (!body_.trim()) return;
+        run('note', { application_id: applicationId, body: body_ })
+          .then(function () { showCandidate(applicationId, jobId); }).catch(fail);
+      });
+    }).catch(fail);
+  }
+
+  // ---- Talent pool --------------------------------------------------------
+  function showPool() {
+    loading();
+    run('talent_pool').then(function (d) {
+      var rows = d.candidates || [];
+      if (!rows.length) { body.innerHTML = '<div class="empty">Nobody in the talent pool yet.</div>'; return; }
+      body.innerHTML = rows.map(function (c) {
+        return '<div class="card row"><div class="grow">' +
+          '<div class="name">' + esc(c.name) + '</div>' +
+          '<div class="sub">' + esc(c.email || '') + (c.talent_pool_note ? ' · ' + esc(c.talent_pool_note) : '') + '</div>' +
+        '</div></div>';
+      }).join('');
+    }).catch(fail);
+  }
+
+  function render() { view === 'pool' ? showPool() : showJobs(); }
+
+  document.querySelectorAll('.tab').forEach(function (t) {
+    t.addEventListener('click', function () {
+      view = t.getAttribute('data-view');
+      document.querySelectorAll('.tab').forEach(function (x) { x.setAttribute('aria-selected', String(x === t)); });
+      render();
+    });
+  });
+
+  norm.onReady(function (c) {
+    ctx = c;
+    var v = (c.venues || []).find(function (x) { return x.id === c.venueId; });
+    document.getElementById('scope').textContent =
+      'Openings across the group' + (v ? ' · hiring into ' + v.name : '');
+    render();
+  });
+})();
+</script>

@@ -121,7 +121,9 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   // HR (Hiring & Onboarding)
   {
     id: 'hiring',
-    label: 'Hiring',
+    // Disambiguated from the Hiring APP, which now sits in this same menu and
+    // supersedes this page. Two entries both reading 'Hiring' is a coin toss.
+    label: 'Hiring (BambooHR)',
     icon: Users,
     agent: 'hr',
     component: 'hiring_board',
@@ -268,13 +270,18 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
  * A PINNED app as a page config. Dynamic — built from /api/apps at runtime —
  * so it lives beside the static list rather than in it. The id is namespaced
  * (`app:<slug>`) so it can never collide with a static page id.
+ *
+ * Which agent's menu it joins comes from the app itself.
  */
-export function appPageConfig(app: { slug: string; name: string; icon?: string | null }): FunctionalPageConfig {
+export function appPageConfig(app: { slug: string; name: string; icon?: string | null; agent?: string | null }): FunctionalPageConfig {
   return {
     id: `app:${app.slug}`,
     label: app.icon ? `${app.icon} ${app.name}` : app.name,
     icon: Blocks,
-    agent: 'app_builder',
+    // The app says which menu it belongs to — an HR app's pages sit beside
+    // Hiring and Tasks, not off in a separate destination. Falling back to the
+    // App Builder keeps every app that predates the choice exactly where it was.
+    agent: app.agent || 'app_builder',
     component: 'app_runner',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
     componentProps: { slug: app.slug },

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -174,6 +174,9 @@ async def list_apps(
                 "mine": app.created_by == user.id,
                 "access": access.role,
                 "pinned": app.slug in pinned,
+                # Where this app's pages live. Defaulted here rather than in
+                # the column so existing apps keep their old home.
+                "agent": app.agent or "app_builder",
             }
         )
     return {"apps": out}
@@ -202,6 +205,7 @@ async def get_app(
         "name": app.name,
         "description": app.description,
         "icon": app.icon,
+        "agent": app.agent or "app_builder",
         "purpose": app.purpose,
         "visibility": app.visibility,
         "access": access.role,
@@ -222,6 +226,8 @@ class SaveRequest(BaseModel):
     slug: str | None = None
     description: str | None = None
     icon: str | None = None
+    #: Which agent's menu this app's pages join. Omit for the App Builder.
+    agent: str | None = None
     purpose: str | None = None
     spec: dict
     ui_source: str | None = None
@@ -482,3 +488,269 @@ async def pin_app(
     flag_modified(user, "dashboard_preferences")
     db.commit()
     return {"pinned": app.slug in pins}
+
+
+# ---------------------------------------------------------------------------
+# Storage — an app's own rows.
+#
+# Thin like everything else here: `app_runtime.store_*` holds the rules, these
+# endpoints resolve the app and hand over. Note the collection is a PATH
+# segment, so an app that never declared it is refused by name rather than
+# quietly returning nothing.
+# ---------------------------------------------------------------------------
+
+
+class RecordQuery(BaseModel):
+    where: dict | None = None
+    venue_id: str | None = None
+    include_global: bool = True
+    order_by: str | None = None
+    descending: bool = False
+    limit: int = 200
+    offset: int = 0
+    #: Ask for the count instead of the rows — so a caller does not have to
+    #: fetch a whole collection to say how big it is.
+    count_only: bool = False
+
+
+class RecordBody(BaseModel):
+    data: dict
+    venue_id: str | None = None
+
+
+@router.post("/apps/{slug}/records/{collection}/query")
+async def app_records_query(
+    slug: str,
+    collection: str,
+    body: RecordQuery,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """A POST because a query carries a body, not because it changes anything —
+    the door audits it as a read."""
+    from app.services.app_runtime import store_count, store_list
+
+    app, version = _load(db, slug, user)
+    if body.count_only:
+        return {
+            "count": store_count(
+                db,
+                app=app,
+                version=version,
+                user=user,
+                collection=collection,
+                where=body.where,
+                venue_id=body.venue_id,
+                include_global=body.include_global,
+            )
+        }
+    return {
+        "records": store_list(
+            db,
+            app=app,
+            version=version,
+            user=user,
+            collection=collection,
+            where=body.where,
+            venue_id=body.venue_id,
+            include_global=body.include_global,
+            order_by=body.order_by,
+            descending=body.descending,
+            limit=body.limit,
+            offset=body.offset,
+        )
+    }
+
+
+@router.get("/apps/{slug}/records/{collection}/{record_id}")
+async def app_record_get(
+    slug: str,
+    collection: str,
+    record_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.app_runtime import store_get
+
+    app, version = _load(db, slug, user)
+    return store_get(
+        db,
+        app=app,
+        version=version,
+        user=user,
+        collection=collection,
+        record_id=record_id,
+    )
+
+
+@router.post("/apps/{slug}/records/{collection}")
+async def app_record_create(
+    slug: str,
+    collection: str,
+    body: RecordBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.app_runtime import store_put
+
+    app, version = _load(db, slug, user)
+    out = store_put(
+        db,
+        app=app,
+        version=version,
+        user=user,
+        collection=collection,
+        data=body.data,
+        venue_id=body.venue_id,
+    )
+    db.commit()
+    return out
+
+
+@router.put("/apps/{slug}/records/{collection}/{record_id}")
+async def app_record_update(
+    slug: str,
+    collection: str,
+    record_id: str,
+    body: RecordBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.app_runtime import store_put
+
+    app, version = _load(db, slug, user)
+    out = store_put(
+        db,
+        app=app,
+        version=version,
+        user=user,
+        collection=collection,
+        record_id=record_id,
+        data=body.data,
+        venue_id=body.venue_id,
+    )
+    db.commit()
+    return out
+
+
+@router.delete("/apps/{slug}/records/{collection}/{record_id}")
+async def app_record_delete(
+    slug: str,
+    collection: str,
+    record_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.app_runtime import store_delete
+
+    app, version = _load(db, slug, user)
+    out = store_delete(
+        db,
+        app=app,
+        version=version,
+        user=user,
+        collection=collection,
+        record_id=record_id,
+    )
+    db.commit()
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Files — bytes an app owns.
+#
+# Deliberately NOT a public URL. Orbit's evidence lived in a world-readable
+# bucket, so anyone who ever saw a link kept access forever; here every fetch
+# re-runs the same guard the record itself gets.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/apps/{slug}/files/{collection}")
+async def app_file_upload(
+    slug: str,
+    collection: str,
+    file: UploadFile = File(...),
+    record_id: str | None = Form(None),
+    venue_id: str | None = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.app_runtime import file_put
+
+    app, version = _load(db, slug, user)
+    out = file_put(
+        db,
+        app=app,
+        version=version,
+        user=user,
+        collection=collection,
+        record_id=record_id,
+        filename=file.filename or "file",
+        content_type=file.content_type,
+        data=await file.read(),
+        venue_id=venue_id,
+    )
+    db.commit()
+    return out
+
+
+@router.get("/apps/{slug}/files/{collection}")
+async def app_file_list(
+    slug: str,
+    collection: str,
+    record_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.app_runtime import file_list
+
+    app, version = _load(db, slug, user)
+    return {
+        "files": file_list(
+            db,
+            app=app,
+            version=version,
+            user=user,
+            collection=collection,
+            record_id=record_id,
+        )
+    }
+
+
+@router.get("/apps/{slug}/file/{file_id}")
+async def app_file_download(
+    slug: str,
+    file_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.app_runtime import file_fetch
+
+    app, version = _load(db, slug, user)
+    row = file_fetch(db, app=app, version=version, user=user, file_id=file_id)
+    db.commit()
+    return Response(
+        content=row.data,
+        media_type=row.content_type or "application/octet-stream",
+        headers={
+            # `inline` so a photo of a signed checklist opens rather than
+            # downloads; the filename is quoted because staff name files freely.
+            "Content-Disposition": f'inline; filename="{row.filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.delete("/apps/{slug}/file/{file_id}")
+async def app_file_delete(
+    slug: str,
+    file_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.app_runtime import file_delete
+
+    app, version = _load(db, slug, user)
+    out = file_delete(db, app=app, version=version, user=user, file_id=file_id)
+    db.commit()
+    return out

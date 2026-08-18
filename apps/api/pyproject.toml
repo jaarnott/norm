@@ -44,3 +44,12 @@ dev = [
     "httpx>=0.27.0",
     "ruff>=0.15.7",
 ]
+
+[tool.ruff]
+# Fixture apps are SANDBOX sources, not application code: they are exec'd by
+# connectors/function_executor with `store`, `call_api` and `log` injected into
+# the namespace, so a static reader cannot see where those names come from.
+# (The other sandbox sources, config/consolidators/, avoid this only by living
+# outside app/ and therefore outside the lint path.)
+[tool.ruff.lint.per-file-ignores]
+"app/fixtures/apps/*.py" = ["F821"]

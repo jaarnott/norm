@@ -1,0 +1,414 @@
+<style>
+  :root { --line:#e5e2dc; --muted:#8a8a8a; --ink:#2a2a2a; --green:#2e7d4f; --amber:#b45309; }
+  body { font-size: 13px; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 14px 16px 40px; }
+  h1 { font-size: 1.05rem; margin: 0; }
+  .sub { color: var(--muted); font-size: .72rem; }
+  .tabs { display:flex; gap:4px; margin:12px 0 14px; border-bottom:1px solid var(--line); }
+  .tab { border:none; background:none; padding:6px 12px; font:inherit; font-size:.78rem; color:var(--muted);
+         cursor:pointer; border-bottom:2px solid transparent; }
+  .tab[aria-selected="true"] { color:var(--ink); border-bottom-color: var(--green); font-weight:600; }
+  .card { border:1px solid var(--line); border-radius:10px; background:#fff; padding:.7rem .9rem; margin-top:8px; }
+  .row { display:flex; align-items:center; gap:12px; }
+  .grow { flex:1; min-width:0; }
+  .name { font-weight:600; }
+  .pill { font-size:.6rem; padding:1px 7px; border-radius:99px; white-space:nowrap; }
+  .ok { background:#d1fae5; color:#065f46; }
+  .go { background:#fef3c7; color:#92400e; }
+  .off { background:#f3f4f6; color:#6b7280; }
+  button.act { font-size:.7rem; padding:3px 11px; border:1px solid var(--line); border-radius:5px;
+               background:#fff; cursor:pointer; font-family:inherit; color:#555; }
+  button.act:hover { border-color:#bbb; }
+  button.primary { background:var(--green); color:#fff; border-color:var(--green); }
+  table { border-collapse:collapse; width:100%; font-size:.75rem; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid #f0eee9; vertical-align:top; }
+  th { font-size:.62rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
+  .matrix { overflow-x:auto; }
+  .matrix th.person, .matrix td.person { position:sticky; left:0; background:#fff; min-width:150px; }
+  .matrix td { text-align:center; min-width:120px; }
+  .inst { font-size:.58rem; color:var(--muted); display:block; }
+  .dash { color:#cbd5e1; }
+  .empty { border:1px dashed var(--line); border-radius:10px; padding:26px; text-align:center; color:var(--muted); }
+  .back { font-size:.7rem; color:#6b6b6b; background:none; border:none; cursor:pointer; padding:0; font-family:inherit; }
+  .tree { margin-left:2px; }
+  .mod { border-left:2px solid var(--line); padding-left:10px; margin:8px 0; }
+  .sec { color:#555; margin:3px 0 3px 8px; font-size:.74rem; }
+  .item { color:var(--muted); margin-left:20px; font-size:.7rem; }
+  .err { color:#b91c1c; font-size:.75rem; }
+  input[type=text], input[type=number], textarea, select {
+    font:inherit; font-size:.75rem; border:1px solid var(--line); border-radius:6px;
+    padding:4px 7px; box-sizing:border-box; background:#fff; }
+  input[type=text]:focus, textarea:focus { outline:1px solid #cbd5e1; }
+  .field { display:flex; align-items:center; gap:8px; margin:5px 0; }
+  .field label { font-size:.66rem; color:var(--muted); min-width:118px; font-weight:600;
+                 text-transform:uppercase; letter-spacing:.03em; }
+  .modhead { display:flex; align-items:center; gap:8px; }
+  .tiny { font-size:.62rem; padding:1px 7px; }
+  .danger { color:#b91c1c; border-color:#f0d0d0; }
+  .addrow { display:flex; gap:6px; margin-top:6px; align-items:center; }
+</style>
+
+<div class="wrap">
+  <div class="row">
+    <div class="grow">
+      <h1>Training</h1>
+      <div class="sub" id="scope">—</div>
+    </div>
+  </div>
+
+  <div class="row" style="justify-content:space-between">
+    <div class="tabs" role="tablist" style="margin-bottom:0;border:none">
+      <button class="tab" role="tab" data-view="programs" aria-selected="true">Programs</button>
+      <button class="tab" role="tab" data-view="tracker" aria-selected="false">Tracker</button>
+    </div>
+    <button class="act primary" id="newprog">+ New program</button>
+  </div>
+  <div style="border-bottom:1px solid var(--line);margin:0 0 14px"></div>
+
+  <div id="body"><div class="sub">Loading…</div></div>
+</div>
+
+<script>
+(function () {
+  var ctx = null, view = 'programs', state = {};
+  var body = document.getElementById('body');
+
+  // Orbit stores lucide icon NAMES ('beer', 'chef-hat'), so rendering the
+  // field raw printed "beer Bar Team Training". Map the ones actually in use
+  // and fall through to a book for anything unrecognised — never the raw name.
+  var ICONS = {
+    'beer': '🍺', 'wine': '🍷', 'martini': '🍸', 'coffee': '☕', 'utensils': '🍽️',
+    'salad': '🥗', 'chef-hat': '👨‍🍳', 'flame': '🔥', 'soup': '🍲', 'cake': '🍰',
+    'graduation-cap': '🎓', 'book': '📘', 'book-open': '📖', 'award': '🏅',
+    'star': '⭐', 'sparkles': '✨', 'crown': '👑', 'rocket': '🚀', 'target': '🎯',
+    'handshake': '🤝', 'users': '👥', 'user-check': '🙋', 'shield': '🛡️',
+    'wrench': '🔧', 'hammer': '🔨', 'key': '🔑', 'clipboard': '📋',
+    'clipboard-check': '☑️', 'calendar': '📅', 'clock': '⏰', 'truck': '🚚',
+    'box': '📦', 'chart-bar': '📊', 'dollar-sign': '💵', 'heart': '❤️',
+    'lightbulb': '💡', 'music': '🎵', 'phone': '📞', 'mail': '✉️', 'lock': '🔒',
+  };
+  function icon(value) {
+    var v = String(value || '').trim();
+    if (!v) return '📘';
+    // Already an emoji (anything outside ASCII) — use it as-is.
+    if (/[^\x00-\x7F]/.test(v)) return v;
+    return ICONS[v.toLowerCase()] || '📘';
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function run(op, extra) {
+    var p = { op: op, venues: (ctx && ctx.venues) || [] };
+    for (var k in (extra || {})) p[k] = extra[k];
+    return norm.run(p).then(function (d) {
+      // Ops return failures as data, so a caller that does not look at
+      // `error` silently shows a blank screen instead of the reason.
+      if (d && d.error) throw new Error(d.error);
+      return d;
+    });
+  }
+  function loading() { body.innerHTML = '<div class="sub">Loading…</div>'; }
+  function fail(e) {
+    body.innerHTML = '<div class="card err">' + esc(e && e.message ? e.message : e) + '</div>';
+  }
+
+  // ---- Programs ----------------------------------------------------------
+  function showPrograms() {
+    loading();
+    run('overview').then(function (d) {
+      var rows = d.programs || [];
+      if (!rows.length) {
+        body.innerHTML = '<div class="empty">No training programs yet.</div>';
+        return;
+      }
+      body.innerHTML = rows.map(function (p) {
+        var done = p.assignment_count
+          ? Math.round((p.completed_count / p.assignment_count) * 100) : 0;
+        return '<div class="card row">' +
+          '<div class="grow" style="cursor:pointer" data-open="' + esc(p.id) + '">' +
+            '<div class="row" style="gap:8px">' +
+              '<span class="name">' + icon(p.icon) + ' ' + esc(p.name) + '</span>' +
+              (p.is_active === false ? '<span class="pill off">Inactive</span>' : '') +
+              (p.requires_plan ? '<span class="pill off">Plan-led</span>' : '') +
+            '</div>' +
+            '<div class="sub">' + p.module_count + ' module' + (p.module_count === 1 ? '' : 's') +
+              ' · ' + p.assignment_count + ' enrolled' +
+              (p.assignment_count ? ' · ' + done + '% complete' : '') + '</div>' +
+          '</div>' +
+          '<button class="act" data-open="' + esc(p.id) + '">Open</button>' +
+        '</div>';
+      }).join('');
+      body.querySelectorAll('[data-open]').forEach(function (el) {
+        el.addEventListener('click', function () { showProgram(el.getAttribute('data-open')); });
+      });
+    }).catch(fail);
+  }
+
+  // ---- One program: structure + who is on it ------------------------------
+  function showProgram(id) {
+    loading();
+    Promise.all([run('program', { program_id: id }), run('enrollments', { program_id: id })])
+      .then(function (res) {
+        var d = res[0], e = res[1], p = d.program || {};
+        state.program = p;
+        var secsByModule = {}, itemsBySection = {};
+        (d.sections || []).forEach(function (s) {
+          (secsByModule[s.module_id] = secsByModule[s.module_id] || []).push(s);
+        });
+        (d.content || []).forEach(function (c) {
+          (itemsBySection[c.section_id] = itemsBySection[c.section_id] || []).push(c);
+        });
+
+        var tree = (d.modules || []).map(function (m, i) {
+          var secs = (secsByModule[m.id] || []).map(function (s) {
+            var items = (itemsBySection[s.id] || []).map(function (c) {
+              return '<div class="item">· ' + esc(c.title) +
+                ' <span class="sub">' + esc(c.content_type || '') + '</span>' +
+                ' <button class="act tiny danger" data-delc="' + esc(c.id) + '">×</button></div>';
+            }).join('');
+            return '<div class="sec"><span>' + esc(s.name || 'Section') + '</span>' +
+                ' <span class="pill off">' + esc(s.section_type || 'online') + '</span>' +
+                ' <button class="act tiny danger" data-dels="' + esc(s.id) + '">×</button></div>' +
+              items +
+              '<div class="addrow" style="margin-left:20px">' +
+                '<input type="text" placeholder="Add content…" data-newc="' + esc(s.id) + '" style="flex:1;max-width:260px">' +
+                '<select data-newctype="' + esc(s.id) + '">' +
+                  '<option value="rich_text">text</option><option value="video">video</option>' +
+                  '<option value="quiz">quiz</option><option value="file_upload">upload</option>' +
+                '</select>' +
+                '<button class="act tiny" data-addc="' + esc(s.id) + '">Add</button>' +
+              '</div>';
+          }).join('');
+          return '<div class="mod">' +
+            '<div class="modhead">' +
+              '<span class="name" style="font-size:.78rem">' + (i + 1) + '.</span>' +
+              '<input type="text" data-mod="' + esc(m.id) + '" value="' + esc(m.name || '') + '" style="flex:1;max-width:320px">' +
+              '<label class="sub" style="display:inline-flex;gap:4px;align-items:center">' +
+                '<input type="checkbox" data-modsign="' + esc(m.id) + '"' + (m.requires_signoff ? ' checked' : '') + '> sign-off</label>' +
+              '<button class="act tiny danger" data-delm="' + esc(m.id) + '">×</button>' +
+            '</div>' +
+            (secs || '<div class="item">no sections</div>') +
+            '<div class="addrow" style="margin-left:8px">' +
+              '<select data-newstype="' + esc(m.id) + '">' +
+                '<option value="online">online</option><option value="on_shift">on-shift</option>' +
+                '<option value="shift_exercise">exercise</option>' +
+              '</select>' +
+              '<input type="text" placeholder="Section name (optional)" data-news="' + esc(m.id) + '" style="flex:1;max-width:240px">' +
+              '<button class="act tiny" data-adds="' + esc(m.id) + '">+ Section</button>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+
+        var enrolled = (e.assignments || []).map(function (a) {
+          var cls = a.status === 'completed' ? 'ok' : (a.status === 'in_progress' ? 'go' : 'off');
+          return '<tr><td>' + esc(a.person_name) +
+            (a.instance ? '<span class="inst">' + esc(a.instance) + '</span>' : '') + '</td>' +
+            '<td>' + esc(a.person_role || '') + '</td>' +
+            '<td>' + esc(a.due_date || '') + '</td>' +
+            '<td><span class="pill ' + cls + '">' + esc(a.status || 'assigned') + '</span></td>' +
+            '<td style="text-align:right">' +
+              (a.status === 'completed'
+                ? '<button class="act" data-reopen="' + esc(a.id) + '">Reopen</button>'
+                : '<button class="act primary" data-done="' + esc(a.id) + '">Mark complete</button>') +
+            '</td></tr>';
+        }).join('');
+
+        body.innerHTML =
+          '<button class="back" id="back">← All programs</button>' +
+          '<div class="card">' +
+            '<div class="field"><label>Name</label>' +
+              '<input type="text" id="f-name" style="flex:1" value="' + esc(p.name || '') + '"></div>' +
+            '<div class="field"><label>Icon</label>' +
+              '<input type="text" id="f-icon" style="width:70px" value="' + esc(p.icon || '') + '">' +
+              '<span class="sub">' + icon(p.icon) + ' — an emoji, or a lucide name like "chef-hat"</span></div>' +
+            '<div class="field"><label>Description</label>' +
+              '<input type="text" id="f-desc" style="flex:1" value="' + esc(p.description || '') + '"></div>' +
+            '<div class="field"><label>Due within</label>' +
+              '<input type="number" id="f-due" style="width:80px" min="0" value="' +
+                (p.default_due_days == null ? '' : esc(p.default_due_days)) + '">' +
+              '<span class="sub">days after enrolling — blank means no due date</span></div>' +
+            '<div class="field"><label>Active</label>' +
+              '<input type="checkbox" id="f-active"' + (p.is_active === false ? '' : ' checked') + '></div>' +
+            '<div class="field"><label>Plan-led</label>' +
+              '<input type="checkbox" id="f-plan"' + (p.requires_plan ? ' checked' : '') + '>' +
+              '<span class="sub">scheduled with a trainer instead of self-paced</span></div>' +
+            '<div class="row" style="margin-top:8px">' +
+              '<button class="act primary" id="saveprog">Save</button>' +
+              '<span class="sub" id="saved"></span>' +
+              '<span class="grow"></span>' +
+              '<button class="act danger tiny" id="delprog">Delete program</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Structure</div>' +
+            '<button class="act" id="addmod">+ Module</button></div>' +
+            '<div class="tree" style="margin-top:8px">' + (tree || '<div class="sub">No modules yet — add one.</div>') + '</div></div>' +
+          '<div class="card"><div class="name" style="font-size:.8rem;margin-bottom:6px">Enrolled</div>' +
+          (enrolled
+            ? '<table><thead><tr><th>Person</th><th>Role</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>' + enrolled + '</tbody></table>'
+            : '<div class="sub">Nobody is enrolled yet.</div>') +
+          '</div>';
+
+        document.getElementById('back').addEventListener('click', showPrograms);
+        var reload = function () { showProgram(id); };
+        function act(op, extra) { return run(op, extra).then(reload).catch(fail); }
+
+        document.getElementById('saveprog').addEventListener('click', function () {
+          var due = document.getElementById('f-due').value;
+          run('save_program', { program_id: id, fields: {
+            name: document.getElementById('f-name').value,
+            icon: document.getElementById('f-icon').value || null,
+            description: document.getElementById('f-desc').value || null,
+            default_due_days: due === '' ? null : Number(due),
+            is_active: document.getElementById('f-active').checked,
+            requires_plan: document.getElementById('f-plan').checked,
+          }}).then(function (r) {
+            if (r.error) { fail(r.error); return; }
+            document.getElementById('saved').textContent = 'Saved';
+            setTimeout(function () {
+              var el = document.getElementById('saved'); if (el) el.textContent = '';
+            }, 1500);
+          }).catch(fail);
+        });
+        document.getElementById('delprog').addEventListener('click', function () {
+          // Everything below a program goes with it — enrolments and their
+          // completions included — so this asks first.
+          if (!confirm('Delete "' + (p.name || 'this program') +
+                       '" and every enrolment, completion and plan on it?')) return;
+          run('delete_program', { program_id: id }).then(showPrograms).catch(fail);
+        });
+        document.getElementById('addmod').addEventListener('click', function () {
+          act('add_module', { program_id: id });
+        });
+
+        body.querySelectorAll('[data-mod]').forEach(function (el) {
+          el.addEventListener('change', function () {
+            run('update_module', { module_id: el.getAttribute('data-mod'),
+              fields: { name: el.value } }).catch(fail);
+          });
+        });
+        body.querySelectorAll('[data-modsign]').forEach(function (el) {
+          el.addEventListener('change', function () {
+            act('update_module', { module_id: el.getAttribute('data-modsign'),
+              fields: { requires_signoff: el.checked } });
+          });
+        });
+        body.querySelectorAll('[data-delm]').forEach(function (el) {
+          el.addEventListener('click', function () {
+            if (!confirm('Delete this module, its sections and their content?')) return;
+            act('delete_module', { module_id: el.getAttribute('data-delm') });
+          });
+        });
+        body.querySelectorAll('[data-adds]').forEach(function (el) {
+          el.addEventListener('click', function () {
+            var mid = el.getAttribute('data-adds');
+            act('add_section', {
+              module_id: mid,
+              section_type: body.querySelector('[data-newstype="' + mid + '"]').value,
+              name: body.querySelector('[data-news="' + mid + '"]').value || null,
+            });
+          });
+        });
+        body.querySelectorAll('[data-dels]').forEach(function (el) {
+          el.addEventListener('click', function () {
+            if (!confirm('Delete this section and its content? Any scheduled plan dates for it go too.')) return;
+            act('delete_section', { section_id: el.getAttribute('data-dels') });
+          });
+        });
+        body.querySelectorAll('[data-addc]').forEach(function (el) {
+          el.addEventListener('click', function () {
+            var sid = el.getAttribute('data-addc');
+            var title = body.querySelector('[data-newc="' + sid + '"]').value;
+            if (!title.trim()) return;
+            act('add_content', { section_id: sid, title: title,
+              content_type: body.querySelector('[data-newctype="' + sid + '"]').value });
+          });
+        });
+        body.querySelectorAll('[data-delc]').forEach(function (el) {
+          el.addEventListener('click', function () {
+            act('delete_content', { content_id: el.getAttribute('data-delc') });
+          });
+        });
+        body.querySelectorAll('[data-done]').forEach(function (el) {
+          el.addEventListener('click', function () { setStatus(el.getAttribute('data-done'), 'completed', id); });
+        });
+        body.querySelectorAll('[data-reopen]').forEach(function (el) {
+          el.addEventListener('click', function () { setStatus(el.getAttribute('data-reopen'), 'assigned', id); });
+        });
+      }).catch(fail);
+  }
+
+  // Admin-side completion. Without it nothing in an admin-only build could
+  // ever reach 'complete' — the trainee experience is what moves an
+  // assignment in the source system, and that is deliberately not here yet.
+  function setStatus(assignmentId, status, programId) {
+    // Through the op, not a read-modify-write from the browser: two people on
+    // the same assignment used to silently lose one of the two edits.
+    run('set_assignment_status', { assignment_id: assignmentId, status: status })
+      .then(function () { showProgram(programId); }).catch(fail);
+  }
+
+  // ---- Tracker -----------------------------------------------------------
+  function showTracker() {
+    loading();
+    run('tracker').then(function (d) {
+      var cols = d.columns || [], rows = d.rows || [];
+      if (!rows.length) {
+        body.innerHTML = '<div class="empty">Nobody is enrolled on a training program yet.</div>';
+        return;
+      }
+      var head = '<tr><th class="person">Team member</th>' +
+        cols.map(function (c) { return '<th style="text-align:center">' + esc(c.name) + '</th>'; }).join('') + '</tr>';
+      var trs = rows.map(function (r) {
+        return '<tr><td class="person">' + esc(r.person.name) +
+          (r.person.role ? '<span class="inst">' + esc(r.person.role) + '</span>' : '') + '</td>' +
+          r.cells.map(function (entries) {
+            if (!entries || !entries.length) return '<td><span class="dash">—</span></td>';
+            return '<td>' + entries.map(function (c) {
+              var badge = c.status === 'complete'
+                ? '<span class="pill ok">Complete</span>'
+                : (c.status === 'progress'
+                    ? '<span class="pill go">' + esc(c.label || 'In progress') + '</span>'
+                    : '<span class="dash">—</span>');
+              return (c.instance ? '<span class="inst">' + esc(c.instance) + '</span>' : '') + badge;
+            }).join('<div style="height:3px"></div>') + '</td>';
+          }).join('') + '</tr>';
+      }).join('');
+      body.innerHTML = '<div class="card matrix"><table><thead>' + head + '</thead><tbody>' + trs + '</tbody></table></div>' +
+        '<div class="sub" style="margin-top:6px">One badge per enrolment — a person trained on two variants shows two.</div>';
+    }).catch(fail);
+  }
+
+  function render() { view === 'tracker' ? showTracker() : showPrograms(); }
+
+  document.getElementById('newprog').addEventListener('click', function () {
+    var name = prompt('Name the new training program');
+    if (!name || !name.trim()) return;
+    run('save_program', { fields: { name: name.trim(), is_active: true } })
+      .then(function (r) {
+        if (r.error) { fail(r.error); return; }
+        showProgram(r.program.id);
+      }).catch(fail);
+  });
+
+  document.querySelectorAll('.tab').forEach(function (t) {
+    t.addEventListener('click', function () {
+      view = t.getAttribute('data-view');
+      document.querySelectorAll('.tab').forEach(function (x) {
+        x.setAttribute('aria-selected', String(x === t));
+      });
+      render();
+    });
+  });
+
+  norm.onReady(function (c) {
+    ctx = c;
+    var v = (c.venues || []).find(function (x) { return x.id === c.venueId; });
+    document.getElementById('scope').textContent =
+      'Group-wide programs and ' + (v ? v.name : 'all venues') + ' · ' + (c.app ? 'v' + c.app.version : '');
+    render();
+  });
+})();
+</script>

@@ -266,6 +266,85 @@ class TestWritePolicy:
         assert "changes data" in str(e.value.detail)
 
 
+class TestReadOnlyOverTransport:
+    """An MCP-mode connector carries every action as POST — that is transport,
+    not intent. Without an explicit signal, merely LISTING data would demand a
+    write approval (all 114 Cook Brothers App actions are POST, and the
+    `get_`-prefix heuristic never fires on domain-prefixed names like
+    `training_get_job_opening`)."""
+
+    def _spec_with(self, db, connector, action, **over):
+        from app.db.config_models import ConnectorSpec
+
+        db.add(
+            ConnectorSpec(
+                id=str(uuid.uuid4()),
+                connector_name=connector,
+                display_name=connector,
+                category="internal",
+                execution_mode="mcp",
+                auth_type="none",
+                tools=[{"action": action, "method": "POST", **over}],
+                enabled=True,
+            )
+        )
+        db.flush()
+
+    def test_a_read_only_post_is_not_a_write(self, db_session, org, author):
+        self._spec_with(
+            db_session, "orbit", "training_list_job_openings", read_only=True
+        )
+        spec = {
+            "actions": [{"connector": "orbit", "action": "training_list_job_openings"}],
+            "writes": [],
+            "scopes": [],
+        }
+        app = _app(db_session, org, author)
+        v = _version(db_session, app, spec, author)
+        import app.connectors.tool_executor as TE
+
+        original = TE.execute_connector_tool
+        TE.execute_connector_tool = lambda *a, **k: type(
+            "R", (), {"success": True, "payload": {"job_openings": []}, "error": None}
+        )()
+        try:
+            out = _call(
+                db_session,
+                db_session,
+                app,
+                v,
+                author,
+                connector="orbit",
+                action="training_list_job_openings",
+            )
+        finally:
+            TE.execute_connector_tool = original
+        assert out == {"job_openings": []}
+
+    def test_an_unflagged_post_is_still_a_write(self, db_session, org, author):
+        self._spec_with(db_session, "orbit", "training_move_candidate_stage")
+        spec = {
+            "actions": [
+                {"connector": "orbit", "action": "training_move_candidate_stage"}
+            ],
+            "writes": [],
+            "scopes": [],
+        }
+        app = _app(db_session, org, author)
+        v = _version(db_session, app, spec, author)
+        with pytest.raises(HTTPException) as e:
+            _call(
+                db_session,
+                db_session,
+                app,
+                v,
+                author,
+                connector="orbit",
+                action="training_move_candidate_stage",
+            )
+        assert "not declared as a write" in str(e.value.detail)
+
+
 class TestVenueAccess:
     """Fails CLOSED, unlike venue_service.get_user_venues, which hands a user
     with no access rows every venue on the platform."""
@@ -393,6 +472,129 @@ class TestLogicGoesThroughTheDoor:
         assert out["success"] is True
         assert "get_roster" in str(out["data"]["error"])
 
+    def test_the_parallel_helper_cannot_dodge_the_door(
+        self, db_session, org, author, monkeypatch
+    ):
+        """`call_api_parallel` is a door, not a side gate.
+
+        The sandbox widens `run()` by arity, so logic declaring a 4th argument
+        is handed `call_api_parallel`. That helper used to reach
+        `_do_api_call` directly — resolving venue credentials itself and
+        skipping the declared-action allowlist, the scope intersection, the
+        venue check and the `AppCall` audit entirely. An app could therefore
+        read ANY action on ANY connector in the config DB, unaudited, simply by
+        naming a fourth parameter.
+        """
+        app = _app(db_session, org, author)
+        code = (
+            "def run(params, call_api, log, call_api_parallel):\n"
+            "    out = call_api_parallel([('loadedhub', 'get_roster', {})])\n"
+            "    return {'sneaky': out[0]}\n"
+        )
+        v = _version(db_session, app, READ_SPEC, author, logic_source=code)
+        monkeypatch.setattr(AR, "_tool_method", lambda *a: "GET")
+
+        def _boom(*a, **k):  # the real executor must never be reached
+            raise AssertionError("call_api_parallel bypassed the door")
+
+        monkeypatch.setattr(
+            "app.connectors.tool_executor.execute_connector_tool", _boom
+        )
+        out = AR.run_logic(
+            db_session, None, app=app, version=v, user=author, venue_id=None
+        )
+        assert out["success"] is True
+        assert "get_roster" in str(out["data"]["sneaky"]["error"])
+
+    def test_document_extraction_is_not_a_side_gate_either(
+        self, db_session, org, author
+    ):
+        """`extract_document`/`extract_documents_parallel` sit in the sandbox
+        namespace unconditionally and also called out directly. An app has no
+        declared reach for document extraction, so they must simply not be
+        there."""
+        app = _app(db_session, org, author)
+        code = (
+            "def run(params, call_api, log):\n"
+            "    return extract_document('loadedhub', 'x', {})\n"
+        )
+        v = _version(db_session, app, READ_SPEC, author, logic_source=code)
+        out = AR.run_logic(
+            db_session, None, app=app, version=v, user=author, venue_id=None
+        )
+        # Not bound at all — the app's logic cannot even name it.
+        assert out["success"] is False
+        assert "extract_document" in str(out["error"])
+
+    def test_the_interpreter_is_not_reachable_from_app_logic(
+        self, db_session, org, author
+    ):
+        """The door is decorative if the sandbox can reach the interpreter.
+
+        Found by adversarial review, 17 Aug 2026, and reproduced before the
+        fix: the namespace necessarily holds real objects (the json module, the
+        very functions the code must call), and Python walks from any of them
+        to the builtins — `json.__builtins__` returned the genuine builtins
+        (uid 1000 via os.getuid), and `().__class__.__base__.__subclasses__()`
+        returned 644 live classes. From there `__import__` reaches the DB
+        engine and every venue's stored credentials, with no allowlist, no
+        permission intersection and no audit row.
+
+        Restricting the namespace cannot fix that, so the SOURCE is refused.
+        """
+        app = _app(db_session, org, author)
+        escapes = {
+            "module builtins": (
+                "def run(params, call_api, log):\n"
+                "    b = json.__builtins__\n"
+                "    imp = b['__import__'] if isinstance(b, dict) else b.__import__\n"
+                "    return imp('os').getuid()\n"
+            ),
+            "type walk": (
+                "def run(params, call_api, log):\n"
+                "    return len(().__class__.__base__.__subclasses__())\n"
+            ),
+            "closure of a given function": (
+                "def run(params, call_api, log):\n"
+                "    return list(call_api.__globals__)[:3]\n"
+            ),
+            "dynamic getattr": (
+                "def run(params, call_api, log):\n"
+                "    return str(getattr(json, '__builtins__'))[:20]\n"
+            ),
+            "plain import": (
+                "def run(params, call_api, log):\n"
+                "    import os\n"
+                "    return os.getuid()\n"
+            ),
+        }
+        for label, code in escapes.items():
+            v = _version(
+                db_session, app, READ_SPEC, author, version=1, logic_source=code
+            )
+            out = AR.run_logic(
+                db_session, None, app=app, version=v, user=author, venue_id=None
+            )
+            assert out["success"] is False, f"{label} escaped the sandbox"
+            db_session.delete(v)
+            db_session.flush()
+
+    def test_ordinary_logic_still_runs(self, db_session, org, author):
+        """The guard blocks attribute access on private names, NOT the
+        leading-underscore local names real consolidators use freely."""
+        app = _app(db_session, org, author)
+        code = (
+            "def run(params, call_api, log):\n"
+            "    _rows = [1, 2, 3]\n"
+            "    return {'n': sum(_rows), 'j': json.dumps({'a': 1})}\n"
+        )
+        v = _version(db_session, app, READ_SPEC, author, logic_source=code)
+        out = AR.run_logic(
+            db_session, None, app=app, version=v, user=author, venue_id=None
+        )
+        assert out["success"] is True
+        assert out["data"] == {"n": 6, "j": '{"a": 1}'}
+
     def test_a_declared_call_inside_run_works(
         self, db_session, org, author, monkeypatch
     ):
@@ -489,7 +691,12 @@ class TestBuilderTools:
         weak = _member(db_session, org, ["apps:build", "tasks:read"])
         thread = self._thread(db_session, weak)
         out = get_handler("norm", "save_app")(
-            {"name": "Too far", "slug": "too-far", "spec": READ_SPEC, "ui_source": "<div/>"},
+            {
+                "name": "Too far",
+                "slug": "too-far",
+                "spec": READ_SPEC,
+                "ui_source": "<div/>",
+            },
             db_session,
             thread.id,
         )
@@ -746,3 +953,112 @@ class TestPinning:
             headers=self._headers(stranger),
         )
         assert r.status_code == 404
+
+
+class TestAppAgent:
+    """An app's pages join an agent's menu. The slug has to be real: nothing in
+    the UI can select an unregistered agent (the sidebar list is static), so
+    such an app would be orphaned — and `page_context.agent` is trusted
+    verbatim by the supervisor, so chatting from its page would silently do
+    nothing at all."""
+
+    def _headers(self, user):
+        from app.auth.security import create_access_token
+
+        return {
+            "Authorization": f"Bearer {create_access_token({'sub': user.id, 'email': user.email})}"
+        }
+
+    def test_an_app_can_join_a_real_agents_menu(self, db_session, org, author):
+        out = AR.save_app(
+            db_session,
+            author,
+            {
+                "name": "Hiring",
+                "slug": "hiring",
+                "agent": "hr",
+                "spec": READ_SPEC,
+                "ui_source": "<div/>",
+            },
+        )
+        assert out["slug"] == "hiring"
+        app = db_session.query(App).filter(App.slug == "hiring").first()
+        assert app.agent == "hr"
+
+    def test_an_unregistered_agent_is_refused_by_name(self, db_session, org, author):
+        with pytest.raises(HTTPException) as e:
+            AR.save_app(
+                db_session,
+                author,
+                {
+                    "name": "Nowhere",
+                    "slug": "nowhere",
+                    "agent": "finance",
+                    "spec": READ_SPEC,
+                    "ui_source": "<div/>",
+                },
+            )
+        assert e.value.status_code == 400
+        assert "finance" in str(e.value.detail)
+        assert "hr" in str(e.value.detail)  # names the valid set
+
+    def test_omitting_the_agent_keeps_the_old_home(self, db_session, org, author):
+        AR.save_app(
+            db_session,
+            author,
+            {
+                "name": "Legacy",
+                "slug": "legacy",
+                "spec": READ_SPEC,
+                "ui_source": "<div/>",
+            },
+        )
+        app = db_session.query(App).filter(App.slug == "legacy").first()
+        assert app.agent is None  # → app_builder at the surface
+
+    def test_a_later_save_that_omits_the_agent_does_not_move_the_app(
+        self, db_session, org, author
+    ):
+        """The builder revises an app by sending a whole spec. If that dropped
+        the agent, an app would silently jump back to the App Builder menu on
+        its next edit."""
+        AR.save_app(
+            db_session,
+            author,
+            {
+                "name": "Hiring",
+                "slug": "hiring2",
+                "agent": "hr",
+                "spec": READ_SPEC,
+                "ui_source": "<div/>",
+            },
+        )
+        AR.save_app(
+            db_session,
+            author,
+            {
+                "name": "Hiring",
+                "slug": "hiring2",
+                "spec": READ_SPEC,
+                "ui_source": "<div>v2</div>",
+            },
+        )
+        app = db_session.query(App).filter(App.slug == "hiring2").first()
+        assert app.agent == "hr"
+
+    def test_the_list_says_where_each_app_lives(self, client, db_session, org, author):
+        AR.save_app(
+            db_session,
+            author,
+            {
+                "name": "Hiring",
+                "slug": "hiring3",
+                "agent": "hr",
+                "spec": READ_SPEC,
+                "ui_source": "<div/>",
+            },
+        )
+        db_session.commit()
+        apps = client.get("/api/apps", headers=self._headers(author)).json()["apps"]
+        by_slug = {a["slug"]: a for a in apps}
+        assert by_slug["hiring3"]["agent"] == "hr"

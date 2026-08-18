@@ -407,6 +407,8 @@ async def delete_venue(
     """
     from app.db.models import (
         AppCall,
+        AppFile,
+        AppRecord,
         AutomatedTask,
         EmailLog,
         InvoiceAutopilotOutcome,
@@ -440,6 +442,21 @@ async def delete_venue(
         synchronize_session=False
     )
     db.query(HrSetup).filter(HrSetup.venue_id == venue_id).delete(
+        synchronize_session=False
+    )
+    # An app record scoped to a venue is that venue's operational data — a
+    # training assignment at this venue, a job opening for it. NULLing the
+    # column would not orphan it, it would PROMOTE it: NULL means "belongs to
+    # the whole organization" in app_records, so every remaining venue would
+    # suddenly see rows that were never theirs. Delete with the venue.
+    # (Group-wide rows have venue_id NULL already and are untouched.)
+    db.query(AppRecord).filter(AppRecord.venue_id == venue_id).delete(
+        synchronize_session=False
+    )
+    # Same rule for the bytes: a file scoped to a venue is that venue's
+    # evidence, and NULL here means "the whole organization", so nulling the
+    # column would publish it rather than orphan it.
+    db.query(AppFile).filter(AppFile.venue_id == venue_id).delete(
         synchronize_session=False
     )
 
