@@ -1285,11 +1285,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // "Re-run replica" / "reset validation" pair, which differed only in how
   // much cache they kept). Wipes every cached artifact for this invoice
   // (extraction cache included), rebuilds the draft from Loaded, then runs
-  // the review from scratch. Confirmed first: it discards local edits and
-  // the accept/dismiss record. Twin cards refetch via the actioned event.
+  // the review from scratch. No confirm (removed 18 Aug 2026 — it nagged on
+  // every press): the reset is recoverable by re-accepting, and the button
+  // is pressed deliberately. Twin cards refetch via the actioned event.
   const reanalyse = async () => {
     if (embedded || !venueId || !doc.invoice_id || reviewing) return;
-    if (!window.confirm('Re-analysing rebuilds this invoice from Loaded and the copy — your local edits and accepted suggestions are reset.')) return;
     setReviewing(true);
     try {
       const r = await apiFetch('/api/invoice-fixes/reset-validation', {

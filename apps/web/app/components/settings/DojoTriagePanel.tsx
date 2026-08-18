@@ -6,6 +6,7 @@ import DojoSampleView, { type DojoDiff, type ExtractionDoc, type ReplicaDoc } fr
 import InvoicePdfPane from './InvoicePdfPane';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
 import SenseiProposalCard, { type DojoAnalysis } from './SenseiProposalCard';
+import { formatMoney } from '../../lib/format';
 
 /**
  * The Dojo page: triage ground for invoice extraction. Lists every venue's
@@ -77,7 +78,7 @@ const chip = (bg: string, fg: string, border: string): React.CSSProperties => ({
   fontSize: '0.62rem', fontWeight: 700, color: fg, background: bg, border: `1px solid ${border}`, borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap',
 });
 
-const money = (v: number | null) => (typeof v === 'number' ? `$${v.toFixed(2)}` : '—');
+const money = (v: number | null) => (typeof v === 'number' ? formatMoney(v) : '—');
 const day = (v: string | null) => (v ? String(v).slice(0, 10) : '—');
 
 export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
@@ -325,6 +326,22 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
     }
   };
 
+  // Remove from the awaiting-review list — same DELETE as discard, but from
+  // the row itself. The invoice stays cannot-receive in Loaded, so it shows
+  // up under Outstanding invoices again on the next sweep.
+  const removeSample = async (sampleId: string) => {
+    if (!window.confirm('Remove this invoice from the dojo? The staged copy, its baseline and any sensei analysis are deleted. The invoice itself stays in Loaded and reappears under Outstanding invoices.')) return;
+    setBusy(sampleId);
+    try {
+      await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}`, { method: 'DELETE' });
+      setOpen((o) => (o && o.sampleId === sampleId ? null : o));
+      setAnalysisView((v) => (v && v.sampleId === sampleId ? null : v));
+      loadPending();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   /* ---- The expanded toolkit: PDF | proposal + invoice view -------------- */
   const toolkit = (sampleId: string) => {
     const view = open?.view;
@@ -492,17 +509,27 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
                     style={chip('#f4f4f4', '#777', '#e2e2e2')}>not processed</span>
                 )}
                 {/* Run the sensei straight from the list — no need to open the
-                    row. Enqueues instantly; hidden while a run is queued or
-                    live. On rows the sensei has already worked, it reads as a
-                    re-run. */}
+                    row. Enqueues instantly; hidden (with Remove) while a run
+                    is queued or live. On rows the sensei has already worked,
+                    it reads as a re-run. */}
                 {s.analysis_status !== 'queued' && (s.analysis_status !== 'running' || s.analysis_stale) && (
-                  <button type="button"
-                    onClick={(e) => { e.stopPropagation(); analyse(s.id); }}
-                    disabled={analysing === s.id}
-                    title="Run the sensei on this invoice — it studies the extraction and drafts a supplier-spec update for review"
-                    style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, height: 22, padding: '0 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: analysing === s.id ? 'wait' : 'pointer', fontSize: '0.68rem', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-                    {analysing === s.id ? 'Queueing…' : s.analysis_status ? 'Re-run sensei' : 'Run sensei'}
-                  </button>
+                  <span onClick={(e) => e.stopPropagation()}
+                    style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <button type="button"
+                      onClick={() => analyse(s.id)}
+                      disabled={analysing === s.id}
+                      title="Run the sensei on this invoice — it studies the extraction and drafts a supplier-spec update for review"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 22, padding: '0 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: analysing === s.id ? 'wait' : 'pointer', fontSize: '0.68rem', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+                      {analysing === s.id ? 'Queueing…' : s.analysis_status ? 'Re-run sensei' : 'Run sensei'}
+                    </button>
+                    <button type="button"
+                      onClick={() => removeSample(s.id)}
+                      disabled={busy === s.id}
+                      title="Remove this invoice from the dojo — deletes the staged copy, its baseline and any sensei analysis"
+                      style={{ display: 'inline-flex', alignItems: 'center', height: 22, padding: '0 8px', border: '1px solid #f0c0ba', borderRadius: 4, background: '#fff', color: '#c0392b', cursor: busy === s.id ? 'wait' : 'pointer', fontSize: '0.68rem', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+                      {busy === s.id ? 'Removing…' : 'Remove'}
+                    </button>
+                  </span>
                 )}
               </div>
               {open?.key === s.id && (
