@@ -887,12 +887,17 @@ def apply_analysis_proposal(
     *,
     apply_spec: bool = True,
     save_expected: bool = True,
+    db: Session | None = None,
 ) -> dict:
     """Apply a stored analysis proposal: write the spec text, baseline the
     agent's ground truth, and record the candidate extraction as the sample's
-    last run (no re-spend). An ``alias_of`` proposal merges instead of
-    duplicating. Shared by the admin Apply endpoint and the self-training
+    last run (no re-extraction spend). An ``alias_of`` proposal merges instead
+    of duplicating. Shared by the admin Apply endpoint and the self-training
     auto-apply. Raises ``ValueError`` for the not-applicable cases.
+
+    ``db`` (the venue-env session) lets apply also REBUILD the sample's
+    rendered invoice view from the extraction it records; without it the old
+    view is carried forward.
 
     Every roster write in the system funnels through here, so this is where the
     gate lives: the roster is measured before, mutated, measured again, and the
@@ -1039,12 +1044,57 @@ def apply_analysis_proposal(
             + "; ".join(f"{i.where}: {i.problem}" for i in blocked)
         )
     savepoint.commit()
+    # The rendered invoice view must show the extraction just recorded —
+    # carrying the pre-apply replica forward left the dojo's invoice sheet
+    # showing a PO string no values tab contained (Federal Merchants 396152,
+    # 19 Aug 2026). After the gate, so a refused apply spends nothing. A
+    # rebuild that isn't possible (no venue session, hand-uploaded sample,
+    # sample filed in another environment) keeps the old view.
+    if db is not None and isinstance(own.get("extraction"), dict) and sample.expected:
+        try:
+            replica, replica_diffs, replica_compare = replica_stage(
+                db, config_db, sample, own["extraction"]
+            )
+            if isinstance(replica, dict) and not replica.get("error"):
+                sample.last_run = {
+                    **(sample.last_run or {}),
+                    "replica": replica,
+                    "replica_diffs": replica_diffs,
+                    "replica_compare": replica_compare,
+                }
+        except Exception as exc:  # noqa: BLE001 — the view must never block an apply
+            logger.warning("replica rebuild on apply failed for %s: %s", sample.id, exc)
     config_db.commit()
     config_db.refresh(sample)
     return {
         "spec_instructions": host.instructions,
         "alias_added_to": target.name if target is not None else None,
     }
+
+
+def _heal_source_review(db: Session, config_db: Session, sample) -> None:
+    """Follow-through on a self-training auto-apply: re-run the SOURCE
+    invoice's review so the card that raised the sample reflects the fix.
+
+    The sensei taught itself Federal Merchants one minute after the review
+    blocked (396152, 19 Aug 2026) — and the card stayed blocked until a human
+    pressed Re-analyse, because nothing re-reviewed a draft after its prompt
+    was fixed. Best-effort: a failure leaves the card exactly as it was, and
+    the Re-analyse button still works.
+    """
+    if not (sample.source_venue_id and sample.source_invoice_id):
+        return
+    try:
+        from app.routers.invoice_fixes import heal_review
+
+        venue_id = resolve_sample_venue_id(db, sample)
+        if venue_id is None:
+            return
+        heal_review(db, config_db, venue_id, str(sample.source_invoice_id))
+    except Exception as exc:  # noqa: BLE001 — healing must never fail the analysis
+        logger.warning(
+            "post-apply review heal failed for sample %s: %s", sample.id, exc
+        )
 
 
 def analyse_sample(
@@ -1451,7 +1501,7 @@ def analyse_sample(
         ):
             try:
                 apply_analysis_proposal(
-                    config_db, sample, apply_spec=True, save_expected=True
+                    config_db, sample, apply_spec=True, save_expected=True, db=db
                 )
                 stored = _store(
                     dict(
@@ -1462,6 +1512,11 @@ def analyse_sample(
                 )
             except Exception as exc:  # noqa: BLE001 — proposal stays reviewable
                 logger.warning("auto-apply failed for sample %s: %s", sample.id, exc)
+            else:
+                # The invoice that raised this sample still carries its
+                # pre-fix review; re-run it under the prompt just written so
+                # the card heals without waiting for a human's Re-analyse.
+                _heal_source_review(db, config_db, sample)
         return stored
     except Exception as exc:  # noqa: BLE001 — a failed analysis must record, not crash
         logger.warning("dojo analysis failed for sample %s: %s", sample_id, exc)

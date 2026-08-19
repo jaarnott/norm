@@ -1075,7 +1075,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     // clears the unit blocker on the same line — the mirror of the server
     // gate walk's record (unit blockers carry no clears_when by design).
     const entries: SuggestionAction[] = [folded.entry];
-    if (s.kind === 'line_value' && s.field === 'unit') {
+    // An add_line whose payload carries a resolved unit is a unit decision
+    // too — the resolver's pick rides in the line being added ("delivered as
+    // 'Each'"), so accepting the line accepts its unit (Aitkens 173670
+    // freight, 19 Aug 2026: the added line arrived unitless and its blocker
+    // demanded a decision already made).
+    const isUnitDecision = (s.kind === 'line_value' && s.field === 'unit')
+      || (s.kind === 'add_line' && !!(s.payload as Record<string, unknown> | undefined)?.linked_unit_id);
+    if (isUnitDecision) {
       const unitIssue = (docRef.current.issues || []).find((i) =>
         !!i.blocking
         && ['unit_missing', 'unit_unknown', 'unit_unconfirmed'].includes(String(i.code))

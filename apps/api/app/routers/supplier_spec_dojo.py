@@ -741,6 +741,7 @@ def apply_analysis(
             sample,
             apply_spec=body.apply_spec,
             save_expected=body.save_expected,
+            db=db,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

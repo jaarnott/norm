@@ -637,6 +637,11 @@ def build_replica(
             else None
         )
         unit_rec = None
+        # Which tier supplied unit_rec ("variant" | "copy" | "catalogue" |
+        # "printed") — the card finishes unit blockers with the unit in use,
+        # and crediting every stand-in to Loaded misattributed the ones
+        # Norm's catalogue answered (4366904, 19 Aug 2026).
+        unit_source = None
         # The copy's confidently-read delivered unit that isn't in Loaded yet —
         # carried onto the replica line so the review layer can offer a
         # "create this unit" suggestion (never a bare OCR string).
@@ -657,6 +662,7 @@ def build_replica(
             unit_rec = next(
                 (u for u in units if u.get("id") == variant.get("unitId")), None
             ) or {"id": variant.get("unitId"), "name": None, "ratio": None}
+            unit_source = "variant"
             # The unit is whatever the INVOICE says. A variant default is
             # user-entered data in Loaded; the copy is the delivery, and
             # receiving it accurately is the job. A venue counting wine
@@ -685,6 +691,7 @@ def build_replica(
                         "(per the copy)"
                     )
                     unit_rec = copy_rec
+                    unit_source = "copy"
                 elif copy_rec is None:
                     log.append(
                         f"line {i + 1} unit: copy says '{derived}' but the venue "
@@ -700,6 +707,8 @@ def build_replica(
             # The page's own derived unit — the page outranks everything
             # below for the document in hand.
             unit_rec = _resolve_unit_record(derived, units)
+            if unit_rec is not None:
+                unit_source = "copy"
         if unit_rec is None and catalog_key:
             # Norm's supplier-product catalogue: what this (supplier, code)
             # physically IS, learned from sizes printed on OTHER invoices
@@ -715,6 +724,7 @@ def build_replica(
             if answer:
                 unit_rec = _resolve_unit_record(answer["unit_name"], units)
                 if unit_rec is not None:
+                    unit_source = "catalogue"
                     log.append(
                         f"line {i + 1} unit: Norm catalogue says "
                         f"'{answer['unit_name']}' ({answer['provenance']}) → "
@@ -737,6 +747,8 @@ def build_replica(
             printed = el.get("unit")
             if printed and not is_packaging_word(printed):
                 unit_rec = _resolve_unit_record(printed, units)
+                if unit_rec is not None:
+                    unit_source = "printed"
                 if unit_rec is not None and not derived:
                     # Resolved ONLY by a bare count word ('EA' → Each): that
                     # is how the line is CHARGED, not the pack size (the
@@ -766,7 +778,20 @@ def build_replica(
                 "from the copy"
             )
             warnings.append(msg)
-            _issue("unit_unconfirmed", msg, line_id=f"rep-{i}")
+            _issue(
+                "unit_unconfirmed",
+                msg,
+                line_id=f"rep-{i}",
+                # The stand-in's source and identity: the card finishes this
+                # sentence with the unit in use, and the attribution only
+                # holds while the WORKING line shows THIS unit — a different
+                # working unit is Loaded's own.
+                data=(
+                    {"unit_chosen_by": unit_source, "unit_id": unit_rec.get("id")}
+                    if unit_rec is not None and unit_source
+                    else None
+                ),
+            )
         if qty is not None and cost is not None and total is not None:
             try:
                 if abs(float(qty) * float(cost) - float(total)) > 0.011:
@@ -808,6 +833,7 @@ def build_replica(
                 "item_type": "Default",
                 "matched_by": r.get("by"),
                 "unit_unrecognisable": el.get("unit_unrecognisable"),
+                "unit_source": unit_source,
                 "suggested_name": r.get("suggested_name"),
                 "suggested_group_id": r.get("suggested_group_id"),
                 # The copy's delivered unit that isn't in Loaded — drives a
@@ -846,14 +872,22 @@ def build_replica(
             )
             # Candidates for the batched unit resolver — sizeless lines where
             # NOTHING (variant, page, catalogue) says the size. Unreadable
-            # units stay a human's call (the never-guess rule).
-            if not el.get("unit_unrecognisable") and unit_create_name is None:
+            # units qualify too: never-guess binds the EXTRACTOR (nothing may
+            # be invented as a READING of the page), not the resolver, whose
+            # answer is a human-gated suggestion. Excluding them parked
+            # 'HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7' at "set one before
+            # receiving" with the resolver never consulted (4366904,
+            # 19 Aug 2026).
+            if unit_create_name is None:
                 unit_residual.append(i)
-        elif count_word_unit and not el.get("unit_unrecognisable"):
+        elif count_word_unit:
             # Resolved only by a bare charge word (EA → Each): honest but
             # vague — no blocker, yet the size is still unknown. The resolver
             # may offer the real pack as an UPGRADE suggestion (interactive
             # Accept; autopilot keeps the count unit — no gate applies here).
+            # An unreadable-unit line rides too: its unit_unconfirmed blocker
+            # stands regardless, and the resolver's offer turns that Accept
+            # from a shrug into an informed choice.
             unit_residual.append(i)
 
     # ---- The residual unit resolver: one batched LLM call per invoice ----

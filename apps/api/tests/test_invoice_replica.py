@@ -637,6 +637,79 @@ class TestCatalogueTierAndResolver:
         doc = _build(self._sizeless_line(unit="Kilo"), unit_resolver_ask=ask)
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
 
+    def test_an_unreadable_unit_line_consults_the_resolver(self):
+        # The 4366904 pin: 'HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7' —
+        # description truncated, EA charge column, unit marked unreadable by
+        # the extractor. Never-guess binds the EXTRACTOR, not the resolver:
+        # the line rides to the resolver, and its offer is what turns the
+        # still-standing unit_unconfirmed blocker's Accept from a shrug into
+        # an informed choice. Excluding unreadable lines parked exactly this
+        # line at "set one before receiving" with the resolver never asked.
+        seen = {}
+
+        def ask(payload):
+            seen.update(payload)
+            return {
+                "lines": [
+                    {
+                        "line_id": "rep-0",
+                        "unit_id": "u-6x750",
+                        "confidence": "high",
+                        "why": "a known branded bottle; the truncated "
+                        "'(1X7' reads 1X750ML",
+                    }
+                ]
+            }
+
+        doc = _build(
+            self._sizeless_line(unit="EA", unit_unrecognisable=True),
+            unit_resolver_ask=ask,
+        )
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] == "u-each"  # the charge word still holds
+        assert ln["unit_resolved"]["unit_id"] == "u-6x750"
+        assert seen["resolve"] == ["rep-0"]
+        # The human-eye rule is untouched: unreadable still blocks.
+        assert any(i["code"] == "unit_unconfirmed" for i in doc["issues"])
+
+    def test_an_unreadable_line_with_no_printed_unit_consults_the_resolver(self):
+        doc = _build(
+            self._sizeless_line(unit=None, unit_unrecognisable=True),
+            unit_resolver_ask=lambda p: {
+                "lines": [
+                    {
+                        "line_id": "rep-0",
+                        "unit_id": "u-6x750",
+                        "confidence": "high",
+                        "why": "sibling lines print 6x750mL at the same price",
+                    }
+                ]
+            },
+        )
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] is None  # an offer, never a silent link
+        assert ln["unit_resolved"]["unit_id"] == "u-6x750"
+        assert any(i["code"] == "unit_unconfirmed" for i in doc["issues"])
+
+    def test_the_blocker_carries_the_stand_ins_source(self):
+        # The card finishes unit blockers with the unit in use; crediting
+        # every stand-in to Loaded misattributed the ones Norm supplied
+        # (4366904, 19 Aug 2026). A charge-word fallback says so:
+        doc = _build(self._sizeless_line(unit="EA", unit_unrecognisable=True))
+        ln = doc["lines"][0]
+        assert ln["unit_source"] == "printed"
+        issue = next(i for i in doc["issues"] if i["code"] == "unit_unconfirmed")
+        assert issue["data"] == {"unit_chosen_by": "printed", "unit_id": "u-each"}
+
+    def test_a_catalogue_answer_is_stamped_as_the_catalogue(self, db_session):
+        self._seed(db_session)
+        doc = self._build_cfg(db_session, self._sizeless_line(unit_unrecognisable=True))
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] == "u-6x750"
+        assert ln["unit_source"] == "catalogue"
+        issue = next(i for i in doc["issues"] if i["code"] == "unit_unconfirmed")
+        assert issue["data"] == {"unit_chosen_by": "catalogue", "unit_id": "u-6x750"}
+
     def test_cross_supplier_catalogue_evidence_reaches_the_resolver(self, db_session):
         # Bidfood's printed 1L for a SHOTT syrup informs a sizeless Trents
         # SHOTT line — evidence in the resolver payload, never authority.

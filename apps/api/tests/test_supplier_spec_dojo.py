@@ -658,6 +658,63 @@ class TestAnalyseSample:
         assert s.expected == _extraction()  # baselined
         assert (s.analysis or {}).get("status") == "applied"
 
+    def _seed_auto_apply_with_source(self, db_session, monkeypatch):
+        # A brand-new supplier whose sample came from a real invoice — the
+        # self-training auto-apply case, wired for the heal follow-through.
+        spec, s = self._seed(db_session)
+        spec.instructions = ""
+        s.source_venue_id = "v-src"
+        s.source_invoice_id = "inv-src"
+        wrong = _extraction()
+        wrong["lines"][0]["quantity"] = 9
+        s.last_run = {"extraction": wrong, "diffs": []}
+        db_session.flush()
+        monkeypatch.setattr(
+            "app.interpreter.llm_interpreter.call_llm",
+            lambda *a, **k: (self._canned_proposal(), None),
+        )
+        monkeypatch.setattr(spec_dojo, "run_extraction", lambda *a, **k: _extraction())
+        monkeypatch.setattr(
+            spec_dojo, "resolve_sample_venue_id", lambda *a, **k: "v-here"
+        )
+        monkeypatch.setattr(
+            spec_dojo,
+            "replica_stage",
+            lambda *a, **k: ({"replica": True, "lines": []}, [], {}),
+        )
+        return spec, s
+
+    def test_auto_apply_heals_the_source_invoice(self, db_session, monkeypatch):
+        # The prompt fix must reach the card that raised the sample: the
+        # sensei taught itself Federal Merchants one minute after the review
+        # blocked (396152, 19 Aug 2026), and the card stayed blocked until a
+        # human pressed Re-analyse. Auto-apply now re-runs that review.
+        spec, s = self._seed_auto_apply_with_source(db_session, monkeypatch)
+        healed: list = []
+        monkeypatch.setattr(
+            "app.routers.invoice_fixes.heal_review",
+            lambda db, cdb, venue_id, invoice_id: (
+                healed.append((venue_id, invoice_id)) or True
+            ),
+        )
+        out = spec_dojo.analyse_sample(db_session, db_session, s.id)
+        assert out["auto_applied"] is True
+        assert healed == [("v-here", "inv-src")]
+
+    def test_failed_heal_never_fails_the_analysis(self, db_session, monkeypatch):
+        # Healing is follow-through, not part of the apply: Loaded being down
+        # must not turn a successful auto-apply into a failed analysis.
+        spec, s = self._seed_auto_apply_with_source(db_session, monkeypatch)
+
+        def boom(*a, **k):
+            raise RuntimeError("Loaded is down")
+
+        monkeypatch.setattr("app.routers.invoice_fixes.heal_review", boom)
+        out = spec_dojo.analyse_sample(db_session, db_session, s.id)
+        assert out["auto_applied"] is True
+        db_session.refresh(s)
+        assert (s.analysis or {}).get("status") == "applied"
+
     def test_green_analysis_keeps_admin_expected(self, db_session, monkeypatch):
         # An admin-entered baseline is never clobbered by the agent's ground
         # truth — the agent only fills the gap when nothing is stored yet.
@@ -931,6 +988,96 @@ class TestApplyAnalysis:
         assert (
             db_session.get(SupplierInvoiceSpec, spec_id) is None
         )  # duplicate row gone
+
+    def test_apply_rebuilds_the_invoice_view_from_the_candidate(
+        self, client, admin_headers, db_session, monkeypatch
+    ):
+        # Applying used to carry the PRE-fix replica forward, so the dojo's
+        # invoice sheet showed a PO string no values tab contained (Federal
+        # Merchants 396152, 19 Aug 2026). Apply now rebuilds the view from
+        # the extraction it just recorded.
+        spec = _make_spec(db_session, "Apply Rebuilds")
+        gt = _extraction()
+        s = SupplierSpecSample(
+            spec_id=spec.id,
+            label="s.pdf",
+            pdf_bytes=b"%PDF-s",
+            source_venue_id="v-1",
+            source_invoice_id="inv-1",
+            last_run={
+                "extraction": {"stale": True},
+                "diffs": [],
+                "replica": {
+                    "purchase_order_number": "PO 1518452 Freeman & Grey 16P9388"
+                },
+                "replica_compare": {"header": [], "lines": []},
+            },
+            analysis={
+                "status": "ready",
+                "green": True,
+                "proposed_instructions": "NEW SPEC TEXT",
+                "ground_truth": gt,
+                "candidate_results": {
+                    "own": {"status": "pass", "diffs": [], "extraction": gt}
+                },
+            },
+        )
+        db_session.add(s)
+        db_session.flush()
+        seen: dict = {}
+
+        def fake_stage(db, config_db, sample, extraction):
+            seen["extraction"] = extraction
+            return (
+                {"purchase_order_number": "1518452"},
+                [],
+                {"header": [], "lines": []},
+            )
+
+        monkeypatch.setattr(spec_dojo, "replica_stage", fake_stage)
+        res = client.post(
+            f"/api/supplier-invoice-specs/samples/{s.id}/apply-analysis",
+            headers=admin_headers,
+            json={"apply_spec": True, "save_expected": True},
+        )
+        assert res.status_code == 200, res.text
+        db_session.refresh(s)
+        assert seen["extraction"] == gt  # rebuilt from what apply recorded
+        assert (s.last_run or {})["replica"] == {"purchase_order_number": "1518452"}
+
+    def test_apply_keeps_old_view_when_rebuild_impossible(
+        self, client, admin_headers, db_session
+    ):
+        # A hand-uploaded sample (no source venue) can't rebuild — the old
+        # view survives rather than being blanked or replaced by an error box.
+        spec = _make_spec(db_session, "Apply Keeps View")
+        gt = _extraction()
+        old_view = {"purchase_order_number": "kept"}
+        s = SupplierSpecSample(
+            spec_id=spec.id,
+            label="s.pdf",
+            pdf_bytes=b"%PDF-s",
+            last_run={"extraction": {"stale": True}, "diffs": [], "replica": old_view},
+            analysis={
+                "status": "ready",
+                "green": True,
+                "proposed_instructions": "NEW SPEC TEXT",
+                "ground_truth": gt,
+                "candidate_results": {
+                    "own": {"status": "pass", "diffs": [], "extraction": gt}
+                },
+            },
+        )
+        db_session.add(s)
+        db_session.flush()
+        res = client.post(
+            f"/api/supplier-invoice-specs/samples/{s.id}/apply-analysis",
+            headers=admin_headers,
+            json={"apply_spec": True, "save_expected": True},
+        )
+        assert res.status_code == 200, res.text
+        db_session.refresh(s)
+        assert (s.last_run or {})["replica"] == old_view
 
     def test_apply_without_proposal_400(self, client, admin_headers, db_session):
         spec = _make_spec(db_session, "Apply None")

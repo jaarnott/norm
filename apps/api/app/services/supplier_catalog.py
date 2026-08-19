@@ -393,6 +393,55 @@ def apply_enrichment(
     row.updated_at = datetime.now(timezone.utc)
 
 
+def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> int:
+    """Record HIGH-confidence resolver verdicts as enrichment — only where
+    the catalogue has no answer today.
+
+    The batched unit resolver reasons from richer evidence than the offline
+    enrichment script (sibling lines, venue stocking, cross-supplier rows),
+    so a decisive verdict IS an enrichment verdict — recording it means the
+    NEXT invoice for this (supplier, code) resolves from the catalogue tier
+    without spending a model call ('HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7',
+    4366904, 19 Aug 2026). Count words never become an answer, and a row that
+    already answers is never touched. Caller owns the commit.
+    """
+    if not supplier_key:
+        return 0
+    written = 0
+    for ln in lines or []:
+        if not isinstance(ln, dict):
+            continue
+        ur = ln.get("unit_resolved")
+        if not (isinstance(ur, dict) and ur.get("confidence") == "high"):
+            continue
+        code = str(ln.get("code") or "").strip()
+        unit_name = str(ur.get("unit_name") or ur.get("create_name") or "").strip()
+        classified = _classify_uom(unit_name)
+        if not code or not unit_name or classified is None:
+            continue  # a count word must never become an answer
+        if catalog_unit_for_line(config_db, supplier_key, code) is not None:
+            continue  # printed/human/earlier enrichment already answers
+        row = lookup(config_db, supplier_key, code)
+        if row is None:
+            row = SupplierProduct(
+                supplier_key=supplier_key, code=code, provenance="enriched"
+            )
+            if ln.get("description"):
+                row.description = str(ln["description"]).strip()
+            config_db.add(row)
+        apply_enrichment(
+            config_db,
+            row,
+            unit_name=unit_name,
+            pack_type=classified[0],
+            unit_type=classified[2],
+            category=None,
+            why=str(ur.get("why") or "").strip() + " (invoice unit resolver)",
+        )
+        written += 1
+    return written
+
+
 _STOP_WORDS = {"the", "and", "with", "for", "pack", "each", "carton", "box"}
 
 

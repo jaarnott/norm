@@ -408,3 +408,97 @@ class TestAnswer:
     def test_unknown_code_or_supplier_is_none(self, db_session):
         assert sc.catalog_unit_for_line(db_session, "Trents", "nope") is None
         assert sc.catalog_unit_for_line(db_session, None, "4183758") is None
+
+
+class TestLearnFromResolver:
+    """High-confidence resolver verdicts become enrichment — the catalogue
+    self-fills from invoices instead of waiting for the offline script
+    ('HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7', 4366904, 19 Aug 2026)."""
+
+    def _line(self, **over):
+        ln = {
+            "code": "99054",
+            "description": "HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7",
+            "unit_resolved": {
+                "unit_id": "u-700",
+                "unit_name": "700 mL",
+                "create_name": None,
+                "confidence": "high",
+                "why": "a known branded bottle; '(1X7' reads 1X700ML",
+            },
+        }
+        ln.update(over)
+        return ln
+
+    def test_decisive_verdict_answers_an_unknown_product(self, db_session):
+        n = sc.learn_from_resolver(db_session, "Hancocks", [self._line()])
+        db_session.commit()
+        assert n == 1
+        a = sc.catalog_unit_for_line(db_session, "Hancocks", "99054")
+        assert a and a["unit_name"] == "700 mL" and a["provenance"] == "enriched"
+        row = _row(db_session, "99054")
+        assert "invoice unit resolver" in (row.evidence or {}).get("enriched_note", "")
+
+    def test_an_answered_row_is_never_touched(self, db_session):
+        _spec(db_session, name="Hancocks")
+        sc.observe_extraction(
+            db_session,
+            _ext(
+                supplier="Hancocks",
+                lines=[
+                    {
+                        "code": "99054",
+                        "description": "HIGHLAND PARK",
+                        "unit_of_measure": "1L",
+                    }
+                ],
+            ),
+            provenance="printed",
+        )
+        assert sc.learn_from_resolver(db_session, "Hancocks", [self._line()]) == 0
+        a = sc.catalog_unit_for_line(db_session, "Hancocks", "99054")
+        assert a["unit_name"] == "1L" and a["provenance"] == "printed"
+
+    def test_count_words_and_hedges_never_become_answers(self, db_session):
+        lines = [
+            # a count word must never be an answer
+            self._line(
+                unit_resolved={
+                    "unit_name": "Each",
+                    "create_name": None,
+                    "confidence": "high",
+                    "why": "a per-item charge",
+                }
+            ),
+            # anything below high confidence is a person's call
+            self._line(
+                code="11111",
+                unit_resolved={
+                    "unit_name": "700 mL",
+                    "create_name": None,
+                    "confidence": "medium",
+                    "why": "probably a bottle",
+                },
+            ),
+        ]
+        assert sc.learn_from_resolver(db_session, "Hancocks", lines) == 0
+        assert sc.catalog_unit_for_line(db_session, "Hancocks", "99054") is None
+
+    def test_no_supplier_key_writes_nothing(self, db_session):
+        assert sc.learn_from_resolver(db_session, None, [self._line()]) == 0
+
+    def test_create_name_verdict_is_recorded_too(self, db_session):
+        # The right unit isn't in the venue yet — the SIZE is still a fact
+        # about the product, exactly what the catalogue stores.
+        ln = self._line(
+            unit_resolved={
+                "unit_id": None,
+                "unit_name": None,
+                "create_name": "6x700ml",
+                "confidence": "high",
+                "why": "sibling lines print 6x700mL at the same price",
+            }
+        )
+        assert sc.learn_from_resolver(db_session, "Hancocks", [ln]) == 1
+        a = sc.catalog_unit_for_line(db_session, "Hancocks", "99054")
+        assert a and a["unit_name"] == "6x700ml"

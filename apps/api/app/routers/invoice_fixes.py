@@ -1198,36 +1198,21 @@ def create_receive_draft(
     return _doc_to_dict(doc)
 
 
-@router.post("/invoice-fixes/reset-validation")
-def reset_validation(
-    body: DraftRequest,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """Wipe every cached validation artifact for one invoice — retest support.
+def _wipe_validation_caches(db: Session, detail: dict) -> int:
+    """Delete one invoice's cached validation artifacts; returns rows removed.
 
-    Deletes the invoice's PDF-extraction cache rows (matched by the extracted
-    invoice_number, since the cache stores no file id) and rebuilds every open
-    draft for the invoice fresh from Loaded — no cached review, no suggestion
-    action log, no local line state. The editor's next /review then runs the
-    whole validation from scratch, including the LLM extraction AND the
-    stock-item match (its cache rows are keyed by this invoice's Loaded line
-    ids, so a stale/declined match — the Sailor Jerry case, 08 Aug 2026 —
-    is cleared here rather than surviving every reset). Only the small
-    PO-number extraction stays cached (content-keyed, not per-invoice).
+    The PDF-extraction rows are matched by the extracted invoice_number (the
+    cache stores no file id); the stock-item match rows are keyed by the
+    invoice's Loaded line ids (so a stale/declined match — the Sailor Jerry
+    case, 08 Aug 2026 — is cleared rather than surviving every reset). Only
+    the small PO-number extraction stays cached (content-keyed, not
+    per-invoice).
     """
-    from sqlalchemy.orm.attributes import flag_modified
-
     from app.db.models import DocumentExtraction
-    from app.routers.working_documents import _doc_to_dict
     from app.services.received_invoice import _norm
 
-    lh = _Loaded(db, config_db, body.venue_id)
-    detail = lh.invoice(body.invoice_id)
     ref = _norm(detail.get("referenceNumber"))
-
-    extractions_deleted = 0
+    deleted = 0
     if ref:
         rows = (
             db.query(DocumentExtraction)
@@ -1238,7 +1223,7 @@ def reset_validation(
             data = row.data if isinstance(row.data, dict) else {}
             if _norm(data.get("invoice_number")) == ref:
                 db.delete(row)
-                extractions_deleted += 1
+                deleted += 1
 
     line_ids = {
         ln.get("id")
@@ -1254,7 +1239,32 @@ def reset_validation(
             data = row.data if isinstance(row.data, dict) else {}
             if line_ids & set(data.keys()):
                 db.delete(row)
-                extractions_deleted += 1
+                deleted += 1
+    return deleted
+
+
+@router.post("/invoice-fixes/reset-validation")
+def reset_validation(
+    body: DraftRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Wipe every cached validation artifact for one invoice — retest support.
+
+    Deletes the invoice's PDF-extraction and stock-item-match cache rows
+    (``_wipe_validation_caches``) and rebuilds every open draft for the
+    invoice fresh from Loaded — no cached review, no suggestion action log,
+    no local line state. The editor's next /review then runs the whole
+    validation from scratch, including the LLM extraction.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.routers.working_documents import _doc_to_dict
+
+    lh = _Loaded(db, config_db, body.venue_id)
+    detail = lh.invoice(body.invoice_id)
+    extractions_deleted = _wipe_validation_caches(db, detail)
 
     refreshed = None
     docs_reset = 0
@@ -1290,6 +1300,62 @@ class ReviewRequest(BaseModel):
     force: bool = False
 
 
+def _squash_review_into_drafts(
+    db: Session, config_db: Session, venue_id: str, invoice_id: str, docs
+) -> None:
+    """Run the review pipeline and store the result into every open draft.
+
+    Squash semantics: each doc's payload is REPLACED wholesale, keeping only
+    its own identity keys. Shared by the /review endpoint and ``heal_review``.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.invoice_review import review_invoice
+
+    # PO policy derives from the venue's receive_without_po gate (review_invoice
+    # default): the card must tell the story autopilot acts on — a PO-less
+    # invoice reads as blocked-from-auto-receive naming the toggle, unless the
+    # venue has said POs aren't required (18 Aug 2026).
+    fresh = review_invoice(db, config_db, venue_id, invoice_id)
+    try:
+        lh = _Loaded(db, config_db, venue_id)
+        _attach_po_reference(fresh, lh)
+        attach_item_names(fresh, lh)
+        enrich_loaded_snapshot(fresh, lh, venue_id, db)
+    except Exception as exc:  # noqa: BLE001 — reference data is enhancement
+        logger.info("review PO reference unavailable: %s", exc)
+
+    for target in docs:
+        payload = dict(fresh)
+        for k in ("working_document_id", "thread_id", "venue_id"):
+            if k in (target.data or {}):
+                payload[k] = target.data[k]
+        target.data = payload
+        target.version += 1
+        flag_modified(target, "data")
+    db.commit()
+
+
+def heal_review(
+    db: Session, config_db: Session, venue_id: str, invoice_id: str
+) -> bool:
+    """The Re-analyse button as a callable: wipe the invoice's cached
+    validation artifacts and re-run the review into every open draft.
+
+    Built for the sensei's auto-apply follow-through (Federal Merchants
+    396152, 19 Aug 2026: the sensei fixed the prompt one minute after the
+    review blocked, and the card stayed blocked until a human pressed
+    Re-analyse). Returns False when the invoice has no open draft to heal.
+    """
+    docs = _open_docs_for(db, venue_id, invoice_id)
+    if not docs:
+        return False
+    lh = _Loaded(db, config_db, venue_id)
+    _wipe_validation_caches(db, lh.invoice(invoice_id))
+    _squash_review_into_drafts(db, config_db, venue_id, invoice_id, docs)
+    return True
+
+
 @router.post("/invoice-fixes/review")
 def review_receive_draft(
     body: ReviewRequest,
@@ -1306,10 +1372,8 @@ def review_receive_draft(
     ``force`` — the (LLM) PDF extraction runs once per invoice, not per open.
     Re-running REPLACES the doc payload wholesale (squash semantics).
     """
-    from sqlalchemy.orm.attributes import flag_modified
-
     from app.routers.working_documents import _doc_to_dict
-    from app.services.invoice_review import DOC_SCHEMA, review_invoice
+    from app.services.invoice_review import DOC_SCHEMA
 
     docs = _open_docs_for(db, body.venue_id, body.invoice_id)
     if not docs:
@@ -1324,28 +1388,7 @@ def review_receive_draft(
     ):
         return _doc_to_dict(doc)
 
-    # PO policy derives from the venue's receive_without_po gate (review_invoice
-    # default): the card must tell the story autopilot acts on — a PO-less
-    # invoice reads as blocked-from-auto-receive naming the toggle, unless the
-    # venue has said POs aren't required (18 Aug 2026).
-    fresh = review_invoice(db, config_db, body.venue_id, body.invoice_id)
-    try:
-        lh = _Loaded(db, config_db, body.venue_id)
-        _attach_po_reference(fresh, lh)
-        attach_item_names(fresh, lh)
-        enrich_loaded_snapshot(fresh, lh, body.venue_id, db)
-    except Exception as exc:  # noqa: BLE001 — reference data is enhancement
-        logger.info("review PO reference unavailable: %s", exc)
-
-    for target in docs:
-        payload = dict(fresh)
-        for k in ("working_document_id", "thread_id", "venue_id"):
-            if k in (target.data or {}):
-                payload[k] = target.data[k]
-        target.data = payload
-        target.version += 1
-        flag_modified(target, "data")
-    db.commit()
+    _squash_review_into_drafts(db, config_db, body.venue_id, body.invoice_id, docs)
     db.refresh(doc)
     return _doc_to_dict(doc)
 

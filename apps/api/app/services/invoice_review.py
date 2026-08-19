@@ -700,17 +700,38 @@ def build_suggestions(
         )
 
     for rl in unpaired_rep:
+        payload = {k: v for k, v in rl.items() if k not in ("matched_by",)}
+        explanation = (
+            f"the copy bills '{rl.get('description')}' "
+            f"(qty {rl.get('quantity_received')} at {rl.get('unit_cost')}) "
+            "but Loaded's draft has no such line"
+        )
+        ur = rl.get("unit_resolved")
+        # A copy-only line never meets the paired-line unit walk, so the
+        # resolver's decisive pick would die as metadata and the added line
+        # arrived unitless with a bare "set one before receiving" (Aitkens
+        # 173670 freight, 19 Aug 2026). Fold it into the line being added —
+        # named in the explanation, so accepting the line is accepting the
+        # unit. HIGH only: add_line is auto-accepted wherever autopilot runs,
+        # and the gate doctrine forbids acting on a "likely".
+        if (
+            isinstance(ur, dict)
+            and ur.get("unit_id")
+            and ur.get("confidence") == "high"
+            and not payload.get("linked_unit_id")
+        ):
+            payload["linked_unit_id"] = ur["unit_id"]
+            payload["unit"] = ur.get("unit_name")
+            if ur.get("unit_ratio") is not None:
+                payload["unit_ratio"] = ur["unit_ratio"]
+            explanation += f" — delivered as '{ur.get('unit_name')}' ({ur.get('why')})"
         _sugg(
             suggestions,
             "add_line",
             line_id=str(rl.get("id")),
             proposed=rl.get("description"),
-            explanation=(
-                f"the copy bills '{rl.get('description')}' "
-                f"(qty {rl.get('quantity_received')} at {rl.get('unit_cost')}) "
-                "but Loaded's draft has no such line"
-            ),
-            payload={k: v for k, v in rl.items() if k not in ("matched_by",)},
+            explanation=explanation,
+            payload=payload,
         )
 
     for ln in unpaired_loaded:
@@ -1405,10 +1426,20 @@ def name_the_unit_in_use(data: dict, issues: list[dict]) -> None:
             # Nothing anywhere — now the imperative is the honest ending.
             issue["message"] = f"{issue['message']} — set one before receiving"
             continue
-        chosen = (issue.get("data") or {}).get("unit_chosen_by")
+        d = issue.get("data") or {}
+        chosen = d.get("unit_chosen_by")
+        # The replica's stamp describes ITS stand-in unit. It only holds
+        # while the working line shows that same unit — a different working
+        # unit is Loaded's own (the draft line or a seeded variant), so the
+        # default attribution is the truthful one.
+        if d.get("unit_id") and d.get("unit_id") != ln.get("linked_unit_id"):
+            chosen = None
         how = {
             "guess": "matched",
             "created": "created",
+            "copy": "per the copy's",
+            "catalogue": "Norm's catalogue answers",
+            "printed": "falling back to the printed column's",
         }.get(chosen, "using Loaded's")
         issue["message"] = f"{issue['message']} — {how} '{unit_name}'"
         # A unit Loaded supplied is not the same claim as a unit the paper
@@ -1726,6 +1757,27 @@ def review_invoice(
                 **(reference or {}),
             )
             data["replica"] = replica
+            # A decisive resolver verdict is an enrichment verdict — record
+            # it so the next invoice for this product resolves from the
+            # catalogue tier without a model call. Best-effort, like the
+            # observe above.
+            try:
+                from app.services import supplier_catalog
+
+                supplier_catalog.learn_from_resolver(
+                    config_db,
+                    supplier_catalog.supplier_key_for(
+                        extraction.get("supplier_name"), config_db
+                    ),
+                    replica.get("lines"),
+                )
+                config_db.commit()
+            except Exception as exc:  # noqa: BLE001
+                logger.info("catalogue resolver-learn failed: %s", exc)
+                try:
+                    config_db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
             # DERIVED, server-owned: never patched by the client, never sent
             # to Loaded. The replica's verdict wins; Loaded's sign is the
             # fallback for a draft that has not been reviewed yet.
@@ -1888,6 +1940,16 @@ def review_invoice(
                 and not data.get("is_credit_note")
                 and not any(
                     s.get("kind") in ("link_po", "split_reference") for s in suggestions
+                )
+                # A PO story already on the card (an unresolvable reference,
+                # a split order, a doubled-up sibling) explains WHY nothing is
+                # linked and carries its own Accept — a second row underneath
+                # it was the same decision sold twice (user report,
+                # 19 Aug 2026).
+                and not any(
+                    i.get("code")
+                    in ("po_unresolved", "po_split_order", "po_doubled_up")
+                    for i in issues
                 )
             ):
                 data["issues"].append(

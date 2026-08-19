@@ -293,6 +293,69 @@ class TestLineSuggestions:
         assert not [s for s in data["suggestions"] if s["field"] == "unit"]
         assert "unit_missing" in _issue_codes(data)
 
+    def _copy_only_freight_case(self, confidence="high"):
+        # Aitkens 173670: the freight lines exist only on the copy. Loaded's
+        # draft has one line; the extraction bills two.
+        det = DETAIL()
+        ext = EXTRACTION(
+            lines=list(EXTRACTION()["lines"])
+            + [
+                {
+                    "code": None,
+                    "description": "Freight",
+                    "quantity": 1,
+                    "unit": None,
+                    "unit_of_measure": None,
+                    "unit_price_ex_tax": 9.0,
+                    "line_total_ex_tax": 9.0,
+                }
+            ],
+            subtotal_ex_tax=228.78,
+            tax_amount=34.32,
+            total_incl_tax=263.10,
+        )
+        ask = lambda payload: {  # noqa: E731
+            "lines": [
+                {
+                    "line_id": "rep-1",
+                    "unit_id": "u-each",
+                    "confidence": confidence,
+                    "why": "a service charge with no physical size",
+                }
+            ]
+        }
+        return _review(
+            detail=det, extraction=ext, reference=REFERENCE(unit_resolver_ask=ask)
+        )
+
+    def test_a_copy_only_lines_pick_rides_in_the_add_line(self):
+        # A copy-only line never meets the paired-line unit walk, so the
+        # resolver's decisive pick died as metadata: the added line arrived
+        # unitless and its blocker demanded a decision the resolver had
+        # already made (Aitkens 173670 freight, 19 Aug 2026).
+        data = self._copy_only_freight_case()
+        s = next(s for s in data["suggestions"] if s["kind"] == "add_line")
+        assert s["payload"]["linked_unit_id"] == "u-each"
+        assert s["payload"]["unit"] == "Each"
+        assert "delivered as 'Each'" in s["explanation"]
+        assert "service charge" in s["explanation"]
+        # accepting the suggestion lands the line complete
+        from app.services import invoice_review as IR2
+
+        IR2.apply_suggestion(data, s)
+        added = next(
+            ln for ln in data["lines"] if str(ln.get("id")) == str(s["line_id"])
+        )
+        assert added["linked_unit_id"] == "u-each"
+
+    def test_a_medium_pick_never_rides_along(self):
+        # add_line is auto-accepted wherever autopilot runs, and the gate
+        # doctrine forbids acting on a "likely" — medium stays out.
+        data = self._copy_only_freight_case(confidence="medium")
+        s = next(s for s in data["suggestions"] if s["kind"] == "add_line")
+        assert not s["payload"].get("linked_unit_id")
+        assert "delivered as" not in s["explanation"]
+
     def test_charge_word_upgrade_replaces_the_each_suggestion(self):
         # The Trents shape proper: 'EA' printed → the replica resolves Each
         # (how the line is CHARGED); the resolver names the real pack. ONE
@@ -633,6 +696,24 @@ class TestPoPolicy:
     def test_linked_po_never_flags(self):
         data = _review()
         assert "po_missing" not in _issue_codes(data)
+
+    def test_an_unresolved_reference_is_one_row_not_two(self):
+        # The copy references '1520518' and nothing in Loaded matches: the
+        # replica's po_unresolved row tells that story, names the reference
+        # and carries the Accept. A second po_missing row underneath it was
+        # the same decision sold twice — two Accepts, one choice (user
+        # report, 19 Aug 2026).
+        det = DETAIL(linkedPurchaseOrderId=None, purchaseOrderNumber=None)
+        ext = EXTRACTION(customer_purchase_order_number="1520518")
+        data = _review(detail=det, extraction=ext)
+        codes = _issue_codes(data)
+        assert "po_unresolved" in codes
+        assert "po_missing" not in codes
+        # the surviving row still blocks and still carries the Accept
+        issue = next(i for i in data["issues"] if i["code"] == "po_unresolved")
+        assert issue["blocking"] is True
+        assert issue["gate"] == "receive_without_po"
+        assert issue["action"] == {"kind": "receive_without_po", "payload": {}}
 
 
 class TestAutoAccept:
@@ -1607,6 +1688,38 @@ class TestAUnitBlockerSaysWhichUnitWillBeUsed:
         issues = [self._issue("unit_unconfirmed")]
         IR.name_the_unit_in_use(data, issues)
         assert "using Loaded's 'Kilo'" in issues[0]["message"]
+
+    def test_a_catalogue_supplied_unit_is_credited_to_the_catalogue(self):
+        # "using Loaded's '700 mL'" was false when Norm's own catalogue
+        # answered the unit (HIGHLAND PARK 15, 4366904, 19 Aug 2026) — the
+        # replica now stamps the tier that supplied the stand-in.
+        data = {"lines": [{"id": "ld-1", "unit": "700 mL", "linked_unit_id": "u-700"}]}
+        issue = self._issue("unit_unconfirmed")
+        issue["data"] = {"unit_chosen_by": "catalogue", "unit_id": "u-700"}
+        issues = [issue]
+        IR.name_the_unit_in_use(data, issues)
+        assert issues[0]["message"].endswith("— Norm's catalogue answers '700 mL'")
+
+    def test_the_stamp_is_dropped_when_the_working_line_shows_another_unit(self):
+        # The replica's stand-in was catalogue-sourced, but the WORKING line
+        # shows a different unit — that one is Loaded's, and crediting the
+        # catalogue for it would be the same lie in the other direction.
+        data = {"lines": [{"id": "ld-1", "unit": "Each", "linked_unit_id": "u-each"}]}
+        issue = self._issue("unit_unconfirmed")
+        issue["data"] = {"unit_chosen_by": "catalogue", "unit_id": "u-700"}
+        issues = [issue]
+        IR.name_the_unit_in_use(data, issues)
+        assert issues[0]["message"].endswith("— using Loaded's 'Each'")
+
+    def test_a_printed_charge_word_is_named_as_the_fallback_it_is(self):
+        data = {"lines": [{"id": "ld-1", "unit": "each", "linked_unit_id": "u-each"}]}
+        issue = self._issue("unit_unconfirmed")
+        issue["data"] = {"unit_chosen_by": "printed", "unit_id": "u-each"}
+        issues = [issue]
+        IR.name_the_unit_in_use(data, issues)
+        assert issues[0]["message"].endswith(
+            "— falling back to the printed column's 'each'"
+        )
 
 
 class TestAutopilotHonoursTheVenuesToggles:
