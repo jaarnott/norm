@@ -415,12 +415,18 @@ def suggest_supplier_match(
         return {}
     rows = result.get("data") if isinstance(result, dict) else result
     rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
+    from app.services.supplier_identity import is_placeholder_supplier_name
+
     suppliers = [
         {"id": s.get("id"), "name": s.get("name") or s.get("supplierName")}
         for s in rows
         if isinstance(s, dict)
         and s.get("id")
         and not (s.get("removedAt") or s.get("datestampDeleted"))
+        # Loaded's unnamed-supplier placeholder is never a candidate — the
+        # model matching a real name to "[Unnamed Supplier]" is the same
+        # non-answer the deterministic tiers now refuse (19 Aug 2026).
+        and not is_placeholder_supplier_name(s.get("name") or s.get("supplierName"))
     ]
     if not suppliers:
         return {}

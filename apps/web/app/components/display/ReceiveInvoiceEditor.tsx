@@ -33,6 +33,10 @@ interface Line {
   description: string | null;
   brand?: string | null;
   unit: string | null;
+  // Extracted x-ray only: the derived delivered unit of ONE item (the field
+  // the dojo grades), shown beside the printed unit in its own column.
+  unit_of_measure?: string | null;
+  unit_unrecognisable?: boolean | null;
   linked_unit_id: string | null;
   original_unit_id?: string | null;
   unit_ratio: number | null;
@@ -96,6 +100,10 @@ interface Suggestion {
   apply?: Record<string, unknown>;
   // add_line: the full line to append. delete_invoice: the /accept fix body.
   payload?: Record<string, unknown>;
+  // Set when accepting this suggestion resolves a blocking ISSUE (e.g. a
+  // totals correction): accepting the LAST pending suggestion carrying the
+  // same value records that issue accepted too.
+  resolves?: string | null;
 }
 interface ClearsWhen {
   scope: 'line' | 'header';
@@ -114,6 +122,15 @@ const ISSUE_ACTION_LABELS: Record<string, string> = {
   create_brand: 'Create brand',
   create_supplier: 'Create supplier',
   guess_unit: 'Choose a unit',
+  // Record-only decisions: Accept writes nothing to Loaded, it records the
+  // call the row describes (runIssueAction's fall-through does exactly that).
+  receive_without_po: 'Receive without a PO',
+  confirm_unit: 'Confirm this unit',
+  receive_unreconciled_totals: 'Receive on the values as read',
+  strike: 'Strike this line',
+  delete_invoice: 'Delete this draft',
+  delete_non_invoice: 'Delete this draft',
+  delete_unreadable: 'Delete this draft',
 };
 const gateLabels: Record<string, string> = {
   auto_create_units: 'auto-create units',
@@ -123,6 +140,11 @@ const gateLabels: Record<string, string> = {
   receive_without_unit: 'receive when no unit can be found',
   receive_with_unconfirmed_unit: 'receive when the unit came from Loaded rather than the copy',
   receive_without_po: 'receive without a valid purchase order',
+  receive_unreconciled_totals: "receive when the copy's totals don't reconcile",
+  auto_strike_phantom_lines: "strike lines the copy doesn't bill",
+  auto_delete_duplicates: 'delete a duplicate invoice draft',
+  auto_delete_non_invoices: "delete drafts that aren't invoices",
+  auto_delete_unreadable: 'delete drafts with no readable invoice copy',
 };
 
 interface Issue {
@@ -445,6 +467,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         ...docLive,
         reference_number: h.invoice_number ?? null,
         supplier_name: h.supplier_name ?? null,
+        linked_supplier_id: null,
         purchase_order_number: h.customer_purchase_order_number ?? h.purchase_order_number ?? null,
         linked_purchase_order_id: null,
         subtotal: h.subtotal_ex_tax ?? null,
@@ -455,13 +478,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           code: el.code ?? null,
           description: el.description ?? null,
           brand: null,
-          // AS PRINTED on the copy, with the derived delivered unit beside it
-          // ("50L → 50 L") — the unit cell renders plain text in x-ray modes.
-          unit: [
-            el.unit ?? '—',
-            el.unit_of_measure && el.unit_of_measure !== el.unit ? `→ ${el.unit_of_measure}` : null,
-            el.unit_unrecognisable ? '(unreadable)' : null,
-          ].filter(Boolean).join(' '),
+          // Two unit FACTS, two columns (the dojo's labels): the unit as
+          // printed on the copy, and the derived delivered unit of one item.
+          unit: el.unit ?? null,
+          unit_of_measure: el.unit_of_measure ?? null,
+          unit_unrecognisable: el.unit_unrecognisable ?? null,
           linked_unit_id: null,
           unit_ratio: null,
           quantity_ordered: null,
@@ -519,8 +540,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const [linkQuery, setLinkQuery] = useState('');
   // Substitute lines whose original ordered row is expanded.
   const [openSub, setOpenSub] = useState<Set<string>>(new Set());
-  // Line briefly highlighted after an issue row's "show line" jump.
-  const [flashLine, setFlashLine] = useState<string | null>(null);
   // Per-mount uid so line anchors never collide across sibling cards.
   const uid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const isPlatformAdmin = getStoredUser()?.role === 'admin';
@@ -1052,7 +1071,29 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
     const folded = foldSuggestion(docRef.current, s);
     if (!folded) return;
-    const [log, logOp] = recordOp(folded.entry);
+    // Accepting a unit suggestion IS the explicit unit decision, so it also
+    // clears the unit blocker on the same line — the mirror of the server
+    // gate walk's record (unit blockers carry no clears_when by design).
+    const entries: SuggestionAction[] = [folded.entry];
+    if (s.kind === 'line_value' && s.field === 'unit') {
+      const unitIssue = (docRef.current.issues || []).find((i) =>
+        !!i.blocking
+        && ['unit_missing', 'unit_unknown', 'unit_unconfirmed'].includes(String(i.code))
+        && String(i.line_id) === String(s.line_id));
+      if (unitIssue) entries.push({ suggestion_id: unitIssue.id, action: 'accepted', by: 'user', at: nowIso() });
+    }
+    // Suggestions tagged `resolves` (e.g. the totals corrections): accepting
+    // the LAST pending one for an issue records that issue accepted too —
+    // a partial set of corrections must not unblock the receive.
+    if (s.resolves) {
+      const otherPending = suggestions.some((o) =>
+        o.id !== s.id && o.resolves === s.resolves && stateOf(o.id) === 'pending');
+      if (!otherPending) {
+        entries.push({ suggestion_id: String(s.resolves), action: 'accepted', by: 'user', at: nowIso() });
+      }
+    }
+    const log = [...(docRef.current.suggestion_actions || []), ...entries];
+    const logOp = { op: 'update_header', fields: { suggestion_actions: log } };
     const nextState = folded.next;
     setDoc(() => ({ ...nextState, suggestion_actions: log }));
     if (workingDocId) {
@@ -1186,13 +1227,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // What "Accept all" would actually apply — delete_invoice is excluded, so
   // the count must never promise it.
   const acceptAllCount = pendingSuggestions.filter((s) => s.kind !== 'delete_invoice').length;
-
-  const jumpToLine = (lineId: string) => {
-    const el = document.getElementById(`riv-${uid}-${lineId}`);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setFlashLine(lineId);
-    window.setTimeout(() => setFlashLine((curr) => (curr === lineId ? null : curr)), 1800);
-  };
 
   const doneState = status === 'done' || !!doc.is_received || !!doc.is_deleted;
   const draftDeleted = deletedDraft || !!doc.is_deleted;
@@ -1884,20 +1918,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             Undo
           </button>
         )}
-        {st === 'pending' && !doneState && (
-          <span style={{ display: 'flex', gap: 4 }}>
-            {!(isDelete && embedded) && (
-              <button type="button" onClick={() => acceptSuggestion(s)} disabled={accepting !== null}
-                style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #b78a2f', background: accepting === s.id ? '#f0e6cc' : '#fff', color: '#8a6d3b', borderRadius: 4, cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap', opacity: accepting !== null && accepting !== s.id ? 0.5 : 1 }}>
-                {accepting === s.id ? 'Applying…' : 'Accept'}
-              </button>
-            )}
-            <button type="button" onClick={() => dismissAction(s.id)} disabled={accepting !== null}
-              title="decline this suggestion without applying it"
-              style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #ccc', background: '#fff', color: '#888', borderRadius: 4, cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
-              Dismiss
-            </button>
-          </span>
+        {/* One button, one decision: the user accepts the change or leaves
+            it (18 Aug 2026 — Dismiss removed; not-accepting IS declining,
+            and suggestions never block the receive). */}
+        {st === 'pending' && !doneState && !(isDelete && embedded) && (
+          <button type="button" onClick={() => acceptSuggestion(s)} disabled={accepting !== null}
+            style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #b78a2f', background: accepting === s.id ? '#f0e6cc' : '#fff', color: '#8a6d3b', borderRadius: 4, cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap', opacity: accepting !== null && accepting !== s.id ? 0.5 : 1 }}>
+            {accepting === s.id ? 'Applying…' : 'Accept'}
+          </button>
         )}
       </div>
     );
@@ -1912,7 +1940,32 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const lineId = String(i.line_id || '');
     setActioningIssue(i.id);
     try {
-      if (i.action.kind === 'create_brand') {
+      if (['delete_invoice', 'delete_non_invoice', 'delete_unreadable'].includes(String(i.action.kind))) {
+        // A Loaded write through the same verified /accept applier the
+        // duplicate suggestion has always used; the tombstone handling
+        // mirrors acceptFix. Web only (the button is !embedded already).
+        const res = await apiFetch('/api/invoice-fixes/accept', {
+          method: 'POST',
+          body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id, fix: i.action.payload }),
+        });
+        if (!res.ok) {
+          const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+          throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+        }
+        const out = await res.json();
+        if (out?.deleted) {
+          setDeletedDraft(true);
+          setStatus('done');
+          // Siblings may reference this draft (duplicate pair) — tell them.
+          window.dispatchEvent(new CustomEvent(INVOICE_ACTIONED_EVENT, {
+            detail: { venueId, invoiceId: doc.invoice_id, sourceDocId: workingDocId },
+          }));
+        }
+      } else if (i.action.kind === 'strike' && lineId) {
+        // Same op Accept applies from the suggestion row: cross the line out.
+        const idx = docRef.current.lines.findIndex((l) => String(l.id) === lineId);
+        if (idx >= 0) onStrike(idx, true);
+      } else if (i.action.kind === 'create_brand') {
         await createBrandAndApply(lineId, p.brand_name || '');
       } else if (i.action.kind === 'create_item') {
         await createItemAndApply(lineId, p.name || '', p.group_id || '');
@@ -1966,33 +2019,19 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           {i.message}
           {st === 'checked' && <span style={{ fontStyle: 'italic', textDecoration: 'none' }}> — checked</span>}
         </span>
-        {/* The blocker's own remedy. This is the create that used to sit in
-            Suggested changes as well — one decision, one button, here. */}
+        {/* One button, one decision — the same Accept as the suggestion
+            rows (18 Aug 2026: show-line / I've-checked-this / Dismiss
+            removed; a blocker clears by actually fixing it — this action,
+            the line's own controls, or the venue gate that authorises
+            autopilot past it). The title keeps naming what Accept does. */}
         {open && i.action && !doneState && !embedded && (
           <button type="button" onClick={() => runIssueAction(i)}
             disabled={actioningIssue === i.id}
-            title={gateLabel ? `Norm can do this unattended once "${gateLabel}" is on for this venue` : undefined}
-            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #b78a2f', background: '#fff8e8', color: '#8a6d1f', borderRadius: 4, cursor: actioningIssue === i.id ? 'default' : 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
-            {actioningIssue === i.id ? 'working…' : ISSUE_ACTION_LABELS[i.action.kind] || 'Fix it'}
-          </button>
-        )}
-        {i.line_id && viewMode === 'norm' && doc.lines.some((l) => String(l.id) === String(i.line_id)) && (
-          <button type="button" onClick={() => jumpToLine(String(i.line_id))}
-            style={{ fontSize: '0.6rem', padding: 0, border: 'none', background: 'none', color: '#2563a8', textDecoration: 'underline', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            show line
-          </button>
-        )}
-        {open && i.blocking && !doneState && (
-          <button type="button" onClick={() => dismissAction(i.id)}
-            title="mark this as checked — it stops blocking the receive"
-            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #ccc', background: '#fff', color: '#888', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            I’ve checked this
-          </button>
-        )}
-        {st === 'checked' && !doneState && (
-          <button type="button" onClick={() => undoAction(null, i.id)} title="restore this issue"
-            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #ccc', background: '#fff', color: '#888', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            Undo
+            title={ISSUE_ACTION_LABELS[i.action.kind]
+              ? `${ISSUE_ACTION_LABELS[i.action.kind]}${gateLabel ? ` — Norm can do this unattended once "${gateLabel}" is on for this venue` : ''}`
+              : undefined}
+            style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #b78a2f', background: actioningIssue === i.id ? '#f0e6cc' : '#fff', color: '#8a6d3b', borderRadius: 4, cursor: actioningIssue === i.id ? 'default' : 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+            {actioningIssue === i.id ? 'Applying…' : 'Accept'}
           </button>
         )}
       </div>
@@ -2151,6 +2190,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             <label style={fieldCol}>
               <span style={microLabel}>Supplier</span>
+              {/* X-ray modes show the VALUE (the extraction's printed name /
+                  the replica's resolution) as text — the select below can
+                  only display ids from the venue's list, which is how the
+                  Extracted tab showed "[Unnamed Supplier]" while the copy
+                  read 'BIDFOOD FSV DUNEDIN' (110016259, 19 Aug 2026). */}
+              {viewLoaded ? (
+                <span style={{ ...inputStyle, width: '100%', display: 'inline-block', background: '#f7f5f1', color: '#444' }}>
+                  {doc.supplier_name || '—'}
+                </span>
+              ) : (<>
               {/* An unlinked supplier renders AMBER — Loaded's server 500s on
                   receiving a supplier-less invoice. */}
               <select value={doc.linked_supplier_id || ''} disabled={doneState} onChange={(e) => onSupplier(e.target.value)}
@@ -2176,9 +2225,17 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   </button>
                 </span>
               )}
+              </>)}
             </label>
             <label style={fieldCol}>
               <span style={microLabel}>Order Number</span>
+              {/* Same x-ray rule: show the order number the view holds (the
+                  copy's printed reference in Extracted mode). */}
+              {viewLoaded ? (
+                <span style={{ ...inputStyle, width: '100%', display: 'inline-block', background: '#f7f5f1', color: '#444' }}>
+                  {doc.purchase_order_number || '—'}
+                </span>
+              ) : (<>
               <select value={doc.linked_purchase_order_id || ''} disabled={doneState} onChange={(e) => onPo(e.target.value)}
                 style={{ ...inputStyle, width: '100%', ...(poSuggs.length && !doneState ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }}>
                 {/* Split order (reference accepted): the field shows the order
@@ -2219,6 +2276,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   </a>
                 </span>
               )}
+              </>)}
             </label>
             {doc.order_date && (
               <label style={fieldCol}>
@@ -2285,7 +2343,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               <th style={{ padding: '0.4rem 0.6rem' }}>Code</th>
               <th style={{ padding: '0.4rem 0.6rem' }}>Description</th>
               <th style={{ padding: '0.4rem 0.6rem' }}>Brand</th>
+              {viewMode === 'extracted' ? (<>
+                <th style={{ padding: '0.4rem 0.6rem' }} title="the unit column exactly as printed — often how the line is CHARGED (EA/CTN), not the pack size">Unit (printed)</th>
+                <th style={{ padding: '0.4rem 0.6rem' }} title="the delivered unit of ONE item, derived from the document — what recipe costing and stock need">Unit of measure</th>
+              </>) : (
               <th style={{ padding: '0.4rem 0.6rem' }}>Unit</th>
+              )}
               <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Qty ordered</th>
               <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Qty received</th>
               <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Unit cost</th>
@@ -2301,11 +2364,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               const struck = !!l.struck;
               const strikeSugg = strikeSuggFor(l.id);
               const itemSugg = itemSuggFor(l.id);
-              const flash = flashLine === l.id;
               return (
               <Fragment key={l.id}>
               <tr id={`riv-${uid}-${l.id}`}
-                style={{ borderTop: '1px solid #f3f3f3', ...(flash ? { background: '#fdf6e7' } : {}), ...(struck ? { opacity: 0.5, textDecoration: 'line-through', color: '#999' } : {}) }}>
+                style={{ borderTop: '1px solid #f3f3f3', ...(struck ? { opacity: 0.5, textDecoration: 'line-through', color: '#999' } : {}) }}>
                 <td style={{ padding: '0.4rem 0.6rem', color: '#666' }}>{l.display_code || l.code || '—'}</td>
                 <td style={{ padding: '0.4rem 0.6rem' }}>
                   {l.item_name || l.description}
@@ -2416,8 +2478,20 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     brandSuggFor(l.id), `create '${fmtVal(l.brand)}'`,
                   )}
                 </td>
+                {viewMode === 'extracted' && (
+                  <td style={{ padding: '0.4rem 0.6rem', color: '#777' }}>
+                    {l.unit || '—'}
+                  </td>
+                )}
                 <td style={{ padding: '0.4rem 0.6rem' }}>
-                  {viewMode !== 'norm' ? (
+                  {viewMode === 'extracted' ? (
+                    <span style={{ fontSize: '0.8rem', color: '#555' }}>
+                      {l.unit_of_measure || '—'}
+                      {l.unit_unrecognisable && (
+                        <span style={{ color: '#b45309' }}> (unreadable)</span>
+                      )}
+                    </span>
+                  ) : viewMode !== 'norm' ? (
                     // X-ray modes are read-only — the unit renders as text
                     // (extracted lines carry no Loaded unit records at all).
                     <span style={{ fontSize: '0.8rem', color: '#555' }}>
@@ -2874,31 +2948,22 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {/* Footer */}
       {!dojo && (
       <div style={{ padding: '0.6rem 0.9rem', borderTop: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
-        <span style={{ flex: 1, fontSize: '0.72rem', color: status === 'error' ? '#c0392b' : doneState ? '#2e7d4f' : (unresolved.length > 0 || supplierBlocking || blockingOpen.length > 0) ? '#b45309' : '#888' }}>
+        {/* Only what has nowhere else to appear. Every "you can't receive
+            because..." line this used to carry is now said once, in its own
+            words, on the row that owns it: Suggested changes, Blocked from
+            auto receive, Worth knowing. Repeating the count down here made
+            the card say the same thing three times and taught people to skim
+            past the part that actually names the fix.
+
+            What stays is the transient and the terminal — a failed receive,
+            a receive in flight, a receive that happened. None of those has a
+            section of its own. */}
+        <span style={{ flex: 1, fontSize: '0.72rem', color: status === 'error' ? '#c0392b' : doneState ? '#2e7d4f' : '#888' }}>
           {status === 'error' ? `✗ ${message}`
             : draftDeleted ? `✓ Draft deleted from Loaded${doc.deleted_reason ? ` — ${doc.deleted_reason}` : ' — this document was a supplier statement or duplicate.'}`
             : doneState ? '✓ Received in Loaded.'
             : status === 'saving' ? 'Receiving…'
-            : noLines
-              ? 'Nothing to receive — this draft has no line items. If it isn’t an invoice, accept the delete suggestion instead.'
-            : supplierBlocking
-              ? 'No Loaded supplier linked — pick the supplier before receiving.'
-            // These two branches were deliberately silent, on the reasoning
-            // that the per-line NEW badge and the button's hover title said
-            // enough. They didn't: whenever anything was blocked the footer
-            // printed NOTHING, so the line most likely to be read went blank
-            // at exactly the moment the user needed to know why they could
-            // not receive. Say how many, and point at the list that says
-            // what each one needs.
-            : blockedCount > 0
-              ? `${blockedCount} thing${blockedCount > 1 ? 's' : ''} to sort out first — each is listed above with what it needs.`
-                : deleteSugg && stateOf(deleteSugg.id) === 'pending'
-                  ? 'This looks like a duplicate — review the delete suggestion before receiving.'
-                  : pendingSuggestions.length > 0
-                    ? `${pendingSuggestions.length} suggested change${pendingSuggestions.length > 1 ? 's' : ''} pending — Accept or Dismiss them, or receive as-is.`
-                    : reviewed
-                      ? 'Ready to receive.'
-                      : 'Review the invoice, then accept to update Loaded and receive.'}
+            : ''}
         </span>
         {overlay && (
           <button type="button" onClick={() => setExpandedFull(false)}

@@ -55,6 +55,18 @@ def norm(text: object) -> str:
     return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
 
 
+#: Names that are Loaded saying "I don't know", never an identity. Matching
+#: one resolved a Bidfood invoice to the venue's literal "[Unnamed Supplier]"
+#: record and the card read Ready-to-receive with no supplier (110016259,
+#: 19 Aug 2026).
+_PLACEHOLDER_NORMS = {"unnamedsupplier"}
+
+
+def is_placeholder_supplier_name(name: object) -> bool:
+    """True for empty names and Loaded's unnamed-supplier placeholder."""
+    return norm(name) in _PLACEHOLDER_NORMS or not norm(name)
+
+
 def words(text: object) -> set[str]:
     """Identity-bearing words: lowercase tokens, legal suffixes dropped."""
     out: set[str] = set()
@@ -76,7 +88,10 @@ def _targets(names) -> list[str]:
     the supplier list), deduplicated but ORDER PRESERVED — callers rank hints
     by authority and that ranking has to survive."""
     out: list[str] = []
-    for n in (norm(x) for x in names):
+    for x in names:
+        if is_placeholder_supplier_name(x):
+            continue  # "[Unnamed Supplier]" is a shrug, not a hint
+        n = norm(x)
         if len(n) >= 3 and n not in out:
             out.append(n)
     return out
@@ -146,6 +161,9 @@ def live_suppliers(suppliers) -> list[dict]:
         if isinstance(s, dict)
         and s.get("id")
         and not (s.get("removedAt") or s.get("datestampDeleted"))
+        # The unnamed-supplier placeholder is not an identity — nothing may
+        # resolve TO it, in any tier, from any caller.
+        and not is_placeholder_supplier_name(s.get("name"))
     ]
 
 
@@ -196,15 +214,18 @@ def resolve_supplier(names, suppliers, aliases_by_id=None):
     def known(s: dict) -> list[str]:
         return [s.get("name")] + list(aliases_by_id.get(str(s.get("id")), []))
 
-    # Hint by hint, in the caller's order of authority: the copy is asked
-    # first and only an unresolvable copy defers to Loaded's own value.
-    # Iterating suppliers first would silently let a lower-authority hint win
-    # whenever its supplier happened to sort earlier in Loaded's list.
+    # Hint by hint, in the caller's order of authority — and ALL tiers run
+    # for a hint before the next hint is consulted. Running the exact tier
+    # over every hint first inverted the authority: Loaded's low-authority
+    # hint exact-matched its own placeholder record while the printed name's
+    # correct containment match never got a turn (110016259, 19 Aug 2026).
+    # An ambiguous containment DEFERS to the next hint rather than giving up:
+    # when the invoice came from an order, Loaded's supplier is the human
+    # choice that breaks exactly this kind of tie.
     for target in targets:
         for s in live:
             if any(norm(n) == target for n in known(s) if n):
                 return s, "exact"
-    for target in targets:
         hits, seen = [], set()
         for s in live:
             for n in known(s):
@@ -216,8 +237,6 @@ def resolve_supplier(names, suppliers, aliases_by_id=None):
                     break
         if len(hits) == 1:
             return hits[0], "containment"
-        if hits:
-            return None, None  # ambiguous on the strongest hint that matched
     return None, None
 
 

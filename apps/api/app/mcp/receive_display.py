@@ -208,7 +208,8 @@ def _attach_suggestions(
             config_db,
             venue_id,
             str(data.get("invoice_id") or ""),
-            require_valid_po=False,  # interactive card — note, not block
+            # PO policy derives from the venue's receive_without_po gate, so
+            # the card tells the story autopilot acts on (18 Aug 2026).
         )
         keep = {
             k: data[k]

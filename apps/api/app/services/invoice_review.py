@@ -611,7 +611,7 @@ def order_item_suggestions(
 
 
 def build_suggestions(
-    data: dict, replica: dict
+    data: dict, replica: dict, *, db=None, pairing_ask=None
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """All suggestions + pairing/coverage issues for one reviewed invoice.
 
@@ -632,6 +632,57 @@ def build_suggestions(
         lid = pairs.get(str(rl.get("id")))
         if lid:
             _line_suggestions(suggestions, rl, lines_by_id[lid], lid)
+
+    # LLM arbitration for the ambiguous tail: a decisive pairing merely
+    # unlocks the NORMAL line suggestions (it writes nothing itself, so it
+    # needs no gate); anything less than high confidence leaves the blockers
+    # standing exactly as before. The validator in invoice_arbiter enforces
+    # a proper matching — a half-right pairing is worse than none.
+    if ambiguous and (pairing_ask is not None or db is not None):
+        from app.services import invoice_arbiter
+
+        claimed = set(pairs.values())
+        candidates = [
+            ln for ln in doc_lines if str(ln.get("id")) not in claimed and ln.get("id")
+        ]
+        slim = lambda ln: {  # noqa: E731 — tiny local shaper
+            "id": str(ln.get("id")),
+            "description": ln.get("description"),
+            "code": ln.get("code"),
+            "quantity": ln.get("quantity_received"),
+            "unit_price": ln.get("unit_cost"),
+            "line_total": ln.get("total_cost"),
+        }
+        verdict = invoice_arbiter.arbitrate_pairing(
+            [slim(rl) for rl in ambiguous],
+            [slim(ln) for ln in candidates],
+            context_lines=[{"copy": rid, "loaded": lid} for rid, lid in pairs.items()],
+            ask_llm=pairing_ask,
+            db=db,
+        )
+        if verdict:
+            arbitrated = dict(verdict["pairs"])
+            still_ambiguous = []
+            for rl in ambiguous:
+                lid = arbitrated.get(str(rl.get("id")))
+                if lid and lid in lines_by_id:
+                    pairs[str(rl.get("id"))] = lid
+                    _line_suggestions(suggestions, rl, lines_by_id[lid], lid)
+                else:
+                    still_ambiguous.append(rl)
+            ambiguous = still_ambiguous
+            issues.append(
+                {
+                    "id": "pairing_arbitrated",
+                    "code": "pairing_arbitrated",
+                    "blocking": False,
+                    "line_id": None,
+                    "message": (
+                        "ambiguous lines paired by Norm — "
+                        + (verdict.get("why") or "matched on the line details")
+                    ),
+                }
+            )
 
     for rl in ambiguous:
         issues.append(
@@ -859,6 +910,10 @@ def build_suggestions(
 _LINE_ISSUE_CLEARS = {
     "item_unmatched": ("linked_item_id", "not_null"),
     "brand_unknown": ("linked_brand_id", "not_null"),
+    # Give the credited line a quantity and the blocker stands down — the
+    # remedy is the quantity field itself (one-button doctrine: a blocker
+    # clears by actually fixing it, and editing IS the fix here).
+    "credit_zero_quantity": ("quantity_received", "truthy"),
     # unit_missing / unit_unconfirmed deliberately have NO clears_when: a unit
     # value already sitting on Loaded's line is Loaded's OCR of the same paper
     # — the very thing we don't trust. Only an explicit confirm/dismiss
@@ -883,6 +938,14 @@ _ISSUE_GATES = {
     "unit_unconfirmed": _VA.RECEIVE_WITH_UNCONFIRMED_UNIT,
     "po_missing": _VA.RECEIVE_WITHOUT_PO,
     "po_unresolved": _VA.RECEIVE_WITHOUT_PO,
+    "totals_inconsistent": _VA.RECEIVE_UNRECONCILED_TOTALS,
+    "loaded_line_not_on_copy": _VA.AUTO_STRIKE_PHANTOM_LINES,
+    # The delete gates — autopilot's only destructive writes, three separate
+    # toggles on purpose (different risk profiles; see venue_autopilot).
+    "duplicate_invoice": _VA.AUTO_DELETE_DUPLICATES,
+    "not_an_invoice": _VA.AUTO_DELETE_NON_INVOICES,
+    "no_copy_attached": _VA.AUTO_DELETE_UNREADABLE,
+    "copy_unreadable": _VA.AUTO_DELETE_UNREADABLE,
 }
 
 
@@ -958,7 +1021,21 @@ _REMEDY_BLOCKERS = {
     # No gate: an order already fully invoiced by a sibling is a judgement,
     # not a create, so no toggle authorises it.
     "unlink_po": ("po_doubled_up", None),
+    # The duplicate's delete recommendation rides ON the blocker — one row,
+    # one Accept (and autopilot's gate walk runs the same delete).
+    "delete_invoice": ("duplicate_invoice", _VA.AUTO_DELETE_DUPLICATES),
+    # Phantom lines: the strike IS the recommendation.
+    "strike": ("loaded_line_not_on_copy", _VA.AUTO_STRIKE_PHANTOM_LINES),
 }
+
+#: Kinds that fold ONLY when their blocker already exists. A $0-artifact
+#: strike has no blocker on purpose — folding must not fabricate one.
+_FOLD_ONLY_IF_PRESENT = {"strike"}
+
+#: Action kinds that DELETE the Loaded draft. All carry
+#: ``payload.type="delete_invoice"`` so one server applier serves them; the
+#: distinct kinds exist because each answers to its own venue gate.
+_DELETE_KINDS = {"delete_invoice", "delete_non_invoice", "delete_unreadable"}
 
 
 def fold_remedies_into_blockers(
@@ -1016,6 +1093,19 @@ def fold_remedies_into_blockers(
             picked = resolver_by_line.get(str(i.get("line_id") or ""))
             if picked and isinstance(picked.get("apply"), dict):
                 i["action"]["apply"] = dict(picked["apply"])
+        # Record-only decisions: Accept doesn't write to Loaded, it RECORDS
+        # the call the message describes (the card's one-button doctrine —
+        # every blocker row offers Accept, and accepting an unresolvable PO
+        # reference means "receive without it").
+        if i.get("code") == "po_unresolved" and not i.get("action"):
+            i["action"] = {"kind": "receive_without_po", "payload": {}}
+        if i.get("code") == "unit_unconfirmed" and not i.get("action"):
+            i["action"] = {"kind": "confirm_unit", "payload": {}}
+        if i.get("code") == "totals_inconsistent" and not i.get("action"):
+            # The fallback path when the diagnosis can't fix the numbers:
+            # Accept = receive on the values as read (record-only; the
+            # receive derives its figures from the lines regardless).
+            i["action"] = {"kind": "receive_unreconciled_totals", "payload": {}}
     for s in suggestions:
         pair = _REMEDY_BLOCKERS.get(str(s.get("kind")))
         if not pair:
@@ -1029,6 +1119,9 @@ def fold_remedies_into_blockers(
         payload = dict(s.get("payload") or {})
         apply_now = s.get("apply") if isinstance(s.get("apply"), dict) else None
         target = by_line.get((code, lid))
+        if target is None and s.get("kind") in _FOLD_ONLY_IF_PRESENT:
+            kept.append(s)
+            continue
         if target is None and code == "unit_missing":
             # The copy names a unit Loaded lacks while the line still holds a
             # variant DEFAULT, so no unit_missing was raised — and autopilot
@@ -1103,6 +1196,35 @@ def apply_open_gates(
             }
         )
 
+    # Deletes run FIRST and short-circuit everything: no point creating items
+    # (or receiving) on a draft that is about to be removed. Autopilot's only
+    # destructive writes — each behind its own gate, always recorded, and a
+    # failed delete leaves the blocker standing like any other remedy.
+    for issue in data.get("issues") or []:
+        action = issue.get("action")
+        if (
+            not isinstance(action, dict)
+            or not issue.get("blocking")
+            or str(action.get("kind") or "") not in _DELETE_KINDS
+        ):
+            continue
+        if not _VA.gate_open(settings, issue.get("gate")):
+            continue
+        payload = action.get("payload") or {}
+        try:
+            lh = LoadedInvoiceClient(db, config_db, venue_id)
+            IF._apply_delete_invoice(lh, payload, db)
+            data["is_deleted"] = True
+            data["status"] = "deleted"
+            _cleared(issue, {"deleted": True})
+            done.append(
+                f"deleted the draft ({payload.get('summary') or issue.get('code')})"
+            )
+        except Exception as exc:  # noqa: BLE001 — parks instead of half-done
+            logger.warning("gated delete failed on %s: %s", invoice_id, exc)
+            continue
+        return done
+
     for issue in data.get("issues") or []:
         action = issue.get("action")
         if not isinstance(action, dict) or not issue.get("blocking"):
@@ -1140,6 +1262,25 @@ def apply_open_gates(
                     ln["unit_ratio"] = out.get("unit_ratio")
                 _cleared(issue, {"linked_unit_id": out.get("unit_id")})
                 done.append(f"created unit '{out.get('unit_name')}'")
+            elif kind == "strike" and ln is not None:
+                # The phantom-line remedy: cross the line out. Same op the
+                # card's Accept applies, recorded the same way; the blocker's
+                # clears_when (struck) then stands down on its own.
+                ln["struck"] = True
+                _cleared(issue, {"struck": True})
+                done.append(
+                    f"struck '{ln.get('description') or ln.get('code') or '?'}' "
+                    "(not billed on the copy)"
+                )
+            elif kind in (
+                "receive_without_po",
+                "confirm_unit",
+                "receive_unreconciled_totals",
+            ):
+                # Record-only decisions: the open gate IS the venue's answer,
+                # so the record clears the blocker and nothing touches Loaded.
+                _cleared(issue, {})
+                done.append(f"accepted ({kind.replace('_', ' ')})")
             elif kind == "guess_unit" and ln is not None:
                 # The batched resolver's HIGH-confidence pick rides in the
                 # action's `apply` — use it verbatim so autopilot applies
@@ -1410,15 +1551,37 @@ def review_invoice(
     detail: dict | None = None,
     extraction: dict | None = None,
     reference: dict | None = None,
-    require_valid_po: bool = True,
+    require_valid_po: bool | None = None,
     allow_sensei: bool = False,
+    totals_ask=None,
+    pairing_ask=None,
 ) -> dict:
     """Review one invoice and return the full replica_v1 doc payload.
 
     Pure computation + Loaded reads: the caller persists the payload onto
     working documents (and decides about receiving). ``detail`` /
     ``extraction`` / ``reference`` let the batch path inject prefetched work.
+
+    ``require_valid_po`` None means: derive it from the venue's
+    ``receive_without_po`` gate — so the card tells the same story autopilot
+    acts on. The interactive card used to force False ("a human is looking"),
+    which filed the missing-PO blocker under worth-knowing and hid what
+    autopilot would actually do (user report, 18 Aug 2026: it should read as
+    blocked-from-auto-receive naming the toggle).
     """
+    if require_valid_po is None:
+        require_valid_po = True  # the batch default; harness runs pass db=None
+        if db is not None:
+            try:
+                from app.db.models import Venue
+                from app.services import venue_autopilot as _VAmod
+
+                venue = db.query(Venue).filter(Venue.id == venue_id).first()
+                require_valid_po = not _VAmod.settings_for(venue)[
+                    _VAmod.RECEIVE_WITHOUT_PO
+                ]
+            except Exception:  # noqa: BLE001 — policy lookup must never sink a review
+                pass
     if lh is None:
         lh = LoadedInvoiceClient(db, config_db, venue_id)
     if detail is None:
@@ -1465,9 +1628,24 @@ def review_invoice(
                 "code": "no_copy_attached",
                 "blocking": True,
                 "line_id": None,
+                "gate": _VA.AUTO_DELETE_UNREADABLE,
+                # Accept = delete this draft (a Loaded write, the verified
+                # delete endpoint). A draft with no document behind it can't
+                # be reviewed; the venue decides via the gate whether Norm
+                # may clear these unattended.
+                "action": {
+                    "kind": "delete_unreadable",
+                    "payload": {
+                        "type": "delete_invoice",
+                        "invoice_id": data.get("invoice_id"),
+                        "reference": data.get("reference_number"),
+                        "summary": "no invoice copy attached — draft deleted",
+                    },
+                },
                 "message": (
                     "no invoice copy is attached in Loaded — nothing to review "
-                    "against; attach the document or receive by hand"
+                    "against — delete the draft (or attach the document "
+                    "in Loaded)"
                 ),
             }
         )
@@ -1494,9 +1672,19 @@ def review_invoice(
                     "code": "copy_unreadable",
                     "blocking": True,
                     "line_id": None,
+                    "gate": _VA.AUTO_DELETE_UNREADABLE,
+                    "action": {
+                        "kind": "delete_unreadable",
+                        "payload": {
+                            "type": "delete_invoice",
+                            "invoice_id": data.get("invoice_id"),
+                            "reference": data.get("reference_number"),
+                            "summary": f"unreadable invoice copy ({err}) — draft deleted",
+                        },
+                    },
                     "message": (
-                        f"the invoice copy could not be read ({err}) — review "
-                        "the document by hand"
+                        f"the invoice copy could not be read ({err}) — delete "
+                        "the draft (or fix the document in Loaded)"
                     ),
                 }
             )
@@ -1545,7 +1733,9 @@ def review_invoice(
                 replica.get("is_credit_note")
                 or (isinstance(data.get("total"), (int, float)) and data["total"] < 0)
             )
-            suggestions, extra_issues, pairs = build_suggestions(data, replica)
+            suggestions, extra_issues, pairs = build_suggestions(
+                data, replica, db=db, pairing_ask=pairing_ask
+            )
             # Last word on an ambiguous supplier code: the order.
             order_item_suggestions(data, suggestions, catalogue)
             # A brand Loaded names but has no record for blocks its own
@@ -1595,13 +1785,101 @@ def review_invoice(
             # ...and a unit blocker says which unit will be used, now that the
             # working lines are in hand.
             name_the_unit_in_use(data, issues)
+            # Not-an-invoice (statement/letter): Accept = delete the draft —
+            # a Loaded write behind its own gate. Attached here because the
+            # payload needs the invoice id, which the replica doesn't hold.
+            for i in issues:
+                if i.get("code") == "not_an_invoice" and not i.get("action"):
+                    doc_type = (i.get("data") or {}).get("document_type") or "document"
+                    i["action"] = {
+                        "kind": "delete_non_invoice",
+                        "payload": {
+                            "type": "delete_invoice",
+                            "invoice_id": data.get("invoice_id"),
+                            "reference": data.get("reference_number"),
+                            "summary": f"a {doc_type}, not an invoice — draft deleted",
+                        },
+                    }
+                    i["message"] = f"{i.get('message')} — delete the draft"
+            # Totals that don't reconcile: ask the model WHICH figure was
+            # misread (invoice_arbiter validates that the corrections make
+            # everything agree). Corrections land as ordinary Accept-able
+            # suggestions tagged `resolves`, so accepting the last of them
+            # also clears the blocker; the blocker keeps its record-only
+            # Accept ("receive on the values as read") as the fallback.
+            totals_issue = next(
+                (i for i in issues if i.get("code") == "totals_inconsistent"), None
+            )
+            if totals_issue and (totals_ask is not None or db is not None):
+                from app.services import invoice_arbiter
+
+                ext_lines = [
+                    {
+                        "id": f"rep-{k}",
+                        "description": xl.get("description"),
+                        "quantity": xl.get("quantity"),
+                        "unit_price": xl.get("unit_price_ex_tax"),
+                        "line_total": xl.get("line_total_ex_tax"),
+                    }
+                    for k, xl in enumerate(extraction.get("lines") or [])
+                ]
+                verdict = invoice_arbiter.diagnose_totals(
+                    ext_lines,
+                    {
+                        "subtotal": extraction.get("subtotal_ex_tax"),
+                        "tax": extraction.get("tax_amount"),
+                        "discount": extraction.get("discount_amount"),
+                        "total": extraction.get("total_incl_tax"),
+                    },
+                    [totals_issue.get("message") or ""],
+                    ask_llm=totals_ask,
+                    db=db,
+                )
+                _field_map = {
+                    "quantity": "quantity_received",
+                    "unit_price": "unit_cost",
+                    "line_total": "total_cost",
+                }
+                for c in (verdict or {}).get("corrections") or []:
+                    if c.get("scope") == "line":
+                        lid = pairs.get(str(c.get("line_id") or ""))
+                        field = _field_map.get(str(c.get("field")))
+                        if not lid or not field:
+                            continue
+                        _sugg(
+                            suggestions,
+                            "line_value",
+                            field=field,
+                            line_id=lid,
+                            current=c.get("current"),
+                            proposed=c.get("proposed"),
+                            explanation=(
+                                f"the copy's totals don't reconcile — "
+                                f"{verdict.get('why')}"
+                            ),
+                            apply={field: c.get("proposed")},
+                            confidence=verdict.get("confidence"),
+                        )
+                        suggestions[-1]["resolves"] = totals_issue["id"]
+                    else:
+                        # A misread HEADER figure means the lines are right —
+                        # and the receive derives its numbers from the lines,
+                        # so nothing needs changing. Say so on the blocker.
+                        totals_issue["message"] = (
+                            f"{totals_issue.get('message')} — Norm's read: "
+                            f"{verdict.get('why')} (the line values are "
+                            "consistent; accepting receives on them)"
+                        )
             data["suggestions"] = suggestions
             data["issues"] = issues
             # The old po_linked gate: an invoice with no purchase order at
             # all (none linked in Loaded, none resolvable from the copy).
-            # Blocking only under the require_valid_po policy — the batch
-            # default; the interactive review passes False (the human is
-            # looking at the card) and gets a note instead.
+            # Blocking under the require_valid_po policy, which both surfaces
+            # now derive from the venue's receive_without_po gate — the card
+            # must tell the story autopilot acts on, with the gate stamped so
+            # it can name the toggle ("Auto-receive needs 'receive without a
+            # valid purchase order' switched on"). Gate on → an honest
+            # worth-knowing note instead.
             # A credit note legitimately has no purchase order — the one it
             # prints belongs to the invoice being credited (see the replica's
             # PO skip), so demanding a link would block every credit.
@@ -1618,10 +1896,18 @@ def review_invoice(
                         "code": "po_missing",
                         "blocking": require_valid_po,
                         "line_id": None,
+                        "gate": _VA.RECEIVE_WITHOUT_PO,
+                        # Accept records the decision the message names —
+                        # receive this delivery without a purchase order
+                        # (record-only; nothing is written to Loaded). The
+                        # message states THE RECOMMENDATION, like every other
+                        # row ("create it as 'X'"); linking an order stays
+                        # available through the Order dropdown.
+                        "action": {"kind": "receive_without_po", "payload": {}},
                         "message": (
                             "no purchase order is linked and the copy "
-                            "references none that resolves — link an order or "
-                            "confirm this delivery had no PO"
+                            "references none that resolves — receive this "
+                            "delivery without an order"
                         ),
                         "clears_when": {
                             "scope": "header",
@@ -1842,6 +2128,18 @@ def review_invoices(
             # invoice parks with its reason on it.
             gated = apply_open_gates(db, config_db, venue_id, iid, data, settings)
             data["confidence"] = compute_confidence(data)
+            if data.get("is_deleted"):
+                # A gated delete removed the draft — terminal; there is
+                # nothing left to receive or card.
+                received.append(
+                    {
+                        "invoice_id": iid,
+                        "reference_number": data.get("reference_number"),
+                        "outcome": "deleted",
+                        "reasons": gated,
+                    }
+                )
+                continue
 
         blocking = [
             i.get("message")

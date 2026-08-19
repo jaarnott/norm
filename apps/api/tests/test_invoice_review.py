@@ -135,9 +135,9 @@ def EXTRACTION(**over):
     return ext
 
 
-def _review(detail=None, extraction=None, reference=None, lh=None, **kw):
+def _review(detail=None, extraction=None, reference=None, lh=None, db=None, **kw):
     return review_invoice(
-        None,
+        db,
         None,
         "v-1",
         "inv-1",
@@ -410,9 +410,15 @@ class TestCoverage:
         )
         assert issue["blocking"] is True and issue["line_id"] == "ld-9"
         assert data["confidence"] == "needs_review"
+        # The strike remedy is FOLDED onto the blocker (one row, one Accept)
+        # and gated for autopilot; the suggestion list no longer repeats it.
+        assert issue["action"]["kind"] == "strike"
+        assert issue["action"]["apply"] == {"struck": True}
+        assert issue["gate"] == "auto_strike_phantom_lines"
+        assert not [s for s in data["suggestions"] if s["kind"] == "strike"]
         # striking the line clears it (the clears_when predicate)
-        strike = next(s for s in data["suggestions"] if s["kind"] == "strike")
-        apply_suggestion(data, strike)
+        ln = next(line for line in data["lines"] if line["id"] == "ld-9")
+        ln["struck"] = True
         assert compute_confidence(data) == "ready"
 
     def test_copy_line_missing_in_loaded_becomes_add_line(self):
@@ -501,12 +507,15 @@ class TestBlockingIssues:
             }
         ]
         data = _review(reference=REFERENCE(received_feed=feed))
-        assert "duplicate_invoice" in _issue_codes(data)
-        s = next(s for s in data["suggestions"] if s["kind"] == "delete_invoice")
-        assert s["payload"]["duplicate_of_invoice_id"] == "inv-old"
-        assert s["payload"]["type"] == "delete_invoice"
-        # a delete is a Loaded write — never applied locally, never auto
-        assert apply_suggestion(data, s) is None
+        dup = next(i for i in data["issues"] if i["code"] == "duplicate_invoice")
+        # The delete recommendation rides ON the blocker now (one row, one
+        # Accept), behind its own gate — autopilot's destructive writes each
+        # answer to a separate toggle.
+        assert dup["action"]["kind"] == "delete_invoice"
+        assert dup["action"]["payload"]["duplicate_of_invoice_id"] == "inv-old"
+        assert dup["action"]["payload"]["type"] == "delete_invoice"
+        assert dup["gate"] == "auto_delete_duplicates"
+        assert not [s for s in data["suggestions"] if s["kind"] == "delete_invoice"]
 
     def test_no_copy_attached_blocks(self):
         data = _review(detail=DETAIL(fileId=None))
@@ -570,19 +579,53 @@ class TestBlockingIssues:
 
 
 class TestPoPolicy:
+    class _VenueDb:
+        """A db stub answering the venue-settings lookup only."""
+
+        class _Venue:
+            def __init__(self, settings):
+                self.id = "v-1"
+                self.invoice_autopilot = settings
+
+        def __init__(self, settings):
+            self._venue = self._Venue(settings)
+
+        def query(self, *_a):
+            return self
+
+        def filter(self, *_a, **_k):
+            return self
+
+        def first(self):
+            return self._venue
+
     def test_no_po_blocks_under_the_batch_default(self):
         det = DETAIL(linkedPurchaseOrderId=None, purchaseOrderNumber=None)
         data = _review(detail=det)
         issue = next(i for i in data["issues"] if i["code"] == "po_missing")
         assert issue["blocking"] is True
+        # the card names the toggle that would let autopilot past this
+        assert issue["gate"] == "receive_without_po"
+        # ...and offers Accept: a record-only decision to receive without a
+        # PO (the one-button doctrine — no more instruction with no button)
+        assert issue["action"] == {"kind": "receive_without_po", "payload": {}}
         assert data["confidence"] == "needs_review"
         # linking an order clears it (clears_when)
         data["linked_purchase_order_id"] = "po-9"
         assert compute_confidence(data) == "ready"
 
-    def test_interactive_review_gets_a_note_not_a_block(self):
+    def test_the_card_tells_the_story_autopilot_acts_on(self):
+        # No explicit policy → derived from the VENUE's receive_without_po
+        # gate. Gate off: the card shows blocked-from-auto-receive naming the
+        # toggle — no more "worth knowing" while autopilot silently parks
+        # (user report, 18 Aug 2026). Gate on: an honest note.
         det = DETAIL(linkedPurchaseOrderId=None, purchaseOrderNumber=None)
-        data = _review(detail=det, require_valid_po=False)
+        data = _review(detail=det, db=self._VenueDb({}))
+        issue = next(i for i in data["issues"] if i["code"] == "po_missing")
+        assert issue["blocking"] is True
+        assert issue["gate"] == "receive_without_po"
+
+        data = _review(detail=det, db=self._VenueDb({"receive_without_po": True}))
         issue = next(i for i in data["issues"] if i["code"] == "po_missing")
         assert issue["blocking"] is False
         assert data["confidence"] == "ready"
@@ -1912,3 +1955,319 @@ class TestBrandSuggestion:
         data = _review(detail=det)
         brands = [i for i in data["issues"] if i["code"] == "brand_unknown"]
         assert [i["line_id"] for i in brands] == ["ld-2"]
+
+
+class TestDefectRecommendations:
+    """Every defect-class blocker now offers Accept (18-19 Aug 2026): deletes
+    for junk drafts (each behind its own gate), the strike for phantom lines,
+    and LLM arbitration for totals and ambiguous pairing."""
+
+    def test_no_copy_and_unreadable_carry_delete_actions(self):
+        data = _review(detail=DETAIL(fileId=None))
+        issue = next(i for i in data["issues"] if i["code"] == "no_copy_attached")
+        assert issue["gate"] == "auto_delete_unreadable"
+        assert issue["action"]["kind"] == "delete_unreadable"
+        assert issue["action"]["payload"]["type"] == "delete_invoice"
+        assert issue["action"]["payload"]["invoice_id"] == "inv-1"
+
+        data = _review(extraction={"error": "LLM down"})
+        issue = next(i for i in data["issues"] if i["code"] == "copy_unreadable")
+        assert issue["gate"] == "auto_delete_unreadable"
+        assert issue["action"]["kind"] == "delete_unreadable"
+        assert "delete the draft" in issue["message"]
+
+    def test_not_an_invoice_carries_its_delete_action(self):
+        ext = EXTRACTION(document_type="statement", lines=[])
+        data = _review(extraction=ext)
+        issue = next(i for i in data["issues"] if i["code"] == "not_an_invoice")
+        assert issue["gate"] == "auto_delete_non_invoices"
+        assert issue["action"]["kind"] == "delete_non_invoice"
+        assert issue["action"]["payload"]["invoice_id"] == "inv-1"
+        assert "delete the draft" in issue["message"]
+
+    def _misread_totals_case(self, totals_ask):
+        det = DETAIL(total=23.0, subtotal=20.0, taxAmount=3.0)
+        det["lines"] = [
+            {
+                "id": "ld-1",
+                "code": "PBO0.7",
+                "description": "Salmon Fillet Skin On",
+                "unit": "Kilo",
+                "linkedUnitId": "u-kilo",
+                "quantityReceived": 2.0,
+                "unitCostExclTax": 10.0,
+                "totalCostExclTax": 90.0,
+                "saleTaxRate": 0.15,
+                "linkedItemId": "item-salmon",
+                "itemType": "Default",
+            }
+        ]
+        ext = EXTRACTION(
+            subtotal_ex_tax=20.0,
+            tax_amount=3.0,
+            total_incl_tax=23.0,
+            lines=[
+                {
+                    "code": "PBO0.7",
+                    "description": "Salmon Fillet Skin On",
+                    "quantity": 2,
+                    "unit": "Kilo",
+                    "unit_of_measure": "Kilo",
+                    "unit_price_ex_tax": 10.0,
+                    # misread: 2 x 10 = 20, the copy printed 90
+                    "line_total_ex_tax": 90.0,
+                }
+            ],
+        )
+        return _review(detail=det, extraction=ext, totals_ask=totals_ask)
+
+    def test_totals_diagnosis_becomes_tagged_suggestions(self):
+        data = self._misread_totals_case(
+            lambda p: {
+                "corrections": [
+                    {
+                        "scope": "line",
+                        "line_id": "rep-0",
+                        "field": "line_total",
+                        "current": 90.0,
+                        "proposed": 20.0,
+                    }
+                ],
+                "confidence": "high",
+                "why": "2 x 10.00 = 20.00; the printed 90.00 fails the check",
+            }
+        )
+        issue = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
+        # fallback Accept + gate on the blocker itself
+        assert issue["action"]["kind"] == "receive_unreconciled_totals"
+        assert issue["gate"] == "receive_unreconciled_totals"
+        s = next(
+            s
+            for s in data["suggestions"]
+            if s["field"] == "total_cost" and s.get("resolves")
+        )
+        assert s["proposed"] == 20.0
+        assert s["resolves"] == issue["id"]
+        assert s["confidence"] == "high"
+        assert "2 x 10.00" in s["explanation"]
+
+    def test_totals_diagnosis_failure_leaves_the_fallback_only(self):
+        data = self._misread_totals_case(lambda p: {})
+        issue = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
+        assert issue["action"]["kind"] == "receive_unreconciled_totals"
+        assert not [s for s in data["suggestions"] if s.get("resolves")]
+
+    def _ambiguous_case(self, pairing_ask):
+        # rep-0 claims ld-1 (unique salmon); rep-1's only salmon hits are
+        # already claimed and 'Freight' doesn't plain-match it → AMBIGUOUS,
+        # with ld-2 the sole unclaimed candidate for arbitration.
+        det = DETAIL(total=80.5, subtotal=70.0, taxAmount=10.5)
+        det["lines"] = [
+            {
+                "id": "ld-1",
+                "code": "PBO0.7",
+                "description": "Salmon Fillet Skin On",
+                "unit": "Kilo",
+                "linkedUnitId": "u-kilo",
+                "quantityReceived": 2.0,
+                "unitCostExclTax": 10.0,
+                "totalCostExclTax": 20.0,
+                "saleTaxRate": 0.15,
+                "linkedItemId": "item-salmon",
+                "itemType": "Default",
+            },
+            {
+                "id": "ld-2",
+                "code": "FGT001",
+                "description": "Freight",
+                "unit": "Each",
+                "linkedUnitId": "u-each",
+                "quantityReceived": 5.0,
+                "unitCostExclTax": 10.0,
+                "totalCostExclTax": 50.0,
+                "saleTaxRate": 0.15,
+                "linkedItemId": "item-freight",
+                "itemType": "Default",
+            },
+        ]
+        ext = EXTRACTION(
+            subtotal_ex_tax=70.0,
+            tax_amount=10.5,
+            total_incl_tax=80.5,
+            lines=[
+                {
+                    "code": "PBO0.7",
+                    "description": "Salmon Fillet Skin On",
+                    "quantity": qty,
+                    "unit": "Kilo",
+                    "unit_of_measure": "Kilo",
+                    "unit_price_ex_tax": 10.0,
+                    "line_total_ex_tax": qty * 10.0,
+                }
+                for qty in (2, 5)
+            ],
+        )
+        return _review(detail=det, extraction=ext, pairing_ask=pairing_ask)
+
+    def test_decisive_pairing_unlocks_the_lines(self):
+        data = self._ambiguous_case(
+            lambda p: {
+                "pairs": {"rep-1": "ld-2"},
+                "confidence": "high",
+                "why": "the quantities disambiguate the lines",
+            }
+        )
+        assert "ambiguous_pairing" not in _issue_codes(data)
+        note = next(i for i in data["issues"] if i["code"] == "pairing_arbitrated")
+        assert note["blocking"] is False
+        assert "quantities disambiguate" in note["message"]
+
+    def test_indecisive_pairing_keeps_the_blockers(self):
+        data = self._ambiguous_case(lambda p: {})
+        assert "ambiguous_pairing" in _issue_codes(data)
+
+
+class TestDestructiveGates:
+    """The delete gates: autopilot's only destructive writes — never without
+    the venue's toggle, always short-circuiting, always recorded."""
+
+    def _data(self, code, kind, gate):
+        return {
+            "invoice_id": "inv-1",
+            "lines": [],
+            "suggestions": [],
+            "suggestion_actions": [],
+            "issues": [
+                {
+                    "id": code,
+                    "code": code,
+                    "blocking": True,
+                    "gate": gate,
+                    "action": {
+                        "kind": kind,
+                        "payload": {
+                            "type": "delete_invoice",
+                            "invoice_id": "inv-1",
+                            "summary": "junk draft",
+                        },
+                    },
+                    "message": "x",
+                }
+            ],
+        }
+
+    def _settings(self, *on):
+        return {
+            "mode": "autopilot",
+            **{g: False for g in VA.GATES},
+            **{g: True for g in on},
+        }
+
+    def test_gate_off_never_deletes(self, monkeypatch):
+        from app.routers import invoice_fixes as IF
+
+        calls: list = []
+        monkeypatch.setattr(
+            IF, "_apply_delete_invoice", lambda *a, **k: calls.append(a)
+        )
+        data = self._data(
+            "duplicate_invoice", "delete_invoice", VA.AUTO_DELETE_DUPLICATES
+        )
+        assert (
+            IR.apply_open_gates(None, None, "v-1", "inv-1", data, self._settings())
+            == []
+        )
+        assert calls == [], "autopilot deleted a draft the venue had not allowed"
+        assert not data.get("is_deleted")
+
+    def test_gate_on_deletes_and_short_circuits(self, monkeypatch):
+        from app.routers import invoice_fixes as IF
+
+        deletes: list = []
+        creates: list = []
+        monkeypatch.setattr(
+            IF, "_apply_delete_invoice", lambda lh, fix, db: deletes.append(fix)
+        )
+        monkeypatch.setattr(
+            IF, "create_stock_brand", lambda *a, **k: creates.append(a) or {}
+        )
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda *a, **k: object())
+        data = self._data(
+            "duplicate_invoice", "delete_invoice", VA.AUTO_DELETE_DUPLICATES
+        )
+        # a create the walk would normally run — must be skipped by the delete
+        data["issues"].append(
+            {
+                "id": "brand_unknown:ld-1",
+                "code": "brand_unknown",
+                "blocking": True,
+                "line_id": "ld-1",
+                "gate": VA.AUTO_CREATE_BRANDS,
+                "action": {"kind": "create_brand", "payload": {"brand_name": "X"}},
+                "message": "x",
+            }
+        )
+        data["lines"] = [{"id": "ld-1"}]
+        done = IR.apply_open_gates(
+            None,
+            None,
+            "v-1",
+            "inv-1",
+            data,
+            self._settings(VA.AUTO_DELETE_DUPLICATES, VA.AUTO_CREATE_BRANDS),
+        )
+        assert deletes and deletes[0]["invoice_id"] == "inv-1"
+        assert creates == []  # short-circuited
+        assert data["is_deleted"] is True and data["status"] == "deleted"
+        assert done == ["deleted the draft (junk draft)"]
+        # recorded against the issue, actor norm
+        rec = data["suggestion_actions"][-1]
+        assert rec["suggestion_id"] == "duplicate_invoice" and rec["by"] == "norm"
+
+    def test_strike_and_record_only_gates(self):
+        data = {
+            "invoice_id": "inv-1",
+            "lines": [{"id": "ld-9", "description": "Phantom"}],
+            "suggestions": [],
+            "suggestion_actions": [],
+            "issues": [
+                {
+                    "id": "loaded_line_not_on_copy:ld-9",
+                    "code": "loaded_line_not_on_copy",
+                    "blocking": True,
+                    "line_id": "ld-9",
+                    "gate": VA.AUTO_STRIKE_PHANTOM_LINES,
+                    "action": {"kind": "strike", "apply": {"struck": True}},
+                    "message": "x",
+                    "clears_when": {
+                        "scope": "line",
+                        "line_id": "ld-9",
+                        "field": "struck",
+                        "op": "truthy",
+                    },
+                },
+                {
+                    "id": "totals_inconsistent",
+                    "code": "totals_inconsistent",
+                    "blocking": True,
+                    "line_id": None,
+                    "gate": VA.RECEIVE_UNRECONCILED_TOTALS,
+                    "action": {"kind": "receive_unreconciled_totals", "payload": {}},
+                    "message": "x",
+                },
+            ],
+        }
+        done = IR.apply_open_gates(
+            None,
+            None,
+            "v-1",
+            "inv-1",
+            data,
+            self._settings(
+                VA.AUTO_STRIKE_PHANTOM_LINES, VA.RECEIVE_UNRECONCILED_TOTALS
+            ),
+        )
+        assert data["lines"][0]["struck"] is True
+        assert any("struck" in d for d in done)
+        assert any("receive unreconciled totals" in d for d in done)
+        assert IR.compute_confidence(data) == "ready"

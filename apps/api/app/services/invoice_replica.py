@@ -1190,8 +1190,8 @@ def build_replica(
                 _issue(
                     "po_unresolved",
                     f"the copy references order '{po_number}' but no Loaded "
-                    "purchase order matches it unambiguously — link the order "
-                    "by hand or confirm there isn't one",
+                    "purchase order matches it unambiguously — receive "
+                    "without linking an order",
                     data={"po_number": str(po_number)},
                 )
         except Exception as exc:  # noqa: BLE001
@@ -1199,7 +1199,7 @@ def build_replica(
             _issue(
                 "po_unresolved",
                 f"the order reference '{po_number}' could not be checked "
-                f"against Loaded ({exc}) — confirm the order link by hand",
+                f"against Loaded ({exc}) — receive without linking an order",
                 data={"po_number": str(po_number)},
             )
 

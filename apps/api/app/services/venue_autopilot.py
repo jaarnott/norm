@@ -36,6 +36,15 @@ AUTO_CREATE_SUPPLIERS = "auto_create_suppliers"
 RECEIVE_WITHOUT_UNIT = "receive_without_unit"
 RECEIVE_WITH_UNCONFIRMED_UNIT = "receive_with_unconfirmed_unit"
 RECEIVE_WITHOUT_PO = "receive_without_po"
+RECEIVE_UNRECONCILED_TOTALS = "receive_unreconciled_totals"
+AUTO_STRIKE_PHANTOM_LINES = "auto_strike_phantom_lines"
+# The delete gates authorise autopilot's only DESTRUCTIVE writes — three
+# separate toggles on purpose: deleting a duplicate is evidence-backed,
+# deleting an unreadable-copy draft could discard a real delivery behind a
+# bad scan. A venue opts into each risk on its own.
+AUTO_DELETE_DUPLICATES = "auto_delete_duplicates"
+AUTO_DELETE_NON_INVOICES = "auto_delete_non_invoices"
+AUTO_DELETE_UNREADABLE = "auto_delete_unreadable"
 
 #: Toggle -> what it authorises. The keys are also the `gate` names carried on
 #: a blocker, so a card can say "this needs X, and X is off" without a second
@@ -52,6 +61,13 @@ GATES: dict[str, str] = {
         "receive when the unit came from Loaded rather than the copy"
     ),
     RECEIVE_WITHOUT_PO: "receive without a valid purchase order",
+    RECEIVE_UNRECONCILED_TOTALS: ("receive when the copy's totals don't reconcile"),
+    AUTO_STRIKE_PHANTOM_LINES: "strike lines the copy doesn't bill",
+    AUTO_DELETE_DUPLICATES: "delete a duplicate invoice draft",
+    AUTO_DELETE_NON_INVOICES: (
+        "delete drafts that aren't invoices (statements, letters)"
+    ),
+    AUTO_DELETE_UNREADABLE: "delete drafts with no readable invoice copy",
 }
 
 DEFAULTS: dict[str, object] = {"mode": DEFAULT_MODE, **{g: False for g in GATES}}

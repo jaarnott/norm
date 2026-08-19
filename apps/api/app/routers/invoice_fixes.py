@@ -1324,12 +1324,11 @@ def review_receive_draft(
     ):
         return _doc_to_dict(doc)
 
-    # require_valid_po=False: the interactive card has a human looking at it —
-    # a PO-less invoice gets a note, not a block (the batch/autopilot default
-    # stays strict).
-    fresh = review_invoice(
-        db, config_db, body.venue_id, body.invoice_id, require_valid_po=False
-    )
+    # PO policy derives from the venue's receive_without_po gate (review_invoice
+    # default): the card must tell the story autopilot acts on — a PO-less
+    # invoice reads as blocked-from-auto-receive naming the toggle, unless the
+    # venue has said POs aren't required (18 Aug 2026).
+    fresh = review_invoice(db, config_db, body.venue_id, body.invoice_id)
     try:
         lh = _Loaded(db, config_db, body.venue_id)
         _attach_po_reference(fresh, lh)

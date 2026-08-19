@@ -43,6 +43,11 @@ const GATE_ORDER = [
   'receive_without_unit',
   'receive_with_unconfirmed_unit',
   'receive_without_po',
+  'receive_unreconciled_totals',
+  'auto_strike_phantom_lines',
+  'auto_delete_duplicates',
+  'auto_delete_non_invoices',
+  'auto_delete_unreadable',
 ];
 
 const GATE_NOTE: Record<string, string> = {
@@ -52,6 +57,14 @@ const GATE_NOTE: Record<string, string> = {
     'Norm picks the closest unit Loaded already has. It never invents one — that is the switch above.',
   receive_with_unconfirmed_unit:
     'The line has a unit, it just came from Loaded rather than the invoice copy. Off means someone confirms it first; the blocker names which unit it would use.',
+  receive_unreconciled_totals:
+    "The copy's own arithmetic doesn't add up. Norm diagnoses which figure was misread and suggests the correction; this switch lets it receive on the line values when no correction is confident.",
+  auto_delete_duplicates:
+    'A destructive write: Norm deletes the draft when the same invoice number from the same supplier was already received. The evidence rides on the row.',
+  auto_delete_non_invoices:
+    'A destructive write: statements and letters Loaded ingested as invoice drafts are deleted rather than received.',
+  auto_delete_unreadable:
+    'The riskiest delete: a draft with no readable copy could be a real delivery behind a bad scan. Off means a person decides each one.',
 };
 
 export default function InvoiceAutopilotPanel() {
