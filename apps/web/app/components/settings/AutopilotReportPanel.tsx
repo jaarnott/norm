@@ -33,6 +33,14 @@ interface Row {
   manual_edit_count: number;
   manual_fields: string[];
   issues_waved_count: number;
+  // The end-state verdict recorded at receive: would autopilot (all flags
+  // on) have sent the identical receive? diffs carry sent vs auto per field.
+  auto?: {
+    verdict: 'matched' | 'differed' | 'never_auto' | 'unscored';
+    gates_needed?: string[];
+    ungated?: string[];
+    diffs?: { path: string; sent: unknown; auto: unknown }[];
+  } | null;
 }
 
 interface SupplierRow {
@@ -51,6 +59,8 @@ interface Report {
   totals: Record<string, number>;
   rates: { autopilot_ready: number | null; suggestion_quality: number | null; dojo: number | null };
   autopilot: Record<string, number>;
+  auto?: Record<string, number>;
+  flags?: { gate: string; label: string; sole_unlock: number; with_others: number }[];
   suppliers: SupplierRow[];
   top_missed_fields: { field: string; count: number }[];
   recent: Row[];
@@ -74,6 +84,25 @@ function Pill({ outcome }: { outcome: string }) {
 }
 
 const pct = (v: number | null | undefined) => (v == null ? '—' : `${Math.round(v * 100)}%`);
+
+const VERDICT_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
+  matched: { bg: '#d1fae5', fg: '#065f46', label: 'WOULD MATCH' },
+  differed: { bg: '#fdf6e7', fg: '#8a6d3b', label: 'WOULD DIFFER' },
+  never_auto: { bg: '#fee2e2', fg: '#991b1b', label: 'NEEDS A PERSON' },
+  unscored: { bg: '#f3f4f6', fg: '#6b7280', label: 'UNSCORED' },
+};
+
+function VerdictPill({ verdict }: { verdict?: string | null }) {
+  const s = verdict ? VERDICT_STYLE[verdict] : null;
+  if (!s) return null;
+  return (
+    <span style={{ fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: s.bg, color: s.fg, whiteSpace: 'nowrap' }}>
+      {s.label}
+    </span>
+  );
+}
+
+const fmtVal = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 
 function Tile({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
@@ -101,6 +130,7 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
   // "Nothing recorded yet" however many rows it had.
   const [actor, setActor] = useState<'user' | 'norm'>('user');
   const [loading, setLoading] = useState(true);
+  const [openRow, setOpenRow] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -195,6 +225,37 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
             )}
           </div>
 
+          {(report.flags || []).length > 0 && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={sectionLabel}>What the flags would unlock</div>
+              <div style={{ fontSize: '0.72rem', color: '#777', marginBottom: 6 }}>
+                Receives where autopilot would have sent <strong>exactly what you sent</strong> — counted
+                against the flag it was waiting on. &ldquo;Alone&rdquo; means that flag was the only one missing.
+              </div>
+              <div style={{ ...rowStyle, fontWeight: 600, color: '#888', fontSize: '0.7rem', textTransform: 'uppercase' }}>
+                <span style={{ flex: 1 }}>Flag</span>
+                <span style={{ width: 90, textAlign: 'right' }}>Alone</span>
+                <span style={{ width: 130, textAlign: 'right' }}>With other flags</span>
+              </div>
+              {(report.flags || []).map((f) => (
+                <div key={f.gate} style={rowStyle}>
+                  <span style={{ flex: 1 }}>{f.label}</span>
+                  <span style={{ width: 90, textAlign: 'right', fontWeight: 700, color: '#065f46' }}>{f.sole_unlock}</span>
+                  <span style={{ width: 130, textAlign: 'right', color: '#777' }}>{f.with_others}</span>
+                </div>
+              ))}
+              {report.auto && (
+                <div style={{ fontSize: '0.72rem', color: '#777', marginTop: 6 }}>
+                  With every flag on: <strong>{report.auto.matched || 0}</strong> of{' '}
+                  {(report.auto.matched || 0) + (report.auto.differed || 0) + (report.auto.never_auto || 0)}{' '}
+                  scored receives identical · {report.auto.differed || 0} would differ ·{' '}
+                  {report.auto.never_auto || 0} need a person regardless
+                  {(report.auto.no_flags_needed || 0) > 0 && ` · ${report.auto.no_flags_needed} needed no flag at all`}
+                </div>
+              )}
+            </div>
+          )}
+
           {report.suppliers.length > 0 && (
             <div style={{ marginBottom: 18 }}>
               <div style={sectionLabel}>By supplier — who is ready</div>
@@ -237,20 +298,71 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
           )}
 
           <div style={sectionLabel}>Recent receives</div>
+          <div style={{ fontSize: '0.72rem', color: '#777', marginBottom: 6 }}>
+            Click a row to see what was sent vs what autopilot would have sent.
+          </div>
           {report.recent.map((r) => (
-            <div key={r.id} style={rowStyle}>
-              <Pill outcome={r.outcome} />
-              <span style={{ width: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.supplier_name || '—'}</span>
-              <span style={{ width: 120, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.reference_number || '—'}</span>
-              <span style={{ flex: 1, color: '#999', fontSize: '0.72rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {r.suggestion_count > 0
-                  ? `${r.accepted_count}/${r.suggestion_count} accepted${r.dismissed_count ? `, ${r.dismissed_count} dismissed` : ''}${r.pending_count ? `, ${r.pending_count} ignored` : ''}`
-                  : 'no suggestions'}
-                {r.manual_fields.length > 0 && ` · hand-edited ${r.manual_fields.join(', ')}`}
-              </span>
-              <span style={{ width: 90, color: '#aaa', fontSize: '0.7rem', textAlign: 'right' }}>
-                {r.created_at ? new Date(r.created_at).toLocaleDateString() : ''}
-              </span>
+            <div key={r.id}>
+              <div
+                style={{ ...rowStyle, cursor: 'pointer' }}
+                onClick={() => setOpenRow(openRow === r.id ? null : r.id)}
+              >
+                <Pill outcome={r.outcome} />
+                <VerdictPill verdict={r.auto?.verdict} />
+                <span style={{ width: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.supplier_name || '—'}</span>
+                <span style={{ width: 110, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.reference_number || '—'}</span>
+                <span style={{ flex: 1, color: '#999', fontSize: '0.72rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {r.suggestion_count > 0
+                    ? `${r.accepted_count}/${r.suggestion_count} accepted${r.dismissed_count ? `, ${r.dismissed_count} dismissed` : ''}${r.pending_count ? `, ${r.pending_count} ignored` : ''}`
+                    : 'no suggestions'}
+                  {(r.auto?.gates_needed || []).length > 0 && ` · waiting on ${(r.auto?.gates_needed || []).length} flag(s)`}
+                </span>
+                <span style={{ width: 90, color: '#aaa', fontSize: '0.7rem', textAlign: 'right' }}>
+                  {r.created_at ? new Date(r.created_at).toLocaleDateString() : ''}
+                </span>
+              </div>
+              {openRow === r.id && (
+                <div style={{ padding: '8px 12px 12px 34px', borderBottom: '1px solid #f4f4f4', background: '#fbfaf8', fontSize: '0.74rem', color: '#555' }}>
+                  {(r.auto?.gates_needed || []).length > 0 && (
+                    <div style={{ marginBottom: 6 }}>
+                      Flags autopilot was waiting on:{' '}
+                      <strong>
+                        {(r.auto?.gates_needed || [])
+                          .map((g) => (report.flags || []).find((f) => f.gate === g)?.label || g)
+                          .join(', ')}
+                      </strong>
+                    </div>
+                  )}
+                  {(r.auto?.ungated || []).length > 0 && (
+                    <div style={{ marginBottom: 6, color: '#991b1b' }}>
+                      Needed a person regardless: {(r.auto?.ungated || []).join(', ')}
+                    </div>
+                  )}
+                  {(r.auto?.diffs || []).length > 0 ? (
+                    <>
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>Where autopilot would have differed</div>
+                      {(r.auto?.diffs || []).map((d, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 10, padding: '2px 0', fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                          <span style={{ width: 240, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.path}</span>
+                          <span>you sent <strong>{fmtVal(d.sent)}</strong></span>
+                          <span style={{ color: '#8a6d3b' }}>autopilot: <strong>{fmtVal(d.auto)}</strong></span>
+                        </div>
+                      ))}
+                    </>
+                  ) : r.auto?.verdict === 'matched' ? (
+                    <div style={{ color: '#065f46' }}>Autopilot would have sent exactly this receive.</div>
+                  ) : (
+                    <div style={{ color: '#999' }}>
+                      {r.auto ? 'No field-level differences recorded.' : 'Received before end-state scoring existed — no comparison stored.'}
+                    </div>
+                  )}
+                  {r.manual_fields.length > 0 && (
+                    <div style={{ marginTop: 6, color: '#999' }}>
+                      Action-log view (secondary): hand-edited {r.manual_fields.join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </>

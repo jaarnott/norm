@@ -897,10 +897,56 @@ def autopilot_confidence(
             key = f"line.{key}" if str(f).startswith("line:") else key
             missed[key] = missed.get(key, 0) + 1
 
+    # The end-state verdicts (detail.auto, recorded at receive): would
+    # autopilot with every flag on have sent the identical receive? And the
+    # per-flag sentence — for each toggle, how many receives it alone would
+    # have unlocked, matched to the byte.
+    from app.services.venue_autopilot import GATES
+
+    auto_rows = [
+        (r, (r.detail or {}).get("auto"))
+        for r in scope
+        if isinstance((r.detail or {}).get("auto"), dict)
+    ]
+    auto_tally = {k: 0 for k in ("matched", "differed", "never_auto", "unscored")}
+    for _r, a in auto_rows:
+        v = str(a.get("verdict") or "unscored")
+        auto_tally[v if v in auto_tally else "unscored"] += 1
+    flags = []
+    for gate, label in GATES.items():
+        sole = with_others = 0
+        for _r, a in auto_rows:
+            if a.get("verdict") != "matched":
+                continue
+            needed = a.get("gates_needed") or []
+            if needed == [gate]:
+                sole += 1
+            elif gate in needed:
+                with_others += 1
+        if sole or with_others:
+            flags.append(
+                {
+                    "gate": gate,
+                    "label": label,
+                    "sole_unlock": sole,
+                    "with_others": with_others,
+                }
+            )
+    flags.sort(key=lambda f: (-f["sole_unlock"], -f["with_others"]))
+    # Receives already identical with NO flag needed: autopilot was simply
+    # not switched on for them.
+    auto_no_flags = sum(
+        1
+        for _r, a in auto_rows
+        if a.get("verdict") == "matched" and not (a.get("gates_needed") or [])
+    )
+
     venues = {v.id: v.name for v in db.query(Venue).all()}
     return {
         "window": {"days": days, "actor": actor, "since": since.isoformat()},
         "totals": totals,
+        "auto": {**auto_tally, "no_flags_needed": auto_no_flags},
+        "flags": flags,
         "rates": {
             "autopilot_ready": _rate(totals["clean"] + totals["no_suggestions"], rated),
             "suggestion_quality": _rate(clean_with_sugg, len(with_sugg)),
@@ -930,6 +976,9 @@ def autopilot_confidence(
                 "manual_edit_count": r.manual_edit_count,
                 "manual_fields": (r.detail or {}).get("manual_fields") or [],
                 "issues_waved_count": r.issues_waved_count,
+                # The end-state verdict + diffs — the admin viewer's "what
+                # was actually sent vs what autopilot would have sent".
+                "auto": (r.detail or {}).get("auto"),
             }
             for r in scope[: max(1, min(limit, 200))]
         ],

@@ -1045,9 +1045,12 @@ class InvoiceAutopilotOutcome(Base):
     reviewed it", which is why those are separate outcomes rather than one
     flattering bucket.
 
-    Deliberately holds no money and no before/after values — only field NAMES
-    in ``detail.manual_fields``. The working document and Loaded already hold
-    the truth; a second copy would drift and invite being trusted.
+    Deliberately holds no full payload copies. ``detail.manual_fields`` keeps
+    field NAMES only; ``detail.auto`` (the end-state verdict) keeps the
+    sent-vs-simulated DIFF — path plus both values per divergent field, the
+    evidence behind "autopilot would have sent something else" — and the flag
+    set autopilot needed. The working document and Loaded stay the source of
+    truth for everything else.
     """
 
     __tablename__ = "invoice_autopilot_outcomes"

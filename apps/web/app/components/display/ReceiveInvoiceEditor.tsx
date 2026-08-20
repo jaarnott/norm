@@ -1968,17 +1968,29 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             detail: { venueId, invoiceId: doc.invoice_id, sourceDocId: workingDocId },
           }));
         }
-      } else if (i.action.kind === 'strike' && lineId) {
+      }
+      // The create helpers record the accept themselves when handed an id —
+      // against the ISSUE id here, WITH before/after. The values matter: the
+      // autopilot metric explains a changed field only by a recorded accept,
+      // and a bare record read every blocker-created unit as hand-typing
+      // (Federal Merchants 396152, 19 Aug 2026).
+      let recorded = false;
+      let after: Record<string, unknown> | null = null;
+      if (i.action.kind === 'strike' && lineId) {
         // Same op Accept applies from the suggestion row: cross the line out.
         const idx = docRef.current.lines.findIndex((l) => String(l.id) === lineId);
         if (idx >= 0) onStrike(idx, true);
+        after = { struck: true };
       } else if (i.action.kind === 'create_brand') {
-        await createBrandAndApply(lineId, p.brand_name || '');
+        await createBrandAndApply(lineId, p.brand_name || '', { id: i.id } as Suggestion);
+        recorded = true;
       } else if (i.action.kind === 'create_item') {
-        await createItemAndApply(lineId, p.name || '', p.group_id || '');
+        await createItemAndApply(lineId, p.name || '', p.group_id || '', { id: i.id } as Suggestion);
+        recorded = true;
       } else if (i.action.kind === 'create_unit') {
         const idx = docRef.current.lines.findIndex((l) => String(l.id) === lineId);
-        if (idx >= 0) await createUnitAndApply(idx, p.unit_name || '');
+        if (idx >= 0) await createUnitAndApply(idx, p.unit_name || '', { id: i.id } as Suggestion);
+        recorded = true;
       } else if (i.action.kind === 'create_supplier') {
         await createSupplierAndApply();
       }
@@ -1987,11 +1999,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       // link lands, but `unit_missing` deliberately has none — a unit already
       // on Loaded's line is Loaded's OCR of the same paper — so without this
       // the blocker would outlive the unit that resolved it.
-      const [log, logOp] = recordOp({
-        suggestion_id: i.id, action: 'accepted', by: 'user', at: nowIso(),
-      });
-      setDoc((prev) => ({ ...prev, suggestion_actions: log }));
-      if (workingDocId) patchDoc([logOp]);
+      if (!recorded) {
+        const [log, logOp] = recordOp({
+          suggestion_id: i.id, action: 'accepted', by: 'user', at: nowIso(),
+          ...(after ? { after } : {}),
+        });
+        setDoc((prev) => ({ ...prev, suggestion_actions: log }));
+        if (workingDocId) patchDoc([logOp]);
+      }
     } finally {
       setActioningIssue(null);
     }

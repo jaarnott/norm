@@ -306,3 +306,108 @@ class TestAFiledInvoiceIsVisible:
         ids = {r["id"] for r in res.json()["pending_review"]}
         assert filed.id in ids, "a filed invoice must be visible in the dojo"
         assert hidden.id not in ids, "an incidental draft must stay hidden"
+
+
+class TestFlagsAndAutoVerdicts:
+    """The per-flag sentence: 'with X on, N of your receives would have
+    auto-received identically'. Aggregated from detail.auto (the end-state
+    verdict recorded at receive)."""
+
+    def _get(self, client, headers, **params):
+        q = "&".join(f"{k}={v}" for k, v in params.items())
+        return client.get(
+            f"/api/supplier-invoice-specs/autopilot-confidence{'?' + q if q else ''}",
+            headers=headers,
+        )
+
+    def test_flags_count_sole_and_combined_unlocks(
+        self, client, admin_headers, db_session, venue
+    ):
+        _row(
+            db_session,
+            venue,
+            "clean",
+            detail={
+                "auto": {
+                    "verdict": "matched",
+                    "gates_needed": ["receive_without_po"],
+                    "ungated": [],
+                    "diffs": [],
+                }
+            },
+        )
+        _row(
+            db_session,
+            venue,
+            "clean",
+            detail={
+                "auto": {
+                    "verdict": "matched",
+                    "gates_needed": ["receive_without_po"],
+                    "ungated": [],
+                    "diffs": [],
+                }
+            },
+        )
+        _row(
+            db_session,
+            venue,
+            "clean",
+            detail={
+                "auto": {
+                    "verdict": "matched",
+                    "gates_needed": ["receive_without_po", "auto_create_units"],
+                    "ungated": [],
+                    "diffs": [],
+                }
+            },
+        )
+        _row(
+            db_session,
+            venue,
+            "edited",
+            detail={
+                "auto": {
+                    "verdict": "differed",
+                    "gates_needed": ["auto_create_units"],
+                    "ungated": [],
+                    "diffs": [
+                        {"path": "line:x.unit", "sent": "Each", "auto": "6x700ml"}
+                    ],
+                }
+            },
+        )
+        _row(
+            db_session,
+            venue,
+            "clean",
+            detail={
+                "auto": {
+                    "verdict": "never_auto",
+                    "gates_needed": [],
+                    "ungated": ["totals_inconsistent"],
+                    "diffs": [],
+                }
+            },
+        )
+        res = self._get(client, admin_headers, venue_id=venue.id)
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["auto"] == {
+            "matched": 3,
+            "differed": 1,
+            "never_auto": 1,
+            "unscored": 0,
+            "no_flags_needed": 0,
+        }
+        po = next(f for f in body["flags"] if f["gate"] == "receive_without_po")
+        assert po["sole_unlock"] == 2 and po["with_others"] == 1
+        units = next(f for f in body["flags"] if f["gate"] == "auto_create_units")
+        # the differed row never counts toward a flag's unlocks
+        assert units["sole_unlock"] == 0 and units["with_others"] == 1
+        # the viewer's rows carry the verdict + diffs
+        recent_auto = [r.get("auto") for r in body["recent"] if r.get("auto")]
+        assert len(recent_auto) == 5
+        assert any(
+            (a.get("diffs") or [{}])[0].get("auto") == "6x700ml" for a in recent_auto
+        )

@@ -426,3 +426,306 @@ class TestRecorder:
             )
             is None
         )
+
+
+class TestFoldedBlockerAccepts:
+    """The one-button doctrine folds create/strike suggestions onto their
+    blockers, so their accepts are recorded against ISSUE ids — which the
+    classifier used to skip, reading every blocker-created unit as
+    hand-typing (Federal Merchants 396152, 19 Aug 2026: a no-edits receive
+    reported "hand-edited unit, linked_unit_id, unit_ratio")."""
+
+    def _unit_issue(self, **over):
+        i = {
+            "id": "unit_would_be_created:ld-1",
+            "code": "unit_would_be_created",
+            "blocking": True,
+            "line_id": "ld-1",
+            "message": "the copy's delivered unit '6x700ml' doesn't exist in Loaded",
+            "action": {"kind": "create_unit", "payload": {"unit_name": "6x700ml"}},
+        }
+        i.update(over)
+        return i
+
+    def test_the_396152_pin_a_blocker_created_unit_is_not_an_edit(self):
+        lines = [_line(unit="6x700ml", linked_unit_id="u-new", unit_ratio=4.2)]
+        doc = _doc(
+            lines=lines,
+            snapshot_lines=[
+                _line(unit="700 mL", linked_unit_id="u-700", unit_ratio=0.7)
+            ],
+            issues=[self._unit_issue()],
+            actions=[
+                _act(
+                    "unit_would_be_created:ld-1",
+                    after={
+                        "unit": "6x700ml",
+                        "linked_unit_id": "u-new",
+                        "unit_ratio": 4.2,
+                    },
+                )
+            ],
+        )
+        assert AM.manual_edits(doc) == []
+
+    def test_a_bare_issue_accept_still_owns_its_kinds_fields(self):
+        # Gate-walk records (by "norm") and blocker accepts predating the
+        # card recording values carry no after — the accepted action still
+        # owns its kind's fields on that line.
+        lines = [_line(unit="6x700ml", linked_unit_id="u-new", unit_ratio=4.2)]
+        doc = _doc(
+            lines=lines,
+            snapshot_lines=[
+                _line(unit="700 mL", linked_unit_id="u-700", unit_ratio=0.7)
+            ],
+            issues=[self._unit_issue()],
+            actions=[_act("unit_would_be_created:ld-1")],
+        )
+        assert AM.manual_edits(doc) == []
+
+    def test_accept_then_tweak_with_recorded_values_is_still_manual(self):
+        # The strict contract survives wherever values were recorded: the
+        # final unit is NOT the one the accept created, so it was typed.
+        lines = [_line(unit="12 Pack", linked_unit_id="u-12", unit_ratio=12)]
+        doc = _doc(
+            lines=lines,
+            snapshot_lines=[
+                _line(unit="700 mL", linked_unit_id="u-700", unit_ratio=0.7)
+            ],
+            issues=[self._unit_issue()],
+            actions=[
+                _act(
+                    "unit_would_be_created:ld-1",
+                    after={
+                        "unit": "6x700ml",
+                        "linked_unit_id": "u-new",
+                        "unit_ratio": 4.2,
+                    },
+                )
+            ],
+        )
+        edits = AM.manual_edits(doc)
+        assert "line:ld-1.unit" in edits
+
+    def test_a_strike_by_blocker_is_not_an_edit(self):
+        lines = [_line(struck=True)]
+        issue = {
+            "id": "loaded_line_not_on_copy:ld-1",
+            "code": "loaded_line_not_on_copy",
+            "blocking": True,
+            "line_id": "ld-1",
+            "message": "Loaded bills it, the copy doesn't",
+            "action": {"kind": "strike", "payload": {}},
+        }
+        doc = _doc(
+            lines=lines,
+            issues=[issue],
+            actions=[_act("loaded_line_not_on_copy:ld-1")],
+        )
+        assert AM.manual_edits(doc) == []
+
+
+class TestAutoVerdict:
+    """The end-state counterfactual: would autopilot with every flag on have
+    sent THIS receive? No action forensics — the verdict is a diff between
+    the receive that happened and a pure simulation from stored review
+    artifacts (loaded_snapshot ⊕ server_filled, suggestions, issues)."""
+
+    def _reviewed(self, *, lines=None, snapshot_lines=None, **over):
+        doc = _doc(lines=lines, snapshot_lines=snapshot_lines, **over)
+        doc["doc_schema"] = "replica_v1"
+        return doc
+
+    def test_accept_all_matches_and_names_its_gates(self):
+        # The human accepted the qty suggestion; a PO blocker stood, gated.
+        s = _sugg()  # quantity_received 4.95 -> 6.0
+        doc = self._reviewed(
+            lines=[_line(quantity_received=6.0)],
+            suggestions=[s],
+            issues=[
+                {
+                    "id": "po_missing",
+                    "code": "po_missing",
+                    "blocking": True,
+                    "line_id": None,
+                    "gate": "receive_without_po",
+                    "message": "no purchase order",
+                }
+            ],
+        )
+        out = AM.auto_verdict(doc)
+        assert out["verdict"] == "matched"
+        assert out["gates_needed"] == ["receive_without_po"]
+        assert out["diffs"] == []
+
+    def test_hand_typing_the_suggested_value_still_matches(self):
+        # The case the action-forensics classifier gets wrong on purpose:
+        # the human TYPED 6.0 instead of accepting — autopilot would have
+        # produced the identical receive, so the verdict is matched.
+        s = _sugg()
+        doc = self._reviewed(lines=[_line(quantity_received=6.0)], suggestions=[s])
+        assert AM.auto_verdict(doc)["verdict"] == "matched"
+
+    def test_a_dismissed_suggestion_differs(self):
+        # The human kept 4.95; autopilot would have accepted 6.0.
+        s = _sugg()
+        doc = self._reviewed(lines=[_line()], suggestions=[s])
+        out = AM.auto_verdict(doc)
+        assert out["verdict"] == "differed"
+        assert any(d["path"].endswith("quantity_received") for d in out["diffs"])
+        assert out["diffs"][0]["sent"] == 4.95 and out["diffs"][0]["auto"] == 6.0
+
+    def test_a_blocker_created_unit_matches_by_name(self):
+        # Autopilot would CREATE '6x700ml'; the human's receive used the
+        # unit created that day. Ids can't be known in simulation — names
+        # carry the identity.
+        doc = self._reviewed(
+            lines=[_line(unit="6x700ml", linked_unit_id="u-new", unit_ratio=4.2)],
+            issues=[
+                {
+                    "id": "unit_would_be_created:ld-1",
+                    "code": "unit_would_be_created",
+                    "blocking": True,
+                    "line_id": "ld-1",
+                    "gate": "auto_create_units",
+                    "message": "…",
+                    "action": {
+                        "kind": "create_unit",
+                        "payload": {"unit_name": "6x700ml"},
+                    },
+                }
+            ],
+        )
+        out = AM.auto_verdict(doc)
+        assert out["verdict"] == "matched"
+        assert out["gates_needed"] == ["auto_create_units"]
+
+    def test_a_different_unit_than_the_create_differs(self):
+        doc = self._reviewed(
+            lines=[_line(unit="12 Pack", linked_unit_id="u-12", unit_ratio=12)],
+            issues=[
+                {
+                    "id": "unit_would_be_created:ld-1",
+                    "code": "unit_would_be_created",
+                    "blocking": True,
+                    "line_id": "ld-1",
+                    "gate": "auto_create_units",
+                    "message": "…",
+                    "action": {
+                        "kind": "create_unit",
+                        "payload": {"unit_name": "6x700ml"},
+                    },
+                }
+            ],
+        )
+        out = AM.auto_verdict(doc)
+        assert out["verdict"] == "differed"
+        assert any(d["path"].endswith(".unit") for d in out["diffs"])
+
+    def test_an_ungated_blocker_is_never_auto(self):
+        doc = self._reviewed(
+            lines=[_line()],
+            issues=[
+                {
+                    "id": "totals_x",
+                    "code": "totals_inconsistent",
+                    "blocking": True,
+                    "line_id": None,
+                    "message": "totals don't reconcile",
+                }
+            ],
+        )
+        out = AM.auto_verdict(doc)
+        assert out["verdict"] == "never_auto"
+        assert out["ungated"] == ["totals_inconsistent"]
+
+    def test_a_cleared_blocker_needs_no_flag(self):
+        # The item-link suggestion satisfies the blocker's clears_when in
+        # simulation — accepting a suggestion is not a flag.
+        s = _sugg(
+            "line_value:linked_item_id:ld-1",
+            field="linked_item_id",
+            apply={"linked_item_id": "item-salmon"},
+        )
+        doc = self._reviewed(
+            lines=[_line()],
+            snapshot_lines=[_line(linked_item_id=None)],
+            suggestions=[s],
+            issues=[
+                {
+                    "id": "item_unmatched:ld-1",
+                    "code": "item_unmatched",
+                    "blocking": True,
+                    "line_id": "ld-1",
+                    "gate": "auto_create_items",
+                    "message": "…",
+                    "clears_when": {
+                        "scope": "line",
+                        "line_id": "ld-1",
+                        "field": "linked_item_id",
+                        "op": "not_null",
+                    },
+                }
+            ],
+        )
+        out = AM.auto_verdict(doc)
+        assert out["verdict"] == "matched"
+        assert out["gates_needed"] == []
+
+    def test_a_delete_gated_duplicate_the_human_received_differs(self):
+        doc = self._reviewed(
+            lines=[_line()],
+            issues=[
+                {
+                    "id": "duplicate_invoice",
+                    "code": "duplicate_invoice",
+                    "blocking": True,
+                    "line_id": None,
+                    "gate": "auto_delete_duplicates",
+                    "message": "duplicate",
+                    "action": {"kind": "delete_invoice", "payload": {}},
+                }
+            ],
+        )
+        out = AM.auto_verdict(doc)
+        assert out["verdict"] == "differed"
+        assert any(d["path"] == "outcome" and d["auto"] == "deleted" for d in out["diffs"])
+
+    def test_a_hand_added_line_differs(self):
+        doc = self._reviewed(lines=[_line(), _line(id="new-1", description="EXTRA")])
+        out = AM.auto_verdict(doc)
+        assert out["verdict"] == "differed"
+        assert any(d["path"] == "line:new-1.added" for d in out["diffs"])
+
+    def test_an_accepted_add_line_matches(self):
+        add = {
+            "id": "add_line:rep-9",
+            "kind": "add_line",
+            "line_id": "rep-9",
+            "payload": _line(id="rep-9", description="Freight", unit="Each",
+                             linked_unit_id="u-each", unit_ratio=1,
+                             quantity_received=1, unit_cost=9.0),
+        }
+        doc = self._reviewed(
+            lines=[
+                _line(),
+                _line(id="rep-9", description="Freight", unit="Each",
+                      linked_unit_id="u-each", unit_ratio=1,
+                      quantity_received=1, unit_cost=9.0),
+            ],
+            suggestions=[add],
+        )
+        assert AM.auto_verdict(doc)["verdict"] == "matched"
+
+    def test_no_review_is_unscored(self):
+        doc = _doc()  # no doc_schema
+        assert AM.auto_verdict(doc)["verdict"] == "unscored"
+
+    def test_record_stores_the_auto_detail(self):
+        # classify_outcome + auto_verdict both land in the stored detail —
+        # verified at the unit level here (record_receive_outcome's session
+        # handling is covered by its own tests).
+        s = _sugg()
+        doc = self._reviewed(lines=[_line(quantity_received=6.0)], suggestions=[s])
+        out = AM.auto_verdict(doc)
+        assert set(out) == {"verdict", "gates_needed", "ungated", "diffs"}

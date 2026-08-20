@@ -106,6 +106,288 @@ def _live_suggestions(data: dict) -> list[dict]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# The counterfactual: what would autopilot, with EVERY flag on, have sent —
+# computed purely from artifacts the review already stores on the document
+# (loaded_snapshot, server_filled, suggestions, issues). No forensics on which
+# buttons a human pressed: the verdict is a field-level diff between the
+# receive that happened and the receive the simulation produces. This is the
+# report's headline ("with 'receive without a valid purchase order' on, 9 of
+# your invoices would have auto-received identically"); the action-log
+# classifier below it remains the audit trail the viewer shows.
+# ---------------------------------------------------------------------------
+
+#: The simulator's placeholder for "autopilot would CREATE this in Loaded" —
+#: matched against the human's receive by NAME, since the created id can't be
+#: known without doing the create.
+_CREATE = "__create__"
+
+_SIM_DELETE_KINDS = {"delete_invoice", "delete_non_invoice", "delete_unreadable"}
+
+#: Line fields the sent-vs-simulated diff compares. Deliberately narrower
+#: than _LINE_FIELDS: unit identity is compared semantically (see
+#: _unit_matches), and code/description/sale_tax_rate are never a human-vs-
+#: autopilot divergence on the same line id.
+_SIM_LINE_FIELDS = ("quantity_received", "unit_cost")
+_SIM_HEADER_FIELDS = (
+    "reference_number",
+    "linked_supplier_id",
+    "linked_purchase_order_id",
+)
+
+
+def _pristine_doc(data: dict) -> dict | None:
+    """The document as autopilot first saw it: Loaded's snapshot overlaid
+    with Norm's own seeds (`server_filled`) — no human touch. None when the
+    doc carries no usable snapshot."""
+    snap = data.get("loaded_snapshot")
+    if not isinstance(snap, dict) or not isinstance(snap.get("header"), dict):
+        return None
+    doc: dict = dict(snap["header"])
+    filled = data.get("server_filled") or {}
+    lines = []
+    for ln in snap.get("lines") or []:
+        if not isinstance(ln, dict):
+            continue
+        ln = dict(ln)
+        f = filled.get(str(ln.get("id")))
+        if isinstance(f, dict):
+            ln.update(f)
+        lines.append(ln)
+    doc["lines"] = lines
+    return doc
+
+
+def simulate_autopilot(data: dict) -> dict | None:
+    """Autopilot's counterfactual for one reviewed document, all flags on.
+
+    Accept every suggestion (the existing pure applier), then walk the
+    blocking issues: collect each one's gate into ``gates_needed``; a blocker
+    an accepted suggestion already satisfies (its ``clears_when``) needs no
+    flag; a blocker with NO gate goes to ``ungated`` — no flag exists, a
+    person had to look. Folded create-actions apply placeholder values
+    (matched later by name); a delete-gated blocker means autopilot would
+    have DELETED the draft rather than received it.
+
+    Pure — no Loaded, no DB. Returns ``{doc, gates_needed, ungated,
+    would_delete}`` or None when there is no replica_v1 review to simulate.
+    """
+    if data.get("doc_schema") != "replica_v1":
+        return None
+    sim = _pristine_doc(data)
+    if sim is None:
+        return None
+    from app.services.invoice_review import _clears, apply_suggestion
+
+    for s in _live_suggestions(data):
+        try:
+            apply_suggestion(sim, s)
+        except Exception:  # noqa: BLE001 — one bad apply must not void the verdict
+            logger.info("simulate_autopilot: apply failed for %s", s.get("id"))
+    gates: list[str] = []
+    ungated: list[str] = []
+    would_delete = False
+    lines_by_id = {
+        str(ln.get("id")): ln for ln in sim.get("lines") or [] if ln.get("id")
+    }
+    for i in data.get("issues") or []:
+        if not isinstance(i, dict) or not i.get("blocking"):
+            continue
+        if _clears(sim, i):
+            continue  # an accepted suggestion satisfies it — no flag needed
+        act = i.get("action") if isinstance(i.get("action"), dict) else {}
+        kind = str(act.get("kind") or "")
+        payload = act.get("payload") if isinstance(act.get("payload"), dict) else {}
+        apply_now = act.get("apply") if isinstance(act.get("apply"), dict) else None
+        if kind in _SIM_DELETE_KINDS:
+            would_delete = True
+        ln = lines_by_id.get(str(i.get("line_id") or ""))
+        if ln is not None:
+            if kind == "create_unit" and payload.get("unit_name"):
+                ln["unit"] = payload["unit_name"]
+                ln["linked_unit_id"] = _CREATE
+                ln["unit_ratio"] = None
+            elif kind == "create_item":
+                ln["linked_item_id"] = _CREATE
+                if payload.get("name"):
+                    ln["item_name"] = payload["name"]
+            elif kind == "guess_unit" and apply_now:
+                for k in ("unit", "linked_unit_id", "unit_ratio"):
+                    if k in apply_now:
+                        ln[k] = apply_now[k]
+            elif kind == "strike":
+                ln["struck"] = True
+        gate = i.get("gate")
+        if gate:
+            if gate not in gates:
+                gates.append(str(gate))
+        else:
+            code = str(i.get("code") or "issue")
+            if code not in ungated:
+                ungated.append(code)
+    return {
+        "doc": sim,
+        "gates_needed": gates,
+        "ungated": ungated,
+        "would_delete": would_delete,
+    }
+
+
+def _norm_name(v: object) -> str:
+    return "".join(ch for ch in str(v or "").lower() if ch.isalnum())
+
+
+def _unit_matches(sent: dict, sim: dict) -> bool:
+    """The same physical unit? Ids when both are real; NAMES when the
+    simulation only knows 'a unit called 6x700ml would be created' — or when
+    the human picked an equivalently-named existing record."""
+    from app.services.invoice_units import _unit_norm, units_equivalent
+
+    if sim.get("linked_unit_id") and sim.get("linked_unit_id") != _CREATE:
+        if str(sent.get("linked_unit_id") or "") == str(sim["linked_unit_id"]):
+            return True
+    a, b = sent.get("unit"), sim.get("unit")
+    if not a and not b:
+        return True
+    return bool(a and b and (_unit_norm(a) == _unit_norm(b) or units_equivalent(a, b)))
+
+
+def _item_matches(sent: dict, sim: dict) -> bool:
+    if sim.get("linked_item_id") == _CREATE:
+        # Autopilot would have created an item by this name; the human's
+        # receive used SOME item — same decision if the names agree.
+        a, b = _norm_name(sent.get("item_name")), _norm_name(sim.get("item_name"))
+        return bool(sent.get("linked_item_id")) and bool(
+            a and b and (a == b or a in b or b in a)
+        )
+    return str(sent.get("linked_item_id") or "") == str(sim.get("linked_item_id") or "")
+
+
+def receive_diff(data: dict, sim_doc: dict) -> list[dict]:
+    """Field-level differences between the receive that happened (``data``,
+    the doc as received) and the simulated one. Empty = autopilot would have
+    sent the identical receive. Compares the fields
+    ``receive_request_from_doc`` projects into the receive payload."""
+    diffs: list[dict] = []
+    for field in _SIM_HEADER_FIELDS:
+        if _differs(field, data.get(field), sim_doc.get(field)):
+            diffs.append(
+                {
+                    "path": f"header.{field}",
+                    "sent": data.get(field),
+                    "auto": sim_doc.get(field),
+                }
+            )
+    sim_lines = {
+        str(ln.get("id")): ln for ln in sim_doc.get("lines") or [] if ln.get("id")
+    }
+    seen: set[str] = set()
+    for ln in data.get("lines") or []:
+        if not isinstance(ln, dict) or not ln.get("id"):
+            continue
+        lid = str(ln["id"])
+        seen.add(lid)
+        sl = sim_lines.get(lid)
+        if sl is None:
+            if not ln.get("struck"):
+                diffs.append(
+                    {
+                        "path": f"line:{lid}.added",
+                        "sent": ln.get("description"),
+                        "auto": None,
+                    }
+                )
+            continue
+        if bool(ln.get("struck")) != bool(sl.get("struck")):
+            diffs.append(
+                {
+                    "path": f"line:{lid}.struck",
+                    "sent": bool(ln.get("struck")),
+                    "auto": bool(sl.get("struck")),
+                }
+            )
+            continue
+        if ln.get("struck"):
+            continue  # struck on both sides — the values are moot
+        if not _item_matches(ln, sl):
+            diffs.append(
+                {
+                    "path": f"line:{lid}.item",
+                    "sent": ln.get("item_name") or ln.get("linked_item_id"),
+                    "auto": sl.get("item_name") or sl.get("linked_item_id"),
+                }
+            )
+        if not _unit_matches(ln, sl):
+            diffs.append(
+                {
+                    "path": f"line:{lid}.unit",
+                    "sent": ln.get("unit"),
+                    "auto": sl.get("unit"),
+                }
+            )
+        for field in _SIM_LINE_FIELDS:
+            if _differs(field, ln.get(field), sl.get(field)):
+                diffs.append(
+                    {
+                        "path": f"line:{lid}.{field}",
+                        "sent": ln.get(field),
+                        "auto": sl.get(field),
+                    }
+                )
+    for lid, sl in sim_lines.items():
+        if lid not in seen and not sl.get("struck"):
+            diffs.append(
+                {
+                    "path": f"line:{lid}.missing",
+                    "sent": None,
+                    "auto": sl.get("description"),
+                }
+            )
+    return diffs
+
+
+def auto_verdict(data: dict, *, received: bool = True) -> dict:
+    """The end-state verdict stored under ``detail.auto``.
+
+    matched     autopilot (all flags on) sends the identical receive
+    differed    it would have sent something else — the diffs say what
+    never_auto  blockers no flag can authorise — a person had to look
+    unscored    no review to simulate from (or the simulation failed)
+    """
+    try:
+        sim = simulate_autopilot(data)
+        if sim is None:
+            return {"verdict": "unscored"}
+        diffs = receive_diff(data, sim["doc"])
+        if sim["would_delete"] and received:
+            diffs.append({"path": "outcome", "sent": "received", "auto": "deleted"})
+        if sim["ungated"]:
+            verdict = "never_auto"
+        elif diffs:
+            verdict = "differed"
+        else:
+            verdict = "matched"
+        return {
+            "verdict": verdict,
+            "gates_needed": sim["gates_needed"],
+            "ungated": sim["ungated"],
+            "diffs": diffs[:40],
+        }
+    except Exception as exc:  # noqa: BLE001 — metrics must never break a receive
+        logger.info("auto_verdict failed: %s", exc)
+        return {"verdict": "unscored"}
+
+
+#: Fields a folded blocker-action changes on its line, by action kind — the
+#: value-blind excuse used when an accepted blocker recorded no values.
+_ISSUE_ACTION_FIELDS = {
+    "create_unit": ("unit", "linked_unit_id", "unit_ratio"),
+    "guess_unit": ("unit", "linked_unit_id", "unit_ratio"),
+    "create_item": ("linked_item_id", "item_name", "linked_brand_id", "brand"),
+    "create_brand": ("linked_brand_id", "brand"),
+}
+
+
 def manual_edits(data: dict) -> list[str]:
     """Field paths the HUMAN typed, as opposed to accepted from a suggestion.
 
@@ -155,12 +437,47 @@ def manual_edits(data: dict) -> list[str]:
                 explained[("line", str(lid), field)] = value
     added_line_ids: set[str] = set()
     struck_by_suggestion: set[str] = set()
+    # Fields an accepted blocker-action OWNS on its line, excused even when no
+    # values were recorded (gate-walk records and blocker accepts predating
+    # the card recording before/after). Value-blind, so accept-then-tweak on
+    # these fields is excused too — the recorded `after` path above it keeps
+    # the strict contract wherever values exist.
+    explained_any: set[tuple] = set()
     by_id = {str(s.get("id")): s for s in _live_suggestions(data)}
+    issues_by_id = {
+        str(i.get("id")): i
+        for i in data.get("issues") or []
+        if isinstance(i, dict) and i.get("id")
+    }
     for sid, action in _last_actions(data).items():
         if action.get("action") != "accepted":
             continue
         s = by_id.get(sid)
         if not s:
+            # The one-button doctrine folds remedy suggestions ONTO their
+            # blockers (fold_remedies_into_blockers), so a create/strike
+            # accept is recorded against the ISSUE id and appears in no
+            # suggestion list. Skipping those read every folded accept as
+            # hand-typing: a no-edits receive of Federal Merchants 396152
+            # reported "hand-edited unit, linked_unit_id, unit_ratio" for
+            # the one line whose unit was CREATED via the blocker's Accept
+            # (19 Aug 2026).
+            issue = issues_by_id.get(sid)
+            if not isinstance(issue, dict):
+                continue
+            act = issue.get("action") if isinstance(issue.get("action"), dict) else {}
+            lid = str(issue.get("line_id") or "")
+            after = action.get("after")
+            if not isinstance(after, dict):
+                after = act.get("apply") if isinstance(act.get("apply"), dict) else None
+            if str(act.get("kind")) == "strike" and lid:
+                struck_by_suggestion.add(lid)
+            if isinstance(after, dict) and lid:
+                for field, value in after.items():
+                    explained[("line", lid, field)] = value
+            elif lid:
+                for field in _ISSUE_ACTION_FIELDS.get(str(act.get("kind")), ()):
+                    explained_any.add(("line", lid, field))
             continue
         after = action.get("after")
         if not isinstance(after, dict):
@@ -218,6 +535,8 @@ def manual_edits(data: dict) -> list[str]:
             key = ("line", lid, field)
             if key in explained and not _differs(field, cur, explained[key]):
                 continue
+            if key in explained_any:
+                continue  # an accepted blocker-action owns this field
             out.append(f"line:{lid}.{field}")
         # `struck` is local-only, so it never appears in the snapshot.
         if ln.get("struck") and lid not in struck_by_suggestion:
@@ -359,6 +678,11 @@ def record_receive_outcome(
         outcome = outcome_override or counts["outcome"]
         if dojo:
             counts["detail"]["dojo"] = dojo
+        if received and data:
+            # The end-state verdict: would autopilot, all flags on, have sent
+            # THIS receive? Powers the per-flag report ("with X on, N of your
+            # invoices would have auto-received identically").
+            counts["detail"]["auto"] = auto_verdict(data, received=received)
 
         session = SessionLocal()
         try:
