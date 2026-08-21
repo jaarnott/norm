@@ -257,7 +257,7 @@ export default function Home() {
 
     let cancelled = false;
     let ticks = 0;
-    const maxTicks = 100; // ~5 min at 3s — comfortably past the backend's own ceiling
+    const maxTicks = 700; // ~35 min at 3s — comfortably past the 1800s request ceiling
     const id = setInterval(async () => {
       if (cancelled || ++ticks > maxTicks) { clearInterval(id); return; }
       try {
@@ -404,7 +404,10 @@ export default function Home() {
     // in place.
     const recoverByPolling = async (): Promise<boolean> => {
       if (!realThreadId) return false;
-      const deadline = Date.now() + 60000;
+      // Must outlast the backend's request ceiling (Cloud Run up to 1800s): a
+      // long App-Builder turn can commit its answer minutes after the stream
+      // dropped, and giving up early would strand it until a manual reload.
+      const deadline = Date.now() + 2_100_000; // ~35 min
       let delay = 1200;
       while (Date.now() < deadline) {
         await new Promise(r => setTimeout(r, delay));
@@ -644,18 +647,34 @@ export default function Home() {
       } catch { /* ignore */ }
       return;
     }
+    // On approve/reject the server commits the decision and then resumes the
+    // turn inside the same request; if that request is cut (a very long resume
+    // vs. the request ceiling), refetch so we pick up the durably-committed
+    // status — the thread is now `in_progress`, and the in-progress poller
+    // recovers the answer — instead of leaving a dead approval prompt on screen.
+    const refetchThread = async () => {
+      try {
+        const r = await apiFetch(`/api/threads/${threadId}`);
+        if (r.ok) {
+          const fresh = await r.json();
+          setThreads(prev => prev.map(t => (t.id === threadId ? fresh : t)));
+        }
+      } catch { /* transient — the poller will catch up */ }
+    };
     try {
       const res = await apiFetch(`/api/threads/${threadId}/${action}`, {
         method: 'POST',
       });
       if (!res.ok) {
         console.error('Action error:', res.status, await res.text());
+        await refetchThread();
         return;
       }
       const updated = await res.json();
       setThreads(prev => prev.map(t => (t.id === threadId ? updated : t)));
     } catch (err) {
       console.error(`Failed to ${action}:`, err);
+      await refetchThread();
     }
   }, []);
 
