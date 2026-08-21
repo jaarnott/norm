@@ -63,6 +63,23 @@ RETIRED_SURFACE = [
 #: What replaces them on the surface.
 REPLACEMENTS = ["get_invoices", "get_purchase_orders"]
 
+#: Which replacement each retired action maps to — bindings and task filters
+#: gain only the consolidators for surfaces they actually had (reports
+#: carried PO reads only, so it gets get_purchase_orders, not get_invoices).
+REPLACEMENT_FOR = {
+    "list_stock_invoices": "get_invoices",
+    "get_invoice_detail": "get_invoices",
+    "list_supplier_statements": "get_invoices",
+    "list_received_invoices": "get_invoices",
+    "get_received_invoices": "get_invoices",
+    "get_outstanding_invoices": "get_invoices",
+    "get_received_invoices_for_period": "get_invoices",
+    "get_stock_purchase_order": "get_purchase_orders",
+    "list_purchase_orders": "get_purchase_orders",
+    "get_purchase_orders_summary": "get_purchase_orders",
+    "get_purchase_order_detail": "get_purchase_orders",
+}
+
 MCP_SCOPES = ["mcp:orders:read"]
 
 
@@ -81,12 +98,13 @@ def _patch_task_filters(dry_run: bool) -> list[str]:
             if not dead:
                 continue
             new_tf = [a for a in tf if a not in RETIRED_SURFACE]
-            for repl in REPLACEMENTS:
+            needed = sorted({REPLACEMENT_FOR[a] for a in dead if a in REPLACEMENT_FOR})
+            for repl in needed:
                 if repl not in new_tf:
                     new_tf.append(repl)
             changed.append(
                 f"task {task.id} ({getattr(task, 'name', '')!r}): "
-                f"dropped {dead}, ensured {REPLACEMENTS}"
+                f"dropped {dead}, ensured {needed}"
             )
             if not dry_run:
                 task.tool_filter = new_tf
@@ -149,23 +167,24 @@ def main(dry_run: bool = False, tasks_only: bool = False) -> None:
             ):
                 caps = [dict(c) for c in (b.capabilities or [])]
                 touched = False
-                had_retired = False
+                needed: set[str] = set()
                 for cap in caps:
                     if cap.get("action") in RETIRED_SURFACE and cap.get(
                         "enabled", True
                     ):
                         cap["enabled"] = False
                         touched = True
-                        had_retired = True
+                        repl = REPLACEMENT_FOR.get(cap.get("action"))
+                        if repl:
+                            needed.add(repl)
                         changed.append(
                             f"binding {b.agent_slug}: {cap.get('action')} disabled"
                         )
-                if had_retired:
-                    for repl in REPLACEMENTS:
-                        if not any(c.get("action") == repl for c in caps):
-                            caps.append({"action": repl, "enabled": True})
-                            touched = True
-                            changed.append(f"binding {b.agent_slug}: {repl} enabled")
+                for repl in sorted(needed):
+                    if not any(c.get("action") == repl for c in caps):
+                        caps.append({"action": repl, "enabled": True})
+                        touched = True
+                        changed.append(f"binding {b.agent_slug}: {repl} enabled")
                 if touched and not dry_run:
                     b.capabilities = caps
                     flag_modified(b, "capabilities")
