@@ -261,12 +261,21 @@ export default function AppRunner({ slug }: { slug: string }) {
               const res = await apiFetch(`/api/apps/${app.slug}/file/${fileId}`, { method: 'DELETE' });
               post({ type: 'norm:result', id: m.id, ok: res.ok, data: { deleted: m.recordId } });
             } else {
-              // Fetched here and handed over as a blob URL: the iframe has an
-              // opaque origin and no token, so it cannot fetch this itself.
+              // Fetched here and handed to the iframe as a data: URL. The
+              // sandbox runs on an opaque origin, so it can neither fetch this
+              // itself (no token) nor load a parent-origin blob: URL — but a
+              // data: URL carries no origin, so an <img src> in the sandbox
+              // renders it.
               const res = await apiFetch(`/api/apps/${app.slug}/file/${fileId}`);
               if (!res.ok) { post({ type: 'norm:result', id: m.id, ok: false, error: `Error ${res.status}` }); return; }
               const blob = await res.blob();
-              post({ type: 'norm:result', id: m.id, ok: true, data: URL.createObjectURL(blob) });
+              const dataUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result));
+                reader.onerror = () => reject(reader.error ?? new Error('file read failed'));
+                reader.readAsDataURL(blob);
+              });
+              post({ type: 'norm:result', id: m.id, ok: true, data: dataUrl });
             }
           } catch (e) {
             post({ type: 'norm:result', id: m.id, ok: false, error: e instanceof Error ? e.message : 'file call failed' });
