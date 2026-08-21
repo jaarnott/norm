@@ -50,6 +50,13 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
         "get_pos_discounts": "get_pos_discounts_for_period",
         "get_all_recipes": "get_recipes",
         "get_recipe_details": "get_recipes",
+        "list_stock_invoices": "get_invoices",
+        "get_invoice_detail": "get_invoices",
+        "list_received_invoices": "get_invoices",
+        "list_supplier_statements": "get_invoices",
+        "get_purchase_orders_summary": "get_purchase_orders",
+        "get_purchase_order_detail": "get_purchase_orders",
+        "list_purchase_orders": "get_purchase_orders",
     },
 }
 

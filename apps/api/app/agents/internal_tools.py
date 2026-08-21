@@ -1183,7 +1183,12 @@ def _show_component(
             ToolCall.connector_name != "norm",
         )
         if expected_action:
-            q = q.filter(ToolCall.action == expected_action)
+            actions = (
+                list(expected_action)
+                if isinstance(expected_action, (list, tuple, set))
+                else [expected_action]
+            )
+            q = q.filter(ToolCall.action.in_(actions))
         tc = q.order_by(ToolCall.created_at.desc()).first()
 
     if not tc or not tc.result_payload:
@@ -1201,8 +1206,13 @@ def _show_roster(params: dict, db: Session, thread_id: str | None) -> dict:
 @register("norm", "show_orders")
 def _show_orders(params: dict, db: Session, thread_id: str | None) -> dict:
     """Display the orders dashboard."""
+    # Both names: the raw summary (older threads / page loads) and the
+    # get_purchase_orders consolidator that replaced it on the agent surface.
     return _show_component(
-        params, db, thread_id, expected_action="get_purchase_orders_summary"
+        params,
+        db,
+        thread_id,
+        expected_action=("get_purchase_orders_summary", "get_purchase_orders"),
     )
 
 

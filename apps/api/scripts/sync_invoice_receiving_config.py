@@ -27,6 +27,8 @@ _CONSOLIDATORS_DIR = (
 )
 FUNCTION_CODE_PATH = _CONSOLIDATORS_DIR / "review_and_receive_invoices.py"
 RECONCILE_FUNCTION_CODE_PATH = _CONSOLIDATORS_DIR / "reconcile_received_invoices.py"
+GET_INVOICES_CODE_PATH = _CONSOLIDATORS_DIR / "get_invoices.py"
+GET_POS_CODE_PATH = _CONSOLIDATORS_DIR / "get_purchase_orders.py"
 
 # All stock endpoints verified against the live LoadedHub app (16 Jul 2026):
 # the web UI drives api.loadedhub.com/1.0/stock/... and the OAuth connector
@@ -36,25 +38,35 @@ SPEC_TOOLS = [
     {
         "action": "list_stock_invoices",
         "method": "GET",
-        "description": "List the venue's unreceived (draft) supplier invoices between two dates",
+        "description": (
+            "[consolidator-only] The venue's supplier invoices by status "
+            "(default NotReceived drafts). Backend of get_invoices — never "
+            "bind this to an agent."
+        ),
+        "engine_only": True,
         "path_template": (
             "//api.loadedhub.com/1.0/stock/internal/invoices"
-            "?from={{ from_date }}&to={{ to_date }}"
+            "?from={{ from_date | default('1901-01-01') }}"
+            "&to={{ to_date | default('9999-12-31') }}"
             "&status={{ status | default('NotReceived') }}"
-            "&page={{ page | default(0) }}&pageSize={{ pageSize | default(100) }}"
+            "&page={{ page | default(0) }}&pageSize={{ pageSize | default(200) }}"
         ),
         "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
-        "required_fields": ["from_date", "to_date"],
-        "optional_fields": ["status", "page", "pageSize"],
+        "required_fields": [],
+        "optional_fields": ["from_date", "to_date", "status", "page", "pageSize"],
         "field_descriptions": {
-            "from_date": "Start date YYYY-MM-DD",
-            "to_date": "End date YYYY-MM-DD",
+            "from_date": "Start date YYYY-MM-DD (default: all)",
+            "to_date": "End date YYYY-MM-DD (default: all)",
         },
     },
     {
         "action": "get_invoice_detail",
         "method": "GET",
-        "description": "Get full detail for one supplier invoice: supplier, PO link, totals, attached file and line items",
+        "description": (
+            "[consolidator-only] Full detail for one supplier invoice. Backend "
+            "of get_invoices (invoice_id) — never bind this to an agent."
+        ),
+        "engine_only": True,
         "path_template": (
             "//api.loadedhub.com/1.0/stock/invoices/{{ invoice_id }}"
             "?isAdjustingInvoice=false&includeDeleted=false"
@@ -62,25 +74,18 @@ SPEC_TOOLS = [
         "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
         "required_fields": ["invoice_id"],
         "field_descriptions": {
-            "invoice_id": "The Loaded invoice ID (from list_stock_invoices)"
+            "invoice_id": "The Loaded invoice ID (from get_invoices)"
         },
-    },
-    {
-        "action": "get_stock_purchase_order",
-        "method": "GET",
-        "description": "Get one purchase order with its line items (item, unit, quantities, costs)",
-        "path_template": "//api.loadedhub.com/1.0/stock/internal/purchase-orders/{{ purchase_order_id }}",
-        "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
-        "required_fields": ["purchase_order_id"],
     },
     {
         "action": "list_purchase_orders",
         "method": "GET",
         "description": (
-            "List the venue's OPEN purchase orders (order number, supplier, linked "
-            "invoice). Loaded has no PO-by-number search, so the review consolidator "
-            "uses this to resolve a referenced PO number to its id."
+            "[consolidator-only] The venue's OPEN purchase orders with linked-"
+            "invoice ids. Engine-side backend (PO-number resolution moved to "
+            "the service layer) — never bind this to an agent."
         ),
+        "engine_only": True,
         "path_template": (
             "//api.loadedhub.com/1.0/stock/internal/purchase-orders"
             "?from={{ from_date | default('1901-01-01') }}"
@@ -93,7 +98,15 @@ SPEC_TOOLS = [
     {
         "action": "download_invoice_file",
         "method": "GET",
-        "description": "Download the supplier's uploaded invoice document (PDF) attached to an invoice",
+        # NEVER rename or retire this action: DocumentExtraction cache rows
+        # key on the literal string "download_invoice_file"
+        # (app/services/invoice_extraction.py) — renaming orphans every
+        # cached extraction.
+        "description": (
+            "[consolidator-only] Download the supplier's uploaded invoice "
+            "document (PDF). Binary — engine use only; never bind to an agent."
+        ),
+        "engine_only": True,
         "path_template": "//api.loadedhub.com/1.0/stock/internal/invoices/files/{{ file_id }}",
         "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
         "required_fields": ["file_id"],
@@ -101,11 +114,19 @@ SPEC_TOOLS = [
     },
 ]
 
-# Spec tools no longer used by any consolidator — pruned from the config DB at
-# sync time. receive_invoice was the old engine's raw PUT write-through; every
-# receive now goes through the service's do_receive (via norm.review_invoices
-# under autopilot, or the card's receive endpoint).
-RETIRED_ACTIONS = {"receive_invoice"}
+# Spec tools no longer used by anything — pruned from the config DB at sync
+# time. receive_invoice was the old engine's raw PUT write-through (every
+# receive now goes through the service's do_receive). get_stock_purchase_order
+# was a literal duplicate of get_purchase_order_detail (same URL, different
+# param name). get_outstanding_invoices duplicated list_stock_invoices'
+# endpoint with zero code callers. get_received_invoices_for_period was a thin
+# for_period wrapper, fully replaced by get_invoices(kind='received').
+RETIRED_ACTIONS = {
+    "receive_invoice",
+    "get_stock_purchase_order",
+    "get_outstanding_invoices",
+    "get_received_invoices_for_period",
+}
 
 # Phase 2 — reconcile received invoices against supplier statements.
 # Endpoints verified live in the test env on 17 Jul 2026 (statement create/update
@@ -114,7 +135,12 @@ RECONCILE_SPEC_TOOLS = [
     {
         "action": "list_supplier_statements",
         "method": "GET",
-        "description": "List supplier statements for the venue between two datetimes",
+        "description": (
+            "[consolidator-only] Supplier statements between two datetimes. "
+            "Backend of get_invoices (kind='statements') and reconcile — "
+            "never bind this to an agent."
+        ),
+        "engine_only": True,
         "path_template": (
             "//api.loadedhub.com/1.0/stock/internal/supplier-statements"
             "?from={{ from_iso }}&to={{ to_iso }}&includeDeleted=false"
@@ -129,7 +155,13 @@ RECONCILE_SPEC_TOOLS = [
     {
         "action": "list_received_invoices",
         "method": "GET",
-        "description": "List received supplier invoices (with lines, PO number, file, reconciled flag) between two dates",
+        "description": (
+            "[consolidator-only] Received supplier invoices (with lines, PO "
+            "number, file, reconciled flag) between two dates. Backend of "
+            "get_invoices (kind='received') and reconcile — never bind this "
+            "to an agent."
+        ),
+        "engine_only": True,
         "path_template": (
             "//api.loadedhub.com/1.0/stock/internal/stock-received"
             "?from={{ from_date }}&to={{ to_date }}&property=Invoiced"
@@ -150,6 +182,7 @@ RECONCILE_SPEC_TOOLS = [
             "reconciled via reconciledStockReceivedItems). Callable only from "
             "reconcile_received_invoices — never bind this to an agent."
         ),
+        "engine_only": True,
         "path_template": "//api.loadedhub.com/1.0/stock/internal/supplier-statements/{{ statement_id }}",
         "request_body_template": "{{ statement | tojson }}",
         "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
@@ -164,6 +197,7 @@ RECONCILE_SPEC_TOOLS = [
             "reconcile_received_invoices after explicit user consent — never bind "
             "this to an agent."
         ),
+        "engine_only": True,
         "path_template": "//api.loadedhub.com/1.0/stock/internal/supplier-statements",
         "request_body_template": "{{ statement | tojson }}",
         "headers": {"x-loaded-company-id": "{{ creds.x_loaded_company_id }}"},
@@ -308,13 +342,13 @@ PREPARE_RECEIVE_TOOL = {
         "card — fully reviewed against Norm's reading of the invoice copy, "
         "with suggested changes and confidence issues — so the user can check "
         "it and receive it into Loaded with a click. Pass the invoice_id "
-        "(from list_stock_invoices / the outstanding list). This prepares a "
+        "(from get_invoices, kind 'outstanding'). This prepares a "
         "draft only — it never receives the invoice itself; the user does "
         "that from the card."
     ),
     "required_fields": ["invoice_id"],
     "field_descriptions": {
-        "invoice_id": "The Loaded invoice id to receive (from list_stock_invoices).",
+        "invoice_id": "The Loaded invoice id to receive (from get_invoices).",
     },
     "field_schema": {},
     "consolidator_config": {
@@ -345,15 +379,14 @@ RECEIVE_ONE_PLAYBOOK = {
     ),
     "instructions": """Goal: help the user receive ONE specific supplier invoice.
 
-1. Identify the invoice. If the user named it (a reference number, supplier, or "the latest from X"), call list_stock_invoices (status NotReceived) for the venue and find the matching invoice's id. If several match, show the candidates (reference, supplier, date, total) and ask which one — do not guess.
+1. Identify the invoice. If the user named it (a reference number, supplier, or "the latest from X"), call get_invoices (kind 'outstanding', optionally query=<supplier>) for the venue and find the matching invoice's id. If several match, show the candidates (reference, supplier, date, total) and ask which one — do not guess.
 2. Call receive_loadedhub_invoice with that invoice_id. This opens an editable **Receive Invoice** card: units, quantities, unit costs and the linked purchase order, pre-filled from Loaded.
 3. Tell the user the card is ready below and that they review it, adjust anything that needs it, then click **Accept & Receive** to receive the invoice into Loaded. NEVER say you have received it — only the user's click on the card does that.
 
 Do not link POs, edit lines, or receive invoices yourself in prose — everything happens on the card. If the user wants to review ALL outstanding invoices at once instead, that is the separate review-and-receive workflow.""",
     "tool_filter": [
         "receive_loadedhub_invoice",
-        "list_stock_invoices",
-        "get_invoice_detail",
+        "get_invoices",
     ],
     "enabled": True,
 }
@@ -384,12 +417,11 @@ RUN MODE — DO THIS FIRST, before running the review. This workflow honours a p
 
 PO VALIDITY — "No valid purchase order" is a blocking validation error by default: autopilot will not receive an invoice whose order reference matches no Loaded purchase order (or references an order that belongs to a different, non-split invoice). If the user says they don't care about PO validity for auto-receiving (e.g. "receive them even without a matching order"), call update_task_config with key "require_valid_po" and value false (true restores the default). The check still shows on every card either way.
 
-If the user asks why a specific invoice was skipped, use get_invoice_detail together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
+If the user asks why a specific invoice was skipped, use get_invoices with that invoice_id together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
     "tool_filter": [
         "review_and_receive_invoices",
-        "list_stock_invoices",
-        "get_invoice_detail",
-        "get_stock_purchase_order",
+        "get_invoices",
+        "get_purchase_orders",
         "get_workflow_mode",
         "set_workflow_mode",
     ],
@@ -420,12 +452,10 @@ RUN MODE — DO THIS FIRST, before reconciling. Do NOT run the reconciliation un
 3. Include each statement's amount vs reconciled amount difference from the tool's statements summary.
 4. If needs_statement is non-empty, ASK THE USER whether Norm should create those statements. Only after the user explicitly says yes, call the tool again with create_missing_statements=true and suppliers set to the confirmed supplier names. Never create statements unprompted. Remind the user that an auto-created statement's number and amount must be updated from the paper statement.
 
-If the user asks about a specific invoice, use get_invoice_detail plus the returned reasons — do not guess. Never claim you can edit statement amounts or fix mismatches; that is done in Loaded by a person.""",
+If the user asks about a specific invoice, use get_invoices (invoice_id for one invoice; kind 'statements' or 'received' for the lists) plus the returned reasons — do not guess. Never claim you can edit statement amounts or fix mismatches; that is done in Loaded by a person.""",
     "tool_filter": [
         "reconcile_received_invoices",
-        "list_supplier_statements",
-        "list_received_invoices",
-        "get_invoice_detail",
+        "get_invoices",
         "get_workflow_mode",
         "set_workflow_mode",
     ],
@@ -441,14 +471,86 @@ If the user asks about a specific invoice, use get_invoice_detail plus the retur
 BINDING_CAPABILITY_ACTIONS = [
     "review_and_receive_invoices",
     "receive_loadedhub_invoice",
-    "list_stock_invoices",
-    "get_invoice_detail",
-    "get_stock_purchase_order",
-    "list_purchase_orders",
     "reconcile_received_invoices",
-    "list_supplier_statements",
-    "list_received_invoices",
+    "get_invoices",
+    "get_purchase_orders",
 ]
+
+# The consolidated read surface. Everything raw is engine-only plumbing now;
+# the model sees one invoice lookup and one PO lookup, both token-shaped
+# (headers-only lists; lines only for a single document; aggregations via
+# get_received_items_for_period).
+GET_INVOICES_TOOL = {
+    "action": "get_invoices",
+    "method": "GET",  # read-only consolidator: auto-executes, nestable
+    "description": (
+        "THE supplier-invoice lookup. kind='outstanding' (default) lists "
+        "unreceived drafts; kind='received' lists received invoices for a "
+        "period; kind='statements' lists supplier statements. invoice_id "
+        "returns ONE invoice with summarized lines ('full' for the raw "
+        "payload). Lists return headers only — id, supplier, number, date, "
+        "total, PO number — never lines. For 'how much of X did we buy' "
+        "use get_received_items_for_period, not invoices."
+    ),
+    "required_fields": [],
+    "optional_fields": [
+        "kind",
+        "invoice_id",
+        "period",
+        "from_date",
+        "to_date",
+        "query",
+        "detail",
+        "limit",
+    ],
+    "field_descriptions": {
+        "kind": "'outstanding' (default) | 'received' | 'statements'",
+        "invoice_id": "Loaded invoice id — returns exactly this invoice",
+        "period": (
+            "Period in plain English ('last month') — Norm resolves it against "
+            "this venue's trading day. Required for received/statements."
+        ),
+        "from_date": "Only with to_date, when the user gave exact dates",
+        "to_date": "Window end, same rule as from_date",
+        "query": "Case-insensitive supplier-name substring filter",
+        "detail": "'summary' (default) or 'full' — single invoice only",
+        "limit": "Max list rows (default 50)",
+    },
+    "max_result_chars": 60_000,
+    "read_only": True,
+    "consolidator_config": {
+        # function_code injected from GET_INVOICES_CODE_PATH at sync time
+        "max_api_calls": 4,
+        "allowed_write_actions": [],
+    },
+}
+
+GET_PURCHASE_ORDERS_TOOL = {
+    "action": "get_purchase_orders",
+    "method": "GET",
+    "description": (
+        "THE purchase-order lookup. Default lists all POs (order number, "
+        "supplier, status, totals — no lines); order_id returns ONE order "
+        "with its lines ('full' for the raw payload); status/query filter "
+        "the list."
+    ),
+    "required_fields": [],
+    "optional_fields": ["order_id", "status", "query", "detail", "limit"],
+    "field_descriptions": {
+        "order_id": "Loaded purchase-order id — returns exactly this order",
+        "status": "Exact status filter (as Loaded reports it)",
+        "query": "Case-insensitive supplier-name substring filter",
+        "detail": "'summary' (default) or 'full' — single order only",
+        "limit": "Max list rows (default 50)",
+    },
+    "max_result_chars": 60_000,
+    "read_only": True,
+    "consolidator_config": {
+        # function_code injected from GET_POS_CODE_PATH at sync time
+        "max_api_calls": 3,
+        "allowed_write_actions": [],
+    },
+}
 
 
 def main() -> None:
@@ -475,6 +577,16 @@ def main() -> None:
         # Same engine as the batch review — invoice_id selects single mode.
         "function_code": FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
     }
+    get_invoices_tool = dict(GET_INVOICES_TOOL)
+    get_invoices_tool["consolidator_config"] = {
+        **GET_INVOICES_TOOL["consolidator_config"],
+        "function_code": GET_INVOICES_CODE_PATH.read_text(encoding="utf-8"),
+    }
+    get_pos_tool = dict(GET_PURCHASE_ORDERS_TOOL)
+    get_pos_tool["consolidator_config"] = {
+        **GET_PURCHASE_ORDERS_TOOL["consolidator_config"],
+        "function_code": GET_POS_CODE_PATH.read_text(encoding="utf-8"),
+    }
     desired_tools = {
         t["action"]: t
         for t in [
@@ -483,6 +595,8 @@ def main() -> None:
             consolidator,
             reconcile_consolidator,
             prepare_receive,
+            get_invoices_tool,
+            get_pos_tool,
         ]
     }
 

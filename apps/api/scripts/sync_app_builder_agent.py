@@ -85,13 +85,15 @@ Python defining `run(params, call_api, log)`, sandboxed: no imports, no I/O; `ca
 """
 
 # loadedhub reads the builder may call directly to probe response shapes.
+# (get_invoices replaced get_outstanding_invoices and
+# get_received_invoices_for_period when the invoice surface consolidated.)
 PROBE_ACTIONS = [
     "get_sales_for_period",
-    "get_outstanding_invoices",
+    "get_invoices",
     "get_stock_items",
     "get_roster_for_period",
     "get_staff_members",
-    "get_received_invoices_for_period",
+    "get_received_items_for_period",
 ]
 
 BUILDER_TOOLS = [
@@ -191,7 +193,9 @@ def main() -> int:
             print("ERROR: no 'norm' ConnectorSpec — nothing to attach tools to")
             return 1
         tools = list(spec.tools or [])
-        by_action = {t.get("action"): i for i, t in enumerate(tools) if isinstance(t, dict)}
+        by_action = {
+            t.get("action"): i for i, t in enumerate(tools) if isinstance(t, dict)
+        }
         for entry in BUILDER_TOOLS:
             if entry["action"] in by_action:
                 print(f"UPDATE norm.{entry['action']}")
@@ -228,12 +232,16 @@ def main() -> int:
                 .first()
             )
             if binding:
-                print(f"UPDATE binding {AGENT_SLUG} -> {connector} ({len(caps)} actions)")
+                print(
+                    f"UPDATE binding {AGENT_SLUG} -> {connector} ({len(caps)} actions)"
+                )
                 if not args.dry_run:
                     binding.capabilities = caps
                     binding.enabled = True
             else:
-                print(f"CREATE binding {AGENT_SLUG} -> {connector} ({len(caps)} actions)")
+                print(
+                    f"CREATE binding {AGENT_SLUG} -> {connector} ({len(caps)} actions)"
+                )
                 if not args.dry_run:
                     db.add(
                         AgentConnectorBinding(

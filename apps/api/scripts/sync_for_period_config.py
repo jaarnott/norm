@@ -136,13 +136,9 @@ WRAPPED = [
         "end_date",
         "Completed stocktakes",
     ),
-    (
-        "get_received_invoices_for_period",
-        "get_received_invoices",
-        "from",
-        "to",
-        "Received supplier invoices",
-    ),
+    # get_received_invoices_for_period was retired when the invoice surface
+    # consolidated — get_invoices(kind='received', period=…) replaced it
+    # (sync_invoice_receiving_config.py prunes the row). Do not re-add it.
 ]
 
 PERIOD_DESC = (
