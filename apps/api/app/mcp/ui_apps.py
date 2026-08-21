@@ -121,10 +121,15 @@ TOOL_COMPONENT: dict[tuple[str, str], str] = {
     # menu. Interactive here: recipe options and Save route back through
     # norm__menu_component_api / norm__save_menu (the venue rides in as a prop).
     ("loadedhub", "get_menu"): "menu_editor",
-    # get_recipe_details hands the raw recipe (with its current version + lines)
-    # to the recipe editor, opened on that recipe. Reads are direct; Save routes
-    # through the Cook Brothers App (norm__save_recipe). Venue rides in as a prop.
-    ("loadedhub", "get_recipe_details"): "recipe_editor",
+    # get_recipes (the recipe consolidator) returns a token-slim summary, not
+    # the raw payload — so the recipe editor self-loads the full recipe by id
+    # through its component API (norm__recipe_component_api / get_recipe) when
+    # it sees the consolidator shape. Search-mode results (no single recipe)
+    # render nothing and fall back to Claude's text. Save still routes through
+    # the Cook Brothers App (norm__save_recipe); venue rides in as a prop.
+    # (get_recipe_details, the old mapping, is engine_only now — uncallable
+    # from MCP.)
+    ("loadedhub", "get_recipes"): "recipe_editor",
 }
 
 # Bespoke apps for a connector tool, keyed by (connector, action). Empty: the

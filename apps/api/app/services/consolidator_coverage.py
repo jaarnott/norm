@@ -48,6 +48,8 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
         "get_staff_orders": "get_staff_orders_for_period",
         "get_staff_item_orders": "get_staff_item_orders_for_period",
         "get_pos_discounts": "get_pos_discounts_for_period",
+        "get_all_recipes": "get_recipes",
+        "get_recipe_details": "get_recipes",
     },
 }
 

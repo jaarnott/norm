@@ -195,13 +195,13 @@ def main(dry_run: bool = False) -> None:
                 tools[idx] = entry
                 changed.append(f"updated {tool['action']}")
 
-        # 3a2. received_items_for_period calls the all-items list for name
-        # resolution; once get_stock_items is a consolidator that call must
-        # target the raw twin. Patched on the CONFIG row directly — the
+        # 3a2. get_received_items_for_period calls the all-items list for
+        # name resolution; once get_stock_items is a consolidator that call
+        # must target the raw twin. Patched on the CONFIG row directly — the
         # canonical file lives with another session's in-flight work, and
         # this string is exact enough to be safe and idempotent.
         for t in tools:
-            if t.get("action") == "received_items_for_period":
+            if t.get("action") == "get_received_items_for_period":
                 cc = dict(t.get("consolidator_config") or {})
                 code = cc.get("function_code") or ""
                 needle = 'call_api("loadedhub", "get_stock_items", {})'

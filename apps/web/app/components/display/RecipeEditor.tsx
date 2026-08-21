@@ -245,10 +245,21 @@ function fromDoc(d: Record<string, unknown>): Draft {
 
 export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   const embedded = !!props?.embedded;
+  // The tool result may be a raw Loaded recipe (has currentVersion) or the
+  // get_recipes consolidator envelope {recipe: <summary|raw>, ...}. A raw
+  // payload opens directly; a summary carries names but not the line/unit ids
+  // editing needs, so we keep its id and self-load the full recipe below.
+  const envelope =
+    data && typeof data === 'object' && typeof (data as { recipe?: unknown }).recipe === 'object'
+      ? ((data as { recipe: Record<string, unknown> }).recipe)
+      : null;
   const initialRecipe =
     data && typeof data === 'object' && (data as { currentVersion?: unknown }).currentVersion
       ? (data as Record<string, unknown>)
-      : null;
+      : envelope && (envelope as { currentVersion?: unknown }).currentVersion
+        ? envelope
+        : null;
+  const selfLoadRecipeId = !initialRecipe && envelope?.id ? String(envelope.id) : null;
 
   const persistVenue = !!props?.persistVenue;
   const [sharedVenue, setActiveVenue] = useActiveVenue();
@@ -374,6 +385,23 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   }, [embedded]);
 
   useEffect(() => { if (venueId) loadRefs(venueId); }, [venueId, loadRefs]);
+
+  // Embedded self-load: a get_recipes summary names the recipe but doesn't
+  // carry the raw payload the editor needs, so fetch it through the component
+  // API — the same read the page's open flow uses.
+  useEffect(() => {
+    if (!embedded || !selfLoadRecipeId || !venueId || draft) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await callComponentApi('recipe_editor', 'get_recipe', { recipe_id: selfLoadRecipeId }, venueId);
+        const raw = res?.data as Record<string, unknown> | undefined;
+        if (!cancelled && raw?.currentVersion) setDraft(toDraft(raw));
+      } catch { /* the embedded empty state below covers it */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded, selfLoadRecipeId, venueId]);
 
   // Pull Loaded's Live cost for every ingredient/component the recipe references
   // (items and sub-recipes), keyed by ref_id. This is the same endpoint Loaded's
@@ -712,6 +740,15 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
       </select>
     );
   };
+
+  // Embedded with no single recipe to show — a get_recipes search result, or
+  // the self-load still in flight. The full picker page belongs to the web
+  // app; in a chat card, Claude's own text already carries the matches.
+  if (embedded && !draft) {
+    return selfLoadRecipeId ? (
+      <div style={{ fontSize: '0.85rem', color: colors.textMuted, padding: '0.6rem' }}>Loading recipe…</div>
+    ) : null;
+  }
 
   if (draft) {
     const yieldUnitName = units.find((u) => u.id === draft.yield_unit_id)?.name || 'yield';
