@@ -21,7 +21,15 @@
         "answers",
         "notes",
         "activity",
-        "interviews"
+        "interviews",
+        "scorecard_templates",
+        "job_approvals",
+        "hiring_team",
+        "email_templates",
+        "careers_settings",
+        "candidate_documents",
+        "hiring_emails",
+        "jd_templates"
       ]
     },
     "max_api_calls": 0

@@ -19,10 +19,14 @@
         "content",
         "assignments",
         "completions",
-        "signoffs",
         "plans",
         "plan_sections",
-        "capability_frameworks"
+        "capability_frameworks",
+        "review_cycles",
+        "performance_reviews",
+        "auto_enroll_rules",
+        "reminder_settings",
+        "reminder_emails"
       ],
       "shared_with": ["hiring"]
     },

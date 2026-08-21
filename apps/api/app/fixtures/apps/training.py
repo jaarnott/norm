@@ -25,6 +25,18 @@ Three rules ported from Orbit deliberately, because a naive rebuild loses them:
 """
 
 
+def _today():
+    # datetime.date.today() reaches for the time module via __import__, which
+    # the sandbox blocks; datetime.now() (the pattern _now already uses) does not.
+    return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+
+
+def _add_days(iso_date, days):
+    y, m, d = (int(x) for x in iso_date.split("-"))
+    base = datetime.datetime(y, m, d, tzinfo=datetime.timezone.utc)
+    return (base + datetime.timedelta(days=days)).date().isoformat()
+
+
 def _now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -267,9 +279,17 @@ def run(params, call_api, log):
             seen_programs[program["id"]] = program
             cell = assignment_cell(a)
             cell["instance"] = _instance_label(a, venues)
+            # The venue filter in the UI reads this; without it, filtering fell
+            # back to the person's venue list and a venue-scoped enrolment for a
+            # person with no venues array vanished under its own venue.
+            cell["venue_id"] = a.get("venue_id")
             cells.setdefault(f"{a.get('person_id')}:{program['id']}", []).append(cell)
         for p in plans:
-            if p.get("status") != "active" or _instance_key(p) in covered:
+            # A completed plan still belongs on the tracker, as done — dropping
+            # it would make a plan vanish the moment it is marked complete.
+            # Only a cancelled plan, or one an assignment already covers, is
+            # left out.
+            if p.get("status") == "cancelled" or _instance_key(p) in covered:
                 continue
             program = programs.get(p.get("program_id"))
             if not program:
@@ -278,6 +298,7 @@ def run(params, call_api, log):
             cell = plan_cell(p)
             cell["instance"] = _instance_label(p, venues)
             cell["scheduled"] = True
+            cell["venue_id"] = p.get("venue_id")
             cells.setdefault(f"{p.get('person_id')}:{program['id']}", []).append(cell)
 
         columns = sorted(seen_programs.values(), key=lambda p: str(p.get("name") or ""))
@@ -440,19 +461,42 @@ def run(params, call_api, log):
         section_id = params.get("section_id")
         section = store.get("sections", section_id)
         existing = store.list("content", where={"section_id": section_id})
-        return {
-            "content": store.put(
-                "content",
-                {
-                    "section_id": section_id,
-                    "module_id": section.get("module_id"),
-                    "title": params.get("title") or "Untitled",
-                    "content_type": params.get("content_type") or "rich_text",
-                    "body": params.get("body"),
-                    "sort_index": len(existing),
-                },
-            )
-        }
+        content = store.put(
+            "content",
+            {
+                "section_id": section_id,
+                "module_id": section.get("module_id"),
+                "title": params.get("title") or "Untitled",
+                "content_type": params.get("content_type") or "rich_text",
+                "body": params.get("body"),
+                "sort_index": len(existing),
+            },
+        )
+        # Grandfather anyone already finished: a newly-added item must not drag
+        # a completed enrolment back to incomplete. Orbit writes a completion
+        # marked grandfathered; _counts() then counts it toward progress.
+        module = (
+            store.get("modules", section.get("module_id"))
+            if section.get("module_id")
+            else None
+        )
+        program_id = module.get("program_id") if module else None
+        if program_id:
+            for a in store.list("assignments", where={"program_id": program_id}):
+                if a.get("status") == "completed":
+                    store.put(
+                        "completions",
+                        {
+                            "assignment_id": a["id"],
+                            "content_id": content["id"],
+                            "completed_at": _now(),
+                            "result": {
+                                "grandfathered": True,
+                                "reason": "Added after this training was completed",
+                            },
+                        },
+                    )
+        return {"content": content}
 
     if op == "update_content":
         content_id = params.get("content_id")
@@ -479,5 +523,424 @@ def run(params, call_api, log):
             data["sort_index"] = index
             store.put(collection, data, record_id)
         return {"ok": True}
+
+    if op == "enrol":
+        """Put one person on a program instance (program + variant + venue).
+
+        Sets the due date the way Orbit's DB trigger did — today +
+        default_due_days — but in visible app logic. A program with no
+        default_due_days gets no due date, exactly as Orbit.
+        """
+        program_id = params.get("program_id")
+        person_id = params.get("person_id")
+        if not program_id or not person_id:
+            return {"error": "a program and a person are required"}
+        program = store.get("programs", program_id)
+        variant_id = params.get("variant_id") or None
+        venue_id = params.get("venue_id") or None
+        # Guard the instance: one assignment per (person, program, variant, venue).
+        existing = store.list("assignments", where={"program_id": program_id})
+        for a in existing:
+            if (
+                a.get("person_id") == person_id
+                and (a.get("variant_id") or None) == variant_id
+                and (a.get("venue_id") or None) == venue_id
+            ):
+                return {"error": "already enrolled on this instance"}
+        data = {
+            "program_id": program_id,
+            "person_id": person_id,
+            "status": "assigned",
+            "assigned_at": _now(),
+            "variant_id": variant_id,
+            "variant_name": params.get("variant_name"),
+        }
+        due_days = program.get("default_due_days")
+        if due_days:
+            data["due_date"] = _add_days(_today(), int(due_days))
+        return {"assignment": store.put("assignments", data, venue_id=venue_id)}
+
+    if op == "bulk_enrol":
+        """Enrol several people on one instance in a single call. Skips anyone
+        already on it rather than failing the whole batch."""
+        program_id = params.get("program_id")
+        program = store.get("programs", program_id)
+        variant_id = params.get("variant_id") or None
+        venue_id = params.get("venue_id") or None
+        existing = store.list("assignments", where={"program_id": program_id})
+        taken = {
+            a.get("person_id")
+            for a in existing
+            if (a.get("variant_id") or None) == variant_id
+            and (a.get("venue_id") or None) == venue_id
+        }
+        due_days = program.get("default_due_days")
+        due = _add_days(_today(), int(due_days)) if due_days else None
+        created = 0
+        for person_id in params.get("person_ids") or []:
+            if person_id in taken:
+                continue
+            data = {
+                "program_id": program_id,
+                "person_id": person_id,
+                "status": "assigned",
+                "assigned_at": _now(),
+                "variant_id": variant_id,
+                "variant_name": params.get("variant_name"),
+            }
+            if due:
+                data["due_date"] = due
+            store.put("assignments", data, venue_id=venue_id)
+            created += 1
+        return {"enrolled": created}
+
+    if op == "unenrol":
+        """Remove an enrolment and its completions — storage has no cascade."""
+        assignment_id = params.get("assignment_id")
+        for c in store.list("completions", where={"assignment_id": assignment_id}):
+            store.delete("completions", c["id"])
+        store.delete("assignments", assignment_id)
+        return {"ok": True}
+
+    if op == "content":
+        """One content item, with its body — for the viewer."""
+        return {"content": store.get("content", params.get("content_id"))}
+
+    if op == "member":
+        """One person's whole training picture: every assignment with its
+        module-by-module progress, and every active plan with its sections."""
+        person_id = params.get("person_id")
+        person = store.get("people", person_id)
+        programs = _index(store.list("programs"))
+        modules = _group(store.list("modules"), "program_id")
+        sections = _index(store.list("sections"))
+        content = store.list("content")
+        content_by_module = _group(content, "module_id")
+        assignments = [
+            a for a in store.list("assignments") if a.get("person_id") == person_id
+        ]
+        done_by_assignment = {}
+        comps = store.list("completions")
+        by_assignment = _group(comps, "assignment_id")
+        rows = []
+        for a in assignments:
+            program = programs.get(a.get("program_id")) or {}
+            done = {
+                c.get("content_id")
+                for c in by_assignment.get(a["id"], [])
+                if _counts(c)
+            }
+            mod_rows = []
+            total = complete = 0
+            for m in sorted(
+                modules.get(a.get("program_id"), []),
+                key=lambda m: m.get("sort_index") or 0,
+            ):
+                items = content_by_module.get(m["id"], [])
+                if not items:
+                    continue
+                d = sum(1 for c in items if c["id"] in done)
+                total += len(items)
+                complete += d
+                mod_rows.append(
+                    {
+                        "name": m.get("name"),
+                        "done": d,
+                        "total": len(items),
+                    }
+                )
+            rows.append(
+                {
+                    "assignment_id": a["id"],
+                    "program": program.get("name"),
+                    "instance": _instance_label(a, venues),
+                    "status": a.get("status"),
+                    "modules": mod_rows,
+                    "percent": round(complete / total * 100) if total else 0,
+                }
+            )
+        rows.sort(key=lambda r: str(r.get("program")))
+        # Plans the member is on (active), with their sections.
+        plans = [
+            p
+            for p in store.list("plans")
+            if p.get("person_id") == person_id and p.get("status") == "active"
+        ]
+        plan_rows = []
+        ps_by_plan = _group(store.list("plan_sections"), "plan_id")
+        for pl in plans:
+            program = programs.get(pl.get("program_id")) or {}
+            secs = ps_by_plan.get(pl["id"], [])
+            plan_rows.append(
+                {
+                    "plan_id": pl["id"],
+                    "program": program.get("name"),
+                    "sections": [
+                        {
+                            "name": (sections.get(x.get("section_id")) or {}).get(
+                                "name"
+                            )
+                            or "Section",
+                            "status": x.get("status"),
+                            "due_date": x.get("due_date"),
+                        }
+                        for x in sorted(
+                            secs, key=lambda x: str(x.get("due_date") or "")
+                        )
+                    ],
+                }
+            )
+        return {
+            "person": {
+                "id": person["id"],
+                "name": person.get("name"),
+                "role": person.get("role"),
+            },
+            "assignments": rows,
+            "plans": plan_rows,
+        }
+
+    if op == "plans":
+        """Every plan, with the person and program named and the next due date."""
+        status = params.get("status")
+        plans = store.list("plans")
+        if status and status != "all":
+            plans = [p for p in plans if p.get("status") == status]
+        people = _index(store.list("people"))
+        programs = _index(store.list("programs"))
+        ps_by_plan = _group(store.list("plan_sections"), "plan_id")
+        rows = []
+        for pl in plans:
+            secs = ps_by_plan.get(pl["id"], [])
+            pending = [s for s in secs if s.get("status") != "completed"]
+            pending.sort(key=lambda s: str(s.get("due_date") or "9999"))
+            rows.append(
+                {
+                    **pl,
+                    "person_name": (people.get(pl.get("person_id")) or {}).get("name")
+                    or "(unknown)",
+                    "program_name": (programs.get(pl.get("program_id")) or {}).get(
+                        "name"
+                    ),
+                    "instance": _instance_label(pl, venues),
+                    "next_due": pending[0].get("due_date") if pending else None,
+                    "section_count": len(secs),
+                }
+            )
+        rows.sort(key=lambda r: str(r.get("person_name")))
+        return {"plans": rows}
+
+    if op == "plan":
+        """One plan's schedulable sections: every section of the program, with
+        any date/trainer already set."""
+        plan_id = params.get("plan_id")
+        plan = store.get("plans", plan_id)
+        program = store.get("programs", plan.get("program_id"))
+        modules = sorted(
+            store.list("modules", where={"program_id": plan.get("program_id")}),
+            key=lambda m: m.get("sort_index") or 0,
+        )
+        module_ids = {m["id"] for m in modules}
+        sections = sorted(
+            [s for s in store.list("sections") if s.get("module_id") in module_ids],
+            key=lambda s: s.get("sort_index") or 0,
+        )
+        scheduled = {
+            s.get("section_id"): s
+            for s in store.list("plan_sections", where={"plan_id": plan_id})
+        }
+        rows = []
+        for m in modules:
+            for s in [x for x in sections if x.get("module_id") == m["id"]]:
+                ps = scheduled.get(s["id"]) or {}
+                rows.append(
+                    {
+                        "section_id": s["id"],
+                        "module": m.get("name"),
+                        "name": s.get("name") or "Section",
+                        "section_type": s.get("section_type"),
+                        "plan_section_id": ps.get("id"),
+                        "due_date": ps.get("due_date"),
+                        "start_time": ps.get("start_time"),
+                        "status": ps.get("status") or "pending",
+                    }
+                )
+        return {
+            "plan": {
+                "id": plan_id,
+                "program": program.get("name"),
+                "status": plan.get("status") or "active",
+            },
+            "sections": rows,
+        }
+
+    if op == "create_plan":
+        person_id = params.get("person_id")
+        program_id = params.get("program_id")
+        if not person_id or not program_id:
+            return {"error": "a person and a program are required"}
+        return {
+            "plan": store.put(
+                "plans",
+                {
+                    "person_id": person_id,
+                    "program_id": program_id,
+                    "status": "active",
+                    "variant_id": params.get("variant_id") or None,
+                    "variant_name": params.get("variant_name"),
+                    "created_at": _now(),
+                },
+                venue_id=params.get("venue_id") or None,
+            )
+        }
+
+    if op == "schedule_section":
+        """Give one plan section a date/time/trainer. Upsert on (plan, section)
+        — Orbit's editor deleted and reinserted, which reset completion; this
+        preserves any existing status."""
+        plan_id = params.get("plan_id")
+        section_id = params.get("section_id")
+        existing = [
+            x
+            for x in store.list("plan_sections", where={"plan_id": plan_id})
+            if x.get("section_id") == section_id
+        ]
+        data = {
+            "plan_id": plan_id,
+            "section_id": section_id,
+            "due_date": params.get("due_date"),
+            "start_time": params.get("start_time"),
+            "trainer_person_id": params.get("trainer_person_id"),
+            "status": existing[0].get("status") if existing else "pending",
+        }
+        if existing:
+            data["status"] = existing[0].get("status") or "pending"
+            return {"section": store.put("plan_sections", data, existing[0]["id"])}
+        return {"section": store.put("plan_sections", data)}
+
+    if op == "set_plan_section_status":
+        section = store.get("plan_sections", params.get("plan_section_id"))
+        data = {k: v for k, v in section.items() if k not in _META}
+        status = params.get("status") or "pending"
+        data["status"] = status
+        data["completed_at"] = _now() if status == "completed" else None
+        return {"section": store.put("plan_sections", data, section["id"])}
+
+    if op == "set_plan_status":
+        """Complete, reopen, or cancel a whole plan. The tracker trusts a plan's
+        own status when it says completed (Orbit never wrote section status back,
+        so most finished plans still have pending sections) — without this op a
+        migrated 'active' plan could never be marked done from Norm."""
+        plan_id = params.get("plan_id")
+        status = params.get("status") or "active"
+        if status not in ("active", "completed", "cancelled"):
+            return {"error": f"'{status}' is not a plan status"}
+        current = store.get("plans", plan_id)
+        data = {k: v for k, v in current.items() if k not in _META}
+        data["status"] = status
+        return {"plan": store.put("plans", data, plan_id)}
+
+    if op == "delete_plan":
+        plan_id = params.get("plan_id")
+        for x in store.list("plan_sections", where={"plan_id": plan_id}):
+            store.delete("plan_sections", x["id"])
+        store.delete("plans", plan_id)
+        return {"ok": True}
+
+    if op == "signoffs":
+        """The manager sign-off queue: completions a trainee has submitted that
+        need a manager to accept them. This is the query JSONB made reachable —
+        awaiting_signoff true, no signoff_at yet — and it is the mechanism 396
+        of the migrated completions already used."""
+        pending = store.list(
+            "completions",
+            where={"awaiting_signoff": True, "signoff_at": {"is_null": True}},
+        )
+        content = _index(store.list("content"))
+        assignments = _index(store.list("assignments"))
+        people = _index(store.list("people"))
+        programs = _index(store.list("programs"))
+        rows = []
+        for c in pending:
+            a = assignments.get(c.get("assignment_id")) or {}
+            item = content.get(c.get("content_id")) or {}
+            person = people.get(a.get("person_id")) or {}
+            program = programs.get(a.get("program_id")) or {}
+            rows.append(
+                {
+                    "completion_id": c["id"],
+                    "person": person.get("name") or "(unknown)",
+                    "program": program.get("name"),
+                    "item": item.get("title"),
+                    "files": store.files("completions", c["id"]),
+                }
+            )
+        rows.sort(key=lambda r: str(r.get("person")))
+        return {"pending": rows}
+
+    if op == "sign_off":
+        """Accept a submitted item. Clears the awaiting flag and stamps who and
+        when — the shape the tracker's effective-completion rule reads."""
+        c = store.get("completions", params.get("completion_id"))
+        data = {k: v for k, v in c.items() if k not in _META}
+        data["awaiting_signoff"] = False
+        data["signoff_at"] = _now()
+        data["signoff_by"] = params.get("by") or "manager"
+        if params.get("notes"):
+            data["signoff_notes"] = params.get("notes")
+        data.pop("rejected", None)
+        return {"completion": store.put("completions", data, c["id"])}
+
+    if op == "reject_signoff":
+        """Send it back for another attempt, with a reason."""
+        c = store.get("completions", params.get("completion_id"))
+        data = {k: v for k, v in c.items() if k not in _META}
+        data["rejected"] = True
+        data["rejected_at"] = _now()
+        data["rejection_notes"] = params.get("notes")
+        return {"completion": store.put("completions", data, c["id"])}
+
+    if op == "frameworks":
+        """Capability frameworks — a role's competency map."""
+        rows = store.list("capability_frameworks")
+        for f in rows:
+            f["category_count"] = len(f.get("categories") or [])
+        rows.sort(key=lambda f: str(f.get("name")))
+        return {"frameworks": rows}
+
+    if op == "framework":
+        return {
+            "framework": store.get("capability_frameworks", params.get("framework_id"))
+        }
+
+    if op == "save_framework":
+        fields = params.get("fields") or {}
+        fid = params.get("framework_id")
+        if fid:
+            current = store.get("capability_frameworks", fid)
+            data = {k: v for k, v in current.items() if k not in _META}
+        else:
+            data = {"categories": []}
+        for key in ("name", "role_label", "is_active", "baseline_prerequisites"):
+            if key in fields:
+                data[key] = fields[key]
+        # Full category/capability editing: the UI sends the whole tree. Give
+        # every category and capability a stable id (migrated rows already carry
+        # the Orbit id; new ones get one here) so performance-review ratings and
+        # a later edit can point at them. No `uuid` in the sandbox — stamp from
+        # the clock plus position, which is unique within a save.
+        if "categories" in fields:
+            cats = fields.get("categories") or []
+            stamp = _now()
+            for i, cat in enumerate(cats):
+                if not cat.get("id"):
+                    cat["id"] = "c-" + stamp + "-" + str(i)
+                for j, cap in enumerate(cat.get("capabilities") or []):
+                    if not cap.get("id"):
+                        cap["id"] = "k-" + stamp + "-" + str(i) + "-" + str(j)
+            data["categories"] = cats
+        if not str(data.get("name") or "").strip():
+            return {"error": "a framework needs a name"}
+        return {"framework": store.put("capability_frameworks", data, fid)}
 
     return {"error": f"unknown op '{op}'"}

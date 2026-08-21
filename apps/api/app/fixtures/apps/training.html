@@ -20,6 +20,7 @@
                background:#fff; cursor:pointer; font-family:inherit; color:#555; }
   button.act:hover { border-color:#bbb; }
   button.primary { background:var(--green); color:#fff; border-color:var(--green); }
+  button.act:disabled { opacity:.5; cursor:default; }
   table { border-collapse:collapse; width:100%; font-size:.75rem; }
   th, td { text-align:left; padding:5px 8px; border-bottom:1px solid #f0eee9; vertical-align:top; }
   th { font-size:.62rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
@@ -30,12 +31,14 @@
   .dash { color:#cbd5e1; }
   .empty { border:1px dashed var(--line); border-radius:10px; padding:26px; text-align:center; color:var(--muted); }
   .back { font-size:.7rem; color:#6b6b6b; background:none; border:none; cursor:pointer; padding:0; font-family:inherit; }
+  .link { color:var(--green); cursor:pointer; }
+  .link:hover { text-decoration:underline; }
   .tree { margin-left:2px; }
   .mod { border-left:2px solid var(--line); padding-left:10px; margin:8px 0; }
   .sec { color:#555; margin:3px 0 3px 8px; font-size:.74rem; }
   .item { color:var(--muted); margin-left:20px; font-size:.7rem; }
   .err { color:#b91c1c; font-size:.75rem; }
-  input[type=text], input[type=number], textarea, select {
+  input[type=text], input[type=number], input[type=date], input[type=time], textarea, select {
     font:inherit; font-size:.75rem; border:1px solid var(--line); border-radius:6px;
     padding:4px 7px; box-sizing:border-box; background:#fff; }
   input[type=text]:focus, textarea:focus { outline:1px solid #cbd5e1; }
@@ -44,8 +47,20 @@
                  text-transform:uppercase; letter-spacing:.03em; }
   .modhead { display:flex; align-items:center; gap:8px; }
   .tiny { font-size:.62rem; padding:1px 7px; }
+  .arrow { font-size:.6rem; padding:0 5px; }
   .danger { color:#b91c1c; border-color:#f0d0d0; }
   .addrow { display:flex; gap:6px; margin-top:6px; align-items:center; }
+  .pick { max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; margin-top:6px; }
+  .pick label { display:flex; align-items:center; gap:7px; padding:4px 9px; font-size:.75rem;
+                border-bottom:1px solid #f4f2ee; cursor:pointer; }
+  .pick label:hover { background:#faf9f6; }
+  .filters { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  .modal { position:fixed; inset:0; background:rgba(30,30,30,.35); display:flex;
+           align-items:flex-start; justify-content:center; padding:40px 16px; z-index:50; overflow-y:auto; }
+  .modal .panel { background:#fff; border-radius:12px; max-width:640px; width:100%; padding:18px 20px;
+                  box-shadow:0 12px 40px rgba(0,0,0,.2); }
+  .prose { font-size:.82rem; line-height:1.5; color:var(--ink); }
+  .prose img, .prose video { max-width:100%; }
 </style>
 
 <div class="wrap">
@@ -59,7 +74,10 @@
   <div class="row" style="justify-content:space-between">
     <div class="tabs" role="tablist" style="margin-bottom:0;border:none">
       <button class="tab" role="tab" data-view="programs" aria-selected="true">Programs</button>
+      <button class="tab" role="tab" data-view="plans" aria-selected="false">Plans</button>
+      <button class="tab" role="tab" data-view="signoffs" aria-selected="false">Sign-offs</button>
       <button class="tab" role="tab" data-view="tracker" aria-selected="false">Tracker</button>
+      <button class="tab" role="tab" data-view="frameworks" aria-selected="false">Frameworks</button>
     </div>
     <button class="act primary" id="newprog">+ New program</button>
   </div>
@@ -67,15 +85,14 @@
 
   <div id="body"><div class="sub">Loading…</div></div>
 </div>
+<div id="modal"></div>
 
 <script>
 (function () {
   var ctx = null, view = 'programs', state = {};
   var body = document.getElementById('body');
+  var modalHost = document.getElementById('modal');
 
-  // Orbit stores lucide icon NAMES ('beer', 'chef-hat'), so rendering the
-  // field raw printed "beer Bar Team Training". Map the ones actually in use
-  // and fall through to a book for anything unrecognised — never the raw name.
   var ICONS = {
     'beer': '🍺', 'wine': '🍷', 'martini': '🍸', 'coffee': '☕', 'utensils': '🍽️',
     'salad': '🥗', 'chef-hat': '👨‍🍳', 'flame': '🔥', 'soup': '🍲', 'cake': '🍰',
@@ -90,11 +107,9 @@
   function icon(value) {
     var v = String(value || '').trim();
     if (!v) return '📘';
-    // Already an emoji (anything outside ASCII) — use it as-is.
     if (/[^\x00-\x7F]/.test(v)) return v;
     return ICONS[v.toLowerCase()] || '📘';
   }
-
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
@@ -104,8 +119,6 @@
     var p = { op: op, venues: (ctx && ctx.venues) || [] };
     for (var k in (extra || {})) p[k] = extra[k];
     return norm.run(p).then(function (d) {
-      // Ops return failures as data, so a caller that does not look at
-      // `error` silently shows a blank screen instead of the reason.
       if (d && d.error) throw new Error(d.error);
       return d;
     });
@@ -114,19 +127,22 @@
   function fail(e) {
     body.innerHTML = '<div class="card err">' + esc(e && e.message ? e.message : e) + '</div>';
   }
+  function closeModal() { modalHost.innerHTML = ''; }
+  function modal(html) {
+    modalHost.innerHTML = '<div class="modal"><div class="panel">' + html + '</div></div>';
+    modalHost.querySelector('.modal').addEventListener('click', function (ev) {
+      if (ev.target === ev.currentTarget) closeModal();
+    });
+  }
 
-  // ---- Programs ----------------------------------------------------------
+  // ---- Programs list -----------------------------------------------------
   function showPrograms() {
     loading();
     run('overview').then(function (d) {
       var rows = d.programs || [];
-      if (!rows.length) {
-        body.innerHTML = '<div class="empty">No training programs yet.</div>';
-        return;
-      }
+      if (!rows.length) { body.innerHTML = '<div class="empty">No training programs yet.</div>'; return; }
       body.innerHTML = rows.map(function (p) {
-        var done = p.assignment_count
-          ? Math.round((p.completed_count / p.assignment_count) * 100) : 0;
+        var done = p.assignment_count ? Math.round((p.completed_count / p.assignment_count) * 100) : 0;
         return '<div class="card row">' +
           '<div class="grow" style="cursor:pointer" data-open="' + esc(p.id) + '">' +
             '<div class="row" style="gap:8px">' +
@@ -147,34 +163,38 @@
     }).catch(fail);
   }
 
-  // ---- One program: structure + who is on it ------------------------------
+  // ---- One program -------------------------------------------------------
   function showProgram(id) {
     loading();
     Promise.all([run('program', { program_id: id }), run('enrollments', { program_id: id })])
       .then(function (res) {
         var d = res[0], e = res[1], p = d.program || {};
-        state.program = p;
+        state.program = p; state.content = {}; state.sections = {};
         var secsByModule = {}, itemsBySection = {};
-        (d.sections || []).forEach(function (s) {
-          (secsByModule[s.module_id] = secsByModule[s.module_id] || []).push(s);
-        });
+        (d.sections || []).forEach(function (s) { state.sections[s.id] = s; (secsByModule[s.module_id] = secsByModule[s.module_id] || []).push(s); });
         (d.content || []).forEach(function (c) {
+          state.content[c.id] = c;
           (itemsBySection[c.section_id] = itemsBySection[c.section_id] || []).push(c);
         });
 
-        var tree = (d.modules || []).map(function (m, i) {
+        var mods = d.modules || [];
+        var tree = mods.map(function (m, i) {
           var secs = (secsByModule[m.id] || []).map(function (s) {
-            var items = (itemsBySection[s.id] || []).map(function (c) {
-              return '<div class="item">· ' + esc(c.title) +
+            var items = (itemsBySection[s.id] || []);
+            var itemRows = items.map(function (c, ci) {
+              return '<div class="item"><span class="link" data-viewc="' + esc(c.id) + '">· ' + esc(c.title) + '</span>' +
                 ' <span class="sub">' + esc(c.content_type || '') + '</span>' +
+                (ci > 0 ? ' <button class="act tiny arrow" data-cup="' + esc(c.id) + '">↑</button>' : '') +
+                (ci < items.length - 1 ? ' <button class="act tiny arrow" data-cdn="' + esc(c.id) + '">↓</button>' : '') +
                 ' <button class="act tiny danger" data-delc="' + esc(c.id) + '">×</button></div>';
             }).join('');
-            return '<div class="sec"><span>' + esc(s.name || 'Section') + '</span>' +
+            return '<div class="sec"><input type="text" data-secname="' + esc(s.id) + '" value="' + esc(s.name || '') + '" style="max-width:220px">' +
                 ' <span class="pill off">' + esc(s.section_type || 'online') + '</span>' +
+                ' <button class="act tiny" data-secedit="' + esc(s.id) + '">details</button>' +
                 ' <button class="act tiny danger" data-dels="' + esc(s.id) + '">×</button></div>' +
-              items +
+              itemRows +
               '<div class="addrow" style="margin-left:20px">' +
-                '<input type="text" placeholder="Add content…" data-newc="' + esc(s.id) + '" style="flex:1;max-width:260px">' +
+                '<input type="text" placeholder="Add content…" data-newc="' + esc(s.id) + '" style="flex:1;max-width:240px">' +
                 '<select data-newctype="' + esc(s.id) + '">' +
                   '<option value="rich_text">text</option><option value="video">video</option>' +
                   '<option value="quiz">quiz</option><option value="file_upload">upload</option>' +
@@ -182,10 +202,11 @@
                 '<button class="act tiny" data-addc="' + esc(s.id) + '">Add</button>' +
               '</div>';
           }).join('');
-          return '<div class="mod">' +
-            '<div class="modhead">' +
+          return '<div class="mod"><div class="modhead">' +
               '<span class="name" style="font-size:.78rem">' + (i + 1) + '.</span>' +
-              '<input type="text" data-mod="' + esc(m.id) + '" value="' + esc(m.name || '') + '" style="flex:1;max-width:320px">' +
+              '<input type="text" data-mod="' + esc(m.id) + '" value="' + esc(m.name || '') + '" style="flex:1;max-width:300px">' +
+              (i > 0 ? '<button class="act tiny arrow" data-mup="' + esc(m.id) + '">↑</button>' : '') +
+              (i < mods.length - 1 ? '<button class="act tiny arrow" data-mdn="' + esc(m.id) + '">↓</button>' : '') +
               '<label class="sub" style="display:inline-flex;gap:4px;align-items:center">' +
                 '<input type="checkbox" data-modsign="' + esc(m.id) + '"' + (m.requires_signoff ? ' checked' : '') + '> sign-off</label>' +
               '<button class="act tiny danger" data-delm="' + esc(m.id) + '">×</button>' +
@@ -196,7 +217,7 @@
                 '<option value="online">online</option><option value="on_shift">on-shift</option>' +
                 '<option value="shift_exercise">exercise</option>' +
               '</select>' +
-              '<input type="text" placeholder="Section name (optional)" data-news="' + esc(m.id) + '" style="flex:1;max-width:240px">' +
+              '<input type="text" placeholder="Section name (optional)" data-news="' + esc(m.id) + '" style="flex:1;max-width:220px">' +
               '<button class="act tiny" data-adds="' + esc(m.id) + '">+ Section</button>' +
             '</div>' +
           '</div>';
@@ -204,7 +225,7 @@
 
         var enrolled = (e.assignments || []).map(function (a) {
           var cls = a.status === 'completed' ? 'ok' : (a.status === 'in_progress' ? 'go' : 'off');
-          return '<tr><td>' + esc(a.person_name) +
+          return '<tr><td><span class="link" data-member="' + esc(a.person_id) + '">' + esc(a.person_name) + '</span>' +
             (a.instance ? '<span class="inst">' + esc(a.instance) + '</span>' : '') + '</td>' +
             '<td>' + esc(a.person_role || '') + '</td>' +
             '<td>' + esc(a.due_date || '') + '</td>' +
@@ -213,47 +234,46 @@
               (a.status === 'completed'
                 ? '<button class="act" data-reopen="' + esc(a.id) + '">Reopen</button>'
                 : '<button class="act primary" data-done="' + esc(a.id) + '">Mark complete</button>') +
+              ' <button class="act tiny danger" data-unenrol="' + esc(a.id) + '">Remove</button>' +
             '</td></tr>';
         }).join('');
 
         body.innerHTML =
           '<button class="back" id="back">← All programs</button>' +
           '<div class="card">' +
-            '<div class="field"><label>Name</label>' +
-              '<input type="text" id="f-name" style="flex:1" value="' + esc(p.name || '') + '"></div>' +
-            '<div class="field"><label>Icon</label>' +
-              '<input type="text" id="f-icon" style="width:70px" value="' + esc(p.icon || '') + '">' +
+            '<div class="field"><label>Name</label><input type="text" id="f-name" style="flex:1" value="' + esc(p.name || '') + '"></div>' +
+            '<div class="field"><label>Icon</label><input type="text" id="f-icon" style="width:70px" value="' + esc(p.icon || '') + '">' +
               '<span class="sub">' + icon(p.icon) + ' — an emoji, or a lucide name like "chef-hat"</span></div>' +
-            '<div class="field"><label>Description</label>' +
-              '<input type="text" id="f-desc" style="flex:1" value="' + esc(p.description || '') + '"></div>' +
-            '<div class="field"><label>Due within</label>' +
-              '<input type="number" id="f-due" style="width:80px" min="0" value="' +
+            '<div class="field"><label>Description</label><input type="text" id="f-desc" style="flex:1" value="' + esc(p.description || '') + '"></div>' +
+            '<div class="field"><label>Due within</label><input type="number" id="f-due" style="width:80px" min="0" value="' +
                 (p.default_due_days == null ? '' : esc(p.default_due_days)) + '">' +
               '<span class="sub">days after enrolling — blank means no due date</span></div>' +
-            '<div class="field"><label>Active</label>' +
-              '<input type="checkbox" id="f-active"' + (p.is_active === false ? '' : ' checked') + '></div>' +
-            '<div class="field"><label>Plan-led</label>' +
-              '<input type="checkbox" id="f-plan"' + (p.requires_plan ? ' checked' : '') + '>' +
+            '<div class="field"><label>Active</label><input type="checkbox" id="f-active"' + (p.is_active === false ? '' : ' checked') + '></div>' +
+            '<div class="field"><label>Plan-led</label><input type="checkbox" id="f-plan"' + (p.requires_plan ? ' checked' : '') + '>' +
               '<span class="sub">scheduled with a trainer instead of self-paced</span></div>' +
+            '<div class="field"><label>Variants</label>' +
+              '<span class="grow sub">' + ((p.variants || []).length
+                ? (p.variants || []).map(function (g) { return esc(g.name) + (g.source === 'venue' ? ' (by venue)' : ' (' + ((g.options || []).length) + ')'); }).join(', ')
+                : 'none — one track for everyone') + '</span>' +
+              '<button class="act tiny" id="editvariants">Edit variants</button></div>' +
             '<div class="row" style="margin-top:8px">' +
-              '<button class="act primary" id="saveprog">Save</button>' +
-              '<span class="sub" id="saved"></span>' +
-              '<span class="grow"></span>' +
-              '<button class="act danger tiny" id="delprog">Delete program</button>' +
+              '<button class="act primary" id="saveprog">Save</button><span class="sub" id="saved"></span>' +
+              '<span class="grow"></span><button class="act danger tiny" id="delprog">Delete program</button>' +
             '</div>' +
           '</div>' +
           '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Structure</div>' +
             '<button class="act" id="addmod">+ Module</button></div>' +
             '<div class="tree" style="margin-top:8px">' + (tree || '<div class="sub">No modules yet — add one.</div>') + '</div></div>' +
-          '<div class="card"><div class="name" style="font-size:.8rem;margin-bottom:6px">Enrolled</div>' +
+          '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Enrolled (' + (e.assignments || []).length + ')</div>' +
+            '<button class="act primary" id="enrolbtn">+ Enrol people</button></div>' +
           (enrolled
             ? '<table><thead><tr><th>Person</th><th>Role</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>' + enrolled + '</tbody></table>'
-            : '<div class="sub">Nobody is enrolled yet.</div>') +
+            : '<div class="sub" style="margin-top:6px">Nobody is enrolled yet.</div>') +
           '</div>';
 
-        document.getElementById('back').addEventListener('click', showPrograms);
         var reload = function () { showProgram(id); };
         function act(op, extra) { return run(op, extra).then(reload).catch(fail); }
+        document.getElementById('back').addEventListener('click', showPrograms);
 
         document.getElementById('saveprog').addEventListener('click', function () {
           var due = document.getElementById('f-due').value;
@@ -264,90 +284,612 @@
             default_due_days: due === '' ? null : Number(due),
             is_active: document.getElementById('f-active').checked,
             requires_plan: document.getElementById('f-plan').checked,
-          }}).then(function (r) {
-            if (r.error) { fail(r.error); return; }
-            document.getElementById('saved').textContent = 'Saved';
-            setTimeout(function () {
-              var el = document.getElementById('saved'); if (el) el.textContent = '';
-            }, 1500);
+          }}).then(function () {
+            var el = document.getElementById('saved'); el.textContent = 'Saved';
+            setTimeout(function () { if (el) el.textContent = ''; }, 1500);
           }).catch(fail);
         });
         document.getElementById('delprog').addEventListener('click', function () {
-          // Everything below a program goes with it — enrolments and their
-          // completions included — so this asks first.
-          if (!confirm('Delete "' + (p.name || 'this program') +
-                       '" and every enrolment, completion and plan on it?')) return;
+          if (!confirm('Delete "' + (p.name || 'this program') + '" and every enrolment, completion and plan on it?')) return;
           run('delete_program', { program_id: id }).then(showPrograms).catch(fail);
         });
-        document.getElementById('addmod').addEventListener('click', function () {
-          act('add_module', { program_id: id });
-        });
+        document.getElementById('addmod').addEventListener('click', function () { act('add_module', { program_id: id }); });
+        document.getElementById('enrolbtn').addEventListener('click', function () { enrolPicker(p, e.available || []); });
+        document.getElementById('editvariants').addEventListener('click', function () { variantsEditor(p); });
 
-        body.querySelectorAll('[data-mod]').forEach(function (el) {
-          el.addEventListener('change', function () {
-            run('update_module', { module_id: el.getAttribute('data-mod'),
-              fields: { name: el.value } }).catch(fail);
+        bind('[data-mod]', 'change', function (el) { run('update_module', { module_id: el.getAttribute('data-mod'), fields: { name: el.value } }).catch(fail); });
+        bind('[data-modsign]', 'change', function (el) { act('update_module', { module_id: el.getAttribute('data-modsign'), fields: { requires_signoff: el.checked } }); });
+        bind('[data-delm]', 'click', function (el) { if (confirm('Delete this module, its sections and their content?')) act('delete_module', { module_id: el.getAttribute('data-delm') }); });
+        bind('[data-adds]', 'click', function (el) {
+          var mid = el.getAttribute('data-adds');
+          act('add_section', { module_id: mid, section_type: q('[data-newstype="' + mid + '"]').value, name: q('[data-news="' + mid + '"]').value || null });
+        });
+        bind('[data-dels]', 'click', function (el) { if (confirm('Delete this section and its content? Any scheduled plan dates for it go too.')) act('delete_section', { section_id: el.getAttribute('data-dels') }); });
+        bind('[data-secname]', 'change', function (el) { run('update_section', { section_id: el.getAttribute('data-secname'), fields: { name: el.value } }).catch(fail); });
+        bind('[data-secedit]', 'click', function (el) { editSection(state.sections[el.getAttribute('data-secedit')]); });
+        bind('[data-addc]', 'click', function (el) {
+          var sid = el.getAttribute('data-addc'); var title = q('[data-newc="' + sid + '"]').value;
+          if (title.trim()) act('add_content', { section_id: sid, title: title, content_type: q('[data-newctype="' + sid + '"]').value });
+        });
+        bind('[data-delc]', 'click', function (el) { act('delete_content', { content_id: el.getAttribute('data-delc') }); });
+        bind('[data-viewc]', 'click', function (el) { viewContent(el.getAttribute('data-viewc')); });
+        bind('[data-done]', 'click', function (el) { setStatus(el.getAttribute('data-done'), 'completed', id); });
+        bind('[data-reopen]', 'click', function (el) { setStatus(el.getAttribute('data-reopen'), 'assigned', id); });
+        bind('[data-unenrol]', 'click', function (el) { if (confirm('Remove this enrolment and its completion history?')) act('unenrol', { assignment_id: el.getAttribute('data-unenrol') }); });
+        bind('[data-member]', 'click', function (el) { showMember(el.getAttribute('data-member')); });
+        // reorder: send the whole new order for the collection
+        reorderArrows('[data-mup]', '[data-mdn]', 'modules', mods.map(function (m) { return m.id; }));
+        var allContent = (d.content || []);
+        bindReorderContent(secsByModule, itemsBySection);
+      }).catch(fail);
+  }
+
+  function bindReorderContent(secsByModule, itemsBySection) {
+    // Content reorder is per-section; rebuild the section's id list on click.
+    body.querySelectorAll('[data-cup],[data-cdn]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var cid = el.getAttribute('data-cup') || el.getAttribute('data-cdn');
+        var up = !!el.getAttribute('data-cup');
+        var sid = state.content[cid].section_id;
+        var ids = (itemsBySection[sid] || []).map(function (c) { return c.id; });
+        var i = ids.indexOf(cid); if (i < 0) return;
+        var j = up ? i - 1 : i + 1; if (j < 0 || j >= ids.length) return;
+        var t = ids[i]; ids[i] = ids[j]; ids[j] = t;
+        run('reorder', { collection: 'content', ids: ids }).then(function () { showProgram(state.program.id); }).catch(fail);
+      });
+    });
+  }
+  function reorderArrows(upSel, dnSel, collection, ids) {
+    function move(cid, up) {
+      var order = ids.slice(); var i = order.indexOf(cid); if (i < 0) return;
+      var j = up ? i - 1 : i + 1; if (j < 0 || j >= order.length) return;
+      var t = order[i]; order[i] = order[j]; order[j] = t;
+      run('reorder', { collection: collection, ids: order }).then(function () { showProgram(state.program.id); }).catch(fail);
+    }
+    body.querySelectorAll(upSel).forEach(function (el) { el.addEventListener('click', function () { move(el.getAttribute(upSel.slice(1, -1)), true); }); });
+    body.querySelectorAll(dnSel).forEach(function (el) { el.addEventListener('click', function () { move(el.getAttribute(dnSel.slice(1, -1)), false); }); });
+  }
+  function q(sel) { return body.querySelector(sel); }
+  function bind(sel, ev, fn) { body.querySelectorAll(sel).forEach(function (el) { el.addEventListener(ev, function () { fn(el); }); }); }
+  // Handlers for elements INSIDE a modal live in modalHost, not body.
+  function bindM(sel, ev, fn) {
+    if (typeof ev === 'function') { fn = ev; ev = 'click'; }
+    modalHost.querySelectorAll(sel).forEach(function (el) { el.addEventListener(ev, function () { fn(el); }); });
+  }
+  function uid() { return 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  function extractYouTube(v) {
+    v = String(v || '').trim();
+    var m = v.match(/(?:youtu\.be\/|[?&]v=|embed\/|shorts\/)([A-Za-z0-9_-]{11})/);
+    return m ? m[1] : v;
+  }
+
+  // ---- Variant groups editor ---------------------------------------------
+  // A variant splits a program into separately-tracked instances (Orbit's
+  // "Sections": Larder / Fryer / Grill). The enrol picker already reads these;
+  // this is what lets you DEFINE them, which nothing did before.
+  function variantsEditor(program) {
+    state.vg = JSON.parse(JSON.stringify(program.variants || []));
+    renderVariants(program);
+  }
+  function readVarInputs() {
+    (state.vg || []).forEach(function (g, gi) {
+      var gn = modalHost.querySelector('#vg-' + gi); if (gn) g.name = gn.value;
+      (g.options || []).forEach(function (o, oi) {
+        var on = modalHost.querySelector('#vo-' + gi + '-' + oi); if (on) o.name = on.value;
+      });
+    });
+  }
+  function renderVariants(program) {
+    var groupsHtml = (state.vg || []).map(function (g, gi) {
+      var isVenue = g.source === 'venue';
+      var opts = isVenue
+        ? '<div class="sub" style="margin-left:12px">Options come from your venues automatically.</div>'
+        : (g.options || []).map(function (o, oi) {
+            return '<div class="field" style="margin-left:12px"><input type="text" id="vo-' + gi + '-' + oi + '" value="' + esc(o.name || '') + '" placeholder="Option (e.g. Larder)" style="flex:1">' +
+              '<button class="act tiny danger" data-delvo="' + gi + '-' + oi + '">×</button></div>';
+          }).join('') + '<button class="act tiny" data-addvo="' + gi + '" style="margin-left:12px">+ option</button>';
+      return '<div class="mod"><div class="field"><input type="text" id="vg-' + gi + '" value="' + esc(g.name || '') + '" placeholder="Group name (e.g. Section)" style="flex:1;font-weight:600">' +
+        '<span class="pill off">' + (isVenue ? 'by venue' : 'manual') + '</span>' +
+        '<button class="act tiny danger" data-delvg="' + gi + '">× group</button></div>' + opts + '</div>';
+    }).join('');
+    modal('<div class="row"><div class="grow name" style="font-size:.85rem">Variant groups — ' + esc(program.name) + '</div>' +
+      '<button class="act primary" id="vg-save">Save</button> <button class="act" id="vg-cancel">Cancel</button></div>' +
+      '<div class="sub" style="margin:6px 0">A variant splits this program into separately-tracked tracks — someone enrols on one track and the tracker shows a badge per track. A "by venue" group tracks per venue automatically.</div>' +
+      '<div>' + (groupsHtml || '<div class="sub">No variant groups yet.</div>') + '</div>' +
+      '<div class="addrow" style="margin-top:8px"><button class="act" id="addvg">+ Manual group</button><button class="act" id="addvgvenue">+ Venue group</button></div>' +
+      '<div class="err" id="vg-err" style="margin-top:6px"></div>');
+    modalHost.querySelector('#vg-cancel').addEventListener('click', closeModal);
+    modalHost.querySelector('#addvg').addEventListener('click', function () { readVarInputs(); state.vg.push({ id: uid(), name: 'New group', source: 'manual', options: [] }); renderVariants(program); });
+    modalHost.querySelector('#addvgvenue').addEventListener('click', function () {
+      readVarInputs();
+      if (state.vg.some(function (g) { return g.source === 'venue'; })) { modalHost.querySelector('#vg-err').textContent = 'Only one venue group.'; return; }
+      state.vg.push({ id: uid(), name: 'Venue', source: 'venue', options: [] }); renderVariants(program);
+    });
+    bindM('[data-addvo]', function (el) { readVarInputs(); var gi = Number(el.getAttribute('data-addvo')); state.vg[gi].options = state.vg[gi].options || []; state.vg[gi].options.push({ id: uid(), name: '' }); renderVariants(program); });
+    bindM('[data-delvo]', function (el) { readVarInputs(); var p = el.getAttribute('data-delvo').split('-'); state.vg[Number(p[0])].options.splice(Number(p[1]), 1); renderVariants(program); });
+    bindM('[data-delvg]', function (el) { readVarInputs(); state.vg.splice(Number(el.getAttribute('data-delvg')), 1); renderVariants(program); });
+    modalHost.querySelector('#vg-save').addEventListener('click', function () {
+      readVarInputs();
+      var clean = state.vg.filter(function (g) { return String(g.name || '').trim(); }).map(function (g) {
+        if (g.source !== 'venue') g.options = (g.options || []).filter(function (o) { return String(o.name || '').trim(); });
+        return g;
+      });
+      run('save_program', { program_id: program.id, fields: { variants: clean } })
+        .then(function () { closeModal(); showProgram(program.id); }).catch(function (e) { modalHost.querySelector('#vg-err').textContent = e.message; });
+    });
+  }
+
+  function setStatus(assignmentId, status, programId) {
+    run('set_assignment_status', { assignment_id: assignmentId, status: status })
+      .then(function () { showProgram(programId); }).catch(fail);
+  }
+
+  // ---- Enrol picker ------------------------------------------------------
+  function enrolPicker(program, available) {
+    var groups = variantGroups(program);
+    var pickerRows = available.map(function (p) {
+      return '<label><input type="checkbox" value="' + esc(p.id) + '"> ' + esc(p.name) +
+        (p.role ? ' <span class="sub">' + esc(p.role) + '</span>' : '') + '</label>';
+    }).join('') || '<div class="sub" style="padding:8px">Everyone is already enrolled on this instance.</div>';
+    modal('<div class="name" style="font-size:.85rem">Enrol on ' + esc(program.name) + '</div>' +
+      groups.html +
+      '<input type="text" id="pfilter" placeholder="Filter names…" style="width:100%;margin-top:8px">' +
+      '<div class="pick" id="picklist">' + pickerRows + '</div>' +
+      '<div class="row" style="margin-top:10px"><button class="act primary" id="doenrol">Enrol selected</button>' +
+      '<span class="sub" id="enrolcount">0 selected</span><span class="grow"></span>' +
+      '<button class="act" id="cancelenrol">Cancel</button></div>');
+
+    var list = document.getElementById('picklist');
+    function count() { document.getElementById('enrolcount').textContent = list.querySelectorAll('input:checked').length + ' selected'; }
+    list.addEventListener('change', count);
+    document.getElementById('pfilter').addEventListener('input', function () {
+      var t = this.value.toLowerCase();
+      list.querySelectorAll('label').forEach(function (l) { l.style.display = l.textContent.toLowerCase().indexOf(t) >= 0 ? '' : 'none'; });
+    });
+    document.getElementById('cancelenrol').addEventListener('click', closeModal);
+    document.getElementById('doenrol').addEventListener('click', function () {
+      var ids = Array.prototype.slice.call(list.querySelectorAll('input:checked')).map(function (x) { return x.value; });
+      if (!ids.length) { closeModal(); return; }
+      var sel = groups.selection();
+      run('bulk_enrol', { program_id: program.id, person_ids: ids,
+        variant_id: sel.variant_id, variant_name: sel.variant_name, venue_id: sel.venue_id })
+        .then(function () { closeModal(); showProgram(program.id); }).catch(fail);
+    });
+  }
+
+  // Variant groups on a program define the instance a person is enrolled on.
+  function variantGroups(program) {
+    var groups = (program.variants || []).filter(function (g) { return g && g.id; });
+    var venues = (ctx && ctx.venues) || [];
+    if (!groups.length) {
+      // Even with no variant groups, a venue can scope the instance.
+      var opts = '<option value="">No venue</option>' + venues.map(function (v) {
+        return '<option value="' + esc(v.id) + '">' + esc(v.name) + '</option>'; }).join('');
+      return {
+        html: '<div class="field" style="margin-top:6px"><label>Venue</label><select id="v-venue">' + opts + '</select></div>',
+        selection: function () { var v = document.getElementById('v-venue'); return { variant_id: null, variant_name: null, venue_id: v && v.value || null }; }
+      };
+    }
+    var html = groups.map(function (g) {
+      var isVenue = g.source === 'venue';
+      var opts = isVenue
+        ? '<option value="">Not set</option>' + venues.map(function (v) { return '<option value="' + esc(v.id) + '">' + esc(v.name) + '</option>'; }).join('')
+        : '<option value="">Not set</option>' + (g.options || []).map(function (o) { return '<option value="' + esc(o.id) + '">' + esc(o.name) + '</option>'; }).join('');
+      return '<div class="field" style="margin-top:6px"><label>' + esc(g.name || 'Variant') + '</label>' +
+        '<select data-vg="' + esc(g.id) + '" data-vgsrc="' + esc(g.source || '') + '">' + opts + '</select></div>';
+    }).join('');
+    return {
+      html: html,
+      selection: function () {
+        var idParts = [], nameParts = [], venueId = null;
+        modalHost.querySelectorAll('[data-vg]').forEach(function (sel) {
+          if (!sel.value) return;
+          var gid = sel.getAttribute('data-vg');
+          if (sel.getAttribute('data-vgsrc') === 'venue') { venueId = sel.value; idParts.push(gid + ':' + sel.value); }
+          else { idParts.push(gid + ':' + sel.value); nameParts.push(sel.options[sel.selectedIndex].text); }
+        });
+        return { variant_id: idParts.join('|') || null, variant_name: nameParts.join(' · ') || null, venue_id: venueId };
+      }
+    };
+  }
+
+  // ---- Content viewer ----------------------------------------------------
+  function viewContent(cid) {
+    var c = state.content[cid];
+    if (!c) { run('content', { content_id: cid }).then(function (d) { renderContent(d.content); }).catch(fail); return; }
+    renderContent(c);
+  }
+  function renderContent(c) {
+    var body_ = c.body || {};
+    var inner = '';
+    if (c.content_type === 'rich_text') {
+      inner = '<div class="prose">' + (typeof body_ === 'object' ? (body_.html || body_.text || '') : String(body_)) + '</div>';
+    } else if (c.content_type === 'video') {
+      var yt = body_.youtube_id;
+      inner = yt ? '<iframe width="100%" height="320" src="https://www.youtube.com/embed/' + esc(yt) + '" frameborder="0" allowfullscreen></iframe>'
+        : (body_.url ? '<video controls style="width:100%"><source src="' + esc(body_.url) + '"></video>' : '<div class="sub">No video attached.</div>');
+    } else if (c.content_type === 'quiz') {
+      var qs = (body_.questions || []);
+      inner = '<div class="sub">Quiz — ' + qs.length + ' question' + (qs.length === 1 ? '' : 's') +
+        (body_.pass_percentage ? ', pass ' + body_.pass_percentage + '%' : '') + '</div>' +
+        qs.map(function (qq, i) {
+          var qtype = qq.type || 'multiple_choice';
+          var detail = '';
+          if (qtype === 'multiple_choice') {
+            detail = (qq.options || []).map(function (o, oi) {
+              var correct = (qq.correct_indices || []).indexOf(oi) >= 0;
+              return '<div class="' + (correct ? 'ok' : '') + '" style="font-size:.75rem;padding:2px 6px">' +
+                (correct ? '✓ ' : '· ') + esc(o) + '</div>';
+            }).join('');
+          } else if (qtype === 'match_pairs') {
+            detail = (qq.pairs || []).map(function (pr) {
+              return '<div style="font-size:.75rem;padding:2px 6px">' + esc(pr.left || '') + ' <span class="sub">↔</span> ' + esc(pr.right || '') + '</div>';
+            }).join('');
+          } else if (qtype === 'ordering') {
+            detail = (qq.items || []).map(function (it, ii) {
+              return '<div style="font-size:.75rem;padding:2px 6px">' + (ii + 1) + '. ' + esc(it) + '</div>';
+            }).join('');
+          }
+          return '<div style="margin-top:8px"><b>' + (i + 1) + '. ' + esc(qq.question || '') + '</b>' +
+            ' <span class="pill off">' + esc(qtype.replace('_', ' ')) + '</span>' + detail + '</div>';
+        }).join('');
+    } else if (c.content_type === 'file_upload') {
+      inner = '<div class="sub">Evidence upload step — trainees attach files here.' +
+        (body_.requires_signoff ? ' Requires manager sign-off.' : '') + '</div>';
+    }
+    modal('<div class="row"><div class="grow name" style="font-size:.85rem">' + esc(c.title) +
+      ' <span class="pill off">' + esc(c.content_type || '') + '</span></div>' +
+      '<button class="act" id="editc">Edit</button> <button class="act" id="closev">Close</button></div>' +
+      '<div style="margin-top:10px">' + inner + '</div>');
+    document.getElementById('closev').addEventListener('click', closeModal);
+    document.getElementById('editc').addEventListener('click', function () { editContent(c); });
+  }
+
+  // ---- Content editor (authoring the body the viewer reads) ---------------
+  // A structured editor per type — no raw JSON. The quiz editor builds all
+  // three Orbit question types (multiple choice with multi-answer, match pairs,
+  // ordering); rich text and video show a live preview as you type.
+  function editContent(c) {
+    state.ec = {
+      id: c.id,
+      title: c.title || '',
+      content_type: c.content_type || 'rich_text',
+      body: JSON.parse(JSON.stringify(c.body || {})),
+    };
+    renderEditContent();
+  }
+
+  function readECInputs() {
+    var t = modalHost.querySelector('#ec-title'); if (t) state.ec.title = t.value;
+    var ct = state.ec.content_type, b = state.ec.body || {};
+    if (ct === 'rich_text') {
+      var h = modalHost.querySelector('#ec-html'); if (h) state.ec.body = { html: h.value };
+    } else if (ct === 'video') {
+      var yt = modalHost.querySelector('#ec-yt'), dur = modalHost.querySelector('#ec-dur');
+      var nb = { youtube_id: yt ? (yt.value || null) : b.youtube_id };
+      if (dur && dur.value) nb.duration_seconds = Number(dur.value);
+      state.ec.body = nb;
+    } else if (ct === 'file_upload') {
+      var inst = modalHost.querySelector('#ec-inst'), mx = modalHost.querySelector('#ec-max'), sg = modalHost.querySelector('#ec-sign');
+      state.ec.body = { instructions: inst ? inst.value : '', max_files: mx ? Number(mx.value || 10) : 10, requires_signoff: sg ? sg.checked : false };
+    } else if (ct === 'quiz') {
+      var pass = modalHost.querySelector('#ec-pass');
+      (b.questions || []).forEach(function (qq, qi) {
+        var qt = modalHost.querySelector('#q-' + qi + '-text'); if (qt) qq.question = qt.value;
+        if (qq.type === 'multiple_choice') {
+          var ci = [];
+          (qq.options || []).forEach(function (o, oi) {
+            var ot = modalHost.querySelector('#q-' + qi + '-opt-' + oi + '-text'); if (ot) qq.options[oi] = ot.value;
+            var cb = modalHost.querySelector('#q-' + qi + '-opt-' + oi + '-correct'); if (cb && cb.checked) ci.push(oi);
           });
-        });
-        body.querySelectorAll('[data-modsign]').forEach(function (el) {
-          el.addEventListener('change', function () {
-            act('update_module', { module_id: el.getAttribute('data-modsign'),
-              fields: { requires_signoff: el.checked } });
+          qq.correct_indices = ci;
+        } else if (qq.type === 'match_pairs') {
+          (qq.pairs || []).forEach(function (pr, pi) {
+            var l = modalHost.querySelector('#q-' + qi + '-pair-' + pi + '-left'), r = modalHost.querySelector('#q-' + qi + '-pair-' + pi + '-right');
+            if (l) pr.left = l.value; if (r) pr.right = r.value;
           });
-        });
-        body.querySelectorAll('[data-delm]').forEach(function (el) {
-          el.addEventListener('click', function () {
-            if (!confirm('Delete this module, its sections and their content?')) return;
-            act('delete_module', { module_id: el.getAttribute('data-delm') });
+        } else if (qq.type === 'ordering') {
+          (qq.items || []).forEach(function (it, ii) {
+            var iel = modalHost.querySelector('#q-' + qi + '-item-' + ii); if (iel) qq.items[ii] = iel.value;
           });
-        });
-        body.querySelectorAll('[data-adds]').forEach(function (el) {
-          el.addEventListener('click', function () {
-            var mid = el.getAttribute('data-adds');
-            act('add_section', {
-              module_id: mid,
-              section_type: body.querySelector('[data-newstype="' + mid + '"]').value,
-              name: body.querySelector('[data-news="' + mid + '"]').value || null,
-            });
+        }
+      });
+      b.pass_percentage = pass && pass.value ? Number(pass.value) : (b.pass_percentage || 100);
+      state.ec.body = b;
+    }
+  }
+
+  function quizEditorHtml() {
+    var b = state.ec.body || {};
+    var qHtml = (b.questions || []).map(function (qq, qi) {
+      var typeOpts = ['multiple_choice', 'match_pairs', 'ordering'].map(function (t) {
+        return '<option value="' + t + '"' + (qq.type === t ? ' selected' : '') + '>' + t.replace('_', ' ') + '</option>';
+      }).join('');
+      var tb = '';
+      if (qq.type === 'multiple_choice') {
+        tb = (qq.options || []).map(function (o, oi) {
+          var correct = (qq.correct_indices || []).indexOf(oi) >= 0;
+          return '<div class="field" style="margin-left:12px"><input type="checkbox" id="q-' + qi + '-opt-' + oi + '-correct"' + (correct ? ' checked' : '') + ' title="correct answer">' +
+            '<input type="text" id="q-' + qi + '-opt-' + oi + '-text" value="' + esc(o) + '" placeholder="Option" style="flex:1">' +
+            '<button class="act tiny danger" data-delopt="' + qi + '-' + oi + '">×</button></div>';
+        }).join('') + '<button class="act tiny" data-addopt="' + qi + '" style="margin-left:12px">+ option</button>' +
+          '<div class="sub" style="margin-left:12px">Tick every correct answer — more than one is allowed.</div>';
+      } else if (qq.type === 'match_pairs') {
+        tb = (qq.pairs || []).map(function (pr, pi) {
+          return '<div class="field" style="margin-left:12px"><input type="text" id="q-' + qi + '-pair-' + pi + '-left" value="' + esc(pr.left || '') + '" placeholder="Left" style="flex:1">' +
+            '<span class="sub">↔</span><input type="text" id="q-' + qi + '-pair-' + pi + '-right" value="' + esc(pr.right || '') + '" placeholder="Right" style="flex:1">' +
+            '<button class="act tiny danger" data-delpair="' + qi + '-' + pi + '">×</button></div>';
+        }).join('') + '<button class="act tiny" data-addpair="' + qi + '" style="margin-left:12px">+ pair</button>';
+      } else if (qq.type === 'ordering') {
+        tb = (qq.items || []).map(function (it, ii) {
+          return '<div class="field" style="margin-left:12px"><span class="sub">' + (ii + 1) + '.</span><input type="text" id="q-' + qi + '-item-' + ii + '" value="' + esc(it) + '" placeholder="Item" style="flex:1">' +
+            (ii > 0 ? '<button class="act tiny arrow" data-itemup="' + qi + '-' + ii + '">↑</button>' : '') +
+            '<button class="act tiny danger" data-delitem="' + qi + '-' + ii + '">×</button></div>';
+        }).join('') + '<button class="act tiny" data-additem="' + qi + '" style="margin-left:12px">+ item</button>' +
+          '<div class="sub" style="margin-left:12px">List them in the correct order.</div>';
+      }
+      return '<div class="mod"><div class="field"><span class="name" style="font-size:.72rem">Q' + (qi + 1) + '</span>' +
+        '<select data-qtype="' + qi + '">' + typeOpts + '</select>' +
+        '<span class="grow"></span><button class="act tiny danger" data-delq="' + qi + '">× question</button></div>' +
+        '<input type="text" id="q-' + qi + '-text" value="' + esc(qq.question || '') + '" placeholder="Question" style="width:100%;margin-bottom:5px">' +
+        tb + '</div>';
+    }).join('');
+    return '<div class="field"><label>Pass %</label><input type="number" id="ec-pass" style="width:90px" value="' + esc(b.pass_percentage == null ? 100 : b.pass_percentage) + '"></div>' +
+      '<div style="margin-top:6px">' + (qHtml || '<div class="sub">No questions yet.</div>') + '</div>' +
+      '<button class="act" id="ec-addq" style="margin-top:8px">+ Question</button>';
+  }
+
+  function renderEditContent() {
+    var ct = state.ec.content_type, b = state.ec.body || {};
+    var typeSel = ['rich_text', 'video', 'quiz', 'file_upload'].map(function (t) {
+      return '<option value="' + t + '"' + (ct === t ? ' selected' : '') + '>' + t + '</option>';
+    }).join('');
+    var editor = '';
+    if (ct === 'rich_text') {
+      var html = typeof b === 'object' ? (b.html || b.text || '') : String(b);
+      editor = '<div class="field"><label>Body (HTML)</label></div>' +
+        '<textarea id="ec-html" style="width:100%;min-height:140px">' + esc(html) + '</textarea>' +
+        '<div class="sub" style="margin-top:6px">Live preview</div>' +
+        '<div class="card prose" id="ec-preview" style="max-height:220px;overflow:auto">' + html + '</div>';
+    } else if (ct === 'video') {
+      editor = '<div class="field"><label>YouTube link/ID</label><input type="text" id="ec-yt" style="flex:1" value="' + esc(b.youtube_id || '') + '" placeholder="paste a YouTube link or the 11-char id"></div>' +
+        '<div class="field"><label>Duration (s)</label><input type="number" id="ec-dur" style="width:110px" value="' + esc(b.duration_seconds || '') + '"></div>' +
+        '<div id="ec-vpreview" style="margin-top:6px">' + (b.youtube_id ? '<iframe width="100%" height="220" src="https://www.youtube.com/embed/' + esc(b.youtube_id) + '" frameborder="0" allowfullscreen></iframe>' : '<div class="sub">Paste a link to preview.</div>') + '</div>';
+    } else if (ct === 'quiz') {
+      editor = quizEditorHtml();
+    } else if (ct === 'file_upload') {
+      editor = '<div class="field"><label>Instructions</label></div>' +
+        '<textarea id="ec-inst" style="width:100%;min-height:70px">' + esc(b.instructions || '') + '</textarea>' +
+        '<div class="field" style="margin-top:6px"><label>Max files</label><input type="number" id="ec-max" style="width:90px" value="' + esc(b.max_files == null ? 10 : b.max_files) + '"></div>' +
+        '<div class="field"><label>Sign-off</label><input type="checkbox" id="ec-sign"' + (b.requires_signoff ? ' checked' : '') + '><span class="sub">a manager must accept the uploaded evidence</span></div>';
+    }
+    modal('<div class="row"><div class="grow name" style="font-size:.85rem">Edit content</div>' +
+      '<button class="act primary" id="ec-save">Save</button> <button class="act" id="ec-cancel">Cancel</button></div>' +
+      '<div class="field" style="margin-top:8px"><label>Title</label><input type="text" id="ec-title" style="flex:1" value="' + esc(state.ec.title || '') + '"></div>' +
+      '<div class="field"><label>Type</label><select id="ec-type">' + typeSel + '</select></div>' +
+      '<div id="ec-body" style="margin-top:8px">' + editor + '</div>' +
+      '<div class="err" id="ec-err" style="margin-top:6px"></div>');
+
+    modalHost.querySelector('#ec-cancel').addEventListener('click', function () {
+      renderContent({ id: state.ec.id, title: state.ec.title, content_type: state.ec.content_type, body: state.ec.body });
+    });
+    modalHost.querySelector('#ec-type').addEventListener('change', function () {
+      readECInputs(); state.ec.content_type = this.value;
+      if (this.value === 'quiz' && !(state.ec.body && state.ec.body.questions)) state.ec.body = { pass_percentage: 100, questions: [] };
+      renderEditContent();
+    });
+    var htmlEl = modalHost.querySelector('#ec-html');
+    if (htmlEl) htmlEl.addEventListener('input', function () { var pv = modalHost.querySelector('#ec-preview'); if (pv) pv.innerHTML = this.value; });
+    var ytEl = modalHost.querySelector('#ec-yt');
+    if (ytEl) ytEl.addEventListener('change', function () {
+      this.value = extractYouTube(this.value);
+      var pv = modalHost.querySelector('#ec-vpreview');
+      if (pv) pv.innerHTML = this.value ? '<iframe width="100%" height="220" src="https://www.youtube.com/embed/' + esc(this.value) + '" frameborder="0" allowfullscreen></iframe>' : '<div class="sub">Paste a link to preview.</div>';
+    });
+    // Quiz structural controls
+    var addq = modalHost.querySelector('#ec-addq');
+    if (addq) addq.addEventListener('click', function () {
+      readECInputs(); state.ec.body.questions = state.ec.body.questions || [];
+      state.ec.body.questions.push({ type: 'multiple_choice', question: '', options: ['', ''], correct_indices: [] });
+      renderEditContent();
+    });
+    bindM('[data-qtype]', 'change', function (el) {
+      readECInputs(); var qq = state.ec.body.questions[Number(el.getAttribute('data-qtype'))]; qq.type = el.value;
+      if (qq.type === 'multiple_choice' && !qq.options) { qq.options = ['', '']; qq.correct_indices = []; }
+      if (qq.type === 'match_pairs' && !qq.pairs) qq.pairs = [{ left: '', right: '' }];
+      if (qq.type === 'ordering' && !qq.items) qq.items = ['', ''];
+      renderEditContent();
+    });
+    bindM('[data-delq]', function (el) { readECInputs(); state.ec.body.questions.splice(Number(el.getAttribute('data-delq')), 1); renderEditContent(); });
+    bindM('[data-addopt]', function (el) { readECInputs(); var qi = Number(el.getAttribute('data-addopt')); state.ec.body.questions[qi].options.push(''); renderEditContent(); });
+    bindM('[data-delopt]', function (el) { readECInputs(); var p = el.getAttribute('data-delopt').split('-'); var qq = state.ec.body.questions[Number(p[0])]; qq.options.splice(Number(p[1]), 1); qq.correct_indices = (qq.correct_indices || []).filter(function (x) { return x !== Number(p[1]); }).map(function (x) { return x > Number(p[1]) ? x - 1 : x; }); renderEditContent(); });
+    bindM('[data-addpair]', function (el) { readECInputs(); state.ec.body.questions[Number(el.getAttribute('data-addpair'))].pairs.push({ left: '', right: '' }); renderEditContent(); });
+    bindM('[data-delpair]', function (el) { readECInputs(); var p = el.getAttribute('data-delpair').split('-'); state.ec.body.questions[Number(p[0])].pairs.splice(Number(p[1]), 1); renderEditContent(); });
+    bindM('[data-additem]', function (el) { readECInputs(); state.ec.body.questions[Number(el.getAttribute('data-additem'))].items.push(''); renderEditContent(); });
+    bindM('[data-delitem]', function (el) { readECInputs(); var p = el.getAttribute('data-delitem').split('-'); state.ec.body.questions[Number(p[0])].items.splice(Number(p[1]), 1); renderEditContent(); });
+    bindM('[data-itemup]', function (el) { readECInputs(); var p = el.getAttribute('data-itemup').split('-'); var it = state.ec.body.questions[Number(p[0])].items; var i = Number(p[1]); var t = it[i]; it[i] = it[i - 1]; it[i - 1] = t; renderEditContent(); });
+
+    modalHost.querySelector('#ec-save').addEventListener('click', function () {
+      readECInputs();
+      run('update_content', { content_id: state.ec.id, fields: { title: state.ec.title, content_type: state.ec.content_type, body: state.ec.body } })
+        .then(function (r) {
+          if (state.content) state.content[state.ec.id] = r.content;
+          renderContent(r.content);
+          if (state.program) showProgram(state.program.id);
+        }).catch(function (e) { modalHost.querySelector('#ec-err').textContent = e.message; });
+    });
+  }
+
+  // ---- Section details editor --------------------------------------------
+  function editSection(s) {
+    if (!s) return;
+    modal('<div class="row"><div class="grow name" style="font-size:.85rem">Section details</div>' +
+      '<button class="act primary" id="s-save">Save</button> <button class="act" id="s-cancel">Cancel</button></div>' +
+      '<div class="field" style="margin-top:8px"><label>Name</label><input type="text" id="s-name" style="flex:1" value="' + esc(s.name || '') + '"></div>' +
+      '<div class="field"><label>Introduction</label></div>' +
+      '<textarea id="s-intro" style="width:100%;min-height:70px">' + esc(s.introduction || '') + '</textarea>' +
+      '<div class="field" style="margin-top:6px"><label>Instructions</label></div>' +
+      '<textarea id="s-instr" style="width:100%;min-height:70px">' + esc(s.instructions || '') + '</textarea>' +
+      '<div class="field" style="margin-top:6px"><label>Trainer mins</label><input type="number" id="s-trm" style="width:90px" value="' + esc(s.trainer_time_minutes == null ? '' : s.trainer_time_minutes) + '">' +
+        '<label style="min-width:auto;margin-left:10px">Trainee mins</label><input type="number" id="s-tem" style="width:90px" value="' + esc(s.trainee_time_minutes == null ? '' : s.trainee_time_minutes) + '"></div>');
+    document.getElementById('s-cancel').addEventListener('click', closeModal);
+    document.getElementById('s-save').addEventListener('click', function () {
+      var trm = document.getElementById('s-trm').value, tem = document.getElementById('s-tem').value;
+      run('update_section', { section_id: s.id, fields: {
+        name: document.getElementById('s-name').value,
+        introduction: document.getElementById('s-intro').value || null,
+        instructions: document.getElementById('s-instr').value || null,
+        trainer_time_minutes: trm ? Number(trm) : null,
+        trainee_time_minutes: tem ? Number(tem) : null,
+      }}).then(function () { closeModal(); showProgram(state.program.id); }).catch(fail);
+    });
+  }
+
+  // ---- Member detail -----------------------------------------------------
+  function showMember(personId) {
+    loading();
+    run('member', { person_id: personId }).then(function (d) {
+      var a = (d.assignments || []).map(function (r) {
+        var mods = (r.modules || []).map(function (m) {
+          var cls = m.done === m.total ? 'ok' : (m.done > 0 ? 'go' : 'off');
+          return '<span class="pill ' + cls + '" style="margin:1px">' + esc(m.name) + ' ' + m.done + '/' + m.total + '</span>';
+        }).join(' ');
+        return '<tr><td>' + esc(r.program) + (r.instance ? '<span class="inst">' + esc(r.instance) + '</span>' : '') + '</td>' +
+          '<td>' + mods + '</td><td style="text-align:right">' + r.percent + '%</td></tr>';
+      }).join('');
+      var plans = (d.plans || []).map(function (pl) {
+        var secs = (pl.sections || []).map(function (s) {
+          var cls = s.status === 'completed' ? 'ok' : 'off';
+          return '<span class="pill ' + cls + '" style="margin:1px" title="' + esc(s.due_date || '') + '">' + esc(s.name) + '</span>';
+        }).join(' ');
+        return '<tr><td>' + esc(pl.program) + '</td><td>' + (secs || '<span class="sub">no sections scheduled</span>') + '</td></tr>';
+      }).join('');
+      body.innerHTML = '<button class="back" id="back">← Back</button>' +
+        '<div class="card"><div class="name">' + esc(d.person.name) +
+          (d.person.role ? ' <span class="sub">' + esc(d.person.role) + '</span>' : '') + '</div></div>' +
+        '<div class="card"><div class="name" style="font-size:.8rem;margin-bottom:6px">Programs</div>' +
+          (a ? '<table><thead><tr><th>Program</th><th>Modules</th><th style="text-align:right">Overall</th></tr></thead><tbody>' + a + '</tbody></table>'
+             : '<div class="sub">No self-paced programs.</div>') + '</div>' +
+        (d.plans && d.plans.length
+          ? '<div class="card"><div class="name" style="font-size:.8rem;margin-bottom:6px">Plans</div>' +
+            '<table><thead><tr><th>Program</th><th>Sections</th></tr></thead><tbody>' + plans + '</tbody></table></div>'
+          : '');
+      document.getElementById('back').addEventListener('click', function () {
+        if (state.program) showProgram(state.program.id); else { view = 'tracker'; render(); }
+      });
+    }).catch(fail);
+  }
+
+  // ---- Plans tab ---------------------------------------------------------
+  function showPlans() {
+    loading();
+    Promise.all([run('plans', { status: state.planStatus || 'active' }), run('overview')]).then(function (res) {
+      var plans = res[0].plans || [], programs = res[1].programs || [];
+      state.planPrograms = programs.filter(function (p) { return p.requires_plan; });
+      var statusSel = ['active', 'completed', 'cancelled', 'all'].map(function (s) {
+        return '<option value="' + s + '"' + ((state.planStatus || 'active') === s ? ' selected' : '') + '>' + s + '</option>';
+      }).join('');
+      var rows = plans.map(function (pl) {
+        return '<tr><td><span class="link" data-member="' + esc(pl.person_id) + '">' + esc(pl.person_name) + '</span></td>' +
+          '<td><span class="link" data-plan="' + esc(pl.id) + '">' + esc(pl.program_name || '') + '</span>' +
+            (pl.instance ? '<span class="inst">' + esc(pl.instance) + '</span>' : '') + '</td>' +
+          '<td>' + esc(pl.next_due || (pl.section_count ? 'all scheduled' : '—')) + '</td>' +
+          '<td><span class="pill off">' + esc(pl.status) + '</span></td>' +
+          '<td style="text-align:right"><button class="act tiny danger" data-delplan="' + esc(pl.id) + '">×</button></td></tr>';
+      }).join('');
+      body.innerHTML = '<div class="row"><div class="grow filters">' +
+          'Status <select id="planstatus">' + statusSel + '</select></div>' +
+          '<button class="act primary" id="newplan">+ New plan</button></div>' +
+        '<div class="card">' + (rows
+          ? '<table><thead><tr><th>Team member</th><th>Program</th><th>Next due</th><th>Status</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
+          : '<div class="sub">No plans.</div>') + '</div>';
+      document.getElementById('planstatus').addEventListener('change', function () { state.planStatus = this.value; showPlans(); });
+      document.getElementById('newplan').addEventListener('click', newPlan);
+      bind('[data-member]', 'click', function (el) { state.program = null; showMember(el.getAttribute('data-member')); });
+      bind('[data-plan]', 'click', function (el) { showPlan(el.getAttribute('data-plan')); });
+      bind('[data-delplan]', 'click', function (el) { if (confirm('Delete this plan and its schedule?')) run('delete_plan', { plan_id: el.getAttribute('data-delplan') }).then(showPlans).catch(fail); });
+    }).catch(fail);
+  }
+
+  function newPlan() {
+    Promise.all([run('overview'), run('enrollments', { program_id: (state.planPrograms[0] || {}).id })])
+      .then(function () {
+        var progs = (state.planPrograms || []);
+        if (!progs.length) { alert('Create a plan-led program first (tick "Plan-led").'); return; }
+        var progOpts = progs.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>'; }).join('');
+        // people list from any program's enrollments call (returns all active people via available)
+        run('enrollments', { program_id: progs[0].id }).then(function (e) {
+          var everyone = (e.available || []).concat((e.assignments || []).map(function (a) { return { id: a.person_id, name: a.person_name }; }));
+          var seen = {}; everyone = everyone.filter(function (p) { if (seen[p.id]) return false; seen[p.id] = 1; return true; });
+          everyone.sort(function (a, b) { return String(a.name).localeCompare(b.name); });
+          var pplOpts = everyone.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>'; }).join('');
+          modal('<div class="name" style="font-size:.85rem">New training plan</div>' +
+            '<div class="field" style="margin-top:8px"><label>Team member</label><select id="np-person" style="flex:1">' + pplOpts + '</select></div>' +
+            '<div class="field"><label>Program</label><select id="np-prog" style="flex:1">' + progOpts + '</select></div>' +
+            '<div class="row" style="margin-top:10px"><button class="act primary" id="np-create">Create &amp; schedule</button>' +
+            '<span class="grow"></span><button class="act" id="np-cancel">Cancel</button></div>');
+          document.getElementById('np-cancel').addEventListener('click', closeModal);
+          document.getElementById('np-create').addEventListener('click', function () {
+            run('create_plan', { person_id: document.getElementById('np-person').value, program_id: document.getElementById('np-prog').value })
+              .then(function (r) { closeModal(); showPlan(r.plan.id); }).catch(fail);
           });
-        });
-        body.querySelectorAll('[data-dels]').forEach(function (el) {
-          el.addEventListener('click', function () {
-            if (!confirm('Delete this section and its content? Any scheduled plan dates for it go too.')) return;
-            act('delete_section', { section_id: el.getAttribute('data-dels') });
-          });
-        });
-        body.querySelectorAll('[data-addc]').forEach(function (el) {
-          el.addEventListener('click', function () {
-            var sid = el.getAttribute('data-addc');
-            var title = body.querySelector('[data-newc="' + sid + '"]').value;
-            if (!title.trim()) return;
-            act('add_content', { section_id: sid, title: title,
-              content_type: body.querySelector('[data-newctype="' + sid + '"]').value });
-          });
-        });
-        body.querySelectorAll('[data-delc]').forEach(function (el) {
-          el.addEventListener('click', function () {
-            act('delete_content', { content_id: el.getAttribute('data-delc') });
-          });
-        });
-        body.querySelectorAll('[data-done]').forEach(function (el) {
-          el.addEventListener('click', function () { setStatus(el.getAttribute('data-done'), 'completed', id); });
-        });
-        body.querySelectorAll('[data-reopen]').forEach(function (el) {
-          el.addEventListener('click', function () { setStatus(el.getAttribute('data-reopen'), 'assigned', id); });
         });
       }).catch(fail);
   }
 
-  // Admin-side completion. Without it nothing in an admin-only build could
-  // ever reach 'complete' — the trainee experience is what moves an
-  // assignment in the source system, and that is deliberately not here yet.
-  function setStatus(assignmentId, status, programId) {
-    // Through the op, not a read-modify-write from the browser: two people on
-    // the same assignment used to silently lose one of the two edits.
-    run('set_assignment_status', { assignment_id: assignmentId, status: status })
-      .then(function () { showProgram(programId); }).catch(fail);
+  function showPlan(planId) {
+    loading();
+    run('plan', { plan_id: planId })
+      .then(function (d) {
+        var st = d.plan.status || 'active';
+        var rows = (d.sections || []).map(function (s) {
+          var done = s.status === 'completed';
+          // A section can only be ticked off once it has been scheduled (that
+          // is when it gets a plan_section_id to hang the status on).
+          var toggle = s.plan_section_id
+            ? '<button class="act tiny' + (done ? '' : ' primary') + '" data-pstatus="' + esc(s.plan_section_id) +
+                '" data-to="' + (done ? 'pending' : 'completed') + '">' + (done ? 'Undo' : 'Done') + '</button>'
+            : '<span class="sub">schedule first</span>';
+          return '<tr><td>' + esc(s.module) + '<span class="inst">' + esc(s.name) + ' · ' + esc(s.section_type || '') + '</span></td>' +
+            '<td><input type="date" data-due="' + esc(s.section_id) + '" value="' + esc(s.due_date || '') + '"></td>' +
+            '<td><input type="time" data-time="' + esc(s.section_id) + '" value="' + esc(s.start_time || '') + '" style="width:90px"></td>' +
+            '<td><span class="pill ' + (done ? 'ok' : 'off') + '">' + esc(s.status) + '</span></td>' +
+            '<td style="text-align:right"><button class="act tiny" data-sched="' + esc(s.section_id) + '">Save</button> ' + toggle + '</td></tr>';
+        }).join('');
+        var planAction = st === 'completed'
+          ? '<span class="pill ok">Completed</span> <button class="act" id="plan-reopen">Reopen</button>'
+          : (st === 'cancelled'
+            ? '<span class="pill off">Cancelled</span> <button class="act" id="plan-reopen">Reactivate</button>'
+            : '<button class="act primary" id="plan-complete">Mark plan complete</button> ' +
+              '<button class="act danger tiny" id="plan-cancel">Cancel</button>');
+        body.innerHTML = '<button class="back" id="back">← All plans</button>' +
+          '<div class="card"><div class="row"><div class="grow name">' + esc(d.plan.program || 'Plan') + '</div>' + planAction + '</div></div>' +
+          '<div class="card">' + (rows
+            ? '<table><thead><tr><th>Section</th><th>Date</th><th>Time</th><th>Status</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
+            : '<div class="sub">This program has no sections to schedule.</div>') + '</div>';
+        document.getElementById('back').addEventListener('click', function () { view = 'plans'; render(); });
+        bind('[data-sched]', 'click', function (el) {
+          var sid = el.getAttribute('data-sched');
+          run('schedule_section', { plan_id: planId, section_id: sid,
+            due_date: q('[data-due="' + sid + '"]').value || null,
+            start_time: q('[data-time="' + sid + '"]').value || null })
+            .then(function () { showPlan(planId); }).catch(fail);
+        });
+        bind('[data-pstatus]', 'click', function (el) {
+          run('set_plan_section_status', { plan_section_id: el.getAttribute('data-pstatus'), status: el.getAttribute('data-to') })
+            .then(function () { showPlan(planId); }).catch(fail);
+        });
+        function setPlan(status, thenPlans) {
+          run('set_plan_status', { plan_id: planId, status: status })
+            .then(function () { if (thenPlans) { view = 'plans'; render(); } else showPlan(planId); }).catch(fail);
+        }
+        var pc = document.getElementById('plan-complete');
+        if (pc) pc.addEventListener('click', function () { setPlan('completed'); });
+        var pr = document.getElementById('plan-reopen');
+        if (pr) pr.addEventListener('click', function () { setPlan('active'); });
+        var px = document.getElementById('plan-cancel');
+        if (px) px.addEventListener('click', function () { if (confirm('Cancel this plan? It drops off the active tracker.')) setPlan('cancelled', true); });
+      }).catch(fail);
   }
 
   // ---- Tracker -----------------------------------------------------------
@@ -355,50 +897,210 @@
     loading();
     run('tracker').then(function (d) {
       var cols = d.columns || [], rows = d.rows || [];
-      if (!rows.length) {
-        body.innerHTML = '<div class="empty">Nobody is enrolled on a training program yet.</div>';
-        return;
-      }
-      var head = '<tr><th class="person">Team member</th>' +
-        cols.map(function (c) { return '<th style="text-align:center">' + esc(c.name) + '</th>'; }).join('') + '</tr>';
-      var trs = rows.map(function (r) {
-        return '<tr><td class="person">' + esc(r.person.name) +
+      state.tracker = d;
+      if (!rows.length) { body.innerHTML = '<div class="empty">Nobody is enrolled on a training program yet.</div>'; return; }
+      var venues = (ctx && ctx.venues) || [];
+      var venueSel = '<option value="">All venues</option>' + venues.map(function (v) { return '<option value="' + esc(v.id) + '"' + (state.trkVenue === v.id ? ' selected' : '') + '>' + esc(v.name) + '</option>'; }).join('');
+      var progSel = '<option value="">All programs</option>' + cols.map(function (c) { return '<option value="' + esc(c.id) + '"' + (state.trkProg === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('');
+      // filter columns/rows
+      var showCols = cols.filter(function (c) { return !state.trkProg || c.id === state.trkProg; });
+      var colIdx = {}; cols.forEach(function (c, i) { colIdx[c.id] = i; });
+      var visRows = rows.filter(function (r) {
+        if (!state.trkVenue) return true;
+        // a row shows if any of its cells is at that venue (instance) or the person is at it
+        return r.cells.some(function (cell) { return (cell || []).some(function (e) { return e.venue_id === state.trkVenue; }); }) ||
+          (r.person.venues || []).indexOf(state.trkVenue) >= 0;
+      });
+      var head = '<tr><th class="person">Team member</th>' + showCols.map(function (c) { return '<th style="text-align:center">' + esc(c.name) + '</th>'; }).join('') + '</tr>';
+      var trs = visRows.map(function (r) {
+        return '<tr><td class="person"><span class="link" data-member="' + esc(r.person.id) + '">' + esc(r.person.name) + '</span>' +
           (r.person.role ? '<span class="inst">' + esc(r.person.role) + '</span>' : '') + '</td>' +
-          r.cells.map(function (entries) {
-            if (!entries || !entries.length) return '<td><span class="dash">—</span></td>';
-            return '<td>' + entries.map(function (c) {
-              var badge = c.status === 'complete'
-                ? '<span class="pill ok">Complete</span>'
-                : (c.status === 'progress'
-                    ? '<span class="pill go">' + esc(c.label || 'In progress') + '</span>'
-                    : '<span class="dash">—</span>');
-              return (c.instance ? '<span class="inst">' + esc(c.instance) + '</span>' : '') + badge;
+          showCols.map(function (c) {
+            var entries = r.cells[colIdx[c.id]] || [];
+            if (!entries.length) return '<td><span class="dash">—</span></td>';
+            return '<td>' + entries.map(function (e) {
+              var badge = e.status === 'complete' ? '<span class="pill ok">Complete</span>'
+                : (e.status === 'progress' ? '<span class="pill go">' + esc(e.label || 'In progress') + '</span>' : '<span class="dash">—</span>');
+              return (e.instance ? '<span class="inst">' + esc(e.instance) + '</span>' : '') + badge;
             }).join('<div style="height:3px"></div>') + '</td>';
           }).join('') + '</tr>';
       }).join('');
-      body.innerHTML = '<div class="card matrix"><table><thead>' + head + '</thead><tbody>' + trs + '</tbody></table></div>' +
-        '<div class="sub" style="margin-top:6px">One badge per enrolment — a person trained on two variants shows two.</div>';
+      body.innerHTML = '<div class="filters">' +
+          'Venue <select id="trkvenue">' + venueSel + '</select>' +
+          'Program <select id="trkprog">' + progSel + '</select>' +
+          ((state.trkVenue || state.trkProg) ? '<button class="act tiny" id="trkclear">Clear</button>' : '') +
+          '<span class="grow"></span><button class="act" id="trkprint">Print</button></div>' +
+        '<div class="card matrix" id="trkmatrix"><table><thead>' + head + '</thead><tbody>' + trs + '</tbody></table></div>' +
+        '<div class="sub" style="margin-top:6px">One badge per enrolment — a person trained on two variants shows two. ' + visRows.length + ' of ' + rows.length + ' people shown.</div>';
+      document.getElementById('trkvenue').addEventListener('change', function () { state.trkVenue = this.value; showTracker(); });
+      document.getElementById('trkprog').addEventListener('change', function () { state.trkProg = this.value; showTracker(); });
+      var clr = document.getElementById('trkclear'); if (clr) clr.addEventListener('click', function () { state.trkVenue = ''; state.trkProg = ''; showTracker(); });
+      document.getElementById('trkprint').addEventListener('click', function () { window.print(); });
+      bind('[data-member]', 'click', function (el) { state.program = null; showMember(el.getAttribute('data-member')); });
     }).catch(fail);
   }
 
-  function render() { view === 'tracker' ? showTracker() : showPrograms(); }
+  // ---- Sign-off queue ----------------------------------------------------
+  function showSignoffs() {
+    loading();
+    run('signoffs').then(function (d) {
+      var rows = d.pending || [];
+      if (!rows.length) { body.innerHTML = '<div class="empty">Nothing awaiting sign-off. 🎉</div>'; return; }
+      body.innerHTML = '<div class="sub" style="margin:2px 0 8px">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + ' a trainee has submitted, waiting for a manager to accept.</div>' +
+        rows.map(function (r) {
+          var files = (r.files || []).map(function (f) {
+            return '<button class="act tiny" data-viewfile="' + esc(f.id) + '" data-fct="' + esc(f.content_type || '') + '" data-fn="' + esc(f.filename || 'file') + '">' + esc(f.filename || 'evidence') + '</button>';
+          }).join(' ') || '<span class="sub">no files attached</span>';
+          return '<div class="card"><div class="row"><div class="grow">' +
+            '<div class="name">' + esc(r.person) + '</div>' +
+            '<div class="sub">' + esc(r.program || '') + ' · ' + esc(r.item || '') + '</div>' +
+            '<div style="margin-top:5px">' + files + '</div></div>' +
+            '<button class="act primary" data-approve="' + esc(r.completion_id) + '">Approve</button>' +
+            '<button class="act danger" data-reject="' + esc(r.completion_id) + '">Reject</button>' +
+          '</div></div>';
+        }).join('');
+      bind('[data-approve]', 'click', function (el) { run('sign_off', { completion_id: el.getAttribute('data-approve') }).then(showSignoffs).catch(fail); });
+      bind('[data-reject]', 'click', function (el) {
+        var notes = prompt('Reason for sending it back (the trainee sees this):');
+        if (notes === null) return;
+        run('reject_signoff', { completion_id: el.getAttribute('data-reject'), notes: notes || null }).then(showSignoffs).catch(fail);
+      });
+      bind('[data-viewfile]', 'click', function (el) {
+        var fct = el.getAttribute('data-fct'), fn = el.getAttribute('data-fn');
+        norm.files.urlFor(el.getAttribute('data-viewfile')).then(function (url) {
+          var inner = /^image\//.test(fct) ? '<img src="' + url + '" style="max-width:100%">'
+            : '<a class="link" href="' + url + '" target="_blank">Open ' + esc(fn) + '</a>';
+          modal('<div class="row"><div class="grow name">' + esc(fn) + '</div><button class="act" id="closev">Close</button></div><div style="margin-top:10px">' + inner + '</div>');
+          document.getElementById('closev').addEventListener('click', closeModal);
+        }).catch(fail);
+      });
+    }).catch(fail);
+  }
+
+  // ---- Capability frameworks ---------------------------------------------
+  function showFrameworks() {
+    loading();
+    run('frameworks').then(function (d) {
+      var rows = d.frameworks || [];
+      body.innerHTML = '<div class="row"><div class="grow"></div><button class="act primary" id="newfw">+ New framework</button></div>' +
+        (rows.length ? rows.map(function (f) {
+          return '<div class="card row"><div class="grow" style="cursor:pointer" data-fw="' + esc(f.id) + '">' +
+            '<div class="name">' + esc(f.name) + (f.role_label && f.role_label !== f.name ? ' <span class="sub">' + esc(f.role_label) + '</span>' : '') + '</div>' +
+            '<div class="sub">' + f.category_count + ' categor' + (f.category_count === 1 ? 'y' : 'ies') +
+              (f.is_active === false ? ' · inactive' : '') + '</div></div>' +
+            '<button class="act" data-fw="' + esc(f.id) + '">Open</button></div>';
+        }).join('') : '<div class="empty">No capability frameworks yet.</div>');
+      document.getElementById('newfw').addEventListener('click', function () {
+        var name = prompt('Name the capability framework (e.g. "Sales Manager")');
+        if (!name || !name.trim()) return;
+        run('save_framework', { fields: { name: name.trim(), is_active: true } }).then(function (r) { showFramework(r.framework.id); }).catch(fail);
+      });
+      bind('[data-fw]', 'click', function (el) { showFramework(el.getAttribute('data-fw')); });
+    }).catch(fail);
+  }
+
+  function showFramework(fid) {
+    loading();
+    run('framework', { framework_id: fid }).then(function (d) {
+      state.fw = d.framework;
+      // Work on a local copy of the tree so structural edits (add/remove) don't
+      // hit the server until Save; every node keeps its id (server fills new).
+      state.fwCats = JSON.parse(JSON.stringify(d.framework.categories || []));
+      renderFramework(fid);
+    }).catch(fail);
+  }
+
+  // Pull the on-screen field values back into the working model, so an add or
+  // remove elsewhere on the form doesn't discard in-progress edits.
+  function readFwInputs() {
+    (state.fwCats || []).forEach(function (cat, ci) {
+      var cn = document.getElementById('cat-' + ci); if (cn) cat.name = cn.value;
+      (cat.capabilities || []).forEach(function (cap, ki) {
+        var pn = document.getElementById('cap-' + ci + '-' + ki); if (pn) cap.name = pn.value;
+        var l1 = document.getElementById('l1-' + ci + '-' + ki); if (l1) cap.level1_descriptor = l1.value;
+        var l2 = document.getElementById('l2-' + ci + '-' + ki); if (l2) cap.level2_descriptor = l2.value;
+        var l3 = document.getElementById('l3-' + ci + '-' + ki); if (l3) cap.level3_descriptor = l3.value;
+      });
+    });
+  }
+
+  function renderFramework(fid) {
+    var f = state.fw;
+    var catsHtml = (state.fwCats || []).map(function (cat, ci) {
+      var caps = (cat.capabilities || []).map(function (cap, ki) {
+        return '<div class="item" style="margin-left:12px;border-left:2px solid var(--line);padding-left:8px;margin-top:6px">' +
+          '<div class="field"><input type="text" id="cap-' + ci + '-' + ki + '" value="' + esc(cap.name || '') + '" placeholder="Capability" style="flex:1">' +
+            '<button class="act tiny danger" data-delcap="' + ci + '-' + ki + '">×</button></div>' +
+          '<input type="text" id="l1-' + ci + '-' + ki + '" value="' + esc(cap.level1_descriptor || '') + '" placeholder="Level 1 — developing" style="width:100%;margin-top:3px">' +
+          '<input type="text" id="l2-' + ci + '-' + ki + '" value="' + esc(cap.level2_descriptor || '') + '" placeholder="Level 2 — competent" style="width:100%;margin-top:3px">' +
+          '<input type="text" id="l3-' + ci + '-' + ki + '" value="' + esc(cap.level3_descriptor || '') + '" placeholder="Level 3 — leading" style="width:100%;margin-top:3px">' +
+          '</div>';
+      }).join('');
+      return '<div class="mod"><div class="field"><input type="text" id="cat-' + ci + '" value="' + esc(cat.name || '') + '" placeholder="Category" style="flex:1;font-weight:600">' +
+        '<button class="act tiny" data-addcap="' + ci + '">+ capability</button>' +
+        '<button class="act tiny danger" data-delcat="' + ci + '">× category</button></div>' +
+        (caps || '<div class="sub" style="margin-left:12px">no capabilities yet</div>') + '</div>';
+    }).join('');
+    body.innerHTML = '<button class="back" id="back">← All frameworks</button>' +
+      '<div class="card"><div class="field"><label>Name</label><input type="text" id="fw-name" style="flex:1" value="' + esc(f.name || '') + '"></div>' +
+        '<div class="field"><label>Role label</label><input type="text" id="fw-role" style="flex:1" value="' + esc(f.role_label || '') + '"></div>' +
+        '<div class="field"><label>Active</label><input type="checkbox" id="fw-active"' + (f.is_active === false ? '' : ' checked') + '></div></div>' +
+      '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Categories &amp; capabilities</div>' +
+        '<button class="act" id="addcat">+ Category</button></div>' +
+        '<div style="margin-top:8px">' + (catsHtml || '<div class="sub">No categories yet — add one.</div>') + '</div></div>' +
+      '<div class="row"><button class="act primary" id="fw-save">Save framework</button> <span class="sub" id="fw-saved"></span></div>';
+    document.getElementById('back').addEventListener('click', function () { view = 'frameworks'; render(); });
+    document.getElementById('addcat').addEventListener('click', function () {
+      readFwInputs(); state.fwCats.push({ name: 'New category', capabilities: [] }); renderFramework(fid);
+    });
+    bind('[data-addcap]', 'click', function (el) {
+      readFwInputs(); var ci = Number(el.getAttribute('data-addcap'));
+      state.fwCats[ci].capabilities = state.fwCats[ci].capabilities || [];
+      state.fwCats[ci].capabilities.push({ name: 'New capability' }); renderFramework(fid);
+    });
+    bind('[data-delcat]', 'click', function (el) {
+      readFwInputs(); state.fwCats.splice(Number(el.getAttribute('data-delcat')), 1); renderFramework(fid);
+    });
+    bind('[data-delcap]', 'click', function (el) {
+      readFwInputs(); var p = el.getAttribute('data-delcap').split('-');
+      state.fwCats[Number(p[0])].capabilities.splice(Number(p[1]), 1); renderFramework(fid);
+    });
+    document.getElementById('fw-save').addEventListener('click', function () {
+      readFwInputs();
+      run('save_framework', { framework_id: fid, fields: {
+        name: document.getElementById('fw-name').value,
+        role_label: document.getElementById('fw-role').value || null,
+        is_active: document.getElementById('fw-active').checked,
+        categories: state.fwCats,
+      }}).then(function (r) {
+        state.fw = r.framework;
+        state.fwCats = JSON.parse(JSON.stringify(r.framework.categories || []));
+        renderFramework(fid);
+        var el = document.getElementById('fw-saved'); el.textContent = 'Saved';
+        setTimeout(function () { if (el) el.textContent = ''; }, 1500);
+      }).catch(fail);
+    });
+  }
+
+  function render() {
+    closeModal();
+    if (view === 'tracker') showTracker();
+    else if (view === 'plans') showPlans();
+    else if (view === 'signoffs') showSignoffs();
+    else if (view === 'frameworks') showFrameworks();
+    else showPrograms();
+  }
 
   document.getElementById('newprog').addEventListener('click', function () {
     var name = prompt('Name the new training program');
     if (!name || !name.trim()) return;
     run('save_program', { fields: { name: name.trim(), is_active: true } })
-      .then(function (r) {
-        if (r.error) { fail(r.error); return; }
-        showProgram(r.program.id);
-      }).catch(fail);
+      .then(function (r) { showProgram(r.program.id); }).catch(fail);
   });
-
   document.querySelectorAll('.tab').forEach(function (t) {
     t.addEventListener('click', function () {
       view = t.getAttribute('data-view');
-      document.querySelectorAll('.tab').forEach(function (x) {
-        x.setAttribute('aria-selected', String(x === t));
-      });
+      document.querySelectorAll('.tab').forEach(function (x) { x.setAttribute('aria-selected', String(x === t)); });
       render();
     });
   });

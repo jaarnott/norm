@@ -42,6 +42,7 @@ SPEC = {
             "completions",
             "plans",
             "plan_sections",
+            "capability_frameworks",
         ],
     },
 }
@@ -837,3 +838,853 @@ class TestAssignmentStatus:
             status="finished",
         )
         assert "not an assignment status" in out["error"]
+
+
+class TestEnrolment:
+    """The enrol path — the hole that made the app read-only. It also sets the
+    due date the way Orbit's DB trigger did, in visible app logic."""
+
+    def test_enrol_puts_a_person_on_an_instance(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, _, _, _ = _program_with_two_items(db_session, org, author)
+        person = _rec(
+            db_session, org, author, "people", {"name": "New", "is_active": True}
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="enrol",
+            program_id=program,
+            person_id=person,
+        )
+        assert out["assignment"]["status"] == "assigned"
+
+    def test_due_date_comes_from_default_due_days(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program = _rec(
+            db_session,
+            org,
+            author,
+            "programs",
+            {"name": "P", "is_active": True, "default_due_days": 30},
+        )
+        person = _rec(
+            db_session, org, author, "people", {"name": "New", "is_active": True}
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="enrol",
+            program_id=program,
+            person_id=person,
+        )
+        assert out["assignment"]["due_date"] is not None
+
+    def test_no_default_due_days_means_no_due_date(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, _, _, _ = _program_with_two_items(db_session, org, author)
+        person = _rec(
+            db_session, org, author, "people", {"name": "New", "is_active": True}
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="enrol",
+            program_id=program,
+            person_id=person,
+        )
+        assert out["assignment"].get("due_date") is None
+
+    def test_cannot_enrol_twice_on_the_same_instance(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, _, _, _ = _program_with_two_items(db_session, org, author)
+        person = _rec(
+            db_session, org, author, "people", {"name": "New", "is_active": True}
+        )
+        _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="enrol",
+            program_id=program,
+            person_id=person,
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="enrol",
+            program_id=program,
+            person_id=person,
+        )
+        assert "already enrolled" in out["error"]
+
+    def test_but_a_second_variant_is_allowed(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, _, _, _ = _program_with_two_items(db_session, org, author)
+        person = _rec(
+            db_session, org, author, "people", {"name": "New", "is_active": True}
+        )
+        _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="enrol",
+            program_id=program,
+            person_id=person,
+            variant_id="g:larder",
+            variant_name="Larder",
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="enrol",
+            program_id=program,
+            person_id=person,
+            variant_id="g:grill",
+            variant_name="Grill",
+        )
+        assert out["assignment"]["status"] == "assigned"
+
+    def test_bulk_enrol_skips_the_already_enrolled(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, _, _, _ = _program_with_two_items(db_session, org, author)
+        a = _rec(db_session, org, author, "people", {"name": "A", "is_active": True})
+        b = _rec(db_session, org, author, "people", {"name": "B", "is_active": True})
+        _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="enrol",
+            program_id=program,
+            person_id=a,
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="bulk_enrol",
+            program_id=program,
+            person_ids=[a, b],
+        )
+        assert out["enrolled"] == 1  # a was already on
+
+    def test_unenrol_removes_completions_too(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, _, _, items = _program_with_two_items(db_session, org, author)
+        person = _rec(
+            db_session, org, author, "people", {"name": "New", "is_active": True}
+        )
+        assignment = _rec(
+            db_session,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person, "status": "assigned"},
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {"assignment_id": assignment, "content_id": items[0]},
+        )
+        _run(db_session, app, version, author, op="unenrol", assignment_id=assignment)
+        left = {
+            c: len(
+                AR.store_list(
+                    db_session, app=app, version=version, user=author, collection=c
+                )
+            )
+            for c in ("assignments", "completions")
+        }
+        assert left == {"assignments": 0, "completions": 0}
+
+
+class TestMemberAndPlans:
+    def test_member_detail_shows_module_progress(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, _, _, items = _program_with_two_items(db_session, org, author)
+        person = _rec(
+            db_session, org, author, "people", {"name": "Ana", "is_active": True}
+        )
+        assignment = _rec(
+            db_session,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person, "status": "assigned"},
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {"assignment_id": assignment, "content_id": items[0]},
+        )
+        d = _run(db_session, app, version, author, op="member", person_id=person)
+        assert d["person"]["name"] == "Ana"
+        assert d["assignments"][0]["percent"] == 50  # 1 of 2 items
+
+    def test_content_op_returns_the_body(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program = _rec(
+            db_session, org, author, "programs", {"name": "P", "is_active": True}
+        )
+        module = _rec(
+            db_session, org, author, "modules", {"program_id": program, "name": "M"}
+        )
+        section = _rec(
+            db_session, org, author, "sections", {"module_id": module, "name": "S"}
+        )
+        content = _rec(
+            db_session,
+            org,
+            author,
+            "content",
+            {
+                "section_id": section,
+                "module_id": module,
+                "title": "Lesson",
+                "content_type": "rich_text",
+                "body": {"html": "<p>Hello</p>"},
+            },
+        )
+        out = _run(db_session, app, version, author, op="content", content_id=content)
+        assert out["content"]["body"]["html"] == "<p>Hello</p>"
+
+    def test_plans_list_names_person_and_program(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program = _rec(
+            db_session,
+            org,
+            author,
+            "programs",
+            {"name": "Bar", "is_active": True, "requires_plan": True},
+        )
+        person = _rec(
+            db_session, org, author, "people", {"name": "Dev", "is_active": True}
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "plans",
+            {"program_id": program, "person_id": person, "status": "active"},
+        )
+        d = _run(db_session, app, version, author, op="plans", status="active")
+        assert d["plans"][0]["person_name"] == "Dev"
+        assert d["plans"][0]["program_name"] == "Bar"
+
+    def test_schedule_section_preserves_completion(
+        self, db_session, org, author, app_and_version
+    ):
+        """Orbit's editor deleted and reinserted, resetting completion. This
+        upserts and keeps the status."""
+        app, version = app_and_version
+        program = _rec(
+            db_session,
+            org,
+            author,
+            "programs",
+            {"name": "Bar", "is_active": True, "requires_plan": True},
+        )
+        module = _rec(
+            db_session, org, author, "modules", {"program_id": program, "name": "M"}
+        )
+        section = _rec(
+            db_session,
+            org,
+            author,
+            "sections",
+            {"module_id": module, "name": "Opening", "section_type": "on_shift"},
+        )
+        person = _rec(
+            db_session, org, author, "people", {"name": "Dev", "is_active": True}
+        )
+        plan = _rec(
+            db_session,
+            org,
+            author,
+            "plans",
+            {"program_id": program, "person_id": person, "status": "active"},
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "plan_sections",
+            {
+                "plan_id": plan,
+                "section_id": section,
+                "status": "completed",
+                "due_date": "2026-08-01",
+            },
+        )
+        # reschedule the same section — completion must survive
+        _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="schedule_section",
+            plan_id=plan,
+            section_id=section,
+            due_date="2026-09-01",
+        )
+        rows = AR.store_list(
+            db_session,
+            app=app,
+            version=version,
+            user=author,
+            collection="plan_sections",
+        )
+        assert len(rows) == 1 and rows[0]["status"] == "completed"
+        assert rows[0]["due_date"] == "2026-09-01"
+
+
+class TestSignoffQueue:
+    """P3: the manager sign-off queue. A trainee submits an item (Orbit set
+    `awaiting_signoff`); a manager accepts or rejects it. The queue is the
+    JSONB query made reachable — awaiting and not yet signed — and it is how
+    396 of the migrated completions already behave."""
+
+    def _pending_setup(self, db, org, author):
+        program, _, _, items = _program_with_two_items(db, org, author)
+        person = _rec(db, org, author, "people", {"name": "Eden", "is_active": True})
+        assignment = _rec(
+            db,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person, "status": "assigned"},
+        )
+        return items, person, assignment
+
+    def test_queue_lists_only_awaiting_and_unsigned(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        items, _, assignment = self._pending_setup(db_session, org, author)
+        # awaiting, unsigned -> in the queue
+        _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {
+                "assignment_id": assignment,
+                "content_id": items[0],
+                "awaiting_signoff": True,
+            },
+        )
+        # awaiting but already signed -> excluded (signoff_at present)
+        _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {
+                "assignment_id": assignment,
+                "content_id": items[1],
+                "awaiting_signoff": True,
+                "signoff_at": "2026-08-01T00:00:00+00:00",
+            },
+        )
+        # not awaiting -> excluded
+        _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {
+                "assignment_id": assignment,
+                "content_id": items[0],
+                "awaiting_signoff": False,
+            },
+        )
+        d = _run(db_session, app, version, author, op="signoffs")
+        assert len(d["pending"]) == 1
+        row = d["pending"][0]
+        assert row["person"] == "Eden"
+        assert row["program"] == "Food Safety"
+        assert row["item"] == "Why it matters"
+        assert row["files"] == []
+
+    def test_sign_off_stamps_and_removes_from_queue(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        items, _, assignment = self._pending_setup(db_session, org, author)
+        cid = _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {
+                "assignment_id": assignment,
+                "content_id": items[0],
+                "awaiting_signoff": True,
+                "rejected": True,  # a prior rejection must be cleared on accept
+            },
+        )
+        d = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="sign_off",
+            completion_id=cid,
+            by="Manager Sam",
+        )
+        c = d["completion"]
+        assert c["awaiting_signoff"] is False
+        assert c["signoff_at"]
+        assert c["signoff_by"] == "Manager Sam"
+        assert "rejected" not in c  # cleared on acceptance
+        # and it is gone from the queue
+        assert _run(db_session, app, version, author, op="signoffs")["pending"] == []
+
+    def test_reject_records_reason_and_keeps_it_pending(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        items, _, assignment = self._pending_setup(db_session, org, author)
+        cid = _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {
+                "assignment_id": assignment,
+                "content_id": items[0],
+                "awaiting_signoff": True,
+            },
+        )
+        d = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="reject_signoff",
+            completion_id=cid,
+            notes="The photo is blurry — please retake it.",
+        )
+        c = d["completion"]
+        assert c["rejected"] is True
+        assert c["rejection_notes"] == "The photo is blurry — please retake it."
+        assert c["rejected_at"]
+        # still awaiting: a rejection sends it back, it does not sign it off
+        assert c.get("signoff_at") is None
+        assert (
+            len(_run(db_session, app, version, author, op="signoffs")["pending"]) == 1
+        )
+
+
+class TestCapabilityFrameworks:
+    """P4: capability frameworks — a role's competency map (Orbit's
+    `capability_frameworks`), carried across whole with categories, capabilities
+    and L1/L2/L3 descriptors nested inside."""
+
+    def test_list_counts_categories_and_sorts_by_name(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        _rec(
+            db_session,
+            org,
+            author,
+            "capability_frameworks",
+            {"name": "Sales Manager", "categories": [{"name": "A"}, {"name": "B"}]},
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "capability_frameworks",
+            {"name": "Bar Host", "categories": []},
+        )
+        d = _run(db_session, app, version, author, op="frameworks")
+        assert [f["name"] for f in d["frameworks"]] == ["Bar Host", "Sales Manager"]
+        by_name = {f["name"]: f for f in d["frameworks"]}
+        assert by_name["Sales Manager"]["category_count"] == 2
+        assert by_name["Bar Host"]["category_count"] == 0
+
+    def test_get_returns_nested_capabilities(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        fid = _rec(
+            db_session,
+            org,
+            author,
+            "capability_frameworks",
+            {
+                "name": "Sales Manager",
+                "categories": [
+                    {
+                        "name": "Standards",
+                        "capabilities": [
+                            {"name": "Appearance", "level1_descriptor": "Tidy"}
+                        ],
+                    }
+                ],
+            },
+        )
+        d = _run(db_session, app, version, author, op="framework", framework_id=fid)
+        cap = d["framework"]["categories"][0]["capabilities"][0]
+        assert cap["name"] == "Appearance"
+        assert cap["level1_descriptor"] == "Tidy"
+
+    def test_create_seeds_empty_then_update_preserves_name(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        created = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="save_framework",
+            fields={"name": "New Role", "is_active": True},
+        )["framework"]
+        assert created["name"] == "New Role"
+        assert created["categories"] == []  # a new framework starts empty
+        updated = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="save_framework",
+            framework_id=created["id"],
+            fields={"role_label": "Floor Lead", "is_active": False},
+        )["framework"]
+        assert updated["role_label"] == "Floor Lead"
+        assert updated["is_active"] is False
+        assert updated["name"] == "New Role"  # untouched fields survive
+        assert updated["categories"] == []  # and so does the category map
+
+    def test_save_requires_a_name(self, db_session, org, author, app_and_version):
+        app, version = app_and_version
+        d = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="save_framework",
+            fields={"is_active": True},
+        )
+        assert "name" in d["error"]
+
+
+class TestPlanCompletion:
+    """B1: a plan-led program must be completable from Norm. The `plan` op
+    returns a real plan_section_id, and `set_plan_status` closes the plan."""
+
+    def test_plan_op_returns_real_plan_section_id(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program = _rec(
+            db_session,
+            org,
+            author,
+            "programs",
+            {"name": "Bar", "is_active": True, "requires_plan": True},
+        )
+        module = _rec(
+            db_session, org, author, "modules", {"program_id": program, "name": "M"}
+        )
+        section = _rec(
+            db_session, org, author, "sections", {"module_id": module, "name": "Open"}
+        )
+        person = _rec(db_session, org, author, "people", {"name": "Dev"})
+        plan = _rec(
+            db_session,
+            org,
+            author,
+            "plans",
+            {"program_id": program, "person_id": person, "status": "active"},
+        )
+        ps = _rec(
+            db_session,
+            org,
+            author,
+            "plan_sections",
+            {"plan_id": plan, "section_id": section, "status": "pending"},
+        )
+        d = _run(db_session, app, version, author, op="plan", plan_id=plan)
+        row = next(r for r in d["sections"] if r["section_id"] == section)
+        assert row["plan_section_id"] == ps  # was always None before the fix
+
+    def test_set_plan_status_completes_and_tracker_reads_it(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program = _rec(
+            db_session,
+            org,
+            author,
+            "programs",
+            {"name": "Bar", "is_active": True, "requires_plan": True},
+        )
+        module = _rec(
+            db_session, org, author, "modules", {"program_id": program, "name": "M"}
+        )
+        section = _rec(
+            db_session, org, author, "sections", {"module_id": module, "name": "Open"}
+        )
+        person = _rec(db_session, org, author, "people", {"name": "Dev"})
+        plan = _rec(
+            db_session,
+            org,
+            author,
+            "plans",
+            {"program_id": program, "person_id": person, "status": "active"},
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "plan_sections",
+            {"plan_id": plan, "section_id": section, "status": "pending"},
+        )
+        # A plan with a still-pending section reads as in-progress...
+        cell = _run(db_session, app, version, author, op="tracker")["rows"][0]["cells"][
+            0
+        ][0]
+        assert cell["status"] == "progress"
+        # ...until the plan itself is marked complete.
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="set_plan_status",
+            plan_id=plan,
+            status="completed",
+        )
+        assert out["plan"]["status"] == "completed"
+        cell = _run(db_session, app, version, author, op="tracker")["rows"][0]["cells"][
+            0
+        ][0]
+        assert cell["status"] == "complete"
+
+    def test_set_plan_status_rejects_bad_status(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program = _rec(db_session, org, author, "programs", {"name": "P"})
+        person = _rec(db_session, org, author, "people", {"name": "D"})
+        plan = _rec(
+            db_session,
+            org,
+            author,
+            "plans",
+            {"program_id": program, "person_id": person, "status": "active"},
+        )
+        d = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="set_plan_status",
+            plan_id=plan,
+            status="nonsense",
+        )
+        assert "not a plan status" in d["error"]
+
+
+class TestTrackerVenueFilter:
+    """B3: tracker cells must carry venue_id so the UI's venue filter works."""
+
+    def test_cells_carry_venue_id(self, db_session, org, author, app_and_version):
+        app, version = app_and_version
+        venue = _make_venue(db_session, organization_id=org.id)
+        _make_venue_access(db_session, author, venue)
+        program, _, _, items = _program_with_two_items(db_session, org, author)
+        person = _rec(db_session, org, author, "people", {"name": "Ana"})
+        _rec(
+            db_session,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person, "status": "assigned"},
+            venue_id=venue.id,
+        )
+        grid = _run(db_session, app, version, author, op="tracker")
+        cell = grid["rows"][0]["cells"][0][0]
+        assert cell["venue_id"] == venue.id
+
+
+class TestGrandfathering:
+    """B7: adding content to a program must not drag already-complete enrollees
+    back to incomplete — Orbit writes a grandfathered completion; so must we."""
+
+    def test_add_content_grandfathers_completed_assignments(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, module, section, items = _program_with_two_items(
+            db_session, org, author
+        )
+        person = _rec(db_session, org, author, "people", {"name": "Ana"})
+        assignment = _rec(
+            db_session,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person, "status": "completed"},
+        )
+        # Both existing items done → the assignment reads complete.
+        for item in items:
+            _rec(
+                db_session,
+                org,
+                author,
+                "completions",
+                {"assignment_id": assignment, "content_id": item},
+            )
+        before = _run(db_session, app, version, author, op="tracker")["rows"][0][
+            "cells"
+        ][0][0]
+        assert before["status"] == "complete"
+        # Add a new item; the completed assignment must be grandfathered.
+        _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="add_content",
+            section_id=section,
+            title="New rule",
+            content_type="rich_text",
+        )
+        after = _run(db_session, app, version, author, op="tracker")["rows"][0][
+            "cells"
+        ][0][0]
+        assert after["status"] == "complete"  # not dragged back to progress
+        # and it is recorded as grandfathered, not a real completion
+        comps = AR.store_list(
+            db_session, app=app, version=version, user=author, collection="completions"
+        )
+        gf = [c for c in comps if (c.get("result") or {}).get("grandfathered")]
+        assert len(gf) == 1
+
+    def test_incomplete_assignment_is_not_grandfathered(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program, module, section, items = _program_with_two_items(
+            db_session, org, author
+        )
+        person = _rec(db_session, org, author, "people", {"name": "Ana"})
+        _rec(
+            db_session,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person, "status": "in_progress"},
+        )
+        _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="add_content",
+            section_id=section,
+            title="New",
+            content_type="rich_text",
+        )
+        comps = AR.store_list(
+            db_session, app=app, version=version, user=author, collection="completions"
+        )
+        assert not [c for c in comps if (c.get("result") or {}).get("grandfathered")]
+
+
+class TestFrameworkCategoryEditing:
+    """B5: capability frameworks must be editable to the category/capability
+    level — the UI sends the whole tree and every node gets a stable id."""
+
+    def test_save_categories_assigns_ids_and_persists(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        created = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="save_framework",
+            fields={"name": "Bar Host"},
+        )["framework"]
+        fid = created["id"]
+        # Save a category with one capability, no ids supplied.
+        saved = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="save_framework",
+            framework_id=fid,
+            fields={
+                "categories": [
+                    {
+                        "name": "Standards",
+                        "capabilities": [
+                            {"name": "Appearance", "level1_descriptor": "Tidy"}
+                        ],
+                    }
+                ]
+            },
+        )["framework"]
+        cat = saved["categories"][0]
+        assert cat.get("id")  # server assigned an id
+        cap = cat["capabilities"][0]
+        assert cap.get("id") and cap["level1_descriptor"] == "Tidy"
+        # Re-saving with the ids present must preserve them.
+        cat_id, cap_id = cat["id"], cap["id"]
+        again = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="save_framework",
+            framework_id=fid,
+            fields={"categories": saved["categories"]},
+        )["framework"]
+        assert again["categories"][0]["id"] == cat_id
+        assert again["categories"][0]["capabilities"][0]["id"] == cap_id

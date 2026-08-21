@@ -532,3 +532,447 @@ class TestHireDetails:
         )
         assert person["role"] == "manager"
         assert person["start_date"] == "2026-09-15"
+
+
+class TestJobAuthoring:
+    """Creating and editing a job — Hiring could view but create nothing."""
+
+    def test_create_job_seeds_stages_and_fields(self, db_session, org, author, hiring):
+        out = _run(
+            db_session, hiring, author, op="create_job", fields={"title": "Bar Team"}
+        )
+        job_id = out["job"]["id"]
+        ed = _run(db_session, hiring, author, op="job_editor", job_id=job_id)
+        assert len(ed["stages"]) == 7  # Applied..Rejected
+        assert any(s["stage_type"] == "hired" for s in ed["stages"])
+        assert any(s["stage_type"] == "rejected" for s in ed["stages"])
+        assert len(ed["fields"]) == 6
+
+    def test_a_job_needs_a_title(self, db_session, org, author, hiring):
+        out = _run(db_session, hiring, author, op="create_job", fields={"title": "  "})
+        assert "needs a title" in out["error"]
+
+    def test_publish_and_close_are_orthogonal(self, db_session, org, author, hiring):
+        job_id = _run(
+            db_session, hiring, author, op="create_job", fields={"title": "X"}
+        )["job"]["id"]
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="set_job_status",
+            job_id=job_id,
+            is_published=True,
+        )
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="set_job_status",
+            job_id=job_id,
+            status="closed",
+        )
+        job = AR.store_get(
+            db_session,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            collection="job_openings",
+            record_id=job_id,
+        )
+        assert job["is_published"] is True and job["status"] == "closed"
+        assert job["closed_at"]
+
+    def test_a_stage_with_people_cannot_be_deleted(
+        self, db_session, org, author, hiring
+    ):
+        job_id = _run(
+            db_session, hiring, author, op="create_job", fields={"title": "X"}
+        )["job"]["id"]
+        ed = _run(db_session, hiring, author, op="job_editor", job_id=job_id)
+        applied = ed["stages"][0]["id"]
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="add_candidate",
+            job_id=job_id,
+            first_name="A",
+            email="a@x.com",
+        )
+        out = _run(db_session, hiring, author, op="delete_stage", stage_id=applied)
+        assert "move them first" in out["error"]
+
+    def test_reorder_stages(self, db_session, org, author, hiring):
+        job_id = _run(
+            db_session, hiring, author, op="create_job", fields={"title": "X"}
+        )["job"]["id"]
+        ed = _run(db_session, hiring, author, op="job_editor", job_id=job_id)
+        ids = [s["id"] for s in ed["stages"]]
+        _run(db_session, hiring, author, op="reorder_stages", ids=list(reversed(ids)))
+        ed2 = _run(db_session, hiring, author, op="job_editor", job_id=job_id)
+        assert [s["id"] for s in ed2["stages"]] == list(reversed(ids))
+
+
+class TestCandidateEntry:
+    def test_add_candidate_creates_candidate_and_application(
+        self, db_session, org, author, hiring
+    ):
+        job_id = _run(
+            db_session, hiring, author, op="create_job", fields={"title": "X"}
+        )["job"]["id"]
+        out = _run(
+            db_session,
+            hiring,
+            author,
+            op="add_candidate",
+            job_id=job_id,
+            first_name="Maia",
+            last_name="Ngata",
+            email="maia@x.com",
+        )
+        assert out["application_id"]
+        board = _run(db_session, hiring, author, op="board")["jobs"]
+        assert board[0]["application_count"] == 1
+
+    def test_adding_by_a_known_email_reuses_the_candidate(
+        self, db_session, org, author, hiring
+    ):
+        job1 = _run(db_session, hiring, author, op="create_job", fields={"title": "A"})[
+            "job"
+        ]["id"]
+        job2 = _run(db_session, hiring, author, op="create_job", fields={"title": "B"})[
+            "job"
+        ]["id"]
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="add_candidate",
+            job_id=job1,
+            first_name="Sam",
+            email="sam@x.com",
+        )
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="add_candidate",
+            job_id=job2,
+            first_name="Sam",
+            email="sam@x.com",
+        )
+        cands = AR.store_list(
+            db_session,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            collection="candidates",
+        )
+        assert len(cands) == 1  # one person, two applications
+
+    def test_a_name_or_email_is_required(self, db_session, org, author, hiring):
+        job_id = _run(
+            db_session, hiring, author, op="create_job", fields={"title": "X"}
+        )["job"]["id"]
+        out = _run(db_session, hiring, author, op="add_candidate", job_id=job_id)
+        assert "required" in out["error"]
+
+    def test_reject_records_a_reason(self, db_session, org, author, hiring):
+        job_id = _run(
+            db_session, hiring, author, op="create_job", fields={"title": "X"}
+        )["job"]["id"]
+        app_id = _run(
+            db_session,
+            hiring,
+            author,
+            op="add_candidate",
+            job_id=job_id,
+            first_name="A",
+            email="a@x.com",
+        )["application_id"]
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="reject",
+            application_id=app_id,
+            reason="Not enough bar experience",
+        )
+        row = AR.store_get(
+            db_session,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            collection="applications",
+            record_id=app_id,
+        )
+        assert row["status"] == "rejected"
+        assert row["rejection_reason"] == "Not enough bar experience"
+
+    def test_rating_and_talent_pool(self, db_session, org, author, hiring):
+        job_id = _run(
+            db_session, hiring, author, op="create_job", fields={"title": "X"}
+        )["job"]["id"]
+        added = _run(
+            db_session,
+            hiring,
+            author,
+            op="add_candidate",
+            job_id=job_id,
+            first_name="A",
+            email="a@x.com",
+        )
+        app_id = added["application_id"]
+        _run(
+            db_session, hiring, author, op="set_rating", application_id=app_id, rating=4
+        )
+        row = AR.store_get(
+            db_session,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            collection="applications",
+            record_id=app_id,
+        )
+        assert row["rating"] == 4
+        # find the candidate and pool them
+        app = AR.store_get(
+            db_session,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            collection="applications",
+            record_id=app_id,
+        )
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="set_talent_pool",
+            candidate_id=app["candidate_id"],
+            in_talent_pool=True,
+        )
+        pool = _run(db_session, hiring, author, op="talent_pool")["candidates"]
+        assert len(pool) == 1
+
+
+class TestPositionsFilled:
+    """B2: job_openings.positions_filled must track hired applications, so the
+    pipeline header stops reading 0/N forever. Derived, so it cannot drift."""
+
+    def _job(self, db, org, author):
+        job = _rec(
+            db,
+            org,
+            author,
+            "job_openings",
+            {
+                "title": "Bar",
+                "status": "open",
+                "positions_to_fill": 2,
+                "positions_filled": 0,
+            },
+        )
+        stages = {}
+        for i, (name, kind) in enumerate(
+            [("Applied", "active"), ("Hired", "hired"), ("Rejected", "rejected")]
+        ):
+            stages[name] = _rec(
+                db,
+                org,
+                author,
+                "pipeline_stages",
+                {"job_id": job, "name": name, "stage_type": kind, "sort_index": i},
+            )
+        return job, stages
+
+    def _filled(self, db, hiring, author, job):
+        return next(
+            j for j in _run(db, hiring, author, op="board")["jobs"] if j["id"] == job
+        )["positions_filled"]
+
+    def test_hire_increments_and_move_back_decrements(
+        self, db_session, org, author, hiring
+    ):
+        job, stages = self._job(db_session, org, author)
+        _c, application = _applicant(
+            db_session, org, author, job, stages["Applied"], email="a@x.com"
+        )
+        assert self._filled(db_session, hiring, author, job) == 0
+        _run(db_session, hiring, author, op="hire", application_id=application)
+        assert self._filled(db_session, hiring, author, job) == 1
+        # Move them back to an active stage — the count must fall again.
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="move",
+            application_id=application,
+            stage_id=stages["Applied"],
+        )
+        assert self._filled(db_session, hiring, author, job) == 0
+
+    def test_hiring_twice_does_not_double_count(self, db_session, org, author, hiring):
+        job, stages = self._job(db_session, org, author)
+        _c, application = _applicant(
+            db_session, org, author, job, stages["Applied"], email="b@x.com"
+        )
+        _run(db_session, hiring, author, op="hire", application_id=application)
+        _run(db_session, hiring, author, op="hire", application_id=application)
+        assert self._filled(db_session, hiring, author, job) == 1
+
+
+class TestKnockout:
+    """B6: knockout questions were carried as data but never authored or
+    evaluated. add_field/update_field set them; add_candidate evaluates them."""
+
+    def test_add_field_stores_knockout_config(self, db_session, org, author, hiring):
+        job, _ = _job_with_stages(db_session, org, author)
+        d = _run(
+            db_session,
+            hiring,
+            author,
+            op="add_field",
+            job_id=job,
+            field_key="right_to_work",
+            label="Right to work?",
+            field_type="select",
+            options=["Yes", "No"],
+            knockout_enabled=True,
+            knockout_values=["No"],
+        )
+        f = d["field"]
+        assert f["knockout_enabled"] is True and f["knockout_values"] == ["No"]
+
+    def test_update_field_can_enable_knockout_on_a_standard_field(
+        self, db_session, org, author, hiring
+    ):
+        job, _ = _job_with_stages(db_session, org, author)
+        fid = _rec(
+            db_session,
+            org,
+            author,
+            "application_fields",
+            {
+                "job_id": job,
+                "field_key": "right_to_work",
+                "label": "RTW",
+                "field_type": "select",
+                "is_standard": True,
+            },
+        )
+        d = _run(
+            db_session,
+            hiring,
+            author,
+            op="update_field",
+            field_id=fid,
+            fields={"knockout_enabled": True, "knockout_values": ["No"]},
+        )
+        assert d["field"]["knockout_enabled"] is True
+
+    def test_add_candidate_flags_a_knockout_answer(
+        self, db_session, org, author, hiring
+    ):
+        job, _ = _job_with_stages(db_session, org, author)
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="add_field",
+            job_id=job,
+            field_key="right_to_work",
+            label="RTW",
+            field_type="select",
+            options=["Yes", "No"],
+            knockout_enabled=True,
+            knockout_values=["No"],
+        )
+        d = _run(
+            db_session,
+            hiring,
+            author,
+            op="add_candidate",
+            job_id=job,
+            first_name="Nope",
+            email="n@x.com",
+            answers=[{"field_key": "right_to_work", "label": "RTW", "value": "No"}],
+        )
+        assert d["knockout"] is True
+        application = AR.store_get(
+            db_session,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            collection="applications",
+            record_id=d["application_id"],
+        )
+        assert application["knockout_flag"] is True
+        # and the answer was stored
+        answers = AR.store_list(
+            db_session,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            collection="answers",
+        )
+        assert any(a.get("value") == "No" for a in answers)
+
+    def test_a_passing_answer_does_not_flag(self, db_session, org, author, hiring):
+        job, _ = _job_with_stages(db_session, org, author)
+        _run(
+            db_session,
+            hiring,
+            author,
+            op="add_field",
+            job_id=job,
+            field_key="right_to_work",
+            label="RTW",
+            field_type="select",
+            options=["Yes", "No"],
+            knockout_enabled=True,
+            knockout_values=["No"],
+        )
+        d = _run(
+            db_session,
+            hiring,
+            author,
+            op="add_candidate",
+            job_id=job,
+            first_name="Yes",
+            email="y@x.com",
+            answers=[{"field_key": "right_to_work", "value": "Yes"}],
+        )
+        assert d["knockout"] is False
+
+
+class TestInterviewDepth:
+    """B9: schedule_interview must persist the time (not just a date), duration,
+    meeting link, briefing and interviewers — all carried by the migration but
+    previously unsettable."""
+
+    def test_schedule_interview_persists_all_fields(
+        self, db_session, org, author, hiring
+    ):
+        job, stages = _job_with_stages(db_session, org, author)
+        _c, application = _applicant(db_session, org, author, job, stages["Applied"])
+        d = _run(
+            db_session,
+            hiring,
+            author,
+            op="schedule_interview",
+            application_id=application,
+            interview_type="online",
+            scheduled_at="2026-09-01T14:30:00+00:00",
+            duration_minutes=45,
+            meeting_url="https://meet.example/abc",
+            instructions="Bring your portfolio",
+            interviewers=["p1", "p2"],
+        )
+        iv = d["interview"]
+        assert iv["scheduled_at"] == "2026-09-01T14:30:00+00:00"
+        assert iv["duration_minutes"] == 45
+        assert iv["meeting_url"] == "https://meet.example/abc"
+        assert iv["instructions"] == "Bring your portfolio"
+        assert iv["interviewers"] == ["p1", "p2"]

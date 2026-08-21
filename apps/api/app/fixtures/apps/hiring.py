@@ -20,6 +20,30 @@ forever. Here it is derived once, in ``_apply_stage``, and the stamps are
 cleared on the way back.
 """
 
+_META = ("id", "venue_id", "created_at", "updated_at")
+
+#: The pipeline Orbit seeds on a new job. Stage TYPE is what drives status;
+#: names are just labels the user renames.
+_DEFAULT_STAGES = [
+    ("Applied", "active"),
+    ("Screening", "active"),
+    ("Interview", "active"),
+    ("Trial Shift", "active"),
+    ("Offer", "active"),
+    ("Hired", "hired"),
+    ("Rejected", "rejected"),
+]
+
+#: The standard application form.
+_STANDARD_FIELDS = [
+    ("first_name", "First name", "text", True),
+    ("last_name", "Last name", "text", True),
+    ("email", "Email", "email", True),
+    ("phone", "Phone", "phone", False),
+    ("cv", "CV / resume", "file", False),
+    ("cover_letter", "Cover letter", "textarea", False),
+]
+
 
 def _index(rows, key="id"):
     return {r.get(key): r for r in rows}
@@ -96,6 +120,36 @@ def _apply_stage(application, stage):
         next_state["hired_at"] = None
         next_state["rejected_at"] = None
     return next_state
+
+
+def _recount_fill(job_id):
+    """Keep ``job_openings.positions_filled`` equal to the number of hired
+    applications. DERIVED from the pipeline, never incremented, so it cannot
+    drift: the header showed 0/N forever because nothing maintained it."""
+    apps = store.list("applications", where={"job_id": job_id}, limit=2000)
+    filled = sum(1 for a in apps if a.get("status") == "hired")
+    job = store.get("job_openings", job_id)
+    if (job.get("positions_filled") or 0) != filled:
+        data = {k: v for k, v in job.items() if k not in _META}
+        data["positions_filled"] = filled
+        store.put("job_openings", data, job["id"])
+
+
+def _knockout_hit(job_id, answers):
+    """Does any answer trip a knockout question? A field with
+    ``knockout_enabled`` lists ``knockout_values``; an answer equal to one of
+    them auto-flags the application — Orbit's right_to_work='No' rule, which the
+    port carried as data but never evaluated."""
+    fields = {
+        f.get("field_key"): f
+        for f in store.list("application_fields", where={"job_id": job_id}, limit=200)
+    }
+    for ans in answers or []:
+        field = fields.get(ans.get("field_key"))
+        if field and field.get("knockout_enabled"):
+            if ans.get("value") in (field.get("knockout_values") or []):
+                return True
+    return False
 
 
 def run(params, call_api, log):
@@ -181,6 +235,7 @@ def run(params, call_api, log):
             return {"error": "that stage belongs to a different job"}
         updated = _apply_stage(application, stage)
         store.put("applications", updated, application["id"])
+        _recount_fill(application.get("job_id"))
         _log(
             application,
             "stage_change",
@@ -259,6 +314,7 @@ def run(params, call_api, log):
         updated["person_id"] = person_id
         updated["hire_start_date"] = params.get("start_date")
         store.put("applications", updated, application["id"])
+        _recount_fill(application.get("job_id"))
         _log(
             application,
             "hired",
@@ -275,5 +331,321 @@ def run(params, call_api, log):
             c["name"] = _candidate_name(c)
         candidates.sort(key=lambda c: str(c.get("name")))
         return {"candidates": candidates}
+
+    if op == "create_job":
+        """Create a job, and seed the pipeline + application form Orbit gives
+        every new job — a job with no stages cannot receive anyone."""
+        fields = params.get("fields") or {}
+        title = str(fields.get("title") or "").strip()
+        if not title:
+            return {"error": "a job needs a title"}
+        job = store.put(
+            "job_openings",
+            {
+                "title": title,
+                "department": fields.get("department"),
+                "employment_type": fields.get("employment_type") or "part_time",
+                "status": "open",
+                "is_published": False,
+                "positions_to_fill": fields.get("positions_to_fill") or 1,
+                "positions_filled": 0,
+                "description_html": fields.get("description_html"),
+                "created_at": _now(),
+            },
+            venue_id=params.get("venue_id") or None,
+        )
+        for i, (name, kind) in enumerate(_DEFAULT_STAGES):
+            store.put(
+                "pipeline_stages",
+                {
+                    "job_id": job["id"],
+                    "name": name,
+                    "stage_type": kind,
+                    "sort_index": i,
+                },
+            )
+        for i, (key, label, ftype, required) in enumerate(_STANDARD_FIELDS):
+            store.put(
+                "application_fields",
+                {
+                    "job_id": job["id"],
+                    "field_key": key,
+                    "label": label,
+                    "field_type": ftype,
+                    "is_required": required,
+                    "is_enabled": True,
+                    "is_standard": True,
+                    "sort_index": i,
+                },
+            )
+        return {"job": job}
+
+    if op == "update_job":
+        job_id = params.get("job_id")
+        current = store.get("job_openings", job_id)
+        data = {k: v for k, v in current.items() if k not in _META}
+        for key in (
+            "title",
+            "department",
+            "employment_type",
+            "positions_to_fill",
+            "description_html",
+            "requirements_html",
+            "pay_type",
+            "pay_min",
+            "pay_max",
+        ):
+            if key in (params.get("fields") or {}):
+                data[key] = params["fields"][key]
+        return {"job": store.put("job_openings", data, job_id)}
+
+    if op == "set_job_status":
+        """Publish / unpublish / close / reopen — status and is_published are
+        orthogonal, so both are settable."""
+        job_id = params.get("job_id")
+        current = store.get("job_openings", job_id)
+        data = {k: v for k, v in current.items() if k not in _META}
+        if "status" in params:
+            data["status"] = params["status"]
+            if params["status"] == "closed":
+                data["closed_at"] = _now()
+        if "is_published" in params:
+            data["is_published"] = bool(params["is_published"])
+            if params["is_published"] and not data.get("published_at"):
+                data["published_at"] = _now()
+        return {"job": store.put("job_openings", data, job_id)}
+
+    if op == "job_editor":
+        """A job with its stages and application fields, for editing."""
+        job_id = params.get("job_id")
+        return {
+            "job": store.get("job_openings", job_id),
+            "stages": _stages_for(job_id),
+            "fields": sorted(
+                store.list("application_fields", where={"job_id": job_id}),
+                key=lambda f: f.get("sort_index") or 0,
+            ),
+        }
+
+    if op == "add_stage":
+        job_id = params.get("job_id")
+        existing = _stages_for(job_id)
+        return {
+            "stage": store.put(
+                "pipeline_stages",
+                {
+                    "job_id": job_id,
+                    "name": params.get("name") or "New stage",
+                    "stage_type": params.get("stage_type") or "active",
+                    "sort_index": len(existing),
+                },
+            )
+        }
+
+    if op == "update_stage":
+        stage_id = params.get("stage_id")
+        current = store.get("pipeline_stages", stage_id)
+        data = {k: v for k, v in current.items() if k not in _META}
+        for key in ("name", "stage_type"):
+            if key in (params.get("fields") or {}):
+                data[key] = params["fields"][key]
+        return {"stage": store.put("pipeline_stages", data, stage_id)}
+
+    if op == "delete_stage":
+        stage_id = params.get("stage_id")
+        stage = store.get("pipeline_stages", stage_id)
+        # Refuse to strand applicants: a stage with people on it cannot go.
+        on_it = [
+            a
+            for a in store.list("applications", where={"job_id": stage.get("job_id")})
+            if a.get("stage_id") == stage_id
+        ]
+        if on_it:
+            return {
+                "error": f"{len(on_it)} candidate(s) are on that stage — move them first"
+            }
+        store.delete("pipeline_stages", stage_id)
+        return {"ok": True}
+
+    if op == "reorder_stages":
+        for index, sid in enumerate(params.get("ids") or []):
+            current = store.get("pipeline_stages", sid)
+            data = {k: v for k, v in current.items() if k not in _META}
+            data["sort_index"] = index
+            store.put("pipeline_stages", data, sid)
+        return {"ok": True}
+
+    if op == "add_field":
+        job_id = params.get("job_id")
+        existing = store.list("application_fields", where={"job_id": job_id})
+        data = {
+            "job_id": job_id,
+            "field_key": params.get("field_key") or "field",
+            "label": params.get("label") or "Field",
+            "field_type": params.get("field_type") or "text",
+            "is_required": bool(params.get("is_required")),
+            "is_enabled": True,
+            "is_standard": False,
+            "sort_index": len(existing),
+            "knockout_enabled": bool(params.get("knockout_enabled")),
+        }
+        # A select field carries its options; a knockout question carries the
+        # values that reject. Both are optional and only kept when supplied.
+        for key in ("help_text", "options", "knockout_values"):
+            if params.get(key) is not None:
+                data[key] = params.get(key)
+        return {"field": store.put("application_fields", data)}
+
+    if op == "update_field":
+        """Edit a field — including turning knockout on for a standard field
+        like right_to_work, which the migration carries but nothing could set."""
+        field_id = params.get("field_id")
+        current = store.get("application_fields", field_id)
+        data = {k: v for k, v in current.items() if k not in _META}
+        for key in (
+            "label",
+            "field_type",
+            "is_required",
+            "is_enabled",
+            "help_text",
+            "options",
+            "knockout_enabled",
+            "knockout_values",
+        ):
+            if key in (params.get("fields") or {}):
+                data[key] = params["fields"][key]
+        return {"field": store.put("application_fields", data, field_id)}
+
+    if op == "delete_field":
+        store.delete("application_fields", params.get("field_id"))
+        return {"ok": True}
+
+    if op == "add_candidate":
+        """Create a candidate and, if a job is named, an application on its
+        first stage. This is how someone gets into the pipeline by hand."""
+        first = str(params.get("first_name") or "").strip()
+        last = str(params.get("last_name") or "").strip()
+        email = str(params.get("email") or "").strip() or None
+        if not (first or last or email):
+            return {"error": "a name or an email is required"}
+        # Reuse an existing candidate by email rather than duplicating.
+        candidate_id = None
+        if email:
+            match = store.list("candidates", where={"email": email}, limit=1)
+            if match:
+                candidate_id = match[0]["id"]
+        if not candidate_id:
+            candidate_id = store.put(
+                "candidates",
+                {
+                    "first_name": first,
+                    "last_name": last,
+                    "email": email,
+                    "phone": params.get("phone"),
+                    "source": params.get("source") or "manual",
+                    "in_talent_pool": False,
+                },
+            )["id"]
+        job_id = params.get("job_id")
+        if not job_id:
+            return {"ok": True, "candidate_id": candidate_id}
+        stages = _stages_for(job_id)
+        first_stage = stages[0]["id"] if stages else None
+        answers = params.get("answers") or []
+        app_data = {
+            "job_id": job_id,
+            "candidate_id": candidate_id,
+            "stage_id": first_stage,
+            "status": "active",
+            "source": params.get("source") or "manual",
+            "applied_at": _now(),
+        }
+        # Evaluate knockout questions against the answers given, if any — this
+        # is what makes the pipeline's knockout pill mean something.
+        if _knockout_hit(job_id, answers):
+            app_data["knockout_flag"] = True
+        application = store.put(
+            "applications", app_data, venue_id=params.get("venue_id") or None
+        )
+        for ans in answers:
+            if ans.get("field_key"):
+                store.put(
+                    "answers",
+                    {
+                        "application_id": application["id"],
+                        "field_key": ans.get("field_key"),
+                        "label": ans.get("label"),
+                        "value": ans.get("value"),
+                    },
+                )
+        _log(application, "application_created", "Added to the pipeline", actor)
+        return {
+            "ok": True,
+            "application_id": application["id"],
+            "knockout": bool(app_data.get("knockout_flag")),
+        }
+
+    if op == "reject":
+        """Move to a rejected stage with a reason recorded."""
+        application = store.get("applications", params.get("application_id"))
+        stages = _stages_for(application.get("job_id"))
+        rejected = None
+        for s in stages:
+            if s.get("stage_type") == "rejected":
+                rejected = s
+                break
+        if not rejected:
+            return {"error": "this job has no 'rejected' stage"}
+        updated = _apply_stage(application, rejected)
+        updated["rejection_reason"] = params.get("reason")
+        store.put("applications", updated, application["id"])
+        _recount_fill(application.get("job_id"))
+        _log(
+            application,
+            "rejected",
+            "Not progressing"
+            + (": " + params["reason"] if params.get("reason") else ""),
+            actor,
+        )
+        return {"ok": True}
+
+    if op == "set_rating":
+        application = store.get("applications", params.get("application_id"))
+        data = {k: v for k, v in application.items() if k not in _META}
+        data["rating"] = params.get("rating")
+        return {"application": store.put("applications", data, application["id"])}
+
+    if op == "set_talent_pool":
+        candidate = store.get("candidates", params.get("candidate_id"))
+        data = {k: v for k, v in candidate.items() if k not in _META}
+        data["in_talent_pool"] = bool(params.get("in_talent_pool"))
+        if params.get("note") is not None:
+            data["talent_pool_note"] = params.get("note")
+        return {"candidate": store.put("candidates", data, candidate["id"])}
+
+    if op == "schedule_interview":
+        """Record an interview. No calendar integration here — that is a
+        connector concern; this stores the intent so the pipeline shows it.
+        `scheduled_at` carries a time, not just a date, and the interviewers,
+        meeting link and briefing ride along (all carried by the migration but
+        previously unsettable)."""
+        application = store.get("applications", params.get("application_id"))
+        data = {
+            "application_id": application["id"],
+            "candidate_id": application.get("candidate_id"),
+            "job_id": application.get("job_id"),
+            "interview_type": params.get("interview_type") or "in_person",
+            "scheduled_at": params.get("scheduled_at"),
+            "location": params.get("location"),
+            "status": "scheduled",
+        }
+        for key in ("duration_minutes", "meeting_url", "instructions"):
+            if params.get(key):
+                data[key] = params.get(key)
+        if params.get("interviewers"):
+            data["interviewers"] = params.get("interviewers")
+        interview = store.put("interviews", data)
+        _log(application, "interview_scheduled", "Interview scheduled", actor)
+        return {"interview": interview}
 
     return {"error": "unknown op '" + str(op) + "'"}

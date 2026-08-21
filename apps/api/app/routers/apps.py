@@ -127,7 +127,14 @@ async def app_run(
         params=body.params,
     )
     if not out.get("success"):
+        # Nothing persisted — the storage door only flushes, and a failed run
+        # must leave no half-written rows behind.
+        db.rollback()
         raise HTTPException(400, out.get("error") or "the app's logic failed")
+    # An op may have written through `store` inside run(); the door flushes but
+    # does not commit, so the endpoint is what makes those writes durable. A
+    # read-only run commits nothing and is unharmed.
+    db.commit()
     return {"data": out.get("data"), "logs": out.get("_logs") or []}
 
 
