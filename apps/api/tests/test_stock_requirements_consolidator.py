@@ -49,7 +49,10 @@ STOCK_NOW = {
 STOCK_4W = {"lines": [{"stockItemID": "i1", "quantityOnHand": 10.0}]}
 RECEIVED = []
 SALES = [{"amount": 100000}]
-BUDGETS = [{"amount": 200000}]
+# The get_budgets CONSOLIDATOR's shape (nested read-only call): the child
+# owns Loaded's off-by-one dating; this consolidator reads the precomputed
+# total.
+BUDGETS = {"days": [], "total": 200000.0}
 # Post-transform shape of get_stock_item_minimums (see the spec action): one row
 # per item with the par level and the ratios needed to convert it to counting
 # units. Default: no minimums configured.
@@ -92,6 +95,11 @@ class Api:
         if action == "get_sales_data":
             return self.sales
         if action == "get_budgets":
+            # The budgets consolidator, called nested with TRUE dates — no
+            # +1 window math here; the child owns the source's quirks.
+            assert params and params.get("to_date") == PARAMS["order_until_date"], (
+                params
+            )
             return self.budgets
         if action == "get_stock_item_minimums":
             return self.minimums

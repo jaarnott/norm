@@ -248,6 +248,9 @@ def execute_function(
         _HARD_MAX_API_CALLS,
     )
     allowed_write_actions = set(options.get("allowed_write_actions") or [])
+    # Nesting depth for consolidator-to-consolidator calls (see the dispatch
+    # in _do_api_call): absent = a top-level run.
+    depth = int(options.get("_depth") or 0)
 
     logs: list[str] = []
     api_call_count = 0
@@ -346,6 +349,50 @@ def execute_function(
                     handler_result.get("error") or f"{connector}.{action} failed"
                 )
             return handler_result.get("data"), call_ms
+
+        # Consolidator-typed tools recurse into the executor instead of
+        # building an HTTP request. Before this, a consolidator calling
+        # another consolidator fell through to the HTTP path and died on the
+        # missing path_template — the get_budgets/get_budgets_raw split
+        # existed only to route around that. Guardrails: ONE level of
+        # nesting (cycles impossible by construction), read-only children
+        # only (a read-only parent must not reach a write-capable
+        # consolidator's writes through the side door), and the child's own
+        # budget capped at 50 when nested. The nested call itself costs the
+        # parent one api call, like any other.
+        child_cfg = tool_def.get("consolidator_config")
+        if isinstance(child_cfg, dict) and child_cfg.get("function_code"):
+            if depth >= 1:
+                raise RuntimeError(
+                    f"{connector}.{action} is a consolidator, and consolidators "
+                    "may nest one level deep — call the raw tools instead"
+                )
+            if not tool_def.get("read_only") or child_cfg.get("allowed_write_actions"):
+                raise PermissionError(
+                    "only read-only consolidators can be called from another "
+                    f"consolidator — run '{action}' top-level"
+                )
+            call_t0 = time.time()
+            child = execute_function(
+                child_cfg["function_code"],
+                dict(api_params),
+                use_db,
+                thread_id,
+                options={
+                    **child_cfg,
+                    "_depth": depth + 1,
+                    "max_api_calls": min(
+                        int(child_cfg.get("max_api_calls") or _DEFAULT_MAX_API_CALLS),
+                        50,
+                    ),
+                },
+            )
+            call_ms = int((time.time() - call_t0) * 1000)
+            for line in child.get("_logs") or []:
+                logs.append(f"[{action}] {line}")
+            if not child.get("success", True):
+                raise RuntimeError(child.get("error") or f"{connector}.{action} failed")
+            return child.get("data"), call_ms
 
         # Resolve venue credentials
         from app.agents.tool_loop import _resolve_venue_config

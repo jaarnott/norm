@@ -2546,12 +2546,24 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     </>
                   )}
                 </div>
-                <button onClick={(e) => { e.stopPropagation(); removeTool(idx); }} style={{
-                  border: '1px solid #e53e3e', borderRadius: 4, backgroundColor: '#fff', color: '#e53e3e',
-                  padding: '2px 8px', fontSize: '0.72rem', cursor: 'pointer', fontFamily: 'inherit',
-                }}>
-                  Remove
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  {(op.engine_only || (op.description || '').startsWith('[consolidator-only]') || (op.description || '').startsWith('[engine-only]')) && (
+                    <span style={{
+                      fontSize: '0.65rem', fontWeight: 600, color: '#92400e',
+                      backgroundColor: '#fef3c7', padding: '1px 6px', borderRadius: 3,
+                    }} title="Engine/consolidator use only — never offered to agents">Backend</span>
+                  )}
+                  <span style={{ fontSize: '0.7rem', color: '#aaa', whiteSpace: 'nowrap' }}
+                    title="When this tool was first added to the spec">
+                    {op.added_at ? `added ${new Date(op.added_at).toLocaleDateString()}` : 'added —'}
+                  </span>
+                  <button onClick={(e) => { e.stopPropagation(); removeTool(idx); }} style={{
+                    border: '1px solid #e53e3e', borderRadius: 4, backgroundColor: '#fff', color: '#e53e3e',
+                    padding: '2px 8px', fontSize: '0.72rem', cursor: 'pointer', fontFamily: 'inherit',
+                  }}>
+                    Remove
+                  </button>
+                </div>
               </div>
               {!isCollapsed && (
                 <div style={{ padding: '0.75rem' }}>

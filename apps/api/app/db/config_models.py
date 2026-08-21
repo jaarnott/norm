@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    event,
     Column,
     String,
     Integer,
@@ -75,6 +76,37 @@ class AgentConfig(ConfigBase):
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+@event.listens_for(ConnectorSpec.tools, "set", retval=True)
+def _stamp_tool_added_at(target, value, oldvalue, initiator):
+    """Stamp ``added_at`` on tool entries NEW to this spec, at assignment.
+
+    Every writer assigns ``spec.tools = tools`` (the sync scripts, the admin
+    editor, the MCP tool sync), so stamping here covers them all without a
+    call-site convention. Rules: an action not present before gets
+    ``added_at`` now; an action that already carried a stamp keeps it even
+    when the writer rebuilt the dict without one; an action that predates
+    stamping stays unstamped ("—" in the UI) rather than being given a
+    fabricated date. When the old value isn't loaded, nothing is stamped —
+    a skipped stamp beats a wrong one.
+    """
+    if not isinstance(value, list) or not isinstance(oldvalue, list):
+        return value
+    prev = {
+        t.get("action"): t for t in oldvalue if isinstance(t, dict) and t.get("action")
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    out = []
+    for t in value:
+        if isinstance(t, dict) and t.get("action") and not t.get("added_at"):
+            old = prev.get(t.get("action"))
+            if old is None:
+                t = {**t, "added_at": now}
+            elif old.get("added_at"):
+                t = {**t, "added_at": old["added_at"]}
+        out.append(t)
+    return out
 
 
 class AgentConnectorBinding(ConfigBase):

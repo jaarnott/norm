@@ -33,6 +33,11 @@ export interface ConnectorSpecTool {
   summary_fields?: string[] | null;
   response_transform?: { enabled: boolean; fields: Record<string, string>; flatten?: string[]; filters?: { field: string; operator: string; value: string }[] } | null;
   consolidator_config?: Record<string, unknown> | null;
+  // Stamped server-side when an action first appears on the spec (the
+  // ConnectorSpec.tools listener); legacy entries have none.
+  added_at?: string | null;
+  // Demoted: engine/consolidator use only — never offered to agents.
+  engine_only?: boolean | null;
 }
 
 export interface BillingInfo {

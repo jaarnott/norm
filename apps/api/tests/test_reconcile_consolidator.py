@@ -623,3 +623,44 @@ class TestRunModes:
         api = Api(statements=[], received=[inv], pdfs={FILE_ID: make_pdf()})
         run_consolidator(api, mode="autopilot")
         assert api.created  # created without the LLM passing create_missing
+
+
+class TestPrintedDateFormats:
+    """The copy keeps dates AS PRINTED; Loaded is ISO. A raw string compare
+    failed every differently-formatted date — the 21 Aug 2026 daily run
+    reconciled 0 of 100 invoices, the vast majority blocked only by format.
+    Every shape here was observed on a real supplier invoice or in that
+    thread's report."""
+
+    def _verdict_for(self, printed):
+        api = api_for(make_received(), pdf=make_pdf(invoice_date=printed))
+        return api, run_consolidator(api)
+
+    def test_every_printed_shape_of_the_same_date_reconciles(self):
+        for printed in (
+            "13/07/26",
+            "13/07/2026",
+            "13 Jul 26",
+            "13 Jul 2026",
+            "13 July 2026",
+            "Jul 13, 26",
+            "Jul 13, 2026",
+            "13.07.2026",
+            "13-07-26",
+        ):
+            api, result = self._verdict_for(printed)
+            assert result["summary"]["reconciled"] == 1, (printed, result)
+            row = result["reconciled"][0]
+            assert row["checks"]["date_match"] == "pass", printed
+            # the report's table shows the resolved ISO form, agreeing with ✓
+            assert row["comparison"]["invoice_date"]["document"] == "2026-07-13"
+
+    def test_a_genuinely_different_date_still_fails_whatever_the_format(self):
+        api, result = self._verdict_for("12/07/26")
+        verdict = sole_fail(result)
+        assert any("2026-07-13" in r and "2026-07-12" in r for r in verdict["reasons"])
+
+    def test_unparseable_text_stays_an_honest_failure(self):
+        api, result = self._verdict_for("next Tuesday")
+        verdict = sole_fail(result)
+        assert verdict["checks"]["date_match"] == "fail"

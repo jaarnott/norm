@@ -70,11 +70,11 @@ FAKE_TOOLS = [
 ]
 
 
-def _wire_fake_connector(monkeypatch, payloads):
+def _wire_fake_connector(monkeypatch, payloads, tools=None):
     """Point the executor's spec lookup + HTTP execution at fakes."""
     fake_spec = SimpleNamespace(
         connector_name="fake",
-        tools=FAKE_TOOLS,
+        tools=tools if tools is not None else FAKE_TOOLS,
         base_url_template="https://",
         auth_type=None,
         auth_config=None,
@@ -454,3 +454,108 @@ def run(params, call_api, log):
         result = execute_function(code, {}, db_session, None)
         assert result["success"], result.get("error")
         assert result["data"] == []
+
+
+CHILD_CODE = (
+    "def run(params, call_api, log):\n"
+    "    log('child ran')\n"
+    "    rows = call_api('fake', 'read_thing', {})\n"
+    "    return {'rows': rows, 'tag': params.get('tag')}\n"
+)
+
+
+def _nested_tools(child_extra=None, cfg_extra=None, child_code=CHILD_CODE):
+    child = {
+        "action": "child_budget",
+        "method": "GET",
+        "read_only": True,
+        "consolidator_config": {"function_code": child_code, "max_api_calls": 5},
+        **(child_extra or {}),
+    }
+    if cfg_extra:
+        child["consolidator_config"] = {
+            **child["consolidator_config"],
+            **cfg_extra,
+        }
+    return FAKE_TOOLS + [child]
+
+
+class TestNestedConsolidators:
+    """A consolidator can call a READ-ONLY consolidator, one level deep.
+
+    Before this dispatch existed, a consolidator-typed action fell through to
+    the HTTP path and died on the missing path_template — the
+    get_budgets/get_budgets_raw split existed only to route around that."""
+
+    def _parent(self, call="call_api('fake', 'child_budget', {'tag': 'x'})"):
+        return f"def run(params, call_api, log):\n    return {call}\n"
+
+    def test_parent_gets_the_childs_data(self, monkeypatch, db_session):
+        calls = _wire_fake_connector(
+            monkeypatch, {"read_thing": {"n": 7}}, tools=_nested_tools()
+        )
+        result = execute_function(self._parent(), {}, db_session, None, options={})
+        assert result["success"], result
+        assert result["data"] == {"rows": {"n": 7}, "tag": "x"}
+        # the child's own HTTP call went through the real (faked) spec layer
+        assert calls == ["read_thing"]
+
+    def test_child_logs_ride_along_prefixed(self, monkeypatch, db_session):
+        _wire_fake_connector(monkeypatch, {}, tools=_nested_tools())
+        result = execute_function(self._parent(), {}, db_session, None, options={})
+        assert "[child_budget] child ran" in result["_logs"]
+
+    def test_nesting_stops_at_one_level(self, monkeypatch, db_session):
+        grandchild_call = (
+            "def run(params, call_api, log):\n"
+            "    return call_api('fake', 'child_budget', {})\n"
+        )
+        tools = _nested_tools(child_code=grandchild_call)
+        _wire_fake_connector(monkeypatch, {}, tools=tools)
+        result = execute_function(self._parent(), {}, db_session, None, options={})
+        assert result["success"]
+        assert "one level deep" in str(result["data"].get("error"))
+
+    def test_write_capable_child_is_refused(self, monkeypatch, db_session):
+        tools = _nested_tools(cfg_extra={"allowed_write_actions": ["write_thing"]})
+        _wire_fake_connector(monkeypatch, {}, tools=tools)
+        result = execute_function(self._parent(), {}, db_session, None, options={})
+        assert "top-level" in str(result["data"].get("error"))
+
+    def test_non_read_only_child_is_refused(self, monkeypatch, db_session):
+        tools = _nested_tools(child_extra={"read_only": False})
+        _wire_fake_connector(monkeypatch, {}, tools=tools)
+        result = execute_function(self._parent(), {}, db_session, None, options={})
+        assert "top-level" in str(result["data"].get("error"))
+
+    def test_a_failing_child_is_an_error_not_a_crash(self, monkeypatch, db_session):
+        boom = "def run(params, call_api, log):\n    raise ValueError('child broke')\n"
+        _wire_fake_connector(monkeypatch, {}, tools=_nested_tools(child_code=boom))
+        result = execute_function(self._parent(), {}, db_session, None, options={})
+        assert result["success"]  # the PARENT handled it
+        assert "child broke" in str(result["data"].get("error"))
+
+    def test_the_nested_call_charges_the_parent_once(self, monkeypatch, db_session):
+        # A parent budget of 1 fits one child call even though the child makes
+        # its own internal calls — they never touch the parent's ledger.
+        _wire_fake_connector(monkeypatch, {}, tools=_nested_tools())
+        result = execute_function(
+            self._parent(), {}, db_session, None, options={"max_api_calls": 1}
+        )
+        assert result["success"], result
+        assert result["data"]["rows"] == {"ok": True}
+
+    def test_two_nested_calls_break_a_budget_of_one(self, monkeypatch, db_session):
+        # Budget breaches kill the run (existing semantics) — two child calls
+        # against max_api_calls=1 is two parent-ledger charges.
+        _wire_fake_connector(monkeypatch, {}, tools=_nested_tools())
+        code = (
+            "def run(params, call_api, log):\n"
+            "    call_api('fake', 'child_budget', {})\n"
+            "    return call_api('fake', 'child_budget', {})\n"
+        )
+        result = execute_function(
+            code, {}, db_session, None, options={"max_api_calls": 1}
+        )
+        assert not result["success"]
+        assert "Too many API calls" in str(result["error"])

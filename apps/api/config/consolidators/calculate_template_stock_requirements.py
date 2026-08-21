@@ -91,6 +91,10 @@ def run(params, call_api, log, call_api_parallel):
             ),
             (
                 "loadedhub",
+                # The budgets CONSOLIDATOR (nested read-only call): it owns
+                # Loaded's off-by-one dating and the query-window quirk, so
+                # this asks in plain true dates and reads the precomputed
+                # total below.
                 "get_budgets",
                 {"venue": venue, "from_date": params["today"], "to_date": order_until},
             ),
@@ -223,9 +227,12 @@ def run(params, call_api, log, call_api_parallel):
         log("ERROR: No sales data - cannot calculate usage rates")
         return {"error": "No sales data available", "items_checked": len(stock_now)}
 
-    # Calculate total budget
+    # Total budget for the forecast window — the consolidator precomputes it
+    # (the list fallback covers the raw shape, defensively).
     total_budget = 0
-    if isinstance(budgets, list):
+    if isinstance(budgets, dict):
+        total_budget = float(budgets.get("total") or 0)
+    elif isinstance(budgets, list):
         for b in budgets:
             total_budget += float(b.get("amount", 0) or 0)
     log(f"Total budget (forecast period): ${total_budget:,.0f}")

@@ -1765,7 +1765,7 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
 
             fetch_code = (
                 "def run(params, call_api, log):\n"
-                "    items = call_api('loadedhub', 'get_stock_items', {'venue': params['venue']})\n"
+                "    items = call_api('loadedhub', 'get_stock_items_raw', {'venue': params['venue']})\n"
                 "    if isinstance(items, list):\n"
                 "        return items\n"
                 "    return []\n"

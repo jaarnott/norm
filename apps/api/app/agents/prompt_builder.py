@@ -170,6 +170,13 @@ def _collect_tools(
             action = tool.get("action", "")
             if enabled_actions is not None and action not in enabled_actions:
                 continue
+            # Demoted tools ([consolidator-only]/[engine-only]) are for the
+            # engine's own call_api, never the agent's menu — the structured
+            # flag makes that machine-checked instead of a description
+            # convention, and holds even for a binding with an empty
+            # capabilities list (which otherwise exposes everything).
+            if tool.get("engine_only"):
+                continue
 
             tools.append(
                 {

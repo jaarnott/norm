@@ -63,6 +63,61 @@ def run(params, call_api, log, call_api_parallel=None):
     def date_only(value):
         return str(value or "")[:10]
 
+    def to_iso(value):
+        # The invoice copy keeps dates AS PRINTED ('19/08/26', '19 Jul 26',
+        # '18.08.2026', 'Jul 13, 2026' — all live-observed) while Loaded is
+        # ISO, so a raw string compare failed EVERY differently-formatted
+        # date: on 21 Aug 2026 the daily run reconciled 0 of 100 invoices,
+        # the vast majority blocked only by format. Hand-rolled rather than
+        # strptime: strptime lazily imports _strptime, which this sandbox
+        # forbids. Numeric forms read day-first (NZ suppliers); with a month
+        # name, the first remaining number is the day. Unparseable or
+        # ambiguous text returns verbatim — an honest mismatch, never a
+        # guess.
+        s = " ".join(str(value or "").replace(",", " ").split())
+        if not s:
+            return ""
+        try:
+            return datetime.date.fromisoformat(s[:10]).isoformat()
+        except ValueError:
+            pass
+        months = {
+            "jan": 1,
+            "feb": 2,
+            "mar": 3,
+            "apr": 4,
+            "may": 5,
+            "jun": 6,
+            "jul": 7,
+            "aug": 8,
+            "sep": 9,
+            "oct": 10,
+            "nov": 11,
+            "dec": 12,
+        }
+        parts = s.replace(".", " ").replace("/", " ").replace("-", " ").split()
+        if len(parts) != 3:
+            return s
+        month = None
+        rest = []
+        for part in parts:
+            if not part.isdigit() and part[:3].lower() in months:
+                month = months[part[:3].lower()]
+            else:
+                rest.append(part)
+        try:
+            if month is not None:
+                if len(rest) != 2:
+                    return s
+                day, year = int(rest[0]), int(rest[1])
+            else:
+                day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+            if year < 100:
+                year += 2000
+            return datetime.date(year, month, day).isoformat()
+        except (TypeError, ValueError):
+            return s
+
     venue = params.get("venue")
     # Per-user run mode (injected by execute_consolidator). Reconciliation has
     # no interactive card, so modes map to the two write gates:
@@ -227,9 +282,7 @@ def run(params, call_api, log, call_api_parallel=None):
         comparison["po_number"]["document"] = pdf.get(
             "customer_purchase_order_number"
         ) or pdf.get("supplier_order_number")
-        comparison["invoice_date"]["document"] = (
-            date_only(pdf.get("invoice_date")) or None
-        )
+        comparison["invoice_date"]["document"] = to_iso(pdf.get("invoice_date")) or None
         comparison["total_incl_tax"]["document"] = (
             money(pdf.get("total_incl_tax"))
             if dec(pdf.get("total_incl_tax")) is not None
@@ -282,7 +335,7 @@ def run(params, call_api, log, call_api_parallel=None):
         # Check 3 — invoice date
         inv_date, pdf_date = (
             date_only(inv.get("invoicedAt")),
-            date_only(pdf.get("invoice_date")),
+            to_iso(pdf.get("invoice_date")),
         )
         if not pdf_date:
             checks["date_match"] = "fail"

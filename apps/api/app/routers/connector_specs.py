@@ -131,6 +131,21 @@ async def list_specs(
     return {"specs": [_spec_to_dict(s) for s in specs]}
 
 
+@router.get("/coverage")
+def consolidator_coverage(
+    days: int = 30,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """The consolidator-migration dashboard — see
+    services/consolidator_coverage. Declared BEFORE the /{name} routes so the
+    literal path wins the match. Plain ``def``: sync DB work off the loop."""
+    from app.services.consolidator_coverage import coverage_report
+
+    return coverage_report(db, config_db, days=max(1, min(days, 365)))
+
+
 @router.post("", status_code=201)
 async def create_spec(
     body: ConnectorSpecCreate,

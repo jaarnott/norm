@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
+import ConsolidatorCoveragePanel from './ConsolidatorCoveragePanel';
 import BillingTab from './BillingTab';
 import EmailTab from './EmailTab';
 import DeploymentsPanel from './DeploymentsPanel';
@@ -1433,6 +1434,8 @@ export default function SettingsPanel() {
         {activeTab === 'connectors' && (
           <>
             <ConnectorSpecsPanel onViewModeChange={setSpecEditing} />
+
+            {!specEditing && <ConsolidatorCoveragePanel />}
 
             {!specEditing && <div style={{ borderTop: '1px solid #e8e4de', marginTop: '2rem', paddingTop: '1.5rem' }}>
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
