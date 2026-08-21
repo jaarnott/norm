@@ -92,7 +92,10 @@ def call_llm(
     else:
         user_content = dated_user_prompt
 
-    client = anthropic.Anthropic(api_key=api_key)
+    # Explicit timeout on these one-shot calls (classification, summaries) so a
+    # stalled request can't hang; SDK auto-retry stays on since there is no
+    # manual retry around this path.
+    client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
     llm_call_id = None
     t0 = time.time()
 
@@ -360,7 +363,11 @@ def call_llm_with_tools(
 
     resolved_model = agent_model(db, override=model)
 
-    client = anthropic.Anthropic(api_key=api_key)
+    # Explicit per-call timeout, and no SDK auto-retry: retries are handled
+    # manually below (and only before any token has streamed, so a mid-stream
+    # blip is re-raised rather than silently doubled). Bounding one stalled model
+    # iteration here keeps a single wedged call from riding out the whole request.
+    client = anthropic.Anthropic(api_key=api_key, timeout=600.0, max_retries=0)
     llm_call_id = None
     t0 = time.time()
 

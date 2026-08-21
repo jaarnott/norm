@@ -54,11 +54,16 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# gunicorn with uvicorn workers for production ASGI serving
+# gunicorn with uvicorn workers for production ASGI serving.
+# --timeout is the worker-silence ceiling. With async UvicornWorkers it does not
+# fire during a long streaming chat turn (the event loop stays live), but it is
+# a hard cut if the loop is ever blocked. Keep it just above Cloud Run's request
+# timeout (1800s) so gunicorn can never be the thing that severs a legitimate
+# long turn; a genuinely wedged worker is still reaped, just later.
 CMD ["gunicorn", "app.main:app", \
      "-k", "uvicorn.workers.UvicornWorker", \
      "-w", "4", \
      "-b", "0.0.0.0:8000", \
-     "--timeout", "120", \
+     "--timeout", "1830", \
      "--graceful-timeout", "30", \
      "--access-logfile", "-"]

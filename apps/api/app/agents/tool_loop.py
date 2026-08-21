@@ -173,7 +173,15 @@ def resume_tool_loop(
     task.agent_loop_state = None
     task.status = "in_progress"
     task.remove_tag("approval_required")
-    db.flush()
+    # COMMIT the approval boundary before the (possibly long) continuation.
+    # The approved writes just ran their external side effects above; flushing
+    # only would let a later request cut (Cloud Run timeout) roll the DB back
+    # while the side effect stands — the thread reverts to awaiting-approval and
+    # a re-approve DOUBLE-EXECUTES the write. Committing here makes the approval
+    # + executed writes durable, leaves the thread durably in_progress (so a
+    # re-click is a no-op), and limits any drop to losing only the model's
+    # follow-up prose, which a follow-up message recovers.
+    db.commit()
 
     return _execute_loop(
         messages,

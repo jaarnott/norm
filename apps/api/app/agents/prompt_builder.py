@@ -8,6 +8,80 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
+# Read/write verbs used to classify an mcp-mode action whose transport method
+# is a meaningless POST. Fail-closed: a name carrying ANY write verb is treated
+# as a write, so `get_and_delete_x` never slips through as an unapproved read.
+_READ_VERBS = frozenset({"get", "list", "search", "fetch", "find", "read"})
+_WRITE_VERBS = frozenset(
+    {
+        "create",
+        "update",
+        "delete",
+        "set",
+        "add",
+        "remove",
+        "send",
+        "place",
+        "mark",
+        "approve",
+        "sign",
+        "move",
+        "publish",
+        "cancel",
+        "reject",
+        "enrol",
+        "enroll",
+        "assign",
+        "trigger",
+        "upload",
+        "toggle",
+        "reset",
+        "complete",
+        "log",
+        "draft",
+        "submit",
+        "save",
+        "sync",
+        "push",
+        "write",
+        "post",
+        "put",
+        "patch",
+        "generate",
+    }
+)
+
+
+def _name_is_read(action: str) -> bool:
+    """A conservative read-verb check on the action name's segments —
+    `functions_get_contacts`, `training_list_plans`, `stock_get_stock_on_hand`.
+    Any write verb present vetoes it (fail-closed)."""
+    segs = str(action or "").lower().split("_")
+    if any(s in _WRITE_VERBS for s in segs):
+        return False
+    return any(s in _READ_VERBS for s in segs)
+
+
+def _effective_method(spec, tool: dict) -> str:
+    """The read/write label the agent loop classifies on.
+
+    For an **mcp-mode** connector the real transport is always POST, so a genuine
+    read — `functions_get_contacts`, `training_list_job_openings` — is mislabelled
+    a write and demands an approval nobody should grant to READ. Treat such an
+    action as GET when it is explicitly ``read_only``, or (the flag is unset on
+    auto-discovered tools) when its name is unambiguously a read. Template-mode
+    connectors keep their declared method: there a POST is a real write, and a
+    mis-set flag must never turn one into an unapproved read. Same rule as
+    ``app_runtime._tool_read_only`` / ``delegation.is_read_only_tool``.
+    """
+    declared = (tool.get("method") or "POST").upper()
+    if (getattr(spec, "execution_mode", "") or "") != "mcp":
+        return declared
+    if "read_only" in tool:
+        return "GET" if tool.get("read_only") else declared
+    return "GET" if _name_is_read(tool.get("action", "")) else declared
+
+
 def _collect_tools(
     db: Session,
     user_id: str | None = None,
@@ -106,7 +180,10 @@ def _collect_tools(
                     "field_mapping": tool.get("field_mapping", {}),
                     "field_descriptions": tool.get("field_descriptions", {}),
                     "field_schema": tool.get("field_schema", {}),
-                    "method": tool.get("method", "POST"),
+                    # Effective read/write label — an mcp read stays a read, so
+                    # the agent loop auto-runs it instead of gating it (see
+                    # _effective_method). Execution still POSTs regardless.
+                    "method": _effective_method(spec, tool),
                     "description": tool.get("description", ""),
                     # Used by result-slimming (tool_loop._slim_tool_result and
                     # the MCP surface). Carried here so callers don't have to

@@ -27,6 +27,14 @@ variable "api_memory" {
   type    = string
   default = "512Mi"
 }
+variable "api_timeout_seconds" {
+  # A chat turn streams inside a single request; a delegated cross-venue report
+  # can run for minutes. Cloud Run's 300s default cut those off mid-answer (the
+  # client saw a dropped stream and a false failure). Give the API service ample
+  # headroom — the web service keeps the platform default. Cloud Run max is 3600.
+  type    = number
+  default = 1800
+}
 variable "web_cpu" {
   type    = string
   default = "1"
@@ -181,7 +189,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
     }
 
-    timeout = "300s"
+    timeout = "${var.api_timeout_seconds}s"
   }
 
   # The image and runtime env vars are managed out-of-band by the deploy
