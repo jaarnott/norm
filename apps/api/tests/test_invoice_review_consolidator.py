@@ -28,9 +28,13 @@ class Api:
         self.calls: list[tuple[str, str, dict]] = []
         self.response = response if response is not None else {"cards": []}
         self.error = error
+        self.resolved = None
 
     def call_api(self, connector, action, params=None):
         self.calls.append((connector, action, dict(params or {})))
+        if connector == "norm" and action == "resolve_dates":
+            # The one other allowed call: the optional `period` resolution.
+            return dict(self.resolved) if self.resolved else {"error": "offline"}
         assert connector == "norm" and action == "review_invoices", (
             f"unexpected call {connector}.{action} — the engine is "
             "orchestration-only and may call nothing else"
@@ -322,3 +326,26 @@ class TestSyncConfigContract:
             "fix_invoices"
         )
         assert "receive_invoice" in mod.RETIRED_ACTIONS
+
+
+class TestPeriodResolution:
+    def test_period_resolves_to_calendar_dates(self):
+        api = Api()
+        api.resolved = {
+            "window": {
+                "start": "2026-07-01T07:00:00+12:00",
+                "end": "2026-08-01T06:59:59+12:00",
+                "trading_aligned": True,
+            }
+        }
+        run_consolidator(api, period="last month")
+        req = next(p for (_c, a, p) in api.calls if a == "review_invoices")
+        assert req["from_date"] == "2026-07-01"
+        assert req["to_date"] == "2026-08-01"
+
+    def test_no_period_keeps_the_sixty_day_default(self):
+        api = Api()
+        run_consolidator(api)
+        req = next(p for (_c, a, p) in api.calls if a == "review_invoices")
+        assert req["from_date"] == "2026-06-11"  # today (10 Aug) - 60 days
+        assert not [c for c in api.calls if c[1] == "resolve_dates"]

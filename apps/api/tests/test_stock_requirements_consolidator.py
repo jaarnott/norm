@@ -84,9 +84,12 @@ class Api:
         self.minimums = minimums
         self.retry_stock = retry_stock  # what a serial retry returns, if set
         self.retries = 0
+        self.window = None
+        self.seen = []
         self.logs = []
 
     def _for(self, action, params):
+        self.seen.append((action, dict(params or {})))
         if action == "get_stock_on_hand":
             today = params.get("report_datetime") == PARAMS["today_iso"]
             return self.stock_now if today else self.stock_4w
@@ -103,6 +106,11 @@ class Api:
             return self.budgets
         if action == "get_stock_item_minimums":
             return self.minimums
+        if action == "resolve_dates":
+            # Default: resolver unavailable — the consolidator must fall
+            # back to the executor-injected history window. Tests that
+            # exercise the period path set `self.window` instead.
+            return self.window if self.window else {"error": "resolver offline"}
         raise AssertionError(f"unexpected action {action}")
 
     def call_api(self, connector, action, params=None):
@@ -307,3 +315,45 @@ class TestSandboxCompatibility:
         ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
         exec(FUNCTION_CODE, ns)
         assert callable(ns["run"])
+
+
+class TestPeriodResolution:
+    def test_history_window_comes_from_the_venue_calendar(self):
+        api = Api()
+        api.window = {
+            "window": {
+                "start": "2026-06-19T07:00:00+12:00",
+                "end": "2026-07-17T06:59:59+12:00",
+                "trading_aligned": True,
+            }
+        }
+        out = run_fn(api)
+        assert isinstance(out, list)
+        recv = next(p for a, p in api.seen if a == "get_received_invoices")
+        assert recv["from"] == "2026-06-19T07:00:00+12:00"
+        assert recv["to"] == "2026-07-17T06:59:59+12:00"
+
+    def test_resolver_outage_falls_back_to_injected_window(self):
+        api = Api()  # resolver returns an error by default
+        out = run_fn(api)
+        assert isinstance(out, list)
+        recv = next(p for a, p in api.seen if a == "get_received_invoices")
+        assert recv["from"] == PARAMS["four_weeks_ago_iso"]
+
+    def test_order_until_phrase_resolves_to_a_date(self):
+        api = Api()
+        api.window = {
+            "window": {
+                "start": "2026-08-03T07:00:00+12:00",
+                "end": "2026-08-03T23:59:59+12:00",
+                "trading_aligned": True,
+            }
+        }
+        params = {k: v for k, v in PARAMS.items() if k != "order_until_date"}
+        params["order_until"] = "the Monday after next"
+        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
+        exec(FUNCTION_CODE, ns)
+        out = ns["run"](params, api.call_api, api.log, api.call_api_parallel)
+        assert isinstance(out, list)
+        budg = next(p for a, p in api.seen if a == "get_budgets")
+        assert budg["to_date"] == "2026-08-03"

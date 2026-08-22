@@ -30,7 +30,37 @@ def run(params, call_api, log, call_api_parallel):
     """
     venue = params["venue"]
     template_id = params["template_id"]
-    order_until = params.get("order_until_date", params["today"])
+
+    def _resolve(query):
+        resolve_args = {"query": query}
+        if params.get("venue_id"):
+            resolve_args["venue_id"] = params["venue_id"]
+        resolved = call_api("norm", "resolve_dates", resolve_args)
+        window = resolved.get("window") if isinstance(resolved, dict) else None
+        if not isinstance(window, dict):
+            data = resolved.get("data") if isinstance(resolved, dict) else None
+            window = data.get("window") if isinstance(data, dict) else None
+        return window if isinstance(window, dict) else None
+
+    # "Order until" accepts plain English ("next Friday") via Norm's venue
+    # calendar; order_until_date (YYYY-MM-DD) remains the exact-date path.
+    order_until = params.get("order_until_date")
+    until_phrase = (params.get("order_until") or "").strip()
+    if until_phrase and not order_until:
+        window = _resolve(until_phrase)
+        if not window:
+            return {"error": f"could not resolve '{until_phrase}' to a date"}
+        order_until = str(window["end"])[:10]
+    if not order_until:
+        order_until = params["today"]
+
+    # The 4-week usage history window comes from the venue calendar too —
+    # the executor-injected four_weeks_ago_iso/today_iso are CIVIL midnight
+    # in a fixed timezone, which splits trading sessions. Falls back to the
+    # injected values if the resolver is unavailable.
+    hist = _resolve("last 4 weeks")
+    hist_start = (hist or {}).get("start") or params["four_weeks_ago_iso"]
+    hist_end = (hist or {}).get("end") or params["today_iso"]
 
     def api_error(result):
         """call_api / call_api_parallel hand back {"error": ...} on failure.
@@ -67,7 +97,7 @@ def run(params, call_api, log, call_api_parallel):
                 {
                     "venue": venue,
                     "template_id": template_id,
-                    "report_datetime": params["four_weeks_ago_iso"],
+                    "report_datetime": hist_start,
                 },
             ),
             (
@@ -75,8 +105,8 @@ def run(params, call_api, log, call_api_parallel):
                 "get_received_invoices",
                 {
                     "venue": venue,
-                    "from": params["four_weeks_ago_iso"],
-                    "to": params["today_iso"],
+                    "from": hist_start,
+                    "to": hist_end,
                 },
             ),
             (
@@ -84,8 +114,8 @@ def run(params, call_api, log, call_api_parallel):
                 "get_sales_data",
                 {
                     "venue": venue,
-                    "start_datetime": params["four_weeks_ago_iso"],
-                    "end_datetime": params["today_iso"],
+                    "start_datetime": hist_start,
+                    "end_datetime": hist_end,
                     "interval": "28.00:00:00",
                 },
             ),
@@ -114,7 +144,7 @@ def run(params, call_api, log, call_api_parallel):
         stock_now_raw = stock_on_hand(params["today_iso"])
     if api_error(stock_4w_raw):
         log("stock-on-hand (4 weeks ago) failed — retrying once, serially")
-        stock_4w_raw = stock_on_hand(params["four_weeks_ago_iso"])
+        stock_4w_raw = stock_on_hand(hist_start)
 
     failure = api_error(stock_now_raw) or api_error(stock_4w_raw)
     if failure:

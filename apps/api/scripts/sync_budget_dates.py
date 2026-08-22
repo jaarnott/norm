@@ -80,10 +80,15 @@ def budgets_tool() -> dict:
             "and any days with no budget set. THE one budget tool — use this "
             "for every budget question."
         ),
-        "required_fields": ["from_date"],
-        "optional_fields": ["to_date"],
+        "required_fields": [],
+        "optional_fields": ["period", "from_date", "to_date"],
         "field_descriptions": {
-            "from_date": "Start date YYYY-MM-DD",
+            "period": (
+                "The period in plain English — 'next week', 'this month'. "
+                "Norm resolves it against the venue's calendar. Prefer this "
+                "over from_date/to_date; never work out dates yourself."
+            ),
+            "from_date": "Start date YYYY-MM-DD — only when the user gave one",
             "to_date": (
                 "End date YYYY-MM-DD, inclusive (default: from_date + 6 — one week)"
             ),
@@ -91,7 +96,7 @@ def budgets_tool() -> dict:
         "read_only": True,
         "consolidator_config": {
             "function_code": FUNCTION_CODE_PATH.read_text(),
-            "max_api_calls": 2,
+            "max_api_calls": 3,
         },
     }
 

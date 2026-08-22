@@ -59,8 +59,27 @@ def main() -> None:
                 return
 
             cfg["function_code"] = code
+            # Room for the two optional resolve_dates calls on top of the
+            # 6-call parallel batch, two serial retries, and the nested
+            # get_budgets child.
+            cfg["max_api_calls"] = 12
             tool = dict(tool)
             tool["consolidator_config"] = cfg
+            # `order_until` (plain English, resolved by the venue calendar)
+            # is the primary path; the exact date remains a fallback.
+            tool["required_fields"] = ["template_id"]
+            tool["optional_fields"] = ["order_until", "order_until_date"]
+            fd = dict(tool.get("field_descriptions") or {})
+            fd["order_until"] = (
+                "How far ahead to order for, in plain English — 'next "
+                "Friday', 'end of next week'. Norm resolves it against the "
+                "venue's calendar. Defaults to today when neither field is "
+                "given."
+            )
+            fd["order_until_date"] = (
+                "Exact date YYYY-MM-DD — only when the user gave one."
+            )
+            tool["field_descriptions"] = fd
             tools[i] = tool
 
             if args.dry_run:

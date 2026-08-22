@@ -225,12 +225,17 @@ RECONCILE_CONSOLIDATOR_TOOL = {
     ),
     "required_fields": [],
     "optional_fields": [
+        "period",
         "from_date",
         "to_date",
         "create_missing_statements",
         "suppliers",
     ],
     "field_descriptions": {
+        "period": (
+            "The window in plain English — 'last month'. Norm resolves it "
+            "against the venue's calendar; prefer this over from/to dates."
+        ),
         "from_date": "Statement search window start YYYY-MM-DD (default: 30 days ago)",
         "to_date": "Statement search window end YYYY-MM-DD (default: today)",
     },
@@ -288,8 +293,12 @@ CONSOLIDATOR_TOOL = {
         "its specific reason."
     ),
     "required_fields": [],
-    "optional_fields": ["from_date", "to_date"],
+    "optional_fields": ["period", "from_date", "to_date"],
     "field_descriptions": {
+        "period": (
+            "The window in plain English — 'last month'. Norm resolves it "
+            "against the venue's calendar; prefer this over from/to dates."
+        ),
         "from_date": "Start date YYYY-MM-DD (default: 60 days ago)",
         "to_date": "End date YYYY-MM-DD (default: today)",
     },

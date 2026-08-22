@@ -133,12 +133,31 @@ def run(params, call_api, log, call_api_parallel=None):
         mode == "autopilot"
     )
     supplier_filter = {norm(s) for s in (params.get("suppliers") or []) if s}
-    to_date = params.get("to_date") or params.get("today")
-    from_date = params.get("from_date")
-    if not from_date:
-        from_date = (
-            datetime.date.fromisoformat(params["today"]) - datetime.timedelta(days=30)
-        ).isoformat()
+    # Optional `period` in plain English resolves through Norm's venue
+    # calendar to CALENDAR dates (statement periods are calendar-dated).
+    # The zero-arg default (last 30 days) is unchanged.
+    period = (params.get("period") or "").strip()
+    if period:
+        resolve_args = {"query": period}
+        if params.get("venue_id"):
+            resolve_args["venue_id"] = params["venue_id"]
+        resolved = call_api("norm", "resolve_dates", resolve_args)
+        window = resolved.get("window") if isinstance(resolved, dict) else None
+        if not isinstance(window, dict):
+            data = resolved.get("data") if isinstance(resolved, dict) else None
+            window = data.get("window") if isinstance(data, dict) else None
+        if not isinstance(window, dict):
+            return {"error": f"could not resolve '{period}' to dates"}
+        from_date = str(window["start"])[:10]
+        to_date = str(window["end"])[:10]
+    else:
+        to_date = params.get("to_date") or params.get("today")
+        from_date = params.get("from_date")
+        if not from_date:
+            from_date = (
+                datetime.date.fromisoformat(params["today"])
+                - datetime.timedelta(days=30)
+            ).isoformat()
 
     base = {"venue": venue} if venue else {}
 

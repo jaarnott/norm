@@ -29,9 +29,12 @@ class Api:
     def __init__(self, rows):
         self.rows = rows  # {dated: (amount, tax)}
         self.calls = []
+        self.resolved = None
 
     def call_api(self, connector, action, params=None):
         self.calls.append((connector, action, dict(params or {})))
+        if action == "resolve_dates":
+            return dict(self.resolved) if self.resolved else {"error": "offline"}
         assert action == "get_budgets_raw", action
         frm, to = params["from_date"], params["to_date"]
         return [
@@ -122,3 +125,37 @@ class TestBudgetDates:
         api = Api(NOV)
         out = run(api, from_date="2025-01-01", to_date="2026-12-31")
         assert "error" in out
+
+
+class TestPeriodResolution:
+    def test_period_resolves_to_calendar_dates(self):
+        # "That week in November" as a trading week: Mon 07:00 - next Mon
+        # 06:59. Budget days are calendar days, so the window becomes
+        # Mon 23rd .. Sun 29th — the same seven true days as before, and the
+        # off-by-one shift still puts Thursday's $22k on Thursday.
+        api = Api(NOV)
+        api.resolved = {
+            "window": {
+                "start": "2026-11-23T07:00:00+13:00",
+                "end": "2026-11-30T06:59:59+13:00",
+                "trading_aligned": True,
+            }
+        }
+        out = run(api, period="that week in November")
+        thursday = next(d for d in out["days"] if d["date"] == "2026-11-26")
+        assert thursday["amount"] == 22000.0
+        assert thursday["day"] == "Thursday"
+        raw = next(p for (_c, a, p) in api.calls if a == "get_budgets_raw")
+        # [F, T+1]: the to-exclusive query window over the shifted instants
+        assert raw["from_date"] == "2026-11-23"
+        assert raw["to_date"] == "2026-11-30"
+
+    def test_unresolvable_period_is_an_error_not_a_guess(self):
+        api = Api(NOV)
+        out = run(api, period="the vibes of spring")
+        assert "could not resolve" in out["error"]
+        assert not [c for c in api.calls if c[1] == "get_budgets_raw"]
+
+    def test_no_period_and_no_from_date_is_refused(self):
+        out = run(Api(NOV))
+        assert "period" in out["error"]

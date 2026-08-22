@@ -39,12 +39,32 @@ def run(params, call_api, log, call_api_parallel=None):
     dry_run = approve_all
     require_valid_po = params.get("require_valid_po") is not False
 
-    to_date = params.get("to_date") or params.get("today")
-    from_date = params.get("from_date")
-    if not from_date and params.get("today"):
-        from_date = (
-            datetime.date.fromisoformat(params["today"]) - datetime.timedelta(days=60)
-        ).isoformat()
+    # Optional `period` in plain English resolves through Norm's venue
+    # calendar to CALENDAR dates (invoice dates are calendar-dated — no
+    # trading boundary, so the window is sliced to dates). The zero-arg
+    # default (last 60 days) that the playbooks rely on is unchanged.
+    period = (params.get("period") or "").strip()
+    if period:
+        resolve_args = {"query": period}
+        if params.get("venue_id"):
+            resolve_args["venue_id"] = params["venue_id"]
+        resolved = call_api("norm", "resolve_dates", resolve_args)
+        window = resolved.get("window") if isinstance(resolved, dict) else None
+        if not isinstance(window, dict):
+            data = resolved.get("data") if isinstance(resolved, dict) else None
+            window = data.get("window") if isinstance(data, dict) else None
+        if not isinstance(window, dict):
+            return {"error": f"could not resolve '{period}' to dates"}
+        from_date = str(window["start"])[:10]
+        to_date = str(window["end"])[:10]
+    else:
+        to_date = params.get("to_date") or params.get("today")
+        from_date = params.get("from_date")
+        if not from_date and params.get("today"):
+            from_date = (
+                datetime.date.fromisoformat(params["today"])
+                - datetime.timedelta(days=60)
+            ).isoformat()
 
     # Single-invoice review: the Invoices page (or the receive-one chat tool)
     # opening ONE invoice. Same service pipeline, present-only — the editor

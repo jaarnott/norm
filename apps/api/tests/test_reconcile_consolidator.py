@@ -38,9 +38,14 @@ class Api:
         self.create_error = create_error
         self.updated = []  # (statement_id, body)
         self.created = []  # body
+        self.seen = []
+        self.resolved = None
 
     def call_api(self, connector, action, params=None):
         params = params or {}
+        self.seen.append((action, dict(params)))
+        if action == "resolve_dates":
+            return dict(self.resolved) if self.resolved else {"error": "offline"}
         if action == "list_supplier_statements":
             return self.statements
         if action == "list_received_invoices":
@@ -664,3 +669,26 @@ class TestPrintedDateFormats:
         api, result = self._verdict_for("next Tuesday")
         verdict = sole_fail(result)
         assert verdict["checks"]["date_match"] == "fail"
+
+
+class TestPeriodResolution:
+    def test_period_resolves_to_calendar_dates(self):
+        api = Api(statements=[], received=[])
+        api.resolved = {
+            "window": {
+                "start": "2026-07-01T07:00:00+12:00",
+                "end": "2026-08-01T06:59:59+12:00",
+                "trading_aligned": True,
+            }
+        }
+        run_consolidator(api, period="last month")
+        stmt = next(p for a, p in api.seen if a == "list_supplier_statements")
+        assert stmt["from_iso"].startswith("2026-07-01T00:00:00")
+        assert stmt["to_iso"].startswith("2026-08-01T23:59:59")
+
+    def test_no_period_keeps_the_thirty_day_default(self):
+        api = Api(statements=[], received=[])
+        run_consolidator(api)
+        stmt = next(p for a, p in api.seen if a == "list_supplier_statements")
+        assert stmt["from_iso"].startswith("2026-06-17")  # today (17 Jul) - 30 days
+        assert not [x for x in api.seen if x[0] == "resolve_dates"]

@@ -17,7 +17,7 @@
 # compensated at the wrong end (it included yesterday and dropped the range's
 # last day).
 #
-# Requires consolidator_config: {"max_api_calls": 2}
+# Requires consolidator_config: {"max_api_calls": 3}
 
 
 def run(params, call_api, log):
@@ -27,11 +27,52 @@ def run(params, call_api, log):
         except (TypeError, ValueError):
             raise ValueError(f"{name} must be YYYY-MM-DD, got {value!r}")
 
-    frm = to_date(params.get("from_date"), "from_date")
-    to_param = params.get("to_date")
-    # A single date is a common ask ("budget for the week of the 23rd") —
-    # default the window to that week.
-    to = to_date(to_param, "to_date") if to_param else frm + datetime.timedelta(days=6)
+    # Period in plain English resolves through Norm's venue calendar to
+    # CALENDAR dates (budgets are calendar-dated by design — no trading-day
+    # boundary, so the window is sliced to dates and there is no alignment
+    # gate). Explicit from_date/to_date remain the exact-dates path. The
+    # Loaded off-by-one correction below is untouched either way.
+    period = (params.get("period") or "").strip()
+    if period:
+        resolve_args = {"query": period}
+        if params.get("venue_id"):
+            resolve_args["venue_id"] = params["venue_id"]
+        resolved = call_api("norm", "resolve_dates", resolve_args)
+        window = resolved.get("window") if isinstance(resolved, dict) else None
+        if not isinstance(window, dict):
+            data = resolved.get("data") if isinstance(resolved, dict) else None
+            window = data.get("window") if isinstance(data, dict) else None
+        if not isinstance(window, dict):
+            return {
+                "error": (
+                    f"could not resolve '{period}' to dates — try a simpler "
+                    "period such as 'next week'"
+                )
+            }
+        frm = to_date(window["start"], "period start")
+        to = to_date(window["end"], "period end")
+        # A trading window's end is the small hours of the NEXT civil day
+        # (e.g. Monday 06:59) — for calendar budget days that next day is
+        # not part of the asked-for period.
+        if str(window["end"])[11:13] < "12":
+            to = to - datetime.timedelta(days=1)
+    elif params.get("from_date"):
+        frm = to_date(params.get("from_date"), "from_date")
+        to_param = params.get("to_date")
+        # A single date is a common ask ("budget for the week of the 23rd") —
+        # default the window to that week.
+        to = (
+            to_date(to_param, "to_date")
+            if to_param
+            else frm + datetime.timedelta(days=6)
+        )
+    else:
+        return {
+            "error": (
+                "give a period in plain English (e.g. 'next week') or an "
+                "explicit from_date"
+            )
+        }
     if to < frm:
         frm, to = to, frm
     if (to - frm).days > 400:
