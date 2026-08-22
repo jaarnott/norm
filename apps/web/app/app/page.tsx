@@ -13,6 +13,7 @@ import QuotaExceededModal from '../components/layout/QuotaExceededModal';
 import ConnectorConnectCard from '../components/display/ConnectorConnectCard';
 import { requestOpenRecipe } from '../components/display/RecipeEditor';
 import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
+import type { SendOptions } from '../components/chat/AttachmentComposer';
 import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
 import { getPageDocument } from '../lib/pageDocument';
@@ -283,9 +284,11 @@ export default function Home() {
     return counts;
   }, [threads]);
 
-  const sendMessage = useCallback(async (messageText: string, pageContext?: { page_id: string; agent: string }) => {
+  const sendMessage = useCallback(async (messageText: string, opts?: SendOptions) => {
     if (!messageText.trim()) return;
 
+    const pageContext = opts?.pageContext;
+    const attachments = opts?.attachments;
     const threadIdForRequest = selectedThreadId;
     setLoading(true);
 
@@ -301,7 +304,7 @@ export default function Home() {
         status: 'in_progress',
         tags: [],
         created_at: new Date().toISOString(),
-        conversation: [{ role: 'user', text: messageText }],
+        conversation: [{ role: 'user', text: messageText, attachments }],
         thinking_steps: [],
       };
       setThreads(prev => [optimistic, ...prev]);
@@ -311,7 +314,7 @@ export default function Home() {
       // Existing thread — append user message optimistically
       setThreads(prev => prev.map(t =>
         t.id === threadIdForRequest
-          ? { ...t, conversation: [...(t.conversation || []), { role: 'user', text: messageText }], thinking_steps: ['Working on it\u2026'] }
+          ? { ...t, conversation: [...(t.conversation || []), { role: 'user', text: messageText, attachments }], thinking_steps: ['Working on it\u2026'] }
           : t
       ));
     }
@@ -430,6 +433,9 @@ export default function Home() {
     try {
       const body: Record<string, unknown> = { message: messageText };
       if (threadIdForRequest) body.thread_id = threadIdForRequest;
+      if (attachments && attachments.length > 0) {
+        body.attachment_ids = attachments.map(a => a.upload_id);
+      }
       if (pageContext) {
         // Attach the open document (e.g. the recipe being edited) so the agent
         // knows exactly what the user is looking at.

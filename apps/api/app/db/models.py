@@ -273,6 +273,10 @@ class Message(Base):
     role = Column(String, nullable=False)  # "user" or "assistant"
     content = Column(Text, nullable=False)
     display_blocks = Column(JSON, nullable=True)
+    # Files the user attached to this turn: [{upload_id, filename, content_type,
+    # size}]. The bytes live in UploadedDocument; this is the render + rehydrate
+    # reference. Only ever set on role="user" messages.
+    attachments = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
     thread = relationship("Thread", back_populates="messages")
@@ -508,11 +512,14 @@ class UploadedDocument(Base):
     id = Column(String, primary_key=True, default=_uuid)
     user_id = Column(String, ForeignKey("users.id"), nullable=True)
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    # Set when the upload is attached to a chat message, so the model can
+    # re-fetch it later in the conversation via the get_attachment tool.
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=True)
     filename = Column(String, nullable=True)
     content_type = Column(String, nullable=True)
     size = Column(Integer, nullable=True)
     data = Column(LargeBinary, nullable=False)
-    extraction_target = Column(String, nullable=True)  # e.g. "recipe"
+    extraction_target = Column(String, nullable=True)  # e.g. "recipe", "chat"
     created_at = Column(DateTime(timezone=True), default=_now)
 
 

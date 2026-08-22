@@ -422,6 +422,48 @@ def _get_applicant_resume(params: dict, db: Session, thread_id: str | None) -> d
     }
 
 
+@register("norm", "get_attachment")
+def _get_attachment(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Re-open a file the user attached earlier in this conversation.
+
+    Returns the file's document/image as a block (via ``_document``) for PDFs and
+    images, or its extracted text for Office/text files. Scoped to the current
+    thread, so it can never read another conversation's upload.
+    """
+    from app.db.models import UploadedDocument
+    from app.services.attachments import build_content_block
+
+    aid = params.get("attachment_id") or params.get("id")
+    if not aid:
+        return {"success": False, "data": {}, "error": "attachment_id is required"}
+
+    q = db.query(UploadedDocument).filter(UploadedDocument.id == aid)
+    if thread_id:
+        q = q.filter(UploadedDocument.thread_id == thread_id)
+    doc = q.first()
+    if not doc:
+        return {
+            "success": False,
+            "data": {},
+            "error": "That attachment isn't in this conversation.",
+        }
+
+    try:
+        block = build_content_block(doc.data, doc.content_type, doc.filename)
+    except ValueError as exc:
+        return {"success": False, "data": {}, "error": str(exc)}
+
+    info = {
+        "filename": doc.filename,
+        "content_type": doc.content_type,
+        "size": doc.size,
+    }
+    if block.get("type") == "text":
+        # Extracted text — hand it straight back; no binary block needed.
+        return {"success": True, "data": {**info, "text": block["text"]}}
+    return {"success": True, "data": info, "_document": block}
+
+
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Email — Send on behalf + system notifications

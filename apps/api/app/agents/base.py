@@ -128,7 +128,14 @@ class BaseDomainAgent(ABC):
 
         Creates or loads a task, runs the tool loop, and returns the result.
         """
-        from app.agents.tool_loop import run_tool_loop, _emit_event
+        from app.agents.tool_loop import (
+            run_tool_loop,
+            _emit_event,
+            current_turn_attachments,
+        )
+        from app.services.attachments import link_chat_attachments
+
+        turn_attachment_ids = current_turn_attachments()
 
         system_prompt, anthropic_tools = self.get_tool_definitions(
             db,
@@ -155,8 +162,19 @@ class BaseDomainAgent(ABC):
             # Use thread's venue if none provided
             if not venue_id and thread.venue_id:
                 venue_id = thread.venue_id
-            # Add the user message
-            db.add(Message(thread_id=thread.id, role="user", content=message))
+            # Add the user message (+ any files attached to this turn)
+            attachments = (
+                link_chat_attachments(turn_attachment_ids, thread.id, user_id, db)
+                or None
+            )
+            db.add(
+                Message(
+                    thread_id=thread.id,
+                    role="user",
+                    content=message,
+                    attachments=attachments,
+                )
+            )
             db.commit()
         else:
             thread = Thread(
@@ -171,7 +189,18 @@ class BaseDomainAgent(ABC):
             )
             db.add(thread)
             db.flush()
-            db.add(Message(thread_id=thread.id, role="user", content=message))
+            attachments = (
+                link_chat_attachments(turn_attachment_ids, thread.id, user_id, db)
+                or None
+            )
+            db.add(
+                Message(
+                    thread_id=thread.id,
+                    role="user",
+                    content=message,
+                    attachments=attachments,
+                )
+            )
             db.commit()
 
         # Emit the real thread ID immediately so the frontend can recover if

@@ -191,7 +191,11 @@ def build_conversation_messages(
     # sent the user's text twice — _ensure_alternation merged the two user turns
     # into one, silently doubling it. Drop the persisted copy and let the append
     # below add it back with its [Context] block attached.
+    new_attachments = None
     if recent and recent[-1].role == "user" and recent[-1].content == new_message:
+        # Carry this turn's attachments off the persisted row before dropping it,
+        # so they can be re-attached (as blocks) to the re-appended turn below.
+        new_attachments = getattr(recent[-1], "attachments", None)
         recent = recent[:-1]
 
     # date_history: date-anchor messages from previous days. Scheduled tasks
@@ -253,7 +257,24 @@ def build_conversation_messages(
     if manifest:
         content += "\n\n" + manifest
 
-    result.append({"role": "user", "content": content})
+    # Files attached anywhere in this conversation, so the model can re-open one
+    # with get_attachment on a later turn.
+    from app.services.attachments import attachment_manifest
+
+    att_manifest = attachment_manifest(thread, db)
+    if att_manifest:
+        content += "\n\n" + att_manifest
+
+    # This turn's attachments ride in front of the user's text as native
+    # document/image (or extracted-text) blocks — the one place the chat loop
+    # sends block-list content for a user turn.
+    final_content = content
+    if new_attachments:
+        blocks = _attachment_blocks(new_attachments, db)
+        if blocks:
+            final_content = [*blocks, {"type": "text", "text": content}]
+
+    result.append({"role": "user", "content": final_content})
 
     # Ensure valid alternation — merge consecutive same-role messages
     result = _ensure_alternation(result)
@@ -446,15 +467,55 @@ def _summarise_older_messages(messages: list) -> str:
     return "\n".join(parts)
 
 
+def _as_blocks(content):
+    """A user turn is usually a plain string, but one carrying an attachment is a
+    list of content blocks. Normalise to blocks for merging."""
+    if isinstance(content, list):
+        return content
+    return [{"type": "text", "text": content}]
+
+
+def _attachment_blocks(attachments, db) -> list[dict]:
+    """Build the Anthropic content blocks for a user turn's attachments — the
+    bytes are re-read from UploadedDocument and turned into document/image or
+    extracted-text blocks."""
+    from app.db.models import UploadedDocument
+    from app.services.attachments import build_content_block
+
+    blocks: list[dict] = []
+    for a in attachments or []:
+        uid = a.get("upload_id")
+        if not uid:
+            continue
+        doc = (
+            db.query(UploadedDocument).filter(UploadedDocument.id == uid).first()
+            if db is not None
+            else None
+        )
+        if not doc or not doc.data:
+            continue
+        try:
+            blocks.append(build_content_block(doc.data, doc.content_type, doc.filename))
+        except Exception:
+            logger.exception("failed to build attachment block for %s", uid)
+    return blocks
+
+
 def _ensure_alternation(messages: list[dict]) -> list[dict]:
-    """Merge consecutive same-role messages to satisfy Anthropic's alternation requirement."""
+    """Merge consecutive same-role messages to satisfy Anthropic's alternation
+    requirement. When either side is a block list (an attachment turn), merge as
+    blocks so the string concat can't blow up on a list."""
     if not messages:
         return messages
 
     merged: list[dict] = [messages[0]]
     for msg in messages[1:]:
         if msg["role"] == merged[-1]["role"]:
-            merged[-1]["content"] += "\n\n" + msg["content"]
+            a, b = merged[-1]["content"], msg["content"]
+            if isinstance(a, list) or isinstance(b, list):
+                merged[-1]["content"] = _as_blocks(a) + _as_blocks(b)
+            else:
+                merged[-1]["content"] = a + "\n\n" + b
         else:
             merged.append(msg)
 

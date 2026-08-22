@@ -57,6 +57,19 @@ def set_event_callback(callback):
     _thread_local.event_callback = callback
 
 
+def set_turn_attachments(attachment_ids):
+    """Carry the ids of files attached to this turn from the request handler to
+    the point the user Message is persisted — without threading a new argument
+    through the supervisor and every agent. Same per-turn scope as the event
+    callback (set once per request/worker, read at Message creation)."""
+    _thread_local.turn_attachments = list(attachment_ids or [])
+
+
+def current_turn_attachments() -> list[str]:
+    """The attachment ids set for the turn running on this thread, if any."""
+    return list(getattr(_thread_local, "turn_attachments", []) or [])
+
+
 def _emit_event(event: dict):
     """Emit an event to the client if a callback is set."""
     cb = getattr(_thread_local, "event_callback", None)
@@ -230,6 +243,11 @@ def _execute_loop(
     # prefix for every remaining call of that turn. A stable list caches.
     anthropic_tools, tool_meta, search_available = _ensure_search_tool(
         anthropic_tools, tool_meta
+    )
+    # When the conversation has attachments, offer the read-only get_attachment
+    # tool so the model can re-open a file it was shown on an earlier turn.
+    anthropic_tools, tool_meta = _ensure_attachment_tool(
+        anthropic_tools, tool_meta, task, db
     )
 
     thinking_steps: list[str] = []
@@ -1493,6 +1511,65 @@ def _build_search_tool_schema() -> dict:
     }
 
 
+def _thread_has_attachments(thread, db) -> bool:
+    if thread is None or db is None:
+        return False
+    from app.db.models import Message
+
+    return (
+        db.query(Message.id)
+        .filter(Message.thread_id == thread.id, Message.attachments.isnot(None))
+        .first()
+        is not None
+    )
+
+
+def _build_attachment_tool_schema() -> dict:
+    """Schema for norm__get_attachment — a READ ([GET]) tool that re-opens a file
+    the user attached earlier in this conversation, so an attachment doesn't have
+    to be re-sent on every turn."""
+    return {
+        "name": "norm__get_attachment",
+        "description": (
+            "[GET] Re-open a file the user attached earlier in this conversation, "
+            "by the id shown in the attachments list. Returns the document/image, "
+            "or the extracted text for an Office/text file, so you can read it "
+            "again."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "attachment_id": {
+                    "type": "string",
+                    "description": "The id shown in the attachments list",
+                },
+            },
+            "required": ["attachment_id"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _ensure_attachment_tool(anthropic_tools: list[dict], tool_meta: dict, thread, db):
+    """Expose norm__get_attachment only when this thread actually has attachments.
+    Returns a fresh tool list + meta (never mutates the cached list in place)."""
+    if any(t.get("name") == "norm__get_attachment" for t in anthropic_tools):
+        return anthropic_tools, tool_meta
+    if not _thread_has_attachments(thread, db):
+        return anthropic_tools, tool_meta
+    return (
+        [*anthropic_tools, _build_attachment_tool_schema()],
+        {
+            **tool_meta,
+            "norm__get_attachment": {
+                "method": "GET",
+                "connector": "norm",
+                "action": "get_attachment",
+            },
+        },
+    )
+
+
 def _truncate_nested_arrays(obj, max_items: int = 3):
     """Recursively truncate nested arrays to max_items for preview/sample purposes."""
     if isinstance(obj, dict):
@@ -1988,6 +2065,7 @@ def _build_response(
             "text": m.content,
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "display_blocks": m.display_blocks,
+            "attachments": m.attachments,
         }
         for m in sorted(task.messages, key=lambda x: x.created_at)
     ]
