@@ -18,6 +18,7 @@ function isFullWidthBlock(b: DisplayBlock): boolean {
 import SplitDragHandle from '../layout/SplitDragHandle';
 import { useSplitPane } from '../../hooks/useSplitPane';
 import { getStoredUser } from '../../lib/api';
+import { useComposerAttachments, AttachButton, AttachmentChips, SentAttachmentChips, type SendOptions } from '../chat/AttachmentComposer';
 
 // -- Tab types --
 
@@ -157,6 +158,7 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
                 )}
               </div>
             </div>
+            {isUser && <SentAttachmentChips attachments={m.attachments} />}
             {/* Inline display blocks render below the message text. Flex gap:
                 a batch review emits many sibling cards on one message — they
                 need breathing room between them. */}
@@ -491,11 +493,23 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
 
 // -- Main component --
 
-const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend: (msg: string) => void; loading: boolean; highlight?: boolean }) {
+const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend: (msg: string, opts?: SendOptions) => void; loading: boolean; highlight?: boolean }) {
   const [value, setValue] = useState('');
+  const att = useComposerAttachments();
+  // A message needs text (routing keys off it); attachments ride alongside.
+  const submit = () => {
+    if (!value.trim()) return;
+    onSend(value, { attachments: att.items });
+    setValue('');
+    att.clear();
+  };
   return (
     <div style={{ padding: '12px 24px 24px' }}>
-      <form onSubmit={e => { e.preventDefault(); if (value.trim()) { onSend(value); setValue(''); } }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
+      <div style={{ maxWidth: 768, margin: '0 auto' }}>
+        <AttachmentChips items={att.items} remove={att.remove} uploading={att.uploading} />
+      </div>
+      <form onSubmit={e => { e.preventDefault(); submit(); }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
+        <AttachButton onPick={att.addFiles} disabled={loading} />
         <textarea
           data-testid="message-input"
           ref={el => {
@@ -509,7 +523,7 @@ const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              if (value.trim()) { onSend(value); setValue(''); }
+              submit();
             }
           }}
           placeholder="Message Norm..."
@@ -806,7 +820,7 @@ interface ThreadDetailProps {
   thread: Thread;
   onAction: (threadId: string, action: string) => void;
   onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
-  onSend?: (message: string) => void;
+  onSend?: (message: string, opts?: SendOptions) => void;
   loading: boolean;
   openThread?: Thread | null;
   readOnly?: boolean;

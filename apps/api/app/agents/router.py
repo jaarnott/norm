@@ -17,16 +17,27 @@ def classify(
     domains: list[str],
     db: Session | None = None,
     config_db: Session | None = None,
+    has_attachments: bool = False,
 ) -> dict:
     """Classify a message into a domain.
 
     Returns {"domain": str, "confidence": float, "llm_call_id": str | None}.
     db = main DB (for credentials), config_db = config DB (for agent prompts).
+    has_attachments steers routing away from the no-tool-loop "meta" help path,
+    which would silently drop a file the user attached (only the agent path
+    injects attachments into the model's context).
     """
     from app.services.secrets import get_api_key
 
     api_key = get_api_key("anthropic", "api_key", db) or ""
-    return _llm_classify(message, domains, api_key, db=db, config_db=config_db)
+    return _llm_classify(
+        message,
+        domains,
+        api_key,
+        db=db,
+        config_db=config_db,
+        has_attachments=has_attachments,
+    )
 
 
 def classify_followup(
@@ -195,6 +206,7 @@ def _llm_classify(
     api_key: str,
     db: Session | None = None,
     config_db: Session | None = None,
+    has_attachments: bool = False,
 ) -> dict:
     import anthropic
 
@@ -256,6 +268,21 @@ def _llm_classify(
             '\n- "all" if they want data across all venues or to compare venues'
             '\n- "unclear" if the request likely needs a venue but none was mentioned. When unclear, also include "venue_question": a short, friendly question asking which venue (e.g. "Sure! Which venue would you like me to check the roster for?")'
             "\n- Omit the venue field entirely if the request doesn't need a venue (e.g. recipe lookups, general questions)"
+        )
+
+    # The user attached a file to this turn. Only the agent tool-loop path
+    # injects attachments into the model's context, so routing to "meta" (the
+    # canned capabilities reply, which runs no tool loop) silently drops the
+    # file. Steer to a specialist that can read and act on the document.
+    if has_attachments:
+        system += (
+            "\n\nThe user has ATTACHED one or more files to this message. You MUST "
+            "route to a specialist domain that can read and act on the document — "
+            'never "meta" and never "unknown". If the document\'s purpose is unclear, '
+            "pick the most relevant operational domain (e.g. executive_chef for "
+            "recipes / menus / food documents, procurement for invoices / orders / "
+            "supplier documents, reports for figures / spreadsheets). Do not reply "
+            "with a capabilities list."
         )
 
     from app.services.models import router_model

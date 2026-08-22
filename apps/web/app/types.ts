@@ -236,11 +236,19 @@ export interface WidgetAction {
   params: Record<string, unknown>;
 }
 
+export interface MessageAttachment {
+  upload_id?: string;
+  filename: string;
+  content_type?: string;
+  size?: number;
+}
+
 export interface ConversationMessage {
   role: 'user' | 'assistant' | 'streaming';
   text: string;
   created_at?: string | null;
   display_blocks?: DisplayBlock[];
+  attachments?: MessageAttachment[];
 }
 
 export interface BaseThread {

@@ -359,8 +359,37 @@ def handle_message(
         # descriptions that use user-facing language rather than verbose
         # tool descriptions from the DB.
         domains = registered_domains()
-        routing = classify(message, domains, db=db, config_db=_cdb)
+        # A file attached to this turn only reaches the model on the agent
+        # tool-loop path; tell the router so it doesn't send the turn to the
+        # no-tool-loop "meta" help reply and silently drop the file.
+        from app.agents.tool_loop import current_turn_attachments
+
+        has_attachments = bool(current_turn_attachments())
+        routing = classify(
+            message, domains, db=db, config_db=_cdb, has_attachments=has_attachments
+        )
         domain = routing["domain"]
+
+        # Deterministic backstop: if the router still picked a no-tool-loop
+        # destination ("meta" help, or "unknown"/any slug with no agent) despite
+        # an attachment, route to a document-capable specialist so the file is
+        # not lost. The agent reads the injected block from context and answers.
+        if has_attachments and (domain == "meta" or domain not in domains):
+            fallback = next(
+                (
+                    d
+                    for d in ("executive_chef", "reports", "procurement")
+                    if d in domains
+                ),
+                next((d for d in domains if d != "meta"), domain),
+            )
+            logger.info(
+                "Attachment present but router chose %s — routing to %s instead",
+                domain,
+                fallback,
+            )
+            domain = fallback
+            routing["domain"] = fallback
 
     # Resolve venue (skip if already resolved from venue clarification follow-up)
     if not venue_id:

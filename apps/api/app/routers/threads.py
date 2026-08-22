@@ -83,6 +83,7 @@ def _tool_use_thread_to_dict(thread: Thread) -> dict:
             "text": m.content,
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "display_blocks": m.display_blocks,
+            "attachments": m.attachments,
         }
         for m in sorted(thread.messages, key=lambda x: x.created_at)
     ]

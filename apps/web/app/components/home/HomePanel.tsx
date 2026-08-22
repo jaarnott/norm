@@ -1,15 +1,24 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
+import { useComposerAttachments, AttachButton, AttachmentChips, type SendOptions } from '../chat/AttachmentComposer';
 
 interface HomePanelProps {
-  onSend: (message: string) => void;
+  onSend: (message: string, opts?: SendOptions) => void;
   loading: boolean;
 }
 
 export default function HomePanel({ onSend, loading }: HomePanelProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const att = useComposerAttachments();
+
+  const submit = useCallback(() => {
+    if (!input.trim()) return;
+    onSend(input, { attachments: att.items });
+    setInput('');
+    att.clear();
+  }, [onSend, input, att]);
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -18,9 +27,9 @@ export default function HomePanel({ onSend, loading }: HomePanelProps) {
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (input.trim()) { onSend(input); setInput(''); }
+      submit();
     }
-  }, [onSend, input]);
+  }, [submit]);
 
   return (
     <div className="full-height" style={{
@@ -39,7 +48,11 @@ export default function HomePanel({ onSend, loading }: HomePanelProps) {
         </div>
       </div>
 
-      <form onSubmit={e => { e.preventDefault(); if (input.trim()) { onSend(input); setInput(''); } }} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
+      <div style={{ width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
+        <AttachmentChips items={att.items} remove={att.remove} uploading={att.uploading} />
+      </div>
+      <form onSubmit={e => { e.preventDefault(); submit(); }} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
+        <AttachButton onPick={att.addFiles} disabled={loading} />
         <textarea
           data-testid="home-message-input"
           ref={el => {

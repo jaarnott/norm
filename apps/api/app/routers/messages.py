@@ -133,6 +133,9 @@ class MessageRequest(BaseModel):
     thread_id: str | None = None
     venue_id: str | None = None
     page_context: PageContext | None = None
+    # Ids of files the user attached to this message (uploaded via POST /uploads
+    # first). The bytes are re-read from UploadedDocument and sent to the model.
+    attachment_ids: list[str] = []
 
 
 @router.post("/messages")
@@ -143,6 +146,9 @@ async def post_message(
     user: User = Depends(get_current_user),
 ):
     _assert_venue_access(db, user, req.venue_id)
+    from app.agents.tool_loop import set_turn_attachments
+
+    set_turn_attachments(req.attachment_ids)
     try:
         return handle_message(
             req.message,
@@ -170,6 +176,8 @@ async def post_message(
                 detail="Could not connect to Anthropic API. Check your network and API configuration.",
             )
         raise
+    finally:
+        set_turn_attachments([])
 
 
 @router.post("/messages/stream")
@@ -203,6 +211,9 @@ async def post_message_stream(
             from app.agents.tool_loop import set_event_callback
 
             set_event_callback(on_event)
+            from app.agents.tool_loop import set_turn_attachments
+
+            set_turn_attachments(req.attachment_ids)
             db = SessionLocal()
             config_db = _ConfigSessionLocal()
             try:
@@ -265,6 +276,7 @@ async def post_message_stream(
                         on_event({"type": "thread_created", "thread_id": persisted_id})
                     on_event({"type": "error", "message": str(exc)})
             finally:
+                set_turn_attachments([])
                 db.close()
                 config_db.close()
 

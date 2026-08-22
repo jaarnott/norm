@@ -6,13 +6,14 @@ import { useSplitPane } from '../../hooks/useSplitPane';
 import SplitDragHandle from '../layout/SplitDragHandle';
 import DisplayBlockRenderer from '../display/DisplayBlockRenderer';
 import { ConversationView } from '../threads/ThreadDetail';
+import { useComposerAttachments, AttachButton, AttachmentChips, type SendOptions } from '../chat/AttachmentComposer';
 import type { FunctionalPageConfig } from './pageRegistry';
 import type { Thread, WidgetAction } from '../../types';
 
 interface FunctionalPageProps {
   config: FunctionalPageConfig;
   thread: Thread | null;
-  onSend: (message: string, pageContext?: { page_id: string; agent: string }) => void;
+  onSend: (message: string, opts?: SendOptions) => void;
   loading: boolean;
   onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   activeVenueId?: string | null;
@@ -27,6 +28,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   const [loadingData, setLoadingData] = useState(true);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const { containerRef, topPaneHeight, isDragging, handleDragStart, handleSplitDoubleClick } = useSplitPane();
+  const att = useComposerAttachments(activeVenueId);
 
   // Local venue override for pages that need a venue selector
   const [localVenueId, setLocalVenueId] = useState<string | null>(activeVenueId || null);
@@ -127,9 +129,20 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   const messages = thread?.conversation || [];
   const hasConversation = !!thread;
 
+  const submitMessage = () => {
+    if (!input.trim()) return;
+    onSend(input, { pageContext: { page_id: config.id, agent: config.agent }, attachments: att.items });
+    setInput('');
+    att.clear();
+  };
+
   const inputBar = (
     <div style={{ padding: '12px 24px 24px' }}>
-      <form onSubmit={e => { e.preventDefault(); if (input.trim()) { onSend(input, { page_id: config.id, agent: config.agent }); setInput(''); } }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
+      <div style={{ maxWidth: 768, margin: '0 auto' }}>
+        <AttachmentChips items={att.items} remove={att.remove} uploading={att.uploading} />
+      </div>
+      <form onSubmit={e => { e.preventDefault(); submitMessage(); }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
+        <AttachButton onPick={att.addFiles} disabled={loading} />
         <textarea
           value={input}
           onChange={e => {
@@ -139,7 +152,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              if (input.trim()) { onSend(input, { page_id: config.id, agent: config.agent }); setInput(''); }
+              submitMessage();
             }
           }}
           placeholder="Message Norm..."
