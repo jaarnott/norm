@@ -125,8 +125,8 @@ class TestParamMapping:
             ("get_sales_data", "start_datetime", "end_datetime"),
             ("get_pos_orders", "start", "end"),
             ("get_pos_item_sales", "start_time", "end_time"),
-            ("get_received_invoices", "from", "to"),
-            ("list_supplier_statements", "from_iso", "to_iso"),
+            ("get_timeclock_entries", "start_time", "end_time"),
+            ("get_roster", "start_datetime", "end_datetime"),
             ("get_completed_stocktakes", "start_date", "end_date"),
         ],
     )

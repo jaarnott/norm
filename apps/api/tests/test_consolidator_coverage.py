@@ -171,6 +171,50 @@ class TestDrift:
         c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
         assert c["drift"] == []
 
+    def test_wrappers_share_for_period_as_their_canonical_file(
+        self, db_session, monkeypatch
+    ):
+        # A `wraps` marker means the row's canonical source is for_period.py —
+        # eleven wrappers, one reviewed file, zero false "no_canonical_file".
+        code = "def run(p, c, l): return 1"
+        monkeypatch.setattr(cc, "_canonical_files", lambda: {"for_period": code})
+        monkeypatch.setattr(cc, "_usage", lambda db, days: {})
+        _spec(
+            db_session,
+            tools=[
+                {
+                    "action": "get_sales_for_period",
+                    "consolidator_config": {"function_code": code, "wraps": "x"},
+                },
+                {
+                    "action": "get_roster_for_period",
+                    "consolidator_config": {"function_code": "EDITED", "wraps": "y"},
+                },
+            ],
+        )
+        report = cc.coverage_report(db_session, db_session)
+        c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
+        states = {d["action"]: d["state"] for d in c["drift"]}
+        assert states == {"get_roster_for_period": "differs_from_file"}
+
+    def test_the_real_matcher_resolves_every_live_style_name(self):
+        # No monkeypatching: the shipped canonical map must resolve the stem
+        # (get_budgets), the get_-prefixed stem (staff_attendance →
+        # get_staff_attendance), and the shared files (for_period.py for
+        # wrappers via `wraps`; review_and_receive_invoices.py for
+        # receive_loadedhub_invoice via _SHARED_CANONICAL).
+        canonical = cc._canonical_files()
+        assert "get_budgets" in canonical
+        # The get_ prefix fallback: reconcile_received_invoices.py also
+        # resolves under get_reconcile_received_invoices (harmlessly).
+        assert "get_reconcile_received_invoices" in canonical
+        assert "for_period" in canonical
+        assert (
+            cc._SHARED_CANONICAL["receive_loadedhub_invoice"]
+            == "review_and_receive_invoices"
+        )
+        assert "review_and_receive_invoices" in canonical
+
 
 class TestAddedAtStamp:
     """The ConnectorSpec.tools listener: every writer assigns the list, so

@@ -20,7 +20,8 @@ sync overwrites it.
 | `review_and_receive_invoices.py` | `loadedhub` spec → tools `review_and_receive_invoices` AND `receive_loadedhub_invoice` (single-invoice mode) | `scripts/sync_invoice_receiving_config.py` |
 | `reconcile_received_invoices.py` | `loadedhub` spec → tool `reconcile_received_invoices` | `scripts/sync_invoice_receiving_config.py` |
 | `calculate_template_stock_requirements.py` | `loadedhub` spec → tool `calculate_template_stock_requirements` | `scripts/sync_stock_requirements_config.py` |
-| `for_period.py` | `loadedhub` spec → the 13 `*_for_period` tools (one function_code, per-tool `wraps`/`start_param`/`end_param`) | `scripts/sync_for_period_config.py` |
+| `received_items_for_period.py` | `loadedhub` spec → tool `get_received_items_for_period` | `scripts/sync_received_items_config.py` |
+| `for_period.py` | `loadedhub` spec → the 11 `*_for_period` tools (one function_code, per-tool `wraps`/`start_param`/`end_param`; the invoice/statement wrappers were retired for `get_invoices`) | `scripts/sync_for_period_config.py` |
 
 ## Interactive Receive Invoice cards (chat fan-out)
 

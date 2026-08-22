@@ -1200,7 +1200,14 @@ def _show_component(
 @register("norm", "show_roster")
 def _show_roster(params: dict, db: Session, thread_id: str | None) -> dict:
     """Display the roster as a visual weekly grid."""
-    return _show_component(params, db, thread_id, expected_action="get_roster")
+    # Both names: the raw read (older threads / page loads) and the
+    # get_roster_for_period wrapper that replaced it on the agent surface.
+    return _show_component(
+        params,
+        db,
+        thread_id,
+        expected_action=("get_roster", "get_roster_for_period"),
+    )
 
 
 @register("norm", "show_orders")

@@ -139,6 +139,25 @@ def main(dry_run: bool = False, tasks_only: bool = False) -> None:
                 raise SystemExit("loadedhub ConnectorSpec not found")
             tools = [dict(t) for t in (spec.tools or [])]
 
+            # 0. Widen get_stock_items_raw's transform ADDITIVELY to carry
+            #    each item's group (existing callers read only id/name) — the
+            #    received-items group rollups resolve item → group from it.
+            for t in tools:
+                if t.get("action") != "get_stock_items_raw":
+                    continue
+                rt = dict(t.get("response_transform") or {})
+                fields = dict(rt.get("fields") or {})
+                if fields.get("groupId") != "groupId" or (
+                    fields.get("groupName") != "groupName"
+                ):
+                    fields["groupId"] = "groupId"
+                    fields["groupName"] = "groupName"
+                    rt["fields"] = fields
+                    t["response_transform"] = rt
+                    changed.append(
+                        "get_stock_items_raw transform now carries groupId/groupName"
+                    )
+
             # 1. Demote the config-only rows.
             for action, use in DEMOTE_CONFIG_ONLY.items():
                 for t in tools:

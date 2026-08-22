@@ -62,6 +62,13 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
 
 _BACKEND_MARKERS = ("[consolidator-only]", "[engine-only]")
 
+#: Consolidators whose canonical source is a file named for a SIBLING tool
+#: (many-to-one, beyond the `wraps` marker that maps every *_for_period
+#: wrapper to for_period.py).
+_SHARED_CANONICAL = {
+    "receive_loadedhub_invoice": "review_and_receive_invoices",
+}
+
 
 def _classify(tool: dict) -> str:
     cfg = tool.get("consolidator_config")
@@ -201,8 +208,19 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
                 }
             )
             if status == "consolidator":
-                code = (t.get("consolidator_config") or {}).get("function_code") or ""
-                src = canonical.get(action)
+                cc = t.get("consolidator_config") or {}
+                code = cc.get("function_code") or ""
+                # Many-to-one canonical sources: every *_for_period wrapper
+                # (marked by `wraps` in its config) shares for_period.py, and
+                # receive_loadedhub_invoice is the single-invoice mode of the
+                # batch review's file.
+                if cc.get("wraps"):
+                    key = "for_period"
+                elif action in _SHARED_CANONICAL:
+                    key = _SHARED_CANONICAL[action]
+                else:
+                    key = action
+                src = canonical.get(key)
                 if src is None:
                     drift.append({"action": action, "state": "no_canonical_file"})
                 elif src != code:
