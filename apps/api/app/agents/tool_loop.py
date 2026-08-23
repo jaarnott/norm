@@ -366,8 +366,37 @@ def _execute_loop(
             # --- Phase A: Categorize blocks ---
             read_only_blocks: list[tuple] = []
             write_blocks: list[tuple] = []
+            unknown_tool_results: dict[str, dict] = {}
             for block in response.content:
                 if block.type != "tool_use":
+                    continue
+                if block.name not in tool_meta:
+                    # A tool this agent was NOT given this turn. The model can
+                    # mimic tool names it sees in conversation history (e.g.
+                    # after a mid-thread agent rebind) with an invented schema;
+                    # executing that meant a write fired with garbage params and
+                    # a READ fell into the approval branch as a phantom card
+                    # (method defaulted to POST). Refuse it as an error result
+                    # so the model recovers — delegates, or says so.
+                    unknown_tool_results[block.id] = {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(
+                            {
+                                "error": (
+                                    f"The tool '{block.name}' is not available "
+                                    "to this agent in this conversation. Use "
+                                    "only the tools provided in this turn; for "
+                                    "another domain's data, consult that agent "
+                                    "or tell the user what is needed."
+                                )
+                            }
+                        ),
+                        "is_error": True,
+                    }
+                    thinking_steps.append(
+                        _ts_step(f"Refused unavailable tool {block.name}")
+                    )
                     continue
                 connector, action = _parse_tool_name(block.name)
                 meta = tool_meta.get(block.name, {})
@@ -844,6 +873,8 @@ def _execute_loop(
                     tool_results.append(read_only_tool_results[block.id])
                 elif block.id in write_tool_results:
                     tool_results.append(write_tool_results[block.id])
+                elif block.id in unknown_tool_results:
+                    tool_results.append(unknown_tool_results[block.id])
 
             # Capture intermediate LLM text (its reasoning before tool calls).
             # Don't emit as a thinking event — the text was already streamed

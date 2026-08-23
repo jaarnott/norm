@@ -98,8 +98,10 @@ def classify_followup(
 
         can_consult = DELEGATE_ACTION in get_agent_actions(thread_domain, _cdb)
     consult_rule = (
-        "\n- This agent can get the answer by consulting another agent, so it "
-        "does not need to hand the conversation over."
+        "\n- This agent can get the ANSWER TO A QUESTION by consulting another "
+        "agent, so a read question does not need to hand the conversation over. "
+        "Consulting is read-only: if the user wants something created or changed "
+        "in the other domain, this rule does not apply."
         if can_consult
         else ""
     )
@@ -124,9 +126,12 @@ b) "new_thread" — the user has plainly started a different job that this agent
 - The topic is merely adjacent to another agent's area. Adjacency is not a switch.
 
 Return ONLY valid JSON:
-{{"action": "continue" | "new_thread", "domain": "<domain>", "playbook": "<slug or null>", "is_request": true | false, "reason": "<brief reason>"}}
+{{"action": "continue" | "new_thread", "domain": "<domain>", "playbook": "<slug or null>", "is_request": true | false, "target_writes": true | false, "reason": "<brief reason>"}}
 
 "is_request" is true when the user is asking for something to be fetched or done, and false when they are stating information, giving context or reacting.
+"target_writes" is true when fulfilling this message would require CREATING or
+CHANGING data (writing — e.g. create/update a recipe, change a stock item, place
+an order, edit a roster), and false when reading and answering is enough.
 
 If a playbook listed above matches this message, include its slug in "playbook".
 If no playbook matches, set playbook to null (agent gets full tool access).
@@ -192,6 +197,9 @@ Default to "continue" — only use "new_thread" for genuine domain switches (e.g
             # preserves today's behaviour, so an older/terser verdict routes
             # exactly as it always did.
             "is_request": parsed.get("is_request", True),
+            # Absent means "reading is enough" — keeps the consult-stay
+            # behaviour for older/terser verdicts.
+            "target_writes": parsed.get("target_writes", False),
             "reason": parsed.get("reason", ""),
         }
 

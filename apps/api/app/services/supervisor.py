@@ -260,7 +260,15 @@ def handle_message(
                     # in hand, not a new one. Moving on it stranded the whole
                     # conversation on the recipes agent.
                     stay = "the message states context rather than asking for something"
-                elif _can_consult(thread, followup.get("domain"), db, _cdb):
+                elif not followup.get("target_writes", False) and _can_consult(
+                    thread, followup.get("domain"), db, _cdb
+                ):
+                    # Consulting is read-only, so it can only substitute for a
+                    # hand-over when the ask is a read. Write work for another
+                    # domain must rebind: staying put stranded a recipe/stock
+                    # workflow on the procurement agent, which then had no write
+                    # tools and told the user its earlier (real) writes never
+                    # happened (thread bb7010c3, 20 Aug 2026).
                     stay = f"{thread.domain} can consult {followup.get('domain')}"
                 if stay:
                     logger.info(

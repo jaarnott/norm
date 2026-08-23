@@ -87,6 +87,12 @@ class TestTheClassifierIsToldWhatEachDomainDoes:
     def test_the_classifier_is_asked_whether_this_is_even_a_request(self):
         assert "is_request" in _followup_system_prompt()
 
+    def test_the_classifier_is_asked_whether_the_ask_needs_writes(self):
+        """Consulting is read-only, so the stay-put-and-consult shortcut needs
+        to know when the user wants data changed rather than read (the verdict
+        field the supervisor gates the consult-stay on)."""
+        assert "target_writes" in _followup_system_prompt()
+
     def test_consulting_is_offered_only_to_an_agent_that_can_do_it(self, db_session):
         from app.db.config_models import AgentConnectorBinding
 
@@ -139,6 +145,9 @@ class TestTheVerdictCarriesWhetherItWasARequest:
             anthropic.Anthropic = original
 
         assert out["is_request"] is True
+        # Absent target_writes reads as "reading is enough" — the consult-stay
+        # behaviour every verdict had before the field existed.
+        assert out["target_writes"] is False
 
 
 class TestTheClassifierIsToldWhichDomainsExist:

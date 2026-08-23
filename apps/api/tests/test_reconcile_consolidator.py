@@ -75,7 +75,10 @@ class Api:
         from app.services.invoice_evidence import SOURCE_EXTRACTED, po_verdict
 
         if self.evidence_error:
-            return {"success": False, "error": self.evidence_error}
+            # What the SANDBOX hands the consolidator on failure, not what the
+            # handler returns: _do_api_call raises on success=False and call_api
+            # turns that into {"error": ...}.
+            return {"error": self.evidence_error}
         out = {}
         for inv in params.get("invoices") or []:
             iid, file_id = str(inv.get("id")), inv.get("fileId")
@@ -94,7 +97,11 @@ class Api:
             state, note = po_verdict(inv.get("purchaseOrderNumber"), header)
             header["_po_verdict"], header["_po_note"] = state, note
             out[iid] = header
-        return {"success": True, "data": out}
+        # Flat, exactly as function_executor._do_api_call delivers it:
+        # `return handler_result.get("data")`. Returning the handler's
+        # {"success", "data"} envelope here is what let a double-unwrap in the
+        # consolidator pass green while reading nothing in production.
+        return out
 
     def extract_document(
         self, connector, action, params=None, schema=None, instructions=None

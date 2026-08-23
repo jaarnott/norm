@@ -34,9 +34,7 @@ def run(params, call_api, log, call_api_parallel=None):
     venue = params.get("venue")
     mode = params.get("mode") or "unset"
     mode_unset = mode == "unset"
-    approve_all = mode in ("approve_all", "unset")
     autopilot = mode == "autopilot"
-    dry_run = approve_all
     require_valid_po = params.get("require_valid_po") is not False
 
     # Optional `period` in plain English resolves through Norm's venue

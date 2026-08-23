@@ -25,6 +25,7 @@ WEEK_WINDOW = {
     "window": {
         "start": "2026-08-10T07:00:00+12:00",
         "end": "2026-08-17T06:59:59+12:00",
+        "day_start": "07:00",
         "trading_aligned": True,
     }
 }
@@ -47,11 +48,14 @@ class Api:
         self.resolved = resolved
         self.seen = []
         self.logs = []
+        self.sales_rows = None
 
     def _for(self, connector, action, params):
         self.seen.append((action, dict(params or {})))
         if action == "resolve_dates":
             return dict(self.resolved) if self.resolved else {"error": "offline"}
+        if action == "get_sales_data" and self.sales_rows is not None:
+            return list(self.sales_rows)
         return []
 
     def call_api(self, connector, action, params=None):
@@ -80,10 +84,27 @@ class TestPeriodResolution:
         api = Api(resolved=WEEK_WINDOW)
         run(SALES, api, period="last week", time_windows=WINDOWS)
         fetch = next(p for a, p in api.seen if a == "get_sales_data")
-        assert fetch["start_datetime"].startswith("2026-08-10T00:00:00")
-        # The trading week's end lands Mon 06:59 — Monday is NOT one of the
-        # asked-for days, so the fetch stops after Sunday the 16th.
-        assert fetch["end_datetime"].startswith("2026-08-17T00:00:00")
+        # Day-start to day-start: the venue's trading week, not civil days.
+        assert fetch["start_datetime"].startswith("2026-08-10T07:00:00")
+        assert fetch["end_datetime"].startswith("2026-08-17T07:00:00")
+
+    def test_pre_day_start_hours_belong_to_the_previous_trading_day(self):
+        # Saturday's 1am trade is Saturday's — Loaded's own daily figures
+        # attribute it that way; civil bucketing shifted $4.5k of a real
+        # Saturday onto Sunday (prod thread b9bda2c1, 23 Aug 2026).
+        api = Api(resolved=WEEK_WINDOW)
+        api.sales_rows = [
+            {"startTime": "2026-08-15T20:00:00+12:00", "invoices": 100.0},
+            {"startTime": "2026-08-16T01:00:00+12:00", "invoices": 40.0},
+        ]
+        out = run(
+            SALES,
+            api,
+            period="last week",
+            time_windows=[{"label": "All", "start_hour": 0, "end_hour": 24}],
+        )
+        rows = {r["period"]: r["All"] for r in out["rows"]}
+        assert rows == {"Saturday 15 Aug 2026": 140.0}
 
     def test_recurring_phrase_becomes_envelope_and_infers_the_weekday(self):
         api = Api(resolved=FRIDAYS)

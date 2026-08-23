@@ -277,7 +277,7 @@ class TestEngineNormToolsPublished:
     def test_call_sites_found(self):
         # The regex must keep matching the engine's call style — an empty set
         # would vacuously pass the real assertions below.
-        assert self._engine_actions() == {"review_invoices"}
+        assert self._engine_actions() == {"review_invoices", "resolve_dates"}
 
     def test_every_engine_norm_call_has_a_handler(self):
         from app.agents.internal_tools import get_handler

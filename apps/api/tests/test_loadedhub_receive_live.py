@@ -162,10 +162,9 @@ class TestLiveContract:
             monkeypatch.setattr(
                 IR,
                 "extract_invoice_copies_parallel",
-                lambda db_, lh_, reqs, **kw: [
-                    {"error": "stubbed in live transport test"}
-                ]
-                * len(reqs),
+                lambda db_, lh_, reqs, **kw: (
+                    [{"error": "stubbed in live transport test"}] * len(reqs)
+                ),
             )
             out = IR.review_invoices(db, cdb, venue_id, mode="approve_all")
 

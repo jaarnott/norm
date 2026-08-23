@@ -346,8 +346,14 @@ def _get_or_create_summary(older_messages: list, thread, db) -> str:
         db.flush()
 
         return f"[Conversation summary]\n{summary}"
-    except Exception:
-        logger.exception("LLM summarisation failed, using deterministic fallback")
+    except Exception as exc:
+        # Handled path, not an incident: we fall back to a deterministic summary,
+        # so the turn continues unaffected. Log it quietly (no traceback) so a
+        # non-JSON reply from the summariser LLM stops reading as an error in the
+        # logs — the most common case is a summary that came back as prose.
+        logger.warning(
+            "LLM summarisation failed (%s), using deterministic fallback", exc
+        )
         return _summarise_older_messages(older_messages)
 
 

@@ -5,11 +5,13 @@ Executive Chef manages recipes and menus in LoadedHub. This upserts its
 ``agent_connector_bindings`` for ``loadedhub`` (recipe reads + menu CRUD + a few
 stock-reference reads).
 
-The recipe **write** binding is deliberately left out: recipe writes go through
-the ``cook_brothers_app`` MCP connector (Loaded's own recipe-write API can't be
-authed from Norm), and that tool doesn't exist on the CB App yet. Add a
-``cook_brothers_app`` binding here once ``kitchen_save_recipe`` is discovered via
-``POST /api/connector-specs/cook_brothers_app/sync-mcp-tools``.
+Recipe **writes** are bound by a separate script (``sync_cb_recipe_write_binding.py``):
+they go through the ``cook_brothers_app`` MCP connector's
+``kitchen_loadedhub_update_recipe`` tool (Loaded's own recipe-write API can't be
+authed from Norm; the CB App resolves the venue from the authenticated connection).
+Stock-item **writes** (create/update item, a variant's unit, the default supplier
+variant) are added to the loadedhub spec by ``sync_stock_item_write_actions.py`` and
+bound here.
 
 The menu actions (list_menus/get_menu/create_menu/update_menu/delete_menu) are
 added to the loadedhub ConnectorSpec by ``sync_menu_actions.py`` — run that first
@@ -52,17 +54,30 @@ Today's date is {{today}}.
 You help hospitality venues manage their recipes and menus in LoadedHub.
 
 **Recipes** — read every recipe with its ingredients, quantities, units and
-versions. Edits open an interactive recipe editor card the user works in
-directly; saving pushes the change back to Loaded. You can also extract a draft
-recipe from an uploaded document (PDF, image, or Word) for the user to review.
+versions. Create a new recipe or edit an existing one and save it to Loaded
+directly (describe the change and let the user approve — a create needs a name, a
+yield unit and at least one line; an update needs the recipe's id and version_id
+from get_recipe_details). The interactive editor card is still available for
+hands-on editing, and you can extract a draft recipe from an uploaded document
+(PDF, image, or Word).
 
 **Menus** — read every menu with its sections and dishes. Create and update
 menus (sections, dishes, sell prices) back to Loaded. Each menu line references
 either a recipe or a stock item.
 
-When a tool returns a draft or an interactive editor card, hand it to the user
-and tell them what is waiting for them — never submit on their behalf; the
-user's click in the card is the approval.
+**Stock items** — read items, groups, units and suppliers, and write them:
+create a new stock item, or update an existing one's counting/ordering unit, a
+variant's unit, or which variant is a supplier's default. For an update, ALWAYS
+call get_stock_item_full first and resend the WHOLE item object changing only the
+field(s) you need — keep every supplier entry with its stockCode, description,
+unitCost and ratio. When you change a unit, also set its paired ratio (from
+get_stock_units). Keep exactly one defaultForSupplier=true per supplier. For a
+single variant-unit change, prefer update_variant_unit.
+
+When a tool returns an interactive editor card, hand it to the user and tell them
+what is waiting — the user's click in the card is the approval. For direct write
+tools (recipes, menus, stock items), describe the change and let the user approve
+it before it executes.
 """
 
 # loadedhub actions to bind. Recipe reads exist today; menu actions are added by
@@ -79,6 +94,13 @@ LOADEDHUB_ACTIONS = [
     "get_stock_items",
     "get_stock_item_groups",
     "get_stock_units",
+    "get_suppliers",
+    # Stock-item writes (see sync_stock_item_write_actions.py). get_stock_item_full
+    # is the pass-through read the agent uses before an update.
+    "get_stock_item_full",
+    "create_stock_item",
+    "update_stock_item",
+    "update_variant_unit",
 ]
 
 

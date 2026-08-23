@@ -25,6 +25,14 @@ def run(params, call_api, log, call_api_parallel):
     # explicit period_start/period_end remain the exact-dates path. A
     # recurring phrase ("every Friday for the last 12 weeks") resolves to
     # the matching days: the envelope (first..last) becomes the range and, when every resolved day lands on the same weekday, the day filter is filled in to match the phrase.
+    # When the period path resolves a window, the venue's day start rides
+    # along ("07:00"): fetches then run day-start to day-start and every
+    # hour before it belongs to the PREVIOUS trading day — Loaded's own
+    # daily figures attribute a Saturday's 1am trade to Saturday, and civil
+    # midnight bucketing under-reported that Saturday by $4.5k (prod thread
+    # b9bda2c1, 23 Aug 2026). Explicit period_start/period_end stay civil
+    # calendar days, documented as such.
+    day_start_hour = 0
     period = (params.get("period") or "").strip()
     if period and not (period_start and period_end):
         resolve_args = {"query": period}
@@ -39,6 +47,11 @@ def run(params, call_api, log, call_api_parallel):
         window = data.get("window") if isinstance(data, dict) else None
         periods = data.get("periods") if isinstance(data, dict) else None
         if isinstance(window, dict) and window.get("start"):
+            ds = str(window.get("day_start") or "")
+            try:
+                day_start_hour = int(ds[:2]) if ds else 0
+            except ValueError:
+                day_start_hour = 0
             period_start = str(window.get("start"))[:10]
             wend = str(window.get("end") or "")
             period_end = wend[:10]
@@ -166,10 +179,11 @@ def run(params, call_api, log, call_api_parallel):
     )
 
     api_calls = []
+    boundary = "T" + str(day_start_hour).zfill(2) + ":00:00"
     for m_start, m_end in months:
-        start_str = m_start.isoformat() + "T00:00:00" + tz_offset
+        start_str = m_start.isoformat() + boundary + tz_offset
         end_str = (
-            (m_end + datetime.timedelta(days=1)).isoformat() + "T00:00:00" + tz_offset
+            (m_end + datetime.timedelta(days=1)).isoformat() + boundary + tz_offset
         )
         api_calls.append(
             (
@@ -206,6 +220,11 @@ def run(params, call_api, log, call_api_parallel):
                 date_part = start_time_str[:10]
                 hour = int(start_time_str[11:13])
                 row_date = datetime.date.fromisoformat(date_part)
+                if hour < day_start_hour:
+                    # Before the venue's day start: this trade belongs to
+                    # the PREVIOUS trading day (a Saturday's 1am sales are
+                    # Saturday's, as Loaded's own daily figures report).
+                    row_date = row_date - datetime.timedelta(days=1)
             except (ValueError, IndexError):
                 continue
 

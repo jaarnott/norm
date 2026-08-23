@@ -34,13 +34,16 @@ EDIT_RECIPE = {
     "action": ACTION,
     "method": "GET",  # read path -> the handler's result becomes the working doc
     "description": (
-        "Edit the recipe the user has OPEN in the recipe editor. Prepares an "
-        "editable Recipe card — the SAME draft the page is showing — it does NOT "
-        "save to LoadedHub (the user presses Save on the card for that). Only "
-        "call this when the user asks to change the open recipe. Pass recipe_id "
-        "and venue_id EXACTLY as given in the 'Open Recipe' context, and put only "
-        "the fields you are changing in `changes`; they merge into the draft. "
-        "Address a line by its id or by a `match` on its name (e.g. 'salt')."
+        "Open a recipe as an editable Recipe card and apply changes to the draft. "
+        "Works from ANY page — if the recipe isn't already open it loads it, so "
+        "never tell the user to open a recipe first; call this and the card "
+        "appears. If the user has a recipe open ('Open Recipe' context), use that "
+        "recipe_id; otherwise use the id from get_all_recipes. It does NOT save "
+        "to LoadedHub (the user presses Save on the card for that). Put only the "
+        "fields you are changing in `changes`; they merge into the draft. Address "
+        "a line by its id or by a `match` on its name (e.g. 'salt'). You CAN "
+        "change a line's unit: set unit_id + unit_name (from the units read) and "
+        "give quantity in the NEW unit's display units."
     ),
     "required_fields": ["recipe_id", "venue_id", "changes"],
     "field_schema": {
@@ -62,6 +65,7 @@ EDIT_RECIPE = {
                 "name": {"type": "string", "description": "Rename the recipe."},
                 "notes": {"type": "string", "description": "Replace the method/notes."},
                 "yield_quantity": {"type": "number", "description": "Change the yield amount."},
+                "yield_unit_id": {"type": "string", "description": "Change the yield unit (id from the units read)."},
                 "lines": {
                     "type": "object",
                     "properties": {
@@ -82,10 +86,24 @@ EDIT_RECIPE = {
                                     },
                                     "set": {
                                         "type": "object",
-                                        "description": 'New values, e.g. {"quantity": 5}.',
+                                        "description": (
+                                            'New values, e.g. {"quantity": 5} or a unit change '
+                                            '{"unit_id": "...", "unit_name": "Each", "quantity": 8}.'
+                                        ),
                                         "properties": {
-                                            "quantity": {"type": "number"},
+                                            "quantity": {
+                                                "type": "number",
+                                                "description": "In the line's unit (the NEW unit if changing it).",
+                                            },
                                             "name": {"type": "string"},
+                                            "unit_id": {
+                                                "type": "string",
+                                                "description": "New unit id (from the units read).",
+                                            },
+                                            "unit_name": {
+                                                "type": "string",
+                                                "description": "New unit's name — set together with unit_id so the card shows it.",
+                                            },
                                         },
                                     },
                                 },
@@ -108,7 +126,17 @@ EDIT_RECIPE = {
                                 "Add lines. A real Save needs the item's ref_id and "
                                 "unit_id, so only add when you have them."
                             ),
-                            "items": {"type": "object"},
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"type": "string", "enum": ["item", "recipe"]},
+                                    "name": {"type": "string", "description": "Item/sub-recipe name."},
+                                    "ref_id": {"type": "string", "description": "Stock item or sub-recipe id."},
+                                    "unit_id": {"type": "string", "description": "Unit id (from the units read)."},
+                                    "unit_name": {"type": "string", "description": "Unit name, so the card shows it."},
+                                    "quantity": {"type": "number", "description": "In the unit's display units."},
+                                },
+                            },
                         },
                     },
                 },

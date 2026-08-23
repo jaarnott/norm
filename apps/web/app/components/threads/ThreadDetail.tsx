@@ -438,8 +438,12 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
 }) {
   return (
     <>
-      {loading && task.thinking_steps && task.thinking_steps.length > 0 && (
-        <ThinkingSteps steps={task.thinking_steps} isStreaming={loading} />
+      {/* Show the working strip while this tab is streaming (loading) OR when the
+          thread's turn is still running server-side (in_progress) — the latter is
+          an open thread being polled after its send's stream was cut (e.g. mobile
+          screen-lock), so it must read as "working", not stuck. */}
+      {(loading || task.status === 'in_progress') && task.thinking_steps && task.thinking_steps.length > 0 && (
+        <ThinkingSteps steps={task.thinking_steps} isStreaming={loading || task.status === 'in_progress'} />
       )}
       {/* Tool call history — admin only */}
       {isAdmin && task.tool_calls && task.tool_calls.filter(tc => tc.status === 'executed' || tc.status === 'failed').length > 0 &&
