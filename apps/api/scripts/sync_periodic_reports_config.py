@@ -36,7 +36,11 @@ PERIOD_FD = (
     "last 12 weeks'. Norm resolves it against this venue's calendar; prefer "
     "this over period_start/period_end and never work out dates yourself."
 )
-START_FD = "Exact start date YYYY-MM-DD — only when the user gave exact dates."
+START_FD = (
+    "Exact start date YYYY-MM-DD — only when the user gave exact dates. "
+    "Explicit dates are CIVIL calendar days (midnight boundaries); pass "
+    "period instead for the venue's trading days."
+)
 END_FD = "Exact end date YYYY-MM-DD, same rule as period_start."
 
 #: action → (required fields kept, extra note for recurring phrases)

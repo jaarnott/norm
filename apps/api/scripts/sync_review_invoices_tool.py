@@ -1,4 +1,7 @@
-"""Sync the norm.review_invoices function into the `norm` ConnectorSpec.
+"""Sync the engine-only norm.* functions into the `norm` ConnectorSpec.
+
+Covers norm.review_invoices (the review consolidator's one call) and
+norm.invoice_copy_evidence (the reconcile consolidator's one call).
 
 The review consolidator's ONE call: batch replica review server-side
 (app/services/invoice_review.py) — extraction, replica, suggestions,
@@ -19,7 +22,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-TOOL = {
+REVIEW_TOOL = {
     "action": "review_invoices",
     "method": "POST",
     "description": (
@@ -52,6 +55,30 @@ TOOL = {
     "read_only": False,
 }
 
+# Reconciliation's ONE call into the receive side. A READ: it returns what the
+# receive flow already extracted for each invoice and reads fresh only what is
+# missing, using the same PDF_SCHEMA and per-supplier spec instructions so the
+# cache row is shared rather than paid for twice.
+EVIDENCE_TOOL = {
+    "action": "invoice_copy_evidence",
+    "method": "GET",
+    "description": (
+        "[engine-only] What each invoice COPY says — the header Norm already "
+        "extracted on the receive side, reading fresh only what is missing. "
+        "Called by reconcile_received_invoices via call_api; not bound to any "
+        "agent."
+    ),
+    "required_fields": ["invoices"],
+    "optional_fields": ["venue", "venue_id"],
+    "field_descriptions": {
+        "venue": "Venue name (resolved to an id); or pass venue_id directly.",
+        "invoices": "List of {id, fileId?, supplierName?, purchaseOrderNumber?}.",
+    },
+    "read_only": True,
+}
+
+TOOLS = [REVIEW_TOOL, EVIDENCE_TOOL]
+
 
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
@@ -67,15 +94,16 @@ def main(dry_run: bool = False) -> None:
         raise SystemExit("norm ConnectorSpec not found in config DB")
 
     tools = list(spec.tools or [])
-    by_action = {t.get("action"): i for i, t in enumerate(tools)}
     changed = []
-    if TOOL["action"] in by_action:
-        if tools[by_action[TOOL["action"]]] != TOOL:
-            tools[by_action[TOOL["action"]]] = TOOL
-            changed.append(f"updated tool {TOOL['action']}")
-    else:
-        tools.append(TOOL)
-        changed.append(f"added tool {TOOL['action']}")
+    for tool in TOOLS:
+        by_action = {t.get("action"): i for i, t in enumerate(tools)}
+        if tool["action"] in by_action:
+            if tools[by_action[tool["action"]]] != tool:
+                tools[by_action[tool["action"]]] = tool
+                changed.append(f"updated tool {tool['action']}")
+        else:
+            tools.append(tool)
+            changed.append(f"added tool {tool['action']}")
 
     if not changed:
         print("Already in sync.")

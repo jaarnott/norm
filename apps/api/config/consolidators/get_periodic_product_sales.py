@@ -29,6 +29,10 @@ def run(params, call_api, log, call_api_parallel):
     # explicit period_start/period_end remain the exact-dates path. A
     # recurring phrase ("every Friday for the last 12 weeks") resolves to
     # the matching days: the envelope (first..last) becomes the range and, when every resolved day lands on the same weekday, the day filter is filled in to match the phrase.
+    # Resolved-period fetches run day-start to day-start so period totals
+    # match the venue's trading days (a Saturday's 1am trade is Saturday's);
+    # explicit dates stay civil calendar days.
+    day_start_hour = 0
     period = (params.get("period") or "").strip()
     if period and not (period_start and period_end):
         resolve_args = {"query": period}
@@ -43,6 +47,11 @@ def run(params, call_api, log, call_api_parallel):
         window = data.get("window") if isinstance(data, dict) else None
         periods = data.get("periods") if isinstance(data, dict) else None
         if isinstance(window, dict) and window.get("start"):
+            ds = str(window.get("day_start") or "")
+            try:
+                day_start_hour = int(ds[:2]) if ds else 0
+            except ValueError:
+                day_start_hour = 0
             period_start = str(window.get("start"))[:10]
             wend = str(window.get("end") or "")
             period_end = wend[:10]
@@ -164,9 +173,10 @@ def run(params, call_api, log, call_api_parallel):
 
     api_calls = []
     for m_start, m_end in months:
-        start_str = m_start.isoformat() + "T00:00:00" + tz_offset
+        boundary = "T" + str(day_start_hour).zfill(2) + ":00:00"
+        start_str = m_start.isoformat() + boundary + tz_offset
         end_str = (
-            (m_end + datetime.timedelta(days=1)).isoformat() + "T00:00:00" + tz_offset
+            (m_end + datetime.timedelta(days=1)).isoformat() + boundary + tz_offset
         )
         api_calls.append(
             (

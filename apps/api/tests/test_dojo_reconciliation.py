@@ -24,7 +24,9 @@ class TestGroundTruthViolations:
     def test_discount_is_subtracted_from_the_total_identity(self):
         # subtotal 1000 + tax 150 - discount 100 == total 1050 → reconciles.
         # (Without discount-awareness this would falsely flag 1150 != 1050.)
-        assert _ground_truth_violations(_doc(1000.0, 150.0, 1050.0, discount=100.0)) == []
+        assert (
+            _ground_truth_violations(_doc(1000.0, 150.0, 1050.0, discount=100.0)) == []
+        )
 
     def test_non_reconciling_total_is_flagged(self):
         out = _ground_truth_violations(_doc(1212.35, 182.59, 1399.88, discount=156.38))
@@ -46,7 +48,9 @@ class TestSampleStatus:
         assert _sample_status(None, [], _doc(1000.0, 150.0, 1150.0)) == "new"
 
     def test_baseline_mismatch_fails(self):
-        assert _sample_status({}, [{"field": "x"}], _doc(1000.0, 150.0, 1150.0)) == "fail"
+        assert (
+            _sample_status({}, [{"field": "x"}], _doc(1000.0, 150.0, 1150.0)) == "fail"
+        )
 
     def test_clean_and_reconciling_passes(self):
         assert _sample_status({}, [], _doc(1000.0, 150.0, 1150.0)) == "pass"

@@ -411,10 +411,21 @@ def run(params, call_api, log, call_api_parallel=None):
             ],
         },
     )
-    evidence = (ev or {}).get("data") if isinstance(ev, dict) else None
-    if not isinstance(evidence, dict):
+    # call_api returns the handler's `data` ALREADY unwrapped — see
+    # function_executor._do_api_call: `return handler_result.get("data")`.
+    # Reading .get("data") again found nothing, so every copy reported as
+    # unreadable while the tests passed: their fake returned the HANDLER's
+    # {"success", "data"} shape rather than what the sandbox actually hands in.
+    # The sibling consolidator's norm.review_invoices call reads its result
+    # flat; match it. On failure call_api yields {"error": ...}.
+    if isinstance(ev, dict) and not ev.get("error"):
+        evidence = ev
+    else:
         evidence = {}
-        log("Could not read the invoice copies: " + str((ev or {}).get("error")))
+        log(
+            "Could not read the invoice copies: "
+            + str(ev.get("error") if isinstance(ev, dict) else ev)
+        )
 
     by_statement = {}  # statement id -> {"statement": s, "items": [inv...], "verdicts": []}
     orphans = {}  # supplierId -> {"supplier": name, "passing": [], "failing": []}

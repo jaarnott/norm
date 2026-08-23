@@ -199,6 +199,33 @@ class TestConsultingBeatsBeingReplaced:
 
         assert thread.domain == "reports"
 
+    def test_write_work_hands_over_even_when_consulting_is_possible(
+        self, db_session, admin_user, monkeypatch, no_quota_check, stub_loop, roster
+    ):
+        """Consulting is read-only, so it only substitutes for a hand-over when
+        reading is enough. On 20 Aug 2026 (thread bb7010c3) a recipe/stock WRITE
+        workflow was pinned on an agent because it could consult the right one —
+        but a consult can never perform the write, so the thread was stranded on
+        an agent without the tools, which then told the user its earlier (real)
+        writes had never happened."""
+        thread = _reports_thread(db_session, admin_user)
+        _followup(
+            monkeypatch,
+            domain="time_attendance",
+            is_request=True,
+            target_writes=True,
+        )
+
+        _run(
+            db_session,
+            admin_user,
+            monkeypatch,
+            "add a shift for Sam on Friday 5pm to close",
+            thread=thread,
+        )
+
+        assert thread.domain == "time_attendance"
+
     def test_an_agent_that_cannot_consult_still_hands_over(
         self, db_session, admin_user, monkeypatch, no_quota_check, stub_loop, roster
     ):

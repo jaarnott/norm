@@ -56,6 +56,14 @@ BUDGET_NOTE = (
     "each budget is FOR) alongside the sales figures."
 )
 
+DAILY_NOTE = (
+    "\n\nFor daily figures always pass `period` in plain English to the "
+    "sales tools — they align each day to the venue's trading day (a "
+    "Saturday's 1am trade counts as Saturday). Never pass explicit "
+    "period_start/period_end for day-by-day comparisons: those are civil "
+    "calendar days and misattribute late-night trade."
+)
+
 
 def _swap_text(text: str) -> str:
     for old, new in SWAPS.items():
@@ -96,6 +104,8 @@ def main(dry_run: bool = False) -> None:
             new_ins = _swap_text(ins)
             if slug in ADD_BUDGETS and "get_budgets" not in new_ins:
                 new_ins = new_ins.rstrip() + BUDGET_NOTE
+            if slug in ADD_BUDGETS and "trading day (a" not in new_ins:
+                new_ins = new_ins.rstrip() + DAILY_NOTE
             if new_ins != ins:
                 if not dry_run:
                     pb.instructions = new_ins
