@@ -244,6 +244,30 @@ class TestPlaybookToolFilter:
         assert check_playbook_tool_filter("p", None, self.KNOWN) == []
         assert check_playbook_tool_filter("p", [], self.KNOWN) == []
 
+    def test_engine_only_entry_is_flagged_not_silently_dropped(self):
+        # It exists on the spec, so the exists-somewhere check passes — but
+        # agents can never see it, so the filter entry vanishes. This is how
+        # the sales playbooks lost their data tools when the raws were
+        # demoted (prod thread b9bda2c1, 23 Aug 2026).
+        issues = check_playbook_tool_filter(
+            "sales_comparison",
+            ["get_sales_data"],
+            {"get_sales_data", "get_sales_for_period"},
+            engine_only_actions={"get_sales_data"},
+        )
+        assert len(issues) == 1
+        assert "engine-only" in issues[0].problem
+        assert "silently dropped" in issues[0].problem
+
+    def test_visible_action_passes_with_engine_only_set_present(self):
+        issues = check_playbook_tool_filter(
+            "sales_comparison",
+            ["get_sales_for_period"],
+            {"get_sales_data", "get_sales_for_period"},
+            engine_only_actions={"get_sales_data"},
+        )
+        assert issues == []
+
 
 class TestBindingCapabilities:
     """A bare-string capability entry 500s the Agents tab and breaks tool

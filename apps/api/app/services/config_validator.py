@@ -299,12 +299,21 @@ def check_binding_capabilities(
 
 
 def check_playbook_tool_filter(
-    playbook_slug: str, tool_filter: list | None, known_actions: set[str]
+    playbook_slug: str,
+    tool_filter: list | None,
+    known_actions: set[str],
+    engine_only_actions: set[str] | None = None,
 ) -> list[ConfigIssue]:
-    """Every action a playbook's tool_filter names must exist on some spec.
+    """Every action a playbook's tool_filter names must exist on some spec
+    AND be agent-visible.
 
     A stale name silently strips the tool from the agent, so the playbook's
-    instructions reference a capability the agent no longer has.
+    instructions reference a capability the agent no longer has. An
+    engine_only action is just as fatal and MORE deceptive: it exists on the
+    spec, so the old exists-somewhere check passed while the filter entry
+    silently dropped — how the sales playbooks lost their data tools when
+    the raw reads were demoted to consolidator backends (prod thread
+    b9bda2c1, 23 Aug 2026: "I don't have a budget data source").
     """
     issues: list[ConfigIssue] = []
     for entry in tool_filter or []:
@@ -316,6 +325,21 @@ def check_playbook_tool_filter(
                     where=f"playbook.{playbook_slug}",
                     problem=f"tool_filter names '{entry}' which no connector defines",
                     fix="Fix or remove the entry in Settings → Playbooks.",
+                )
+            )
+        elif engine_only_actions and bare in engine_only_actions:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"playbook.{playbook_slug}",
+                    problem=(
+                        f"tool_filter names '{entry}', an engine-only backend "
+                        "agents can never see — the entry is silently dropped"
+                    ),
+                    fix=(
+                        "Replace it with the consolidator that superseded it "
+                        "in Settings → Playbooks."
+                    ),
                 )
             )
     return issues
@@ -478,6 +502,7 @@ def validate_config(db=None, config_db=None) -> dict:
 
     try:
         known_actions: set[str] = set()
+        engine_only_actions: set[str] = set()
         for spec in config_db.query(ConnectorSpec).all():
             issues.extend(
                 check_connector_tools(
@@ -487,11 +512,16 @@ def validate_config(db=None, config_db=None) -> dict:
             for tool in spec.tools or []:
                 if isinstance(tool, dict) and tool.get("action"):
                     known_actions.add(tool["action"])
+                    if tool.get("engine_only"):
+                        engine_only_actions.add(tool["action"])
 
         for playbook in config_db.query(Playbook).all():
             issues.extend(
                 check_playbook_tool_filter(
-                    playbook.slug, playbook.tool_filter, known_actions
+                    playbook.slug,
+                    playbook.tool_filter,
+                    known_actions,
+                    engine_only_actions,
                 )
             )
 
