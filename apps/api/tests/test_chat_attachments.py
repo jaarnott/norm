@@ -105,6 +105,66 @@ class TestBuildContentBlock:
             A.build_content_block(b"\x00\x01", "application/x-msdownload", "a.exe")
 
 
+def _jpeg_bytes(w, h, *, quality=95, exif_orientation=None):
+    import os
+
+    from PIL import Image
+
+    img = Image.frombytes("RGB", (w, h), os.urandom(w * h * 3))
+    buf = io.BytesIO()
+    kw = {"format": "JPEG", "quality": quality}
+    if exif_orientation is not None:
+        exif = img.getexif()
+        exif[0x0112] = exif_orientation
+        kw["exif"] = exif
+    img.save(buf, **kw)
+    return buf.getvalue()
+
+
+class TestImageNormalization:
+    """A large phone photo must be shrunk to fit Anthropic's per-image limits
+    before it becomes a block, or the whole Messages request fails (prod thread
+    eb83d8f0: a 7.78MB JPEG killed the turn before any model call)."""
+
+    def test_large_image_is_downscaled_under_limits(self):
+        from PIL import Image
+
+        big = _jpeg_bytes(3000, 2000)
+        assert len(big) > 5_000_000  # the failing shape
+        out, media = A.normalize_image_for_anthropic(big, "image/jpeg")
+        assert len(out) < 5_000_000
+        assert max(Image.open(io.BytesIO(out)).size) <= 1568
+        assert media == "image/jpeg"
+
+    def test_small_in_bounds_image_is_untouched(self):
+        small = _jpeg_bytes(800, 600)
+        out, media = A.normalize_image_for_anthropic(small, "image/jpeg")
+        assert out == small  # no needless recompression
+        assert media == "image/jpeg"
+
+    def test_exif_orientation_is_baked_in(self):
+        from PIL import Image
+
+        rotated = _jpeg_bytes(400, 200, exif_orientation=6)  # 90° CW
+        out, _ = A.normalize_image_for_anthropic(rotated, "image/jpeg")
+        assert out != rotated
+        im = Image.open(io.BytesIO(out))
+        assert im.size == (200, 400)  # dimensions swapped → upright
+        assert im.getexif().get(0x0112, 1) == 1  # orientation cleared
+
+    def test_corrupt_image_returns_original_without_raising(self):
+        junk = b"\x00\x01 not an image"
+        out, media = A.normalize_image_for_anthropic(junk, "image/jpeg")
+        assert out == junk  # degrades gracefully, never crashes the turn
+
+    def test_build_content_block_shrinks_a_large_image(self):
+        import base64
+
+        blk = A.build_content_block(_jpeg_bytes(3000, 2000), "image/jpeg", "p.jpg")
+        assert blk["type"] == "image"
+        assert len(base64.b64decode(blk["source"]["data"])) < 5_000_000
+
+
 class TestLinkAndManifest:
     def test_link_stamps_thread_and_returns_refs(self, db_session, admin_user):
         thread = _make_thread(db_session, admin_user)

@@ -66,6 +66,13 @@ _TEXT_EXTS = {
 #: context window.
 _MAX_TEXT_CHARS = 200_000
 
+#: Anthropic rejects any single image over ~5MB and treats ~1568px as the largest
+#: useful long edge. A raw phone photo (prod thread eb83d8f0, 24 Aug 2026: a 7.78MB
+#: PXL_*.jpg) blows past both and fails the whole request. We normalise images to
+#: sit inside these limits before sending — the same thing claude.ai does.
+_IMAGE_MAX_EDGE = 1568
+_IMAGE_MAX_BYTES = 4_500_000  # safety margin under Anthropic's ~5MB per-image cap
+
 
 def _ext(filename: str | None) -> str:
     if filename and "." in filename:
@@ -145,6 +152,77 @@ def _extract_pptx(data: bytes) -> str:
     return "\n".join(out)
 
 
+def _encode_jpeg(img) -> bytes:
+    """Flatten to RGB and JPEG-encode. Starts at high quality (q90 — the size after
+    downscaling to 1568px is tiny, so fidelity is nearly free) and only steps down if
+    an unusually busy image would exceed the byte cap."""
+    rgb = img.convert("RGB")
+    buf = io.BytesIO()
+    for quality in (90, 80, 70, 55):
+        buf.seek(0)
+        buf.truncate(0)
+        rgb.save(buf, format="JPEG", quality=quality, optimize=True)
+        if buf.tell() <= _IMAGE_MAX_BYTES:
+            break
+    return buf.getvalue()
+
+
+def normalize_image_for_anthropic(
+    data: bytes, content_type: str | None
+) -> tuple[bytes, str]:
+    """Downscale / re-encode an image so it fits Anthropic's per-image limits.
+
+    Anthropic rejects a single image over ~5MB and treats ~1568px as the largest
+    useful long edge; a raw phone photo blows past both and fails the whole Messages
+    request. This mirrors what claude.ai does for you: fix EXIF orientation, downscale
+    the long edge to 1568px, and re-encode so the bytes land under the cap. Small,
+    in-bounds, correctly-oriented images are returned untouched.
+
+    Returns ``(bytes, media_type)``. Never raises — on any failure it logs and returns
+    the original bytes, so behaviour is no worse than before.
+    """
+    ct = (content_type or "").split(";")[0].strip().lower()
+    try:
+        from PIL import Image, ImageOps
+
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        # Phones bake rotation into EXIF orientation (tag 0x0112), which Anthropic
+        # ignores. Detect it from the tag (a value other than 1) — reading it here
+        # is reliable across Pillow versions, unlike checking exif_transpose's return.
+        try:
+            orientation = img.getexif().get(0x0112, 1)
+        except Exception:
+            orientation = 1
+        reoriented = orientation not in (0, 1)
+        img = ImageOps.exif_transpose(img) or img  # no-op when orientation is 1
+
+        oversized = max(img.size) > _IMAGE_MAX_EDGE or len(data) > _IMAGE_MAX_BYTES
+        if not oversized and not reoriented:
+            return data, ct or "image/jpeg"
+
+        if max(img.size) > _IMAGE_MAX_EDGE:
+            # LANCZOS is the highest-quality downscaling filter — worth it since we
+            # only do this once per image and detail matters (comparing two dishes).
+            img.thumbnail((_IMAGE_MAX_EDGE, _IMAGE_MAX_EDGE), Image.LANCZOS)
+
+        has_alpha = img.mode in ("RGBA", "LA") or (
+            img.mode == "P" and "transparency" in img.info
+        )
+        if has_alpha:
+            buf = io.BytesIO()
+            img.convert("RGBA").save(buf, format="PNG", optimize=True)
+            if buf.tell() <= _IMAGE_MAX_BYTES:
+                return buf.getvalue(), "image/png"
+            # Transparent but still too big — flatten to JPEG (loses alpha).
+        return _encode_jpeg(img), "image/jpeg"
+    except Exception:
+        logger.warning(
+            "image normalise failed (type=%s) — sending original", ct, exc_info=True
+        )
+        return data, ct or "application/octet-stream"
+
+
 def build_content_block(
     data: bytes, content_type: str | None, filename: str | None
 ) -> dict:
@@ -157,6 +235,10 @@ def build_content_block(
     kind, ct = _kind(content_type, filename)
     name = filename or "file"
     if kind == "native":
+        if ct.startswith("image/"):
+            # Fit the image inside Anthropic's per-image limits (a large phone photo
+            # would otherwise fail the whole request).
+            data, ct = normalize_image_for_anthropic(data, ct)
         b64 = base64.b64encode(data).decode()
         return {
             "type": "image" if ct.startswith("image/") else "document",
