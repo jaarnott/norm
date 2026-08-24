@@ -8,11 +8,13 @@ already config (``sync_stock_item_minimums_action.py``); these are the matching
 writes. Confirmed live that OAuth is authorised to write there (a PUT to
 ``/items/{id}`` reaches processing rather than 403, unlike recipes which are 403).
 
-The writes are POST/PUT/PATCH with ``read_only=false``; the body is the full object
-the agent passes (a ``{{ obj | tojson }}`` passthrough), exactly like the menu
-write actions (``sync_menu_actions.py``). They ride Norm's existing
-describe->approve->execute write flow — no app code. Bind them to an agent with
-``sync_executive_chef_agent.py``.
+The writes here are create_stock_item (POST) and update_variant_unit (PATCH),
+riding Norm's existing describe->approve->execute write flow — no app code.
+Item UPDATES are NOT defined here: ``update_stock_item`` is the server-merge
+consolidator (sync_stock_item_consolidators.py — the model sends deltas, never
+the whole object) and the full-item read is ``get_stock_items`` with
+detail='full' (get_stock_item_full stays an engine-only backend). Bind these to
+an agent with ``sync_executive_chef_agent.py``.
 
 Idempotent — safe to re-run. The config DB is shared across every environment, so
 committing reaches production. Dry-run first.
@@ -36,67 +38,6 @@ _HEADERS = {
 }
 
 TOOLS = [
-    {
-        "action": "get_stock_item_full",
-        "description": (
-            "The COMPLETE stock item as Loaded stores it — every field plus its "
-            "suppliers[] variants (each variant's id, supplierId, stockCode, "
-            "unitId, unitCost, brandId, defaultForSupplier, description). Call this "
-            "BEFORE update_stock_item so you can send the whole item back unchanged "
-            "except your one edit. Read-only."
-        ),
-        "method": "GET",
-        "path_template": "//api.loadedhub.com/1.0/stock/internal/items/{{ item_id }}",
-        "headers": dict(_HEADERS),
-        "required_fields": ["item_id"],
-        "field_mapping": {"item_id": "item_id"},
-        "field_descriptions": {
-            "item_id": "The stock item's id (GUID, from get_stock_items)."
-        },
-        "request_body_template": "",
-        "success_status_codes": [200],
-        "response_ref_path": "",
-        "timeout_seconds": 30,
-        "response_transform": None,  # pass-through: keep every field for the round-trip
-        "read_only": True,
-    },
-    {
-        "action": "update_stock_item",
-        "description": (
-            "Update a stock item by PUTting the WHOLE item back. First call "
-            "get_stock_item_full, change ONLY the field(s) you need in the returned "
-            "object, then pass that COMPLETE object as `item` (keep every other "
-            "field, and keep every entry in suppliers[] with its "
-            "stockCode/description/unitCost/brandId). To change the counting unit "
-            "set countingUnitId AND countingUnitRatio (the unit's ratio from "
-            "get_stock_units); for the ordering unit set orderingUnitId AND "
-            "orderingUnitRatio. To change which variant is the supplier's default, "
-            "set defaultForSupplier:true on that one suppliers[] entry and false on "
-            "EVERY other entry with the same supplierId (exactly one true per "
-            "supplier). This is a write — describe it and let the user approve."
-        ),
-        "method": "PUT",
-        "path_template": "//api.loadedhub.com/1.0/stock/internal/items/{{ item_id }}",
-        "headers": dict(_HEADERS),
-        "required_fields": ["item_id", "item"],
-        "field_mapping": {"item_id": "item_id", "item": "item"},
-        "field_descriptions": {
-            "item_id": "The stock item's id (GUID).",
-            "item": (
-                "The COMPLETE stock item object from get_stock_item_full with your "
-                "edit applied — include id, name, groupId, unitType, countingUnitId, "
-                "countingUnitRatio, orderingUnitId, orderingUnitRatio, "
-                "defaultSupplierId, itemType, and the full suppliers[] array "
-                "unchanged except the field you are editing."
-            ),
-        },
-        "request_body_template": "{{ item | tojson }}",
-        "success_status_codes": [200],
-        "response_ref_path": "",
-        "timeout_seconds": 30,
-        "response_transform": None,
-        "read_only": False,
-    },
     {
         "action": "create_stock_item",
         "description": (
@@ -128,7 +69,8 @@ TOOLS = [
         "action": "update_variant_unit",
         "description": (
             "Change ONE supplier variant's unit. variant_id is the id of the "
-            "suppliers[] entry (from get_stock_item_full); unit_id is the new unit "
+            "suppliers[] entry (from get_stock_items — the summary lists each "
+            "variant_id); unit_id is the new unit "
             "(from get_stock_units). Use this for a single variant-unit change "
             "instead of a whole-item PUT. This is a write — human-approved."
         ),
