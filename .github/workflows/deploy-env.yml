@@ -32,13 +32,28 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      # A migration that FAILS must fail the deploy. This step used to end in
+      # `|| echo "Migration job not found — skipping"`, which swallowed every
+      # failure, not just a missing job. Production migrations then failed
+      # silently for three days after the database was moved during the August
+      # cost cuts (the job's DATABASE_URL_DIRECT still pointed at the stopped
+      # instance) — three revisions went unapplied while every deploy reported
+      # green, and the code that needed those tables shipped without them.
+      #
+      # So: a missing job is still tolerated (not every environment has one),
+      # but only after asking whether it exists. Anything else stops the line.
       - name: Run database migrations
         run: |
+          set -euo pipefail
+          if ! gcloud run jobs describe norm-migrate-${{ inputs.environment }} \
+                 --region "$REGION" --project ${{ vars.GCP_PROJECT_ID }} >/dev/null 2>&1; then
+            echo "No norm-migrate-${{ inputs.environment }} job — skipping migrations."
+            exit 0
+          fi
           gcloud run jobs execute norm-migrate-${{ inputs.environment }} \
-            --region $REGION \
+            --region "$REGION" \
             --project ${{ vars.GCP_PROJECT_ID }} \
-            --wait \
-            2>&1 || echo "Migration job not found — skipping (migrations run via Cloud SQL proxy)"
+            --wait
 
       - name: Deploy API to Cloud Run
         run: |
