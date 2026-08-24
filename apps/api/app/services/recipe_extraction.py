@@ -68,6 +68,15 @@ def extract_recipe(
     from app.services.invoice_extraction import extraction_system_prompt
 
     is_image = ct.startswith("image/")
+    if is_image:
+        # Fit a large photo inside Anthropic's per-image limits, same as the chat
+        # path — a raw phone photo would otherwise fail the extraction request.
+        import base64
+
+        from app.services.attachments import normalize_image_for_anthropic
+
+        raw, ct = normalize_image_for_anthropic(base64.b64decode(content_b64), ct)
+        content_b64 = base64.b64encode(raw).decode()
     block = {
         "type": "image" if is_image else "document",
         "source": {"type": "base64", "media_type": ct, "data": content_b64},
