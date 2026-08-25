@@ -24,17 +24,19 @@ import sys
 
 sys.path.insert(0, ".")
 
-#: connector → {raw action: superseding consolidator}
+#: connector → {raw action: superseding consolidator}. Kept at CURRENT
+#: doctrine (the sales family's front is get_sales since 24 Aug 2026), so
+#: a replay never writes a retired name into a description.
 DEMOTIONS: dict[str, dict[str, str]] = {
     "loadedhub": {
-        "get_sales_data": "get_sales_for_period",
+        "get_sales_data": "get_sales",
         "get_cogs_detail": "get_cogs_detail_for_period",
         "get_completed_stocktakes": "get_completed_stocktakes_for_period",
-        "get_pos_discounts": "get_pos_discounts_for_period",
+        "get_pos_discounts": "get_sales",
         "get_pos_orders": "get_pos_orders_for_period",
         "get_roster_vs_actual": "get_roster_vs_actual_for_period",
-        "get_staff_orders": "get_staff_orders_for_period",
-        "get_staff_item_orders": "get_staff_item_orders_for_period",
+        "get_staff_orders": "get_sales",
+        "get_staff_item_orders": "get_sales",
     },
 }
 

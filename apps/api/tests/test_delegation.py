@@ -50,7 +50,7 @@ def seeded_specs(db_session):
         {"action": a, "method": "GET", "read_only": False} for _, a in GET_BUT_MUTATES
     ] + [
         {"action": "get_roster", "method": "GET", "read_only": True},
-        {"action": "get_sales_for_period", "method": "GET", "read_only": True},
+        {"action": "get_sales", "method": "GET", "read_only": True},
         {"action": "update_shift", "method": "PUT", "read_only": False},
         # Flagged read-only but not a GET: contradictory config must fail closed.
         {"action": "sneaky_write", "method": "POST", "read_only": True},
@@ -87,7 +87,7 @@ class TestReadOnlyBoundary:
     def test_safe_reads_do_reach_a_child(self, db_session, seeded_specs):
         allowed = D.read_only_actions(db_session)
         assert "get_roster" in allowed
-        assert "get_sales_for_period" in allowed
+        assert "get_sales" in allowed
 
     def test_missing_flag_fails_closed(self):
         """An action nobody has classified is not consultable."""

@@ -24,12 +24,15 @@ import sys
 
 sys.path.insert(0, ".")
 
-#: raw → date-safe twin (order irrelevant; regex guards handle substrings).
+#: raw → date-safe replacement (order irrelevant; regex guards handle
+#: substrings). Kept at CURRENT doctrine so a replay can never write a
+#: retired name into a filter: the whole sales family now maps to
+#: get_sales (24 Aug 2026 — see sync_sales_config.py).
 SWAPS = {
-    "get_sales_data": "get_sales_for_period",
-    "get_pos_item_sales": "get_pos_item_sales_for_period",
-    "get_staff_orders": "get_staff_orders_for_period",
-    "get_staff_item_orders": "get_staff_item_orders_for_period",
+    "get_sales_data": "get_sales",
+    "get_pos_item_sales": "get_sales",
+    "get_staff_orders": "get_sales",
+    "get_staff_item_orders": "get_sales",
     "get_cogs_detail": "get_cogs_detail_for_period",
     "get_completed_stocktakes": "get_completed_stocktakes_for_period",
     "get_roster": "get_roster_for_period",

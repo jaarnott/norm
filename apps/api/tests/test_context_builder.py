@@ -369,14 +369,14 @@ class TestToolResultManifest:
         rows = [
             _make_tool_call(
                 "tu_01ABC",
-                "loadedhub__get_sales_for_period",
+                "loadedhub__get_sales",
                 {"period": "yesterday", "venue": "La Zeppa"},
                 {"window": {}, "data": [{"x": 1}, {"x": 2}]},
             )
         ]
         out = build_tool_result_manifest(MagicMock(), _db_returning(rows))
         assert "tu_01ABC" in out
-        assert "loadedhub__get_sales_for_period" in out
+        assert "loadedhub__get_sales" in out
         assert "period=yesterday" in out
         assert "2 rows" in out
         assert "norm__search_tool_result" in out

@@ -188,7 +188,7 @@ class TestAuthFailurePropagates:
                 oauth_config={"token_url": "x"},
                 tools=[
                     {
-                        "action": "get_sales_for_period",
+                        "action": "get_sales",
                         "method": "GET",
                         "path_template": "/sales",
                     }
@@ -204,9 +204,9 @@ class TestAuthFailurePropagates:
             id=str(uuid.uuid4()),
             thread_id=thread.id,
             iteration=1,
-            tool_name="loadedhub__get_sales_for_period",
+            tool_name="loadedhub__get_sales",
             connector_name="loadedhub",
-            action="get_sales_for_period",
+            action="get_sales",
             method="GET",
             status="pending",
             input_params={},

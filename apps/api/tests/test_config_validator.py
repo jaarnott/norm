@@ -252,7 +252,7 @@ class TestPlaybookToolFilter:
         issues = check_playbook_tool_filter(
             "sales_comparison",
             ["get_sales_data"],
-            {"get_sales_data", "get_sales_for_period"},
+            {"get_sales_data", "get_sales"},
             engine_only_actions={"get_sales_data"},
         )
         assert len(issues) == 1
@@ -262,8 +262,8 @@ class TestPlaybookToolFilter:
     def test_visible_action_passes_with_engine_only_set_present(self):
         issues = check_playbook_tool_filter(
             "sales_comparison",
-            ["get_sales_for_period"],
-            {"get_sales_data", "get_sales_for_period"},
+            ["get_sales"],
+            {"get_sales_data", "get_sales"},
             engine_only_actions={"get_sales_data"},
         )
         assert issues == []

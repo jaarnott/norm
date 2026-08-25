@@ -59,13 +59,11 @@ FUNCTION_CODE_PATH = (
 
 # (new action, wrapped action, start param, end param, what it returns)
 WRAPPED = [
-    (
-        "get_sales_for_period",
-        "get_sales_data",
-        "start_datetime",
-        "end_datetime",
-        "Sales totals broken down by interval",
-    ),
+    # The sales tool left this family entirely (24 Aug 2026): get_sales
+    # (config/consolidators/get_sales.py, installed by
+    # scripts/sync_sales_config.py) owns every sales cut — totals, daily,
+    # items, staff, discounts, clock windows, budget/last-year joins. Do
+    # not re-add a sales wrapper here.
     (
         "get_pos_orders_for_period",
         "get_pos_orders",
@@ -73,34 +71,12 @@ WRAPPED = [
         "end",
         "POS order totals broken down by interval",
     ),
-    (
-        "get_pos_item_sales_for_period",
-        "get_pos_item_sales",
-        "start_time",
-        "end_time",
-        "Product sales with group and category",
-    ),
-    (
-        "get_staff_orders_for_period",
-        "get_staff_orders",
-        "start",
-        "end",
-        "Orders by staff member",
-    ),
-    (
-        "get_staff_item_orders_for_period",
-        "get_staff_item_orders",
-        "start",
-        "end",
-        "Product orders for one staff member",
-    ),
-    (
-        "get_pos_discounts_for_period",
-        "get_pos_discounts",
-        "start",
-        "end",
-        "Discounts by staff member",
-    ),
+    # The sales family (get_pos_item_sales_for_period,
+    # get_staff_orders_for_period, get_staff_item_orders_for_period,
+    # get_pos_discounts_for_period) retired 24 Aug 2026: get_sales's
+    # breakdowns (items / staff / discounts, plus staff_name drill-down)
+    # replaced them — see scripts/sync_sales_config.py. Do not re-add;
+    # the prune below removes their rows.
     (
         "get_roster_for_period",
         "get_roster",
@@ -377,6 +353,10 @@ def main() -> None:
             for t in tools
             if str(t.get("action", "")).endswith("_for_period")
             and t.get("action") not in managed
+            # Only wrapper-style rows are this script's to prune: a tool
+            # that graduated to its own function_code has no `wraps` and is
+            # owned by its own sync script.
+            and (t.get("consolidator_config") or {}).get("wraps")
         ]
         for action in stale:
             tools = [t for t in tools if t.get("action") != action]

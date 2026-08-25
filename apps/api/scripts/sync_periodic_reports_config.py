@@ -1,20 +1,23 @@
-"""Sync the norm_reports periodic consolidators — their FIRST sync script.
+"""Retire the norm_reports periodic consolidators — replaced by get_sales.
 
-Until 22 Aug 2026 the three get_periodic_* tools' function_code lived ONLY
-in the config DB (the one consolidator family with no reviewed repo file —
-the coverage dashboard flagged exactly this), and they required the model
-to supply exact period_start/period_end dates it computed itself: the
-documented incident class (test_mcp_execution.py:279 — a Saturday total
-reported midnight-to-midnight because Claude routed around the date-safe
-tools to these).
+History: the three get_periodic_* tools lived config-only until 22 Aug
+2026, were given canonical repo files and a plain-English period surface,
+and on 24 Aug 2026 were absorbed into `loadedhub.get_sales`
+(scripts/sync_sales_config.py):
 
-This script installs the canonical files from config/consolidators/ and
-re-shapes the date surface: `period` in plain English leads (resolved
-through Norm's venue calendar inside the tool; a recurring phrase like
-"every Friday for the last 12 weeks" resolves to the matching days), with
-explicit period_start/period_end kept as the exact-dates fallback. Every
-other row property (descriptions of the analysis params, max_result_chars,
-bindings, MCP rows) is left as it stands.
+- get_periodic_sales          -> get_sales with time_windows (the day-start
+                                 attribution ported verbatim — prod thread
+                                 b9bda2c1)
+- get_periodic_product_sales  -> get_sales breakdown='items'
+                                 (+ time_windows for clock cuts)
+- get_periodic_staff_sales    -> get_sales breakdown='staff'
+                                 (+ staff_name drill-down, interval winners)
+
+This script now DELETES those rows so a re-run enforces the end state (the
+chef-seed lesson: a sync script that re-installs yesterday's doctrine
+regresses production on every replay). Bindings/playbooks/prompts/MCP rows
+are swapped by scripts/sync_sales_domain_rollout.py — run that FIRST so
+nothing still points at the rows this removes.
 
 Usage:
     uv run python scripts/sync_periodic_reports_config.py [--dry-run]
@@ -27,28 +30,13 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-_DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-
 CONNECTOR = "norm_reports"
 
-PERIOD_FD = (
-    "The period in plain English — 'last 12 weeks', 'every Friday for the "
-    "last 12 weeks'. Norm resolves it against this venue's calendar; prefer "
-    "this over period_start/period_end and never work out dates yourself."
+RETIRED = (
+    "get_periodic_sales",
+    "get_periodic_product_sales",
+    "get_periodic_staff_sales",
 )
-START_FD = (
-    "Exact start date YYYY-MM-DD — only when the user gave exact dates. "
-    "Explicit dates are CIVIL calendar days (midnight boundaries); pass "
-    "period instead for the venue's trading days."
-)
-END_FD = "Exact end date YYYY-MM-DD, same rule as period_start."
-
-#: action → (required fields kept, extra note for recurring phrases)
-TOOLS = {
-    "get_periodic_sales": ["venue", "time_windows"],
-    "get_periodic_product_sales": ["venue"],
-    "get_periodic_staff_sales": ["venue"],
-}
 
 
 def main(dry_run: bool = False) -> None:
@@ -58,7 +46,6 @@ def main(dry_run: bool = False) -> None:
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
-    changed: list[str] = []
     try:
         spec = (
             db.query(ConnectorSpec)
@@ -68,56 +55,23 @@ def main(dry_run: bool = False) -> None:
         if not spec:
             raise SystemExit(f"{CONNECTOR} ConnectorSpec not found")
         tools = [dict(t) for t in (spec.tools or [])]
-        for t in tools:
-            action = t.get("action")
-            if action not in TOOLS:
-                continue
-            code = (_DIR / f"{action}.py").read_text(encoding="utf-8")
-            cfg = dict(t.get("consolidator_config") or {})
-            if cfg.get("function_code") != code:
-                cfg["function_code"] = code
-                # +1 call for resolve_dates on top of the per-month batch.
-                cfg["max_api_calls"] = max(int(cfg.get("max_api_calls") or 0), 16)
-                t["consolidator_config"] = cfg
-                changed.append(f"{action}: function_code updated")
-            required = list(TOOLS[action])
-            optional = ["period", "period_start", "period_end"] + [
-                f
-                for f in (t.get("optional_fields") or [])
-                + [
-                    x
-                    for x in (t.get("required_fields") or [])
-                    if x not in required and x not in ("period_start", "period_end")
-                ]
-                if f not in ("period", "period_start", "period_end")
-            ]
-            # dedupe, order-preserving
-            seen: list[str] = []
-            for f in optional:
-                if f not in seen:
-                    seen.append(f)
-            if t.get("required_fields") != required or t.get("optional_fields") != seen:
-                t["required_fields"] = required
-                t["optional_fields"] = seen
-                changed.append(f"{action}: field surface reshaped")
-            fd = dict(t.get("field_descriptions") or {})
-            if fd.get("period") != PERIOD_FD:
-                fd["period"] = PERIOD_FD
-                fd["period_start"] = START_FD
-                fd["period_end"] = END_FD
-                t["field_descriptions"] = fd
-                changed.append(f"{action}: date field descriptions updated")
-
+        kept = [t for t in tools if t.get("action") not in RETIRED]
+        removed = [t.get("action") for t in tools if t.get("action") in RETIRED]
+        if not removed:
+            print("periodic tools already retired — nothing to do")
+            return
         if dry_run:
-            print("DRY RUN — would apply:")
-        else:
-            spec.tools = tools
-            flag_modified(spec, "tools")
-            spec.version = (spec.version or 0) + 1
-            db.commit()
-            print("Applied:")
-        for line in changed or ["  (nothing to do)"]:
-            print(f"  {line}")
+            print("DRY RUN — would remove: " + ", ".join(removed))
+            return
+        spec.tools = kept
+        flag_modified(spec, "tools")
+        spec.version = (spec.version or 0) + 1
+        db.commit()
+        print(
+            "removed "
+            + ", ".join(removed)
+            + f" (replaced by loadedhub.get_sales), spec version -> {spec.version}"
+        )
     finally:
         db.close()
 

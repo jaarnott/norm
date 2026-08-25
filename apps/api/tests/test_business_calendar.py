@@ -391,3 +391,47 @@ class TestWeekBeginning:
     def test_an_unparseable_date_does_not_raise(self):
         assert bc.week_beginning(venue(), "not a date") is None
         assert bc.week_beginning(venue(), "") is None
+
+
+class TestYearOnYearAnchors:
+    """Deterministic 'same week last year' — the LLM resolver answered it two
+    different ways within one conversation (25 Aug vs 18 Aug 2025), giving one
+    thread two YoY baselines. 52 trading weeks back keeps Monday a Monday."""
+
+    MOMENT = dt.datetime(2026, 8, 23, 14, 0, tzinfo=NZ)  # Sun 23 Aug 2026
+
+    def test_same_week_last_year_is_52_trading_weeks_back(self):
+        w = bc.resolve_phrase(venue(), "same week last year", self.MOMENT)
+        assert w is not None
+        assert w.start.date() == dt.date(2025, 8, 18)  # Monday
+        assert w.start.weekday() == 0
+        assert (w.end - w.start).days == 6
+
+    def test_the_anchor_is_deterministic_across_calls(self):
+        a = bc.resolve_phrase(venue(), "same week last year", self.MOMENT)
+        b = bc.resolve_phrase(venue(), "This Week Last Year", self.MOMENT)
+        assert a.start == b.start and a.end == b.end
+
+    def test_same_day_last_year_keeps_the_weekday(self):
+        w = bc.resolve_phrase(venue(), "same day last year", self.MOMENT)
+        assert w.start.weekday() == self.MOMENT.weekday()
+        assert w.start.date() == dt.date(2025, 8, 24)  # Sunday, 364 days back
+
+
+class TestIncompleteWindows:
+    """A window that extends beyond now is PARTIAL, and must say so — a
+    Sunday-so-far presented as a finished day is how a partial week gets
+    quoted as a result (thread b9bda2c1, 23 Aug 2026)."""
+
+    def test_a_current_window_is_flagged_incomplete(self):
+        w = bc.trading_day(venue())  # today — always in progress
+        d = w.as_dict()
+        assert d["incomplete"] is True
+        assert "through" in d
+        assert "in progress" in d["description"]
+
+    def test_a_past_window_carries_no_flag(self):
+        w = bc.trading_day(venue(), offset_days=-7)
+        d = w.as_dict()
+        assert "incomplete" not in d
+        assert "in progress" not in d["description"]
