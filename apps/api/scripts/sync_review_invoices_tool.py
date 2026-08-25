@@ -1,7 +1,7 @@
 """Sync the engine-only norm.* functions into the `norm` ConnectorSpec.
 
-Covers norm.review_invoices (the review consolidator's one call) and
-norm.invoice_copy_evidence (the reconcile consolidator's one call).
+Covers norm.review_invoices (the review consolidator's one call),
+norm.invoice_copy_evidence and norm.record_split_order (reconciliation's).
 
 The review consolidator's ONE call: batch replica review server-side
 (app/services/invoice_review.py) — extraction, replica, suggestions,
@@ -77,7 +77,31 @@ EVIDENCE_TOOL = {
     "read_only": True,
 }
 
-TOOLS = [REVIEW_TOOL, EVIDENCE_TOOL]
+# Reconciliation's only write to an INVOICE. It does not make the reconcile
+# decision — invoice_copy_evidence already established the split from Loaded —
+# it persists the evidence: a durable note, plus a best-effort PO reference for
+# whoever reads Loaded's invoice list (a user's Save wipes that reference;
+# verified 25 Aug 2026, which is why nothing depends on it).
+SPLIT_TOOL = {
+    "action": "record_split_order",
+    "method": "POST",
+    "description": (
+        "[engine-only] Record a confirmed split delivery on invoices that carry "
+        "no purchase order: a 'Split order:' note (durable) and the order number "
+        "as a reference (convenience). Never links the order — Loaded is 1:1 and "
+        "the link belongs to the sibling invoice. Called by "
+        "reconcile_received_invoices via call_api; not bound to any agent."
+    ),
+    "required_fields": ["invoices"],
+    "optional_fields": ["venue", "venue_id"],
+    "field_descriptions": {
+        "venue": "Venue name (resolved to an id); or pass venue_id directly.",
+        "invoices": "List of {id, order_number, sibling_reference}.",
+    },
+    "read_only": False,
+}
+
+TOOLS = [REVIEW_TOOL, EVIDENCE_TOOL, SPLIT_TOOL]
 
 
 def main(dry_run: bool = False) -> None:

@@ -26,6 +26,7 @@ same per-supplier instructions, landing on the same cache row.
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -153,10 +154,215 @@ def copy_headers(
         )
         header["_po_verdict"], header["_po_note"] = state, note
 
+    # Only an `absent` verdict can be overturned by a split-order note, and the
+    # note lives on the invoice DETAIL — the received-invoice feed carries no
+    # `notes` field. So the extra read is paid only for the invoices it could
+    # actually rescue, in parallel, and a note that cannot be read simply
+    # leaves the verdict where it was.
+    absent = [i for i, h in out.items() if h.get("_po_verdict") == "absent"]
+    if absent:
+        details = _invoice_details(lh, absent)
+        cached = _CachedGets(lh)
+        for iid in absent:
+            header, detail = out[iid], details.get(iid) or {}
+            notes = str(detail.get("notes") or "")
+            if notes:
+                state, note = po_verdict(
+                    (by_id.get(iid) or {}).get("purchaseOrderNumber"), header, notes
+                )
+                header["_po_verdict"], header["_po_note"] = state, note
+                if state == "match":
+                    continue
+            if not detail:
+                continue
+            # No usable note. Establish the split from Loaded itself — the note
+            # is only ever written when an invoice was received through Norm's
+            # split path, which is 1 of 18 in practice (Bessie & Engineers,
+            # 23 Aug 2026), while 13 of those 18 were provably splits.
+            verdict = split_verdict(cached, detail, header)
+            if not verdict:
+                continue
+            kind, data = verdict
+            header["_split"] = {**data, "kind": kind}
+            if kind == "split":
+                header["_po_verdict"] = "match"
+                header["_po_note"] = (
+                    f"split delivery — order {data['order_number']} is linked to "
+                    f"{data['sibling_reference']} from the same order"
+                )
+            else:
+                # A doubled-up reference is a possible DUPLICATE invoice, not a
+                # split. Never reconciled on that basis; reported for a person.
+                header["_po_note"] = (
+                    f"order {data['order_number']} is already fully invoiced by "
+                    f"{data['sibling_reference']} — possible duplicate invoice"
+                )
+
     return out
 
 
-def po_verdict(loaded_po: object, header: dict) -> tuple[str, str]:
+#: The marker receiving already writes (``services/received_invoice.py``), so
+#: reconciliation leaves the SAME sentence and ``split_order_number`` reads
+#: either without knowing which wrote it.
+SPLIT_NOTE = "Split order: order {order} also covers {sibling}"
+
+
+def record_split(
+    lh, invoice_id: str, order_number: str, sibling_reference: str
+) -> dict:
+    """Record a confirmed split on the invoice that has no PO.
+
+    Two writes with very different standing, and the difference is the point:
+
+    - the NOTE is the durable one. Verified 25 Aug 2026: a user opening the
+      received invoice, confirming the stocktake dialog and pressing Save keeps
+      the note (and their own edit to it).
+    - the REFERENCE is a convenience for whoever reads Loaded's invoice list,
+      where it renders in the Order Number column exactly like a linked order.
+      The SAME save wipes it. Nothing may depend on it.
+
+    ``linkedPurchaseOrderId`` is never touched: Loaded models PO↔invoice as
+    1:1 and the link belongs to the sibling. Writing it here would steal it.
+
+    Idempotent — an invoice already carrying the marker and a reference is left
+    alone, so a daily run does not rewrite the same invoice forever.
+    """
+    detail = lh.invoice(invoice_id)
+    if not isinstance(detail, dict) or not detail.get("id"):
+        return {"ok": False, "error": "invoice could not be read"}
+
+    marker = SPLIT_NOTE.format(
+        order=order_number, sibling=sibling_reference or "another invoice"
+    )
+    notes = str(detail.get("notes") or "")
+    add_note = marker not in notes
+    add_ref = not detail.get("purchaseOrderNumber")
+    if not add_note and not add_ref:
+        return {"ok": True, "unchanged": True}
+
+    body = dict(detail)
+    if add_note:
+        body["notes"] = (notes + "\n" if notes else "") + marker
+    if add_ref:
+        body["purchaseOrderNumber"] = str(order_number)
+    lh.request("PUT", f"/1.0/stock/internal/invoices/{invoice_id}", body)
+    return {"ok": True, "noted": add_note, "referenced": add_ref}
+
+
+class _CachedGets:
+    """``lh`` with GET memoisation for the life of one batch.
+
+    ``resolve_po_id`` scans the same three lists (open POs, drafts, the
+    received feed) for every number it is asked about. A venue with 34 blocked
+    invoices would otherwise fetch each list 34 times.
+    """
+
+    def __init__(self, lh):
+        self._lh = lh
+        self._seen: dict[str, object] = {}
+
+    def get(self, path: str):
+        if path not in self._seen:
+            self._seen[path] = self._lh.get(path)
+        return self._seen[path]
+
+    def __getattr__(self, name):
+        return getattr(self._lh, name)
+
+
+def split_verdict(lh, invoice: dict, header: dict) -> tuple[str, dict] | None:
+    """Why an invoice has no PO — ``split`` | ``doubled_up``, or None.
+
+    Reuses the receive path's classifier rather than re-deciding: the rule for
+    telling a genuine split delivery from a doubled-up invoice already exists,
+    is tested, and belongs in one place. Loaded models PO↔invoice as 1:1, so
+    when one order arrives across several invoices only the first can hold the
+    link.
+
+    None means there is nothing to explain — the number on the copy resolves to
+    no Loaded order at all (a supplier's own reference, like Ocean's North's
+    standing order 631518146), or the order is this invoice's own.
+    """
+    from app.services.invoice_replica import _sibling_doubled_up
+    from app.services.received_invoice import resolve_po_id
+
+    printed = header.get("customer_purchase_order_number") or header.get(
+        "supplier_order_number"
+    )
+    if not printed:
+        return None
+    try:
+        resolved = resolve_po_id(lh, printed, invoice.get("linkedSupplierId"))
+    except Exception as exc:  # noqa: BLE001 — an unresolvable number is not a split
+        logger.info("split resolve failed for %s: %s", printed, exc)
+        return None
+    if not resolved:
+        return None
+    sibling = resolved.get("linked_invoice_id")
+    if not sibling or sibling == invoice.get("id"):
+        return None
+
+    lines = [
+        {
+            "code": ln.get("code"),
+            "description": ln.get("description"),
+            "quantity_received": ln.get("quantityReceived"),
+            # The detail's spelling; the classifier understands both sides.
+            "unit_cost": (
+                ln.get("unitCost")
+                if ln.get("unitCost") is not None
+                else ln.get("unitCostExclTax")
+            ),
+        }
+        for ln in invoice.get("lines") or []
+        if isinstance(ln, dict) and not ln.get("deletedAt")
+    ]
+    doubled, sib_ref = _sibling_doubled_up(lh, sibling, lines, header)
+    data = {
+        "order_number": str(resolved.get("order_number") or printed),
+        "po_id": resolved.get("id"),
+        "sibling_invoice_id": sibling,
+        "sibling_reference": sib_ref,
+    }
+    return ("doubled_up" if doubled else "split"), data
+
+
+def _invoice_details(lh, invoice_ids: list[str]) -> dict[str, dict]:
+    """``{invoice_id: detail}``, fetched in parallel. Best effort by design:
+    this only ever ADDS evidence, so a failed read costs a rescue, never a
+    wrong reconcile. The detail carries both the ``notes`` and the lines the
+    split classifier compares — the received-invoice feed carries neither."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def fetch(invoice_id: str) -> tuple[str, dict]:
+        try:
+            return invoice_id, (lh.invoice(invoice_id) or {})
+        except Exception as exc:  # noqa: BLE001 — what we cannot read is no evidence
+            logger.info("split evidence read failed for %s: %s", invoice_id, exc)
+            return invoice_id, {}
+
+    with ThreadPoolExecutor(max_workers=min(8, len(invoice_ids))) as pool:
+        return dict(pool.map(fetch, invoice_ids))
+
+
+#: The note ``do_receive`` stamps on a split delivery's other invoice —
+#: ``"Split order: order 1521169 also covers IN11411819"``
+#: (``services/received_invoice.py``). Loaded models PO↔invoice as 1:1, so when
+#: one purchase order is delivered across several invoices only the first can
+#: hold the link and the rest carry an empty PO field forever. The note is the
+#: record of WHY it is empty, written at receive time by the code that saw it.
+_SPLIT_ORDER_RE = re.compile(r"split order:\s*order\s+(\S+)\s+also covers", re.I)
+
+
+def split_order_number(notes: object) -> str | None:
+    """The order number recorded in a ``Split order:`` note, or None."""
+    match = _SPLIT_ORDER_RE.search(str(notes or ""))
+    return match.group(1) if match else None
+
+
+def po_verdict(
+    loaded_po: object, header: dict, split_note: object = None
+) -> tuple[str, str]:
     """``(verdict, note)`` for one invoice's PO — ``match`` | ``mismatch`` | ``absent``.
 
     Reconcile only when Norm can tell OUR number from the supplier's and they
@@ -168,6 +374,10 @@ def po_verdict(loaded_po: object, header: dict) -> tuple[str, str]:
       ours (documented in tests/test_invoice_fixes_handler.py), so the two
       sides are naming the same document by the supplier's name for it.
 
+    A third route applies only when Loaded holds nothing: a SPLIT DELIVERY,
+    where ``split_note`` is this invoice's ``notes`` field and names the order
+    the copy prints. See ``split_order_number``.
+
     Anything else is left as a mismatch for a person. Two numbers that are
     genuinely different is exactly what this check is for.
     """
@@ -178,6 +388,18 @@ def po_verdict(loaded_po: object, header: dict) -> tuple[str, str]:
     loaded = _po_key(loaded_po)
 
     if not loaded:
+        # A SPLIT DELIVERY, not a missing PO. Loaded's field is empty because
+        # the order is linked to a sibling invoice, and receiving recorded that
+        # at the time. Reconcile only when the order named in the note is the
+        # one printed on this copy — the note alone proves a split happened,
+        # the match proves it is THIS invoice's split. Measured 23 Aug 2026:
+        # 13 of 18 blocked invoices at Bessie & Engineers were splits.
+        split = split_order_number(split_note)
+        if split and _po_key(split) in {k for k in (ours, theirs) if k}:
+            return "match", (
+                f"split delivery — order {split} is linked to another invoice "
+                "from the same order, and this copy names that order"
+            )
         found = header.get("customer_purchase_order_number") or header.get(
             "supplier_order_number"
         )

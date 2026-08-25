@@ -306,7 +306,18 @@ def _sibling_doubled_up(
         sl = m["_sl"]
         if not _close(sl.get("quantityReceived"), ln.get("quantity_received"), 0.001):
             return False, sib_ref
-        if not _close(sl.get("unitCost"), ln.get("unit_cost")):
+        # Loaded's invoice DETAIL returns unitCostExclTax; `unitCost` is only
+        # on the received-invoice FEED. Reading one name meant the cost check
+        # could never pass on a real sibling, so every doubled-up invoice was
+        # classified a split and the reference was never removed. Verified
+        # against live invoices in two venues, 25 Aug 2026 — unitCost was None
+        # on every detail line.
+        sib_cost = (
+            sl.get("unitCost")
+            if sl.get("unitCost") is not None
+            else sl.get("unitCostExclTax")
+        )
+        if not _close(sib_cost, ln.get("unit_cost")):
             return False, sib_ref
     if not _close(sib.get("total"), extraction.get("total_incl_tax")):
         return False, sib_ref

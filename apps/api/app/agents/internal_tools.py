@@ -2496,6 +2496,63 @@ def _invoice_copy_evidence(params: dict, db: Session, thread_id: str | None) -> 
         return {"success": False, "error": str(exc)}
 
 
+@register("norm", "record_split_order")
+def _record_split_order(params: dict, db: Session, thread_id: str | None) -> dict:  # noqa: ARG001
+    """Record confirmed split deliveries on the invoices that carry no PO.
+
+    A WRITE, and the only one reconciliation makes to an invoice. It does NOT
+    make the reconcile decision — `invoice_copy_evidence` already established
+    the split from Loaded — it persists the evidence so a person reading Loaded
+    can see why the PO field is empty, and so later runs short-circuit on the
+    note instead of re-resolving the order.
+
+    Params: ``venue``/``venue_id``; ``invoices`` — a list of
+    ``{id, order_number, sibling_reference}``.
+    """
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.models import Venue
+    from app.services.invoice_evidence import record_split
+    from app.services.received_invoice import LoadedInvoiceClient
+
+    venue_id = params.get("venue_id")
+    if not venue_id and params.get("venue"):
+        venue_obj = (
+            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
+        )
+        venue_id = venue_obj.id if venue_obj else None
+    if not venue_id:
+        return {"success": False, "error": "venue not found"}
+
+    invoices = params.get("invoices")
+    if not isinstance(invoices, list):
+        return {"success": False, "error": "invoices must be a list"}
+
+    out: dict = {}
+    cdb = _ConfigSessionLocal()
+    try:
+        lh = LoadedInvoiceClient(db, cdb, str(venue_id))
+        for inv in invoices:
+            if not isinstance(inv, dict) or not inv.get("id"):
+                continue
+            iid = str(inv["id"])
+            try:
+                out[iid] = record_split(
+                    lh,
+                    iid,
+                    str(inv.get("order_number") or ""),
+                    str(inv.get("sibling_reference") or ""),
+                )
+            except Exception as exc:  # noqa: BLE001 — one failure must not stop the rest
+                logger.warning("record_split_order failed for %s: %s", iid, exc)
+                out[iid] = {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — the consolidator reports the failure
+        logger.warning("record_split_order failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+    finally:
+        cdb.close()
+    return {"success": True, "data": out}
+
+
 @register("norm", "update_task_config")
 def _update_task_config(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update a persistent configuration field on the automated task."""
