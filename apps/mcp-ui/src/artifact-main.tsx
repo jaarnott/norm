@@ -36,7 +36,11 @@ import RosterEditor from '../../web/app/components/display/RosterEditor';
 // says "Norm". The same string must be used here and in the published
 // manifest, or the two disagree and nothing resolves.
 const SERVER = 'Norm';
-const TOOL = 'loadedhub__get_roster_for_period';
+// get_labour replaced get_roster_for_period (24 Aug 2026): one labour tool,
+// many views. Every call here pins view='roster' — the only view whose
+// result is the raw roster payload this page parses.
+const TOOL = 'loadedhub__get_labour';
+const VIEW = { view: 'roster' };
 
 /**
  * The connector channel, or null.
@@ -246,7 +250,7 @@ function App() {
     let live = true;
     setLoading(true);
     api
-      .callTool(SERVER, TOOL, { period }, { cache: { staleTime: 30_000 } })
+      .callTool(SERVER, TOOL, { ...VIEW, period }, { cache: { staleTime: 30_000 } })
       .then((res) => {
         if (!live) return;
         setBlock((res.payload || {}) as Block);
@@ -282,7 +286,7 @@ function App() {
     const stop = api.watchTool(
       SERVER,
       TOOL,
-      { venue, period },
+      { ...VIEW, venue, period },
       (ev) => {
         if (ev.type === 'data') {
           setBlock((ev.result.payload || {}) as Block);

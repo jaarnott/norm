@@ -35,8 +35,10 @@ SWAPS = {
     "get_staff_item_orders": "get_sales",
     "get_cogs_detail": "get_cogs_detail_for_period",
     "get_completed_stocktakes": "get_completed_stocktakes_for_period",
-    "get_roster": "get_roster_for_period",
-    "get_timeclock_entries": "get_timeclock_entries_for_period",
+    # The labour family's front is get_labour since 25 Aug 2026
+    # (sync_labour_config.py).
+    "get_roster": "get_labour",
+    "get_timeclock_entries": "get_labour",
 }
 
 SLUGS = [

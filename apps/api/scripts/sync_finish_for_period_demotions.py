@@ -45,8 +45,9 @@ sys.path.insert(0, ".")
 #: toward a retired wrapper name.
 DEMOTIONS = {
     "get_pos_item_sales": "get_sales",
-    "get_roster": "get_roster_for_period",
-    "get_timeclock_entries": "get_timeclock_entries_for_period",
+    # The labour front is get_labour since 25 Aug 2026.
+    "get_roster": "get_labour",
+    "get_timeclock_entries": "get_labour",
 }
 
 #: Previously demoted raw twins whose McpCapability rows may still say
@@ -69,13 +70,21 @@ PREVIOUSLY_DEMOTED = [
 PROMPT_PATCHES = [
     (
         "call both get_roster and get_timeclock_entries for the same period",
-        "call both get_roster_for_period and get_timeclock_entries_for_period "
-        "with the same period phrase",
+        "call get_labour (view 'attendance' is the default) — it fetches "
+        "roster and timeclock together and splits booked leave out",
     ),
     (
         "call both get_roster and get_timeclock_entries",
+        "call get_labour (view 'attendance' is the default) — it fetches "
+        "roster and timeclock together and splits booked leave out",
+    ),
+    # Replay guard: a prompt already patched to the (now retired) wrappers
+    # moves on to current doctrine.
+    (
         "call both get_roster_for_period and get_timeclock_entries_for_period "
         "with the same period phrase",
+        "call get_labour (view 'attendance' is the default) — it fetches "
+        "roster and timeclock together and splits booked leave out",
     ),
     (
         "use get_pos_item_sales and rank by revenue",

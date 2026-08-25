@@ -39,9 +39,10 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
         "get_sales_data": "get_sales",
         "get_pos_orders": "get_pos_orders_for_period",
         "get_received_invoices": "get_received_items_for_period",
-        "get_roster": "get_roster_for_period",
-        "get_roster_vs_actual": "get_roster_vs_actual_for_period",
-        "get_timeclock_entries": "get_timeclock_entries_for_period",
+        "get_roster": "get_labour",
+        "get_roster_vs_actual": "get_labour",
+        "get_timeclock_entries": "get_labour",
+        "get_staff_members": "get_labour",
         "get_cogs_detail": "get_cogs_detail_for_period",
         "get_completed_stocktakes": "get_completed_stocktakes_for_period",
         "get_pos_item_sales": "get_sales",
@@ -85,7 +86,7 @@ def _canonical_files() -> dict[str, str]:
     """action-guess → file source, from config/consolidators/*.py.
 
     A file matches an action by stem (``get_budgets.py`` → ``get_budgets``)
-    or with a ``get_`` prefix (``staff_attendance.py`` →
+    or with a ``get_`` prefix (a ``staff_attendance.py`` would match
     ``get_staff_attendance``).
     """
     out: dict[str, str] = {}

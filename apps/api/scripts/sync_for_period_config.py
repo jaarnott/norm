@@ -77,27 +77,12 @@ WRAPPED = [
     # breakdowns (items / staff / discounts, plus staff_name drill-down)
     # replaced them — see scripts/sync_sales_config.py. Do not re-add;
     # the prune below removes their rows.
-    (
-        "get_roster_for_period",
-        "get_roster",
-        "start_datetime",
-        "end_datetime",
-        "The roster including all shifts",
-    ),
-    (
-        "get_roster_vs_actual_for_period",
-        "get_roster_vs_actual",
-        "start",
-        "end",
-        "Rostered versus actual hours and cost",
-    ),
-    (
-        "get_timeclock_entries_for_period",
-        "get_timeclock_entries",
-        "start_time",
-        "end_time",
-        "Timeclock entries",
-    ),
+    # The labour family (get_roster_for_period,
+    # get_roster_vs_actual_for_period, get_timeclock_entries_for_period)
+    # retired 25 Aug 2026: get_labour's views (roster / vs_actual /
+    # timeclock, plus the attendance default) replaced them — see
+    # scripts/sync_labour_config.py. Do not re-add; the prune below
+    # removes their rows.
     (
         "get_cogs_detail_for_period",
         "get_cogs_detail",

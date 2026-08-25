@@ -130,6 +130,20 @@ TOOL_COMPONENT: dict[tuple[str, str], str] = {
     # (get_recipe_details, the old mapping, is engine_only now — uncallable
     # from MCP.)
     ("loadedhub", "get_recipes"): "recipe_editor",
+    # get_labour is the labour domain tool: only its roster view carries the
+    # raw roster payload the grid parses — the other views (attendance,
+    # vs_actual, timeclock, staff) are shaped summaries that render fine as
+    # a generic table. TOOL_COMPONENT_VIEW below gates on the result.
+    ("loadedhub", "get_labour"): "roster_editor",
+}
+
+# Result-gated component mappings: the component applies only when the tool
+# RESULT carries field == value (checked on the outer payload, before the
+# envelope unwrap). Any other result falls through to the display app's
+# generic_table. Needed for domain tools whose views return different shapes
+# under one action name.
+TOOL_COMPONENT_VIEW: dict[tuple[str, str], tuple[str, str]] = {
+    ("loadedhub", "get_labour"): ("view", "roster"),
 }
 
 # Bespoke apps for a connector tool, keyed by (connector, action). Empty: the
@@ -165,11 +179,25 @@ def ui_resource_for(connector: str | None, action: str | None) -> str | None:
     return TOOL_UI.get((connector, action))
 
 
-def component_for(connector: str | None, action: str | None) -> str | None:
-    """The Norm display component that draws this tool's result, or None."""
+def component_for(
+    connector: str | None, action: str | None, result: dict | None = None
+) -> str | None:
+    """The Norm display component that draws this tool's result, or None.
+
+    A TOOL_COMPONENT_VIEW entry makes the mapping conditional on the result:
+    get_labour renders the roster grid only for view='roster' results —
+    every other view falls through to generic_table rather than handing the
+    grid a payload it cannot parse.
+    """
     if not connector or not action:
         return None
-    return TOOL_COMPONENT.get((connector, action))
+    component = TOOL_COMPONENT.get((connector, action))
+    gate = TOOL_COMPONENT_VIEW.get((connector, action))
+    if component and gate:
+        field, expected = gate
+        if not (isinstance(result, dict) and result.get(field) == expected):
+            return None
+    return component
 
 
 def ui_resource_for_playbook(slug: str | None) -> str | None:

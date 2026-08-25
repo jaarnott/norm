@@ -437,7 +437,7 @@ class NormMcpContext(McpContext):
 
         if tool.ui_resource != DISPLAY_BLOCK_URI:
             return data
-        component = component_for(tool.connector, tool.action)
+        component = component_for(tool.connector, tool.action, data)
         if not component:
             return data
 

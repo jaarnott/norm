@@ -49,7 +49,7 @@ class TestConsolidatorFormat:
     def test_function_code_consolidator_is_fine(self):
         tools = [
             {
-                "action": "get_staff_attendance",
+                "action": "get_labour",
                 "path_template": "",
                 "consolidator_config": {
                     "function_code": "def run(params, call_api, log): ..."

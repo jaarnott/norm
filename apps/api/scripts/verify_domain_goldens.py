@@ -13,6 +13,7 @@ must match exactly; values summed from the hourly sales feed allow ±$3
 
 Usage:
     uv run python scripts/verify_domain_goldens.py sales
+    uv run python scripts/verify_domain_goldens.py labour
 """
 
 from __future__ import annotations
@@ -179,6 +180,57 @@ def verify_sales(execute, venues: dict) -> None:
             )
 
 
+def verify_labour(execute, venues: dict) -> None:
+    code = (BASE / "config" / "consolidators" / "get_labour.py").read_text()
+    config = {
+        "function_code": code,
+        "max_api_calls": 12,
+        "allowed_write_actions": [],
+    }
+
+    for venue, periods in venues.items():
+        for period_label, g in periods.items():
+            if "_period_phrase" in g or "attendance" not in g:
+                continue  # monthly goldens carry no labour battery
+            print(f"\n== {venue} | {period_label} (get_labour) ==")
+
+            # attendance (the default view) — engine identical to the
+            # retired get_staff_attendance, so totals must match exactly.
+            out = execute(config, {"venue": venue, "period": period_label})
+            ga = g["attendance"]
+            for key, want in (ga.get("totals") or {}).items():
+                check(f"attendance {key}", (out.get("totals") or {}).get(key), want)
+            check("attendance row_count", len(out.get("rows") or []), ga["row_count"])
+
+            # vs_actual
+            out = execute(
+                config,
+                {"venue": venue, "period": period_label, "view": "vs_actual"},
+            )
+            gr = g["roster_vs_actual"]
+            sums = (out.get("summary") or {}).get("column_sums") or {}
+            for key, want in (gr.get("sums") or {}).items():
+                if want is not None:
+                    check(f"vs_actual {key}", sums.get(key), want)
+            check(
+                "vs_actual row_count",
+                (out.get("summary") or {}).get("row_count"),
+                gr["row_count"],
+            )
+
+            # timeclock
+            out = execute(
+                config,
+                {"venue": venue, "period": period_label, "view": "timeclock"},
+            )
+            gt = g["timeclock"]
+            summary = out.get("summary") or {}
+            sums = summary.get("column_sums") or {}
+            check("timeclock row_count", summary.get("row_count"), gt["row_count"])
+            check("timeclock totalHours", sums.get("totalHours"), gt["totalHours"])
+            check("timeclock totalCost", sums.get("totalCost"), gt["totalCost"])
+
+
 def main() -> None:
     what = sys.argv[1] if len(sys.argv) > 1 else "sales"
     from app.agents.internal_tools import execute_consolidator
@@ -196,8 +248,10 @@ def main() -> None:
 
         if what == "sales":
             verify_sales(execute, goldens)
+        elif what == "labour":
+            verify_labour(execute, goldens)
         else:
-            raise SystemExit(f"unknown target {what!r} — expected 'sales'")
+            raise SystemExit(f"unknown target {what!r} — expected 'sales' or 'labour'")
     finally:
         db.close()
 
