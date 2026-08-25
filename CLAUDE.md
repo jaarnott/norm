@@ -18,8 +18,15 @@ changed and what you verified, and stop**. The user commits when they're ready.
 - Uncommitted work is fine. This repo is often worked on by more than one agent
   at once, so also: only ever stage **your own** files (`git add <paths>`, never
   `git add -A`), and never push commits you didn't author.
-- When a commit *is* requested, follow the conventions further down: branch off
-  `main` if you're on it, and end the message with the co-author trailer.
+- When a commit *is* requested: **commit directly on `main` and push** — that is
+  the straight-to-prod flow, and it needs no feature branch and no PR. Do **not**
+  spin up a `ship/…` branch or open a PR as a matter of course; that ceremony is
+  not wanted here. The one hard rule is the bullet above — **stage only your own
+  files** (`git add <paths>`, never `git add -A`) so a push never sweeps up
+  another session's work — and end the message with the co-author trailer. A
+  short-lived branch is worth it in exactly one case: several agents are editing
+  this working tree at once and you need to isolate your files from a tangle you
+  can't cleanly stage around. Otherwise, go straight to `main`.
 
 ## Verify before you say it's done
 
