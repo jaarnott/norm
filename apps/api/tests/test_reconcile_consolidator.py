@@ -29,13 +29,16 @@ class Api:
         update_error=None,
         create_error=None,
         evidence_error=None,
+        splits=None,
     ):
         self.evidence_error = evidence_error
+        self.splits = splits or {}
         self.statements = statements
         self.received = received
         self.pdfs = pdfs or {}
         self.update_error = update_error
         self.create_error = create_error
+        self.split_writes = []  # norm.record_split_order calls
         self.updated = []  # (statement_id, body)
         self.created = []  # body
         self.seen = []
@@ -62,6 +65,12 @@ class Api:
             return dict(params["statement"], id="new-stmt-1")
         if action == "invoice_copy_evidence":
             return self.copy_evidence(params)
+        if action == "record_split_order":
+            self.split_writes.append(params)
+            return {
+                str(i["id"]): {"ok": True, "noted": True, "referenced": True}
+                for i in params.get("invoices") or []
+            }
         raise AssertionError(f"unexpected action {action}")
 
     def copy_evidence(self, params):
@@ -96,6 +105,12 @@ class Api:
             header = {**pdf, "_source": SOURCE_EXTRACTED}
             state, note = po_verdict(inv.get("purchaseOrderNumber"), header)
             header["_po_verdict"], header["_po_note"] = state, note
+            # A confirmed split, as the real service stamps it when Loaded's PO
+            # field is empty because a sibling invoice holds the 1:1 link.
+            if iid in self.splits:
+                header["_split"] = {"kind": "split", **self.splits[iid]}
+                header["_po_verdict"] = "match"
+                header["_po_note"] = "split delivery"
             out[iid] = header
         # Flat, exactly as function_executor._do_api_call delivers it:
         # `return handler_result.get("data")`. Returning the handler's
@@ -699,3 +714,61 @@ class TestPeriodResolution:
         stmt = next(p for a, p in api.seen if a == "list_supplier_statements")
         assert stmt["from_iso"].startswith("2026-06-17")  # today (17 Jul) - 30 days
         assert not [x for x in api.seen if x[0] == "resolve_dates"]
+
+
+class TestSplitOrdersAreRecorded:
+    """The write half, at the consolidator level.
+
+    A split is already RECONCILED by the evidence service — the write only
+    persists why, so the run mode governs the write and never the outcome.
+    Loaded is 1:1 PO<->invoice, so a split delivery leaves every invoice after
+    the first with an empty PO field; 13 of 18 blocked invoices at Bessie &
+    Engineers were exactly this (23 Aug 2026).
+    """
+
+    SPLIT = {"order_number": "1521191", "sibling_reference": "109958939"}
+
+    def _api(self):
+        inv = make_received(purchaseOrderNumber=None)
+        return api_for(inv, splits={"recv-1": self.SPLIT})
+
+    def test_approve_fixes_records_it_on_the_invoice(self):
+        api = self._api()
+        out = run_consolidator(api, mode="approve_fixes")
+        assert len(api.split_writes) == 1
+        sent = api.split_writes[0]["invoices"][0]
+        assert sent["order_number"] == "1521191"
+        assert sent["sibling_reference"] == "109958939"
+        assert out["split_orders_recorded"] == ["1008102"]
+
+    def test_approve_all_suggests_the_fix_and_writes_nothing(self):
+        api = self._api()
+        out = run_consolidator(api, mode="approve_all")
+        assert api.split_writes == []
+        assert out["split_orders_recorded"] == []
+        assert len(out["split_orders_suggested"]) == 1
+        assert "1521191" in out["split_orders_suggested"][0]["fix"]
+
+    def test_the_split_reconciles_regardless_of_the_write(self):
+        """Correctness must not depend on a write that a user's Save can undo."""
+        for mode in ("approve_all", "approve_fixes"):
+            out = run_consolidator(self._api(), mode=mode)
+            assert out["summary"]["reconciled"] == 1, mode
+
+    def test_a_failed_write_does_not_unreconcile_anything(self):
+        api = self._api()
+
+        def boom(connector, action, params=None):
+            if action == "record_split_order":
+                return {"error": "Loaded 502"}
+            return Api.call_api(api, connector, action, params)
+
+        api.call_api = boom
+        out = run_consolidator(api, mode="approve_fixes")
+        assert out["summary"]["reconciled"] == 1
+        assert out["split_orders_recorded"] == []
+
+    def test_nothing_is_written_when_there_is_no_split(self):
+        api = api_for(make_received())
+        run_consolidator(api, mode="approve_fixes")
+        assert api.split_writes == []

@@ -427,6 +427,71 @@ def run(params, call_api, log, call_api_parallel=None):
             + str(ev.get("error") if isinstance(ev, dict) else ev)
         )
 
+    # Confirmed split deliveries. The reconcile decision is already made (the
+    # evidence service established it from Loaded), so this only PERSISTS it:
+    # a durable note, plus a best-effort PO reference for whoever reads Loaded.
+    # Under approve_all nothing is written and the fix is reported instead.
+    split_fixes = []
+    for c in candidates:
+        head = evidence.get(str(c.get("id"))) or {}
+        sp = head.get("_split") or {}
+        if sp.get("kind") != "split":
+            continue
+        split_fixes.append(
+            {
+                "id": c.get("id"),
+                "invoice_number": c.get("invoiceNumber") or "(no number)",
+                "order_number": sp.get("order_number"),
+                "sibling_reference": sp.get("sibling_reference"),
+            }
+        )
+
+    split_suggestions, split_applied = [], []
+    if split_fixes and dry_run:
+        split_suggestions = [
+            {
+                "invoice": f["invoice_number"],
+                "fix": (
+                    "record split order "
+                    + str(f["order_number"])
+                    + " (also covers "
+                    + str(f["sibling_reference"])
+                    + ")"
+                ),
+            }
+            for f in split_fixes
+        ]
+        log(
+            str(len(split_fixes))
+            + " split order(s) could be recorded on the invoice — run mode is "
+            "approve_all, so nothing was written"
+        )
+    elif split_fixes:
+        res = call_api(
+            "norm",
+            "record_split_order",
+            {
+                "venue": venue,
+                "invoices": [
+                    {
+                        "id": f["id"],
+                        "order_number": f["order_number"],
+                        "sibling_reference": f["sibling_reference"],
+                    }
+                    for f in split_fixes
+                ],
+            },
+        )
+        if isinstance(res, dict) and res.get("error"):
+            log("Could not record split orders: " + str(res["error"]))
+        else:
+            for f in split_fixes:
+                r = (res or {}).get(str(f["id"])) or {}
+                if r.get("ok") and not r.get("unchanged"):
+                    split_applied.append(f["invoice_number"])
+            if split_applied:
+                log("recorded split order on " + ", ".join(split_applied))
+
     by_statement = {}  # statement id -> {"statement": s, "items": [inv...], "verdicts": []}
     orphans = {}  # supplierId -> {"supplier": name, "passing": [], "failing": []}
 
@@ -622,6 +687,10 @@ def run(params, call_api, log, call_api_parallel=None):
         "reconciled": reconciled,
         "not_reconciled": not_reconciled,
         "needs_statement": needs_statement,
+        # What was recorded, or what WOULD be under a writing mode — so the
+        # report can offer the fix rather than only naming the problem.
+        "split_orders_recorded": split_applied,
+        "split_orders_suggested": split_suggestions,
         "statements": statement_summaries,
         "summary": {
             "reconciled": len(reconciled),

@@ -147,6 +147,354 @@ class TestItReadsWhatReceivingAlreadyProduced:
         assert "no invoice copy" in out["inv-3"]["error"]
 
 
+class _Lh:
+    """Minimal LoadedHub stand-in: only the invoice-detail read matters here."""
+
+    def __init__(self, notes_by_id):
+        self.notes = notes_by_id
+        self.fetched = []
+
+    def invoice(self, invoice_id):
+        self.fetched.append(invoice_id)
+        if invoice_id not in self.notes:
+            raise RuntimeError("boom")
+        return {"id": invoice_id, "notes": self.notes[invoice_id]}
+
+
+class TestSplitNotesAreReadOnlyWhereTheyCanHelp:
+    """End to end: the note lives on the invoice DETAIL, which the received
+    feed does not carry, so copy_headers has to go and get it."""
+
+    def _docs(self, po):
+        return _Db([_Doc("inv-1", {"customer_purchase_order_number": po})])
+
+    def test_a_split_note_turns_absent_into_reconciled(self):
+        lh = _Lh({"inv-1": "Split order: order 1521169 also covers IN11411819"})
+        out = EV.copy_headers(
+            self._docs("1521169"),
+            None,
+            lh,
+            "v-1",
+            [{"id": "inv-1", "purchaseOrderNumber": None}],
+        )
+        assert out["inv-1"]["_po_verdict"] == "match"
+        assert "split delivery" in out["inv-1"]["_po_note"]
+
+    def test_only_the_blocked_invoices_cost_a_detail_read(self):
+        """A matched invoice must not pay for a note it cannot use — this runs
+        over every unreconciled invoice in six venues every morning."""
+        db = _Db(
+            [
+                _Doc("inv-1", {"customer_purchase_order_number": "1521169"}),
+                _Doc("inv-2", {"customer_purchase_order_number": "1520599"}),
+            ]
+        )
+        lh = _Lh({"inv-1": "Split order: order 1521169 also covers X"})
+        EV.copy_headers(
+            db,
+            None,
+            lh,
+            "v-1",
+            [
+                {
+                    "id": "inv-1",
+                    "purchaseOrderNumber": None,
+                },  # absent -> needs the note
+                {"id": "inv-2", "purchaseOrderNumber": "1520599"},  # already a match
+            ],
+        )
+        assert lh.fetched == ["inv-1"]
+
+    def test_an_unreadable_note_leaves_the_verdict_alone(self):
+        lh = _Lh({})  # every fetch raises
+        out = EV.copy_headers(
+            self._docs("1521169"),
+            None,
+            lh,
+            "v-1",
+            [{"id": "inv-1", "purchaseOrderNumber": None}],
+        )
+        assert out["inv-1"]["_po_verdict"] == "absent"
+
+
+class _SplitLh:
+    """`lh` for the split classifier: serves the sibling's detail and nothing
+    else. resolve_po_id is a LOOKUP and is stubbed; `_sibling_doubled_up` is
+    the RULE and runs for real, which is the part worth protecting."""
+
+    def __init__(self, sibling):
+        self.sibling = sibling
+
+    def invoice(self, invoice_id):
+        return self.sibling
+
+    def get(self, path):
+        return []
+
+
+SIB_LINES = [
+    {
+        "code": "A1",
+        "description": "Limes",
+        "quantityReceived": 3.0,
+        "unitCostExclTax": 7.42,
+    }
+]
+
+
+class TestTheSplitClassifier:
+    """Loaded is 1:1 PO<->invoice, so a split delivery leaves every invoice
+    after the first with an empty PO field. 13 of 18 blocked invoices at
+    Bessie & Engineers were splits (23 Aug 2026)."""
+
+    def _run(self, monkeypatch, *, resolved, sibling, own_lines):
+        monkeypatch.setattr(
+            "app.services.received_invoice.resolve_po_id",
+            lambda lh, number, supplier=None: resolved,
+        )
+        invoice = {"id": "inv-own", "linkedSupplierId": "sup-1", "lines": own_lines}
+        header = {"customer_purchase_order_number": "1521169", "total_incl_tax": 295.09}
+        return EV.split_verdict(_SplitLh(sibling), invoice, header)
+
+    def test_an_unresolvable_number_is_not_a_split(self, monkeypatch):
+        """Ocean's North prints 'Standing Order PO#631518146', which is no
+        Loaded order at all. Nothing to explain, and nothing to reconcile on."""
+        assert self._run(monkeypatch, resolved=None, sibling={}, own_lines=[]) is None
+
+    def test_the_orders_own_invoice_is_not_a_split(self, monkeypatch):
+        resolved = {
+            "id": "po-1",
+            "order_number": "1521169",
+            "linked_invoice_id": "inv-own",
+        }
+        assert (
+            self._run(monkeypatch, resolved=resolved, sibling={}, own_lines=[]) is None
+        )
+
+    def test_a_sibling_with_different_lines_is_a_split(self, monkeypatch):
+        resolved = {
+            "id": "po-1",
+            "order_number": "1521169",
+            "linked_invoice_id": "inv-sib",
+        }
+        sibling = {"referenceNumber": "IN11411819", "total": 175.47, "lines": SIB_LINES}
+        own = [
+            {
+                "code": "B2",
+                "description": "Lemons",
+                "quantityReceived": 9.0,
+                "unitCostExclTax": 2.0,
+            }
+        ]
+        kind, data = self._run(
+            monkeypatch, resolved=resolved, sibling=sibling, own_lines=own
+        )
+        assert kind == "split"
+        assert data["order_number"] == "1521169"
+        assert data["sibling_reference"] == "IN11411819"
+
+    def test_an_identical_sibling_is_doubled_up_not_a_split(self, monkeypatch):
+        """Same lines AND same total: the copy's number is bogus and this may
+        be a duplicate invoice. Must never reconcile on that basis."""
+        resolved = {
+            "id": "po-1",
+            "order_number": "1521169",
+            "linked_invoice_id": "inv-sib",
+        }
+        sibling = {"referenceNumber": "IN11411819", "total": 295.09, "lines": SIB_LINES}
+        own = [
+            {
+                "code": "A1",
+                "description": "Limes",
+                "quantityReceived": 3.0,
+                "unitCostExclTax": 7.42,
+            }
+        ]
+        kind, _ = self._run(
+            monkeypatch, resolved=resolved, sibling=sibling, own_lines=own
+        )
+        assert kind == "doubled_up"
+
+
+class TestSplitDetectionReachesTheVerdict:
+    def _headers(self, monkeypatch, *, resolved, sibling, own_lines, notes=""):
+        monkeypatch.setattr(
+            "app.services.received_invoice.resolve_po_id",
+            lambda lh, number, supplier=None: resolved,
+        )
+
+        class Lh(_SplitLh):
+            def invoice(self, invoice_id):
+                if invoice_id == "inv-1":
+                    return {
+                        "id": "inv-1",
+                        "notes": notes,
+                        "lines": own_lines,
+                        "linkedSupplierId": "sup-1",
+                    }
+                return self.sibling
+
+        db = _Db(
+            [
+                _Doc(
+                    "inv-1",
+                    {
+                        "customer_purchase_order_number": "1521169",
+                        "total_incl_tax": 295.09,
+                    },
+                )
+            ]
+        )
+        return EV.copy_headers(
+            db, None, Lh(sibling), "v-1", [{"id": "inv-1", "purchaseOrderNumber": None}]
+        )
+
+    def test_a_confirmed_split_reconciles_without_any_note(self, monkeypatch):
+        out = self._headers(
+            monkeypatch,
+            resolved={
+                "id": "po-1",
+                "order_number": "1521169",
+                "linked_invoice_id": "inv-sib",
+            },
+            sibling={
+                "referenceNumber": "IN11411819",
+                "total": 175.47,
+                "lines": SIB_LINES,
+            },
+            own_lines=[
+                {
+                    "code": "B2",
+                    "description": "Lemons",
+                    "quantityReceived": 9.0,
+                    "unitCostExclTax": 2.0,
+                }
+            ],
+        )
+        assert out["inv-1"]["_po_verdict"] == "match"
+        assert "split delivery" in out["inv-1"]["_po_note"]
+        assert out["inv-1"]["_split"]["kind"] == "split"
+
+    def test_a_doubled_up_is_reported_but_never_reconciled(self, monkeypatch):
+        out = self._headers(
+            monkeypatch,
+            resolved={
+                "id": "po-1",
+                "order_number": "1521169",
+                "linked_invoice_id": "inv-sib",
+            },
+            sibling={
+                "referenceNumber": "IN11411819",
+                "total": 295.09,
+                "lines": SIB_LINES,
+            },
+            own_lines=[
+                {
+                    "code": "A1",
+                    "description": "Limes",
+                    "quantityReceived": 3.0,
+                    "unitCostExclTax": 7.42,
+                }
+            ],
+        )
+        assert out["inv-1"]["_po_verdict"] == "absent"  # NOT reconciled
+        assert "possible duplicate" in out["inv-1"]["_po_note"]
+
+    def test_a_number_that_is_no_loaded_order_stays_blocked(self, monkeypatch):
+        out = self._headers(monkeypatch, resolved=None, sibling={}, own_lines=[])
+        assert out["inv-1"]["_po_verdict"] == "absent"
+
+
+class _WriteLh:
+    def __init__(self, detail):
+        self.detail = detail
+        self.puts = []
+
+    def invoice(self, invoice_id):
+        return dict(self.detail)
+
+    def request(self, method, path, body=None):
+        self.puts.append((method, path, body))
+        return body
+
+
+class TestRecordingASplit:
+    """The write half. Its whole design rests on one measured fact: a user's
+    Save on a received invoice KEEPS the note and WIPES the PO reference
+    (verified in the live Loaded UI, 25 Aug 2026). So the note is the record
+    and the reference is only a courtesy."""
+
+    BASE = {
+        "id": "inv-1",
+        "notes": None,
+        "purchaseOrderNumber": None,
+        "linkedPurchaseOrderId": None,
+        "total": 295.09,
+        "lines": [{"id": "l1"}],
+    }
+
+    def test_it_writes_the_note_and_the_reference(self):
+        lh = _WriteLh(self.BASE)
+        out = EV.record_split(lh, "inv-1", "1521169", "IN11411819")
+        body = lh.puts[0][2]
+        assert out == {"ok": True, "noted": True, "referenced": True}
+        assert body["notes"] == "Split order: order 1521169 also covers IN11411819"
+        assert body["purchaseOrderNumber"] == "1521169"
+
+    def test_it_never_links_the_order(self):
+        """Loaded is 1:1 — the link belongs to the sibling. Writing it here
+        would steal it from the invoice that legitimately holds it."""
+        lh = _WriteLh(self.BASE)
+        EV.record_split(lh, "inv-1", "1521169", "IN11411819")
+        assert lh.puts[0][2]["linkedPurchaseOrderId"] is None
+
+    def test_it_disturbs_nothing_else(self):
+        lh = _WriteLh(self.BASE)
+        EV.record_split(lh, "inv-1", "1521169", "IN11411819")
+        body = lh.puts[0][2]
+        assert body["total"] == 295.09 and body["lines"] == [{"id": "l1"}]
+
+    def test_it_is_idempotent(self):
+        """A daily run must not rewrite the same invoice forever."""
+        done = {
+            **self.BASE,
+            "notes": "Split order: order 1521169 also covers IN11411819",
+            "purchaseOrderNumber": "1521169",
+        }
+        lh = _WriteLh(done)
+        out = EV.record_split(lh, "inv-1", "1521169", "IN11411819")
+        assert out == {"ok": True, "unchanged": True}
+        assert lh.puts == []
+
+    def test_a_wiped_reference_is_restored_without_duplicating_the_note(self):
+        """The expected steady state: the user saved, the reference went, the
+        note stayed."""
+        lh = _WriteLh(
+            {**self.BASE, "notes": "Split order: order 1521169 also covers IN11411819"}
+        )
+        out = EV.record_split(lh, "inv-1", "1521169", "IN11411819")
+        assert out["referenced"] is True and out["noted"] is False
+        assert lh.puts[0][2]["notes"].count("Split order") == 1
+
+    def test_an_existing_human_note_is_kept(self):
+        lh = _WriteLh({**self.BASE, "notes": "Driver left it out back"})
+        EV.record_split(lh, "inv-1", "1521169", "IN11411819")
+        notes = lh.puts[0][2]["notes"]
+        assert notes.startswith("Driver left it out back")
+        assert "Split order: order 1521169" in notes
+
+    def test_the_note_it_writes_is_the_one_the_rule_reads(self):
+        """Receiving writes this sentence too; both must parse."""
+        lh = _WriteLh(self.BASE)
+        EV.record_split(lh, "inv-1", "1521169", "IN11411819")
+        assert EV.split_order_number(lh.puts[0][2]["notes"]) == "1521169"
+
+    def test_an_unreadable_invoice_writes_nothing(self):
+        lh = _WriteLh({})
+        out = EV.record_split(lh, "inv-1", "1521169", "IN11411819")
+        assert out["ok"] is False and lh.puts == []
+
+
 class TestThePoVerdict:
     def test_our_po_matching_loaded_reconciles(self):
         """IN11437546 — the named regression. Loaded 1520599, copy carrying
@@ -172,6 +520,65 @@ class TestThePoVerdict:
 
     def test_po_prefixes_and_spacing_do_not_matter(self):
         assert EV.po_verdict("PO# 1520599", HEADER)[0] == "match"
+
+    def test_a_split_delivery_reconciles_on_the_note(self):
+        """The live case, Bessie & Engineers 23 Aug 2026: IN11410669 has an
+        empty PO field because order 1521169 is linked to IN11411819, and
+        receiving recorded exactly that. 13 of 18 blocked invoices there were
+        splits, so this is the common shape, not an edge case."""
+        header = {"customer_purchase_order_number": "1521169"}
+        verdict, note = EV.po_verdict(
+            None, header, "Split order: order 1521169 also covers IN11411819"
+        )
+        assert verdict == "match"
+        assert "split delivery" in note and "1521169" in note
+
+    def test_a_split_note_for_a_DIFFERENT_order_does_not_reconcile(self):
+        """The note proves a split happened; the match proves it is THIS
+        invoice's split. Without the second half, any invoice carrying any
+        split note would reconcile against any copy."""
+        header = {"customer_purchase_order_number": "1521169"}
+        verdict, _ = EV.po_verdict(
+            None, header, "Split order: order 9999999 also covers IN11411819"
+        )
+        assert verdict == "absent"
+
+    def test_a_note_cannot_rescue_an_invoice_whose_po_loaded_holds(self):
+        """The split route is only for an EMPTY Loaded PO. A genuine mismatch
+        must never be talked round by a note."""
+        verdict, _ = EV.po_verdict(
+            "1520600", HEADER, "Split order: order 1520599 also covers X"
+        )
+        assert verdict == "mismatch"
+
+    def test_the_suppliers_number_also_satisfies_the_split_match(self):
+        header = {"supplier_order_number": "ORD10658598"}
+        verdict, _ = EV.po_verdict(
+            None, header, "Split order: order ORD10658598 also covers X"
+        )
+        assert verdict == "match"
+
+    def test_unrelated_notes_change_nothing(self):
+        for note in (
+            "",
+            None,
+            "Delivered to back door",
+            "Split order: also invoiced on X",
+        ):
+            assert EV.po_verdict(None, HEADER, note)[0] == "absent"
+
+    def test_the_note_parser_reads_the_format_receiving_writes(self):
+        # services/received_invoice.py: f"Split order: order {n} also covers {ref}"
+        assert (
+            EV.split_order_number("Split order: order 1521169 also covers IN11411819")
+            == "1521169"
+        )
+        assert (
+            EV.split_order_number("note\nSplit order: order PO#123 also covers Y")
+            == "PO#123"
+        )
+        assert EV.split_order_number("Split order: also invoiced on IN123") is None
+        assert EV.split_order_number(None) is None
 
     def test_nothing_on_either_side(self):
         verdict, note = EV.po_verdict(None, {})

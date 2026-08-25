@@ -334,10 +334,14 @@ class TestPoSplitValidator:
         assert doc["purchase_order_number"] == "1521145"
         assert any("split across deliveries" in e for e in doc["resolution_log"])
 
-    def test_doubled_up_removes_the_reference(self):
-        # Sibling already carries the SAME lines and total → not a split:
-        # the reference is bogus and the replica drops it.
-        sibling = {
+    def _sibling(self, cost_field):
+        """Loaded returns the line cost under DIFFERENT names depending on the
+        endpoint: `unitCostExclTax` on the invoice detail (which is what the
+        classifier actually receives) and `unitCost` on the received-invoice
+        feed. This fixture only carried `unitCost`, so the cost check could
+        never pass against a real sibling and doubled-up was never detected —
+        verified against live invoices in two venues, 25 Aug 2026."""
+        return {
             "referenceNumber": "INV-1111",
             "total": EXTRACTION["total_incl_tax"],
             "lines": [
@@ -345,14 +349,38 @@ class TestPoSplitValidator:
                     "code": "PBO0.7",
                     "description": "Salmon Fillet Skin On",
                     "quantityReceived": 4.95,
-                    "unitCost": 44.4,
+                    cost_field: 44.4,
                 }
             ],
         }
-        doc = _build(self.EXT, lh=_PoLh("inv-sib", sibling), own_invoice_id="inv-own")
+
+    def test_doubled_up_removes_the_reference(self):
+        # Sibling already carries the SAME lines and total → not a split:
+        # the reference is bogus and the replica drops it.
+        doc = _build(
+            self.EXT,
+            lh=_PoLh("inv-sib", self._sibling("unitCostExclTax")),
+            own_invoice_id="inv-own",
+        )
         assert doc["linked_purchase_order_id"] is None
         assert doc["purchase_order_number"] is None
         assert any("doubled-up" in e for e in doc["resolution_log"])
+
+    def test_the_feed_spelling_of_the_cost_is_also_understood(self):
+        doc = _build(
+            self.EXT,
+            lh=_PoLh("inv-sib", self._sibling("unitCost")),
+            own_invoice_id="inv-own",
+        )
+        assert any("doubled-up" in e for e in doc["resolution_log"])
+
+    def test_a_different_cost_is_a_split_not_a_doubled_up(self):
+        """The check must still DISCRIMINATE — reading the right field is only
+        useful if a genuine difference is still seen."""
+        sib = self._sibling("unitCostExclTax")
+        sib["lines"][0]["unitCostExclTax"] = 99.99
+        doc = _build(self.EXT, lh=_PoLh("inv-sib", sib), own_invoice_id="inv-own")
+        assert doc["purchase_order_number"] is not None
 
 
 class TestCopyUnitPrecedence:

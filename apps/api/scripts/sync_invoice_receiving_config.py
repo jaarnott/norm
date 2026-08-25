@@ -265,6 +265,10 @@ RECONCILE_CONSOLIDATOR_TOOL = {
             # each invoice and reads fresh only what is missing — with that
             # supplier's own spec instructions, onto the same cache row.
             "invoice_copy_evidence",
+            # Reconciliation's only write to an invoice: the durable split note
+            # plus a best-effort PO reference. Gated by the run mode in
+            # function_code — approve_all reports the fix and writes nothing.
+            "record_split_order",
         ],
     },
     # NOTE: deliberately NO display_component. A display block triggers the
