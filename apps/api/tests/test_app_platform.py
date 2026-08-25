@@ -83,12 +83,12 @@ def _version(db, app, spec, author, **over):
 
 
 READ_SPEC = {
-    "actions": [{"connector": "loadedhub", "action": "get_sales_for_period"}],
+    "actions": [{"connector": "loadedhub", "action": "get_sales"}],
     "scopes": ["mcp:reports:read"],
 }
 WRITE_SPEC = {
     "actions": [
-        {"connector": "loadedhub", "action": "get_sales_for_period"},
+        {"connector": "loadedhub", "action": "get_sales"},
         {"connector": "loadedhub", "action": "place_order"},
     ],
     "writes": [{"connector": "loadedhub", "action": "place_order"}],
@@ -118,7 +118,7 @@ def _call(db, config_db, app, version, user, **over):
         user=user,
         venue_id=None,
         connector="loadedhub",
-        action="get_sales_for_period",
+        action="get_sales",
         params={},
     )
     kwargs.update(over)
@@ -601,7 +601,7 @@ class TestLogicGoesThroughTheDoor:
         app = _app(db_session, org, author)
         code = (
             "def run(params, call_api, log):\n"
-            "    return call_api('loadedhub', 'get_sales_for_period', {})\n"
+            "    return call_api('loadedhub', 'get_sales', {})\n"
         )
         v = _version(db_session, app, READ_SPEC, author, logic_source=code)
         monkeypatch.setattr(AR, "_tool_method", lambda *a: "GET")
@@ -779,7 +779,7 @@ class TestSpecValidation:
                 author,
                 {
                     "name": "Bad actions",
-                    "spec": {"actions": ["get_sales_for_period"], "scopes": []},
+                    "spec": {"actions": ["get_sales"], "scopes": []},
                     "ui_source": "<div/>",
                 },
             )

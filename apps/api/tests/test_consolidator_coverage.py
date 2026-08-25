@@ -38,7 +38,7 @@ def _bind(db, connector, agent="reports", caps=None):
 
 TOOLS = [
     {
-        "action": "get_sales_for_period",
+        "action": "get_sales",
         "read_only": True,
         "consolidator_config": {"function_code": "def run(p, c, l): return {}"},
     },
@@ -69,7 +69,7 @@ class TestClassificationAndLeaks:
             cc, "_usage", lambda db, days: {"fakehub__get_sales_data": 66}
         )
         monkeypatch.setitem(
-            cc._SUPERSEDES, "fakehub", {"get_sales_data": "get_sales_for_period"}
+            cc._SUPERSEDES, "fakehub", {"get_sales_data": "get_sales"}
         )
         _spec(db_session, tools=TOOLS)
         _bind(
@@ -81,7 +81,7 @@ class TestClassificationAndLeaks:
         c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
         assert [leak["action"] for leak in c["leaks"]] == ["get_sales_data"]
         leak = c["leaks"][0]
-        assert leak["superseded_by"] == "get_sales_for_period"
+        assert leak["superseded_by"] == "get_sales"
         assert leak["agents"] == ["reports"]
         assert leak["calls_30d"] == 66
         # the unrelated raw tool is backlog, not a leak
@@ -91,7 +91,7 @@ class TestClassificationAndLeaks:
         monkeypatch.setattr(cc, "_canonical_files", lambda: {})
         monkeypatch.setattr(cc, "_usage", lambda db, days: {})
         monkeypatch.setitem(
-            cc._SUPERSEDES, "fakehub", {"get_sales_data": "get_sales_for_period"}
+            cc._SUPERSEDES, "fakehub", {"get_sales_data": "get_sales"}
         )
         _spec(db_session, tools=TOOLS)  # no bindings at all
         report = cc.coverage_report(db_session, db_session)
@@ -130,12 +130,12 @@ class TestDrift:
         monkeypatch.setattr(
             cc,
             "_canonical_files",
-            lambda: {"get_sales_for_period": "def run(p, c, l): return 1"},
+            lambda: {"get_sales": "def run(p, c, l): return 1"},
         )
         monkeypatch.setattr(cc, "_usage", lambda db, days: {})
         tools = [
             {
-                "action": "get_sales_for_period",
+                "action": "get_sales",
                 "consolidator_config": {"function_code": "DIFFERENT"},
             },
             {
@@ -148,21 +148,21 @@ class TestDrift:
         c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
         states = {d["action"]: d["state"] for d in c["drift"]}
         assert states == {
-            "get_sales_for_period": "differs_from_file",
+            "get_sales": "differs_from_file",
             "get_other": "no_canonical_file",
         }
 
     def test_matching_code_is_clean(self, db_session, monkeypatch):
         code = "def run(p, c, l): return 1"
         monkeypatch.setattr(
-            cc, "_canonical_files", lambda: {"get_sales_for_period": code}
+            cc, "_canonical_files", lambda: {"get_sales": code}
         )
         monkeypatch.setattr(cc, "_usage", lambda db, days: {})
         _spec(
             db_session,
             tools=[
                 {
-                    "action": "get_sales_for_period",
+                    "action": "get_sales",
                     "consolidator_config": {"function_code": code},
                 }
             ],
@@ -183,7 +183,7 @@ class TestDrift:
             db_session,
             tools=[
                 {
-                    "action": "get_sales_for_period",
+                    "action": "get_sales",
                     "consolidator_config": {"function_code": code, "wraps": "x"},
                 },
                 {

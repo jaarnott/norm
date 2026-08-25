@@ -36,7 +36,7 @@ _CONSOLIDATORS_DIR = (
 #: automatically; this map carries the exceptions.
 _SUPERSEDES: dict[str, dict[str, str]] = {
     "loadedhub": {
-        "get_sales_data": "get_sales_for_period",
+        "get_sales_data": "get_sales",
         "get_pos_orders": "get_pos_orders_for_period",
         "get_received_invoices": "get_received_items_for_period",
         "get_roster": "get_roster_for_period",
@@ -44,10 +44,10 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
         "get_timeclock_entries": "get_timeclock_entries_for_period",
         "get_cogs_detail": "get_cogs_detail_for_period",
         "get_completed_stocktakes": "get_completed_stocktakes_for_period",
-        "get_pos_item_sales": "get_pos_item_sales_for_period",
-        "get_staff_orders": "get_staff_orders_for_period",
-        "get_staff_item_orders": "get_staff_item_orders_for_period",
-        "get_pos_discounts": "get_pos_discounts_for_period",
+        "get_pos_item_sales": "get_sales",
+        "get_staff_orders": "get_sales",
+        "get_staff_item_orders": "get_sales",
+        "get_pos_discounts": "get_sales",
         "get_all_recipes": "get_recipes",
         "get_recipe_details": "get_recipes",
         "get_stock_item_full": "get_stock_items",

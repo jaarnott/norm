@@ -45,11 +45,11 @@ def test_json_output_carries_every_extra_field(capsys):
         capsys,
         "json",
         "mcp_tool_call",
-        {"mcp_tool": "loadedhub__get_sales_for_period", "duration_ms": 412},
+        {"mcp_tool": "loadedhub__get_sales", "duration_ms": 412},
     )
     payload = json.loads(out.strip().splitlines()[-1])
     assert payload["event"] == "mcp_tool_call"
-    assert payload["mcp_tool"] == "loadedhub__get_sales_for_period"
+    assert payload["mcp_tool"] == "loadedhub__get_sales"
     assert payload["duration_ms"] == 412
 
 

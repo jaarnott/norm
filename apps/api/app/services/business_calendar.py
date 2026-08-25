@@ -77,19 +77,35 @@ class Window:
         hh, mm = _parse_hhmm(self.day_start)
         return (self.start.hour, self.start.minute) == (hh, mm)
 
+    @property
+    def is_incomplete(self) -> bool:
+        """Whether the window extends beyond now — figures are partial.
+
+        A Sunday-so-far presented as a finished day is how a partial week
+        gets quoted as a result (thread b9bda2c1, 23 Aug 2026); every tool
+        that states its window inherits this flag automatically.
+        """
+        return self.end > dt.datetime.now(self.end.tzinfo or dt.timezone.utc)
+
     def describe(self) -> str:
         """One line a human (or an LLM relaying to one) can check against."""
         fmt = "%a %d %b %H:%M"
         base = f"{self.start.strftime(fmt)} → {self.end.strftime(fmt)} {self.timezone}"
+        suffix = (
+            " (in progress — includes the current trading day, figures are partial)"
+            if self.is_incomplete
+            else ""
+        )
         if self.kind == "custom" and not self.is_trading_aligned:
             return (
                 f"Custom window — {base}. Not a trading day: the venue's day "
-                f"starts at {self.day_start}, so this splits a trading session."
+                f"starts at {self.day_start}, so this splits a trading "
+                f"session.{suffix}"
             )
-        return f"{self.label} — {base}"
+        return f"{self.label} — {base}{suffix}"
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
             "kind": self.kind,
@@ -99,6 +115,12 @@ class Window:
             "trading_aligned": self.is_trading_aligned,
             "description": self.describe(),
         }
+        if self.is_incomplete:
+            out["incomplete"] = True
+            out["through"] = dt.datetime.now(
+                self.end.tzinfo or dt.timezone.utc
+            ).isoformat(timespec="seconds")
+        return out
 
 
 # ── Venue settings ───────────────────────────────────────────────────────
@@ -330,6 +352,16 @@ def resolve_phrase(
         "next week": lambda: trading_week(venue, moment, 1),
         "this month": lambda: trading_month(venue, moment, 0),
         "last month": lambda: trading_month(venue, moment, -1),
+        # Year-on-year anchors are DETERMINISTIC: the LLM resolver answered
+        # "same week last year" two different ways within one conversation
+        # (25 Aug vs 18 Aug 2025 — two YoY baselines in one thread,
+        # b9bda2c1, 23 Aug 2026). 52 trading weeks back keeps the weekday
+        # alignment a like-for-like comparison needs.
+        "same week last year": lambda: trading_week(venue, moment, -52),
+        "this week last year": lambda: trading_week(venue, moment, -52),
+        "last week last year": lambda: trading_week(venue, moment, -53),
+        "same day last year": lambda: trading_day(venue, moment, -364),
+        "this day last year": lambda: trading_day(venue, moment, -364),
     }
     handler = handlers.get(key)
     if handler:

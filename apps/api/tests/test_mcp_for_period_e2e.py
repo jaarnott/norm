@@ -98,7 +98,7 @@ def wired(db_session, monkeypatch):
     m = _sync_module()
     function_code = m.FUNCTION_CODE_PATH.read_text(encoding="utf-8")
     tool = m.tool_for(
-        "get_sales_for_period",
+        "get_pos_orders_for_period",
         "get_sales_data",
         "start_datetime",
         "end_datetime",
@@ -164,7 +164,7 @@ def wired(db_session, monkeypatch):
                 connector_name="loadedhub",
                 capabilities=[
                     {"action": "get_sales_data", "enabled": True},
-                    {"action": "get_sales_for_period", "enabled": True},
+                    {"action": "get_pos_orders_for_period", "enabled": True},
                 ],
                 enabled=True,
             ),
@@ -177,7 +177,7 @@ def wired(db_session, monkeypatch):
             McpCapability(
                 kind="connector",
                 target="loadedhub",
-                action="get_sales_for_period",
+                action="get_pos_orders_for_period",
                 scopes=["mcp:reports:read"],
                 enabled=True,
             ),
@@ -234,7 +234,7 @@ def _ctx(wired):
 class TestForPeriodEndToEnd:
     def test_the_tool_is_published(self, wired):
         names = {t["name"] for t in _ctx(wired).list_tools()}
-        assert "loadedhub__get_sales_for_period" in names
+        assert "loadedhub__get_pos_orders_for_period" in names
 
     def test_the_schema_lets_the_caller_supply_what_the_wrapped_action_needs(
         self, wired
@@ -244,7 +244,7 @@ class TestForPeriodEndToEnd:
         tool = next(
             t
             for t in _ctx(wired).list_tools()
-            if t["name"] == "loadedhub__get_sales_for_period"
+            if t["name"] == "loadedhub__get_pos_orders_for_period"
         )
         props = tool["inputSchema"]["properties"]
         assert "interval" in props
@@ -267,13 +267,13 @@ class TestForPeriodEndToEnd:
         tool = next(
             t
             for t in ctx.list_tools()
-            if t["name"] == "loadedhub__get_sales_for_period"
+            if t["name"] == "loadedhub__get_pos_orders_for_period"
         )
         args = {"period": "yesterday"}
         for field in tool["inputSchema"].get("required", []):
             args[field] = "1.00:00:00"
 
-        out = ctx.call_tool("loadedhub__get_sales_for_period", args)
+        out = ctx.call_tool("loadedhub__get_pos_orders_for_period", args)
         assert not out.get("isError"), out
 
         assert sent, "the wrapped action was never reached"
@@ -288,7 +288,7 @@ class TestForPeriodEndToEnd:
 
         _stub_upstream(monkeypatch, [])
         out = _ctx(wired).call_tool(
-            "loadedhub__get_sales_for_period",
+            "loadedhub__get_pos_orders_for_period",
             {"period": "yesterday", "interval": "1.00:00:00"},
         )
         body = json.loads(out["content"][0]["text"])

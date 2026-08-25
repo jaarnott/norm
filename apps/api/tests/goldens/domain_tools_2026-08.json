@@ -1,0 +1,711 @@
+{
+ "_meta": {
+  "captured_at": "2026-08-24T17:21:45+00:00",
+  "monthly": {
+   "label": "July 2026",
+   "note": "'last month' is deterministic locally; it means July 2026 only while it is August 2026 \u2014 the stored window is the truth",
+   "phrase": "last month"
+  },
+  "source": "scripts/capture_domain_goldens.py",
+  "tolerance": "engine-computed sums must match exactly; the hourly sales feed rounds to dollars, so daily/total sales comparisons allow \u00b1$3",
+  "venues": [
+   "La Zeppa",
+   "Bessie & Royals"
+  ],
+  "weekly_periods": [
+   "week beginning 10 August 2026",
+   "week beginning 3 August 2026"
+  ]
+ },
+ "goldens": {
+  "Bessie & Royals": {
+   "July 2026": {
+    "_period_phrase": "last month",
+    "budget": {
+     "daily": {
+      "2026-07-01": 6500.0,
+      "2026-07-02": 7500.0,
+      "2026-07-03": 12000.0,
+      "2026-07-04": 13500.0,
+      "2026-07-05": 6500.0,
+      "2026-07-06": 6500.0,
+      "2026-07-07": 6500.0,
+      "2026-07-08": 6500.0,
+      "2026-07-09": 8000.0,
+      "2026-07-10": 11000.0,
+      "2026-07-11": 12000.0,
+      "2026-07-12": 6500.0,
+      "2026-07-13": 6500.0,
+      "2026-07-14": 6500.0,
+      "2026-07-15": 6500.0,
+      "2026-07-16": 9000.0,
+      "2026-07-17": 12000.0,
+      "2026-07-18": 16000.0,
+      "2026-07-19": 8000.0,
+      "2026-07-20": 6500.0,
+      "2026-07-21": 6500.0,
+      "2026-07-22": 6500.0,
+      "2026-07-23": 8000.0,
+      "2026-07-24": 12000.0,
+      "2026-07-25": 14000.0,
+      "2026-07-26": 8000.0,
+      "2026-07-27": 7000.0,
+      "2026-07-28": 7000.0,
+      "2026-07-29": 7000.0,
+      "2026-07-30": 8000.0,
+      "2026-07-31": 17000.0
+     },
+     "total": 275000.0
+    },
+    "sales": {
+     "daily": {
+      "2026-07-01": 302021.0
+     },
+     "total": 302021.0
+    },
+    "window": {
+     "end": "2026-08-01T06:59:59+12:00",
+     "start": "2026-07-01T07:00:00+12:00"
+    }
+   },
+   "week beginning 10 August 2026": {
+    "attendance": {
+     "row_count": 24,
+     "totals": {
+      "actual_cost": 16385.38,
+      "actual_hours": 515.32,
+      "leave_cost": 714.0,
+      "leave_hours": 26.0,
+      "rostered_cost": 15782.33,
+      "rostered_hours": 503.25,
+      "variance": 12.07
+     }
+    },
+    "budget": {
+     "daily": {
+      "2026-08-10": 7000.0,
+      "2026-08-11": 7000.0,
+      "2026-08-12": 7000.0,
+      "2026-08-13": 10000.0,
+      "2026-08-14": 12000.0,
+      "2026-08-15": 12000.0,
+      "2026-08-16": 7000.0
+     },
+     "total": 62000.0
+    },
+    "discounts": {
+     "amount_total": 3164.25,
+     "count_total": 199,
+     "row_count": 7
+    },
+    "item_sales": {
+     "amount_total": 73535.49,
+     "quantity_total": 6106.0,
+     "row_count": 197,
+     "top10": [
+      {
+       "amount": 5125.0,
+       "name": "350g Dry Aged Ribeye",
+       "quantity": 41
+      },
+      {
+       "amount": 4140.0,
+       "name": "600g Tomahawk",
+       "quantity": 42
+      },
+      {
+       "amount": 4136.0,
+       "name": "Eye Fillet",
+       "quantity": 87.99999999999999
+      },
+      {
+       "amount": 3572.0,
+       "name": "Grass-Fed Ribeye",
+       "quantity": 76.00000000000004
+      },
+      {
+       "amount": 2213.99,
+       "name": "Duck Fat Potatoes",
+       "quantity": 123.00000000000001
+      },
+      {
+       "amount": 2142.0,
+       "name": "Lamb Tenderloin",
+       "quantity": 42
+      },
+      {
+       "amount": 1911.0,
+       "name": "GRM Wagyu Eye Fillet",
+       "quantity": 3185
+      },
+      {
+       "amount": 1767.0,
+       "name": "Dry Aged Ribeye",
+       "quantity": 19
+      },
+      {
+       "amount": 1690.0,
+       "name": "Lamb Shoulder",
+       "quantity": 13
+      },
+      {
+       "amount": 1380.0,
+       "name": "Tomahawk",
+       "quantity": 10
+      }
+     ]
+    },
+    "periodic_dinner": {
+     "daily": {
+      "Friday 14 Aug 2026": 12238.0,
+      "Monday 10 Aug 2026": 5329.0,
+      "Saturday 15 Aug 2026": 14351.0,
+      "Sunday 16 Aug 2026": 5710.0,
+      "Thursday 13 Aug 2026": 7349.0,
+      "Tuesday 11 Aug 2026": 8547.0,
+      "Wednesday 12 Aug 2026": 7718.0
+     },
+     "total": 61242.0
+    },
+    "roster_vs_actual": {
+     "row_count": 7,
+     "sums": {
+      "actualCost": 16385.38,
+      "actualHours": 515.3,
+      "rosteredCost": 15782.33,
+      "rosteredHours": 503.25
+     }
+    },
+    "sales": {
+     "daily": {
+      "2026-08-10": 5814.0,
+      "2026-08-11": 9199.0,
+      "2026-08-12": 7719.0,
+      "2026-08-13": 8306.0,
+      "2026-08-14": 16710.0,
+      "2026-08-15": 16570.0,
+      "2026-08-16": 5747.0
+     },
+     "total": 70065.0
+    },
+    "staff_orders": {
+     "amount_total": 73768.99,
+     "by_staff": {
+      "A Ollie": 3015.5,
+      "Aliana [NO NAME]": 786.0,
+      "CHLOE [NO NAME]": 733.5,
+      "Emma [NO NAME]": 7224.5,
+      "Evie [NO NAME]": 8211.0,
+      "Georgia [NO NAME]": 20205.99,
+      "Grace [NO NAME]": 1737.5,
+      "James [NO NAME]": 3010.0,
+      "LUANA [NO NAME]": 4226.5,
+      "Lawson [NO NAME]": 24618.5
+     },
+     "quantity_total": 782,
+     "row_count": 10
+    },
+    "timeclock": {
+     "row_count": 102,
+     "totalCost": 17099.38,
+     "totalHours": 541.32
+    },
+    "window": {
+     "end": "2026-08-17T06:59:59+12:00",
+     "start": "2026-08-10T07:00:00+12:00"
+    }
+   },
+   "week beginning 3 August 2026": {
+    "attendance": {
+     "row_count": 26,
+     "totals": {
+      "actual_cost": 16504.16,
+      "actual_hours": 526.7,
+      "leave_cost": 1638.0,
+      "leave_hours": 63.0,
+      "rostered_cost": 15289.03,
+      "rostered_hours": 488.75,
+      "variance": 37.95
+     }
+    },
+    "budget": {
+     "daily": {
+      "2026-08-03": 7000.0,
+      "2026-08-04": 7000.0,
+      "2026-08-05": 7000.0,
+      "2026-08-06": 8000.0,
+      "2026-08-07": 12000.0,
+      "2026-08-08": 16000.0,
+      "2026-08-09": 8000.0
+     },
+     "total": 65000.0
+    },
+    "discounts": {
+     "amount_total": 4346.5,
+     "count_total": 266,
+     "row_count": 7
+    },
+    "item_sales": {
+     "amount_total": 77634.51,
+     "quantity_total": 3522.0,
+     "row_count": 210,
+     "top10": [
+      {
+       "amount": 6125.0,
+       "name": "350g Dry Aged Ribeye",
+       "quantity": 49
+      },
+      {
+       "amount": 4182.99,
+       "name": "Grass-Fed Ribeye",
+       "quantity": 89.00000000000003
+      },
+      {
+       "amount": 3806.99,
+       "name": "Eye Fillet",
+       "quantity": 81
+      },
+      {
+       "amount": 3174.0,
+       "name": "Tomahawk",
+       "quantity": 22.999999999999996
+      },
+      {
+       "amount": 3114.0,
+       "name": "1KG Tomahawk",
+       "quantity": 18
+      },
+      {
+       "amount": 2322.0,
+       "name": "Duck Fat Potatoes",
+       "quantity": 129
+      },
+      {
+       "amount": 1900.0,
+       "name": "Red Devon Ribeye",
+       "quantity": 19.999999999999993
+      },
+      {
+       "amount": 1824.0,
+       "name": "Half Doz Oysters",
+       "quantity": 38
+      },
+      {
+       "amount": 1820.0,
+       "name": "Lamb Shoulder",
+       "quantity": 14
+      },
+      {
+       "amount": 1785.0,
+       "name": "Lamb Tenderloin",
+       "quantity": 35
+      }
+     ]
+    },
+    "periodic_dinner": {
+     "daily": {
+      "Friday 07 Aug 2026": 8512.0,
+      "Monday 03 Aug 2026": 5329.0,
+      "Saturday 08 Aug 2026": 13572.0,
+      "Sunday 09 Aug 2026": 8076.0,
+      "Thursday 06 Aug 2026": 6424.0,
+      "Tuesday 04 Aug 2026": 6442.0,
+      "Wednesday 05 Aug 2026": 9868.0
+     },
+     "total": 58223.0
+    },
+    "roster_vs_actual": {
+     "row_count": 7,
+     "sums": {
+      "actualCost": 16504.16,
+      "actualHours": 526.72,
+      "rosteredCost": 15289.03,
+      "rosteredHours": 488.75
+     }
+    },
+    "sales": {
+     "daily": {
+      "2026-08-03": 7604.0,
+      "2026-08-04": 7687.0,
+      "2026-08-05": 10149.0,
+      "2026-08-06": 7320.0,
+      "2026-08-07": 13147.0,
+      "2026-08-08": 19232.0,
+      "2026-08-09": 8076.0
+     },
+     "total": 73215.0
+    },
+    "staff_orders": {
+     "amount_total": 77954.51,
+     "by_staff": {
+      "A Ollie": 8630.01,
+      "Aliana [NO NAME]": 387.0,
+      "CHLOE [NO NAME]": 1415.0,
+      "Clio [NO NAME]": 1538.0,
+      "Emma [NO NAME]": 1454.5,
+      "Evie [NO NAME]": 5140.5,
+      "Georgia [NO NAME]": 26701.01,
+      "Grace [NO NAME]": 3285.5,
+      "James [NO NAME]": 2324.0,
+      "LUANA [NO NAME]": 5683.5,
+      "Lawson [NO NAME]": 21395.49
+     },
+     "quantity_total": 805,
+     "row_count": 11
+    },
+    "timeclock": {
+     "row_count": 107,
+     "totalCost": 18142.16,
+     "totalHours": 589.72
+    },
+    "window": {
+     "end": "2026-08-10T06:59:59+12:00",
+     "start": "2026-08-03T07:00:00+12:00"
+    }
+   }
+  },
+  "La Zeppa": {
+   "July 2026": {
+    "_period_phrase": "last month",
+    "budget": {
+     "daily": {
+      "2026-07-01": 5000.0,
+      "2026-07-02": 11000.0,
+      "2026-07-03": 8000.0,
+      "2026-07-04": 11000.0,
+      "2026-07-05": 1000.0,
+      "2026-07-06": 1000.0,
+      "2026-07-07": 1000.0,
+      "2026-07-08": 2500.0,
+      "2026-07-09": 6000.0,
+      "2026-07-11": 5000.0,
+      "2026-07-12": 1500.0,
+      "2026-07-13": 1500.0,
+      "2026-07-14": 1000.0,
+      "2026-07-15": 2500.0,
+      "2026-07-16": 2500.0,
+      "2026-07-17": 7000.0,
+      "2026-07-18": 9000.0,
+      "2026-07-19": 1500.0,
+      "2026-07-20": 1000.0,
+      "2026-07-21": 1000.0,
+      "2026-07-22": 3000.0,
+      "2026-07-23": 3000.0,
+      "2026-07-24": 6000.0,
+      "2026-07-25": 9000.0,
+      "2026-07-26": 1500.0,
+      "2026-07-27": 1500.0,
+      "2026-07-28": 1500.0,
+      "2026-07-29": 2000.0,
+      "2026-07-30": 4000.0,
+      "2026-07-31": 9000.0
+     },
+     "total": 120500.0
+    },
+    "sales": {
+     "daily": {
+      "2026-07-01": 136254.0
+     },
+     "total": 136254.0
+    },
+    "window": {
+     "end": "2026-08-01T06:59:59+12:00",
+     "start": "2026-07-01T07:00:00+12:00"
+    }
+   },
+   "week beginning 10 August 2026": {
+    "attendance": {
+     "row_count": 20,
+     "totals": {
+      "actual_cost": 10728.98,
+      "actual_hours": 296.26,
+      "leave_cost": 1185.0,
+      "leave_hours": 38.0,
+      "rostered_cost": 10387.15,
+      "rostered_hours": 287.75,
+      "variance": 8.51
+     }
+    },
+    "budget": {
+     "daily": {
+      "2026-08-10": 2000.0,
+      "2026-08-11": 2000.0,
+      "2026-08-12": 3000.0,
+      "2026-08-13": 3000.0,
+      "2026-08-14": 6000.0,
+      "2026-08-15": 9000.0,
+      "2026-08-16": 2000.0
+     },
+     "total": 27000.0
+    },
+    "discounts": {
+     "amount_total": 3174.76,
+     "count_total": 334,
+     "row_count": 10
+    },
+    "item_sales": {
+     "amount_total": 24794.99,
+     "quantity_total": 1353.5,
+     "row_count": 183,
+     "top10": [
+      {
+       "amount": 1695.0,
+       "name": "Peroni (Standard)",
+       "quantity": 113
+      },
+      {
+       "amount": 1127.0,
+       "name": "Wagyu Bavette",
+       "quantity": 23
+      },
+      {
+       "amount": 819.0,
+       "name": "Shoestring Fries",
+       "quantity": 58.50000000000001
+      },
+      {
+       "amount": 704.0,
+       "name": "Fried Chicken & Hot Honey ",
+       "quantity": 31.999999999999996
+      },
+      {
+       "amount": 660.0,
+       "name": "Baked Polenta",
+       "quantity": 12
+      },
+      {
+       "amount": 516.0,
+       "name": "Market Fish 2026",
+       "quantity": 12
+      },
+      {
+       "amount": 510.0,
+       "name": "Pork Cheek",
+       "quantity": 15
+      },
+      {
+       "amount": 490.0,
+       "name": "Cacio e Pepe 2026",
+       "quantity": 14
+      },
+      {
+       "amount": 416.0,
+       "name": "Trevally Crudo 2026",
+       "quantity": 16
+      },
+      {
+       "amount": 406.0,
+       "name": "Pint Panhead Sandman Hazy",
+       "quantity": 28
+      }
+     ]
+    },
+    "periodic_dinner": {
+     "daily": {
+      "Friday 14 Aug 2026": 2894.0,
+      "Monday 10 Aug 2026": 1579.0,
+      "Saturday 15 Aug 2026": 3525.0,
+      "Sunday 16 Aug 2026": 472.0,
+      "Thursday 13 Aug 2026": 1889.0,
+      "Tuesday 11 Aug 2026": 1631.0,
+      "Wednesday 12 Aug 2026": 4248.0
+     },
+     "total": 16238.0
+    },
+    "roster_vs_actual": {
+     "row_count": 7,
+     "sums": {
+      "actualCost": 10217.52,
+      "actualHours": 296.24,
+      "rosteredCost": 9875.89,
+      "rosteredHours": 287.75
+     }
+    },
+    "sales": {
+     "daily": {
+      "2026-08-10": 1727.0,
+      "2026-08-11": 1840.0,
+      "2026-08-12": 5016.0,
+      "2026-08-13": 2338.0,
+      "2026-08-14": 5125.0,
+      "2026-08-15": 4881.0,
+      "2026-08-16": 557.0
+     },
+     "total": 21484.0
+    },
+    "staff_orders": {
+     "amount_total": 24975.99,
+     "by_staff": {
+      "Annabelle [NO NAME]": 122.0,
+      "Arthur [NO NAME]": 2500.0,
+      "Daniel [NO NAME]": 197.0,
+      "Elena [NO NAME]": 3645.5,
+      "Josh [NO NAME]": 5178.0,
+      "Juanita [NO NAME]": 1962.5,
+      "Maxime [NO NAME]": 7347.24,
+      "Nat [NO NAME]": 2631.25,
+      "Stef [NO NAME]": 649.5,
+      "Tamsyn [NO NAME]": 743.0
+     },
+     "quantity_total": 426,
+     "row_count": 10
+    },
+    "timeclock": {
+     "row_count": 71,
+     "totalCost": 11913.98,
+     "totalHours": 334.23
+    },
+    "window": {
+     "end": "2026-08-17T06:59:59+12:00",
+     "start": "2026-08-10T07:00:00+12:00"
+    }
+   },
+   "week beginning 3 August 2026": {
+    "attendance": {
+     "row_count": 19,
+     "totals": {
+      "actual_cost": 10925.07,
+      "actual_hours": 302.52,
+      "leave_cost": 567.0,
+      "leave_hours": 14.5,
+      "rostered_cost": 10520.45,
+      "rostered_hours": 291.25,
+      "variance": 11.27
+     }
+    },
+    "budget": {
+     "daily": {
+      "2026-08-03": 1000.0,
+      "2026-08-04": 1500.0,
+      "2026-08-05": 3000.0,
+      "2026-08-06": 3000.0,
+      "2026-08-07": 7000.0,
+      "2026-08-08": 9000.0,
+      "2026-08-09": 1500.0
+     },
+     "total": 26000.0
+    },
+    "discounts": {
+     "amount_total": 5937.55,
+     "count_total": 591,
+     "row_count": 9
+    },
+    "item_sales": {
+     "amount_total": 25272.0,
+     "quantity_total": 1365.0,
+     "row_count": 180,
+     "top10": [
+      {
+       "amount": 945.0,
+       "name": "Peroni (Standard)",
+       "quantity": 63
+      },
+      {
+       "amount": 774.0,
+       "name": "Market Fish 2026",
+       "quantity": 18
+      },
+      {
+       "amount": 748.0,
+       "name": "Fried Chicken & Hot Honey ",
+       "quantity": 34.00000000000001
+      },
+      {
+       "amount": 744.0,
+       "name": "Margarita",
+       "quantity": 31
+      },
+      {
+       "amount": 602.0,
+       "name": "Shoestring Fries",
+       "quantity": 43
+      },
+      {
+       "amount": 595.0,
+       "name": "Mulled Wine",
+       "quantity": 35
+      },
+      {
+       "amount": 560.0,
+       "name": "Pint Urba Naut IPA",
+       "quantity": 40
+      },
+      {
+       "amount": 536.5,
+       "name": "Pint Panhead Sandman Hazy",
+       "quantity": 37
+      },
+      {
+       "amount": 529.0,
+       "name": "Fried Calamari ",
+       "quantity": 23
+      },
+      {
+       "amount": 496.0,
+       "name": "Glass Da Luca Prosecco",
+       "quantity": 34
+      }
+     ]
+    },
+    "periodic_dinner": {
+     "daily": {
+      "Friday 07 Aug 2026": 1972.0,
+      "Monday 03 Aug 2026": 839.0,
+      "Saturday 08 Aug 2026": 4875.0,
+      "Sunday 09 Aug 2026": 1532.0,
+      "Thursday 06 Aug 2026": 1427.0,
+      "Tuesday 04 Aug 2026": 1537.0,
+      "Wednesday 05 Aug 2026": 755.0
+     },
+     "total": 12937.0
+    },
+    "roster_vs_actual": {
+     "row_count": 7,
+     "sums": {
+      "actualCost": 10432.44,
+      "actualHours": 302.53,
+      "rosteredCost": 10008.25,
+      "rosteredHours": 291.25
+     }
+    },
+    "sales": {
+     "daily": {
+      "2026-08-03": 1076.0,
+      "2026-08-04": 1710.0,
+      "2026-08-05": 1484.0,
+      "2026-08-06": 1808.0,
+      "2026-08-07": 2675.0,
+      "2026-08-08": 10320.0,
+      "2026-08-09": 1738.0
+     },
+     "total": 20811.0
+    },
+    "staff_orders": {
+     "amount_total": 25340.5,
+     "by_staff": {
+      "Arthur [NO NAME]": 1342.25,
+      "Caitlin [NO NAME]": 1596.5,
+      "Elena [NO NAME]": 4839.0,
+      "Josh [NO NAME]": 1368.5,
+      "Juanita [NO NAME]": 3258.0,
+      "Maxime [NO NAME]": 7212.75,
+      "Nat [NO NAME]": 3395.5,
+      "Stef [NO NAME]": 210.0,
+      "Tamsyn [NO NAME]": 2118.0
+     },
+     "quantity_total": 460,
+     "row_count": 9
+    },
+    "timeclock": {
+     "row_count": 70,
+     "totalCost": 11492.07,
+     "totalHours": 317.03
+    },
+    "window": {
+     "end": "2026-08-10T06:59:59+12:00",
+     "start": "2026-08-03T07:00:00+12:00"
+    }
+   }
+  }
+ }
+}

@@ -308,7 +308,7 @@ class TestExtractDocument:
 class TestInternalHandlerDispatch:
     """A consolidator calling an in-process tool must not go over HTTP.
 
-    The incident: loadedhub__get_sales_for_period failed for every venue with
+    The incident: loadedhub__get_sales failed for every venue with
     "Request URL is missing an 'http://' or 'https://' protocol". Its
     function_code calls call_api("norm", "resolve_dates", ...) to apply the
     venue's trading day, but the sandbox had no get_handler lookup — so an

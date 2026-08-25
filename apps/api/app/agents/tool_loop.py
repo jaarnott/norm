@@ -1323,6 +1323,23 @@ def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
     venue_name = input_params.get("venue") or input_params.get("venue_name")
     venue_id = input_params.get("venue_id")
 
+    # 'all' is not a venue. Left alone it fell through to an arbitrary
+    # credential row, silently answering a group question with ONE venue's
+    # data (prod thread b9bda2c1, 23 Aug 2026: 'all' returned only La
+    # Zeppa). Tools that can fan out accept venues='all' themselves
+    # (get_sales); everything else must be called per venue.
+    if venue_name and str(venue_name).strip().lower() in (
+        "all",
+        "all venues",
+        "*",
+        "group",
+    ):
+        raise ValueError(
+            "'all' is not a venue — this tool reads one venue per call. "
+            "Call it once per venue, or use get_sales with venues='all' "
+            "for a group-wide sales comparison."
+        )
+
     if venue_name and not venue_id:
         venue_id = resolve_venue_id(venue_name, db)
 

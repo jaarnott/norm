@@ -68,10 +68,10 @@ Python defining `run(params, call_api, log)`, sandboxed: no imports, no I/O; `ca
 <script>
   window.norm.onReady(function (ctx) {
     document.getElementById('out').textContent = 'loading…';
-    window.norm.call('loadedhub', 'get_sales_for_period', { interval: '1.00:00:00', period: 'last week' })
+    window.norm.call('loadedhub', 'get_sales', { breakdown: 'daily', period: 'last week' })
       .then(function (res) {
         if (res && res.error) throw new Error(res.error);
-        // render res.data ...
+        // render res.rows ...
       })
       .catch(function (e) { document.getElementById('out').textContent = '✗ ' + e.message; });
   });
@@ -86,9 +86,11 @@ Python defining `run(params, call_api, log)`, sandboxed: no imports, no I/O; `ca
 
 # loadedhub reads the builder may call directly to probe response shapes.
 # (get_invoices replaced get_outstanding_invoices and
-# get_received_invoices_for_period when the invoice surface consolidated.)
+# get_received_invoices_for_period when the invoice surface consolidated;
+# get_sales replaced get_sales_for_period and the sales wrappers when the
+# sales domain consolidated.)
 PROBE_ACTIONS = [
-    "get_sales_for_period",
+    "get_sales",
     "get_invoices",
     "get_stock_items",
     "get_roster_for_period",

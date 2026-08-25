@@ -83,7 +83,7 @@ class TestMeasurePrompt:
         '72k of it is tool results' is."""
         messages = [
             {"role": "user", "content": "yesterday's sales"},
-            *self._tool_turn("loadedhub__get_sales_for_period", "x" * 4000),
+            *self._tool_turn("loadedhub__get_sales", "x" * 4000),
         ]
         b = measure_prompt(messages=messages)
         assert b.tool_results == 1000

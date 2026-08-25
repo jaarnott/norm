@@ -32,7 +32,7 @@
 
   function render(rows, windowInfo) {
     var days = rows.map(function (r) {
-      return { day: (r.startTime_dayOfWeek || '').slice(0, 3), amount: Number(r.amount) || 0 };
+      return { day: (r.day || '').slice(0, 3), amount: Number(r.actual) || 0 };
     });
     var total = days.reduce(function (s, d) { return s + d.amount; }, 0);
     var best = days.reduce(function (a, b) { return b.amount > a.amount ? b : a; }, days[0] || { day: '—', amount: 0 });
@@ -75,13 +75,13 @@
     document.getElementById('chart').innerHTML = '';
     document.getElementById('legend').innerHTML = '';
     document.getElementById('window').textContent = 'loading\u2026';
-    window.norm.call('loadedhub', 'get_sales_for_period',
-        { interval: '1.00:00:00', period: 'last week' })
+    window.norm.call('loadedhub', 'get_sales',
+        { breakdown: 'daily', period: 'last week' })
       .then(function (out) {
         // A connector failure comes back as data, not an exception \u2014 show
         // the real message (e.g. \u201creconnect loadedhub\u201d), never a guess.
         if (out && out.error) throw new Error(out.error);
-        var rows = (out && out.data) || [];
+        var rows = (out && out.rows) || [];
         var win = out && out.window && out.window.description;
         if (!rows.length) throw new Error('no sales rows came back');
         render(rows, win);

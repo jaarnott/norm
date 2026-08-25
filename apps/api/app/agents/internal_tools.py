@@ -2050,6 +2050,38 @@ def _get_supplier_invoice_specs(
         return {"success": True, "data": {"specs": []}}
 
 
+@register("norm", "list_venues")
+def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
+    """The venues a connector fan-out can cover: name + connection state.
+
+    Exists so a consolidator can resolve venues='all' itself (the engine
+    resolves credentials one venue per call, so a multi-venue read is N
+    parallel calls over this list — see get_sales). Names only:
+    call_api's venue param takes the venue NAME.
+    """
+    from app.db.models import ConnectorConfig, Venue
+
+    connector = str(params.get("connector") or "loadedhub")
+    connected = {
+        row[0]
+        for row in db.query(ConnectorConfig.venue_id)
+        .filter(
+            ConnectorConfig.connector_name == connector,
+            ConnectorConfig.enabled == "true",
+            ConnectorConfig.venue_id.isnot(None),
+        )
+        .all()
+    }
+    venues = [
+        {"id": v.id, "name": v.name, "connected": v.id in connected}
+        for v in db.query(Venue).order_by(Venue.name).all()
+    ]
+    return {
+        "success": True,
+        "data": {"connector": connector, "venues": venues},
+    }
+
+
 @register("norm", "get_workflow_mode")
 def _get_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict:
     """Return the caller's run mode for a workflow (or 'unset')."""

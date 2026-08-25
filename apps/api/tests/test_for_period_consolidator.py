@@ -291,7 +291,7 @@ class TestWrappedArgumentsAreReachable:
     def test_required_fields_of_the_wrapped_action_are_required_here(self):
         m = self._module()
         tool = m.tool_for(
-            "get_sales_for_period",
+            "get_pos_orders_for_period",
             "get_sales_data",
             "start_datetime",
             "end_datetime",
@@ -306,7 +306,7 @@ class TestWrappedArgumentsAreReachable:
         the caller back in the business of computing timestamps."""
         m = self._module()
         tool = m.tool_for(
-            "get_sales_for_period",
+            "get_pos_orders_for_period",
             "get_sales_data",
             "start_datetime",
             "end_datetime",
@@ -322,7 +322,7 @@ class TestWrappedArgumentsAreReachable:
     def test_optional_fields_and_their_descriptions_carry_over(self):
         m = self._module()
         tool = m.tool_for(
-            "get_sales_for_period",
+            "get_pos_orders_for_period",
             "get_sales_data",
             "start_datetime",
             "end_datetime",
@@ -354,7 +354,7 @@ class TestWrappedArgumentsAreReachable:
             path_template="/pos/sales?interval={{ interval | default('1.00:00:00') }}",
         )
         tool = m.tool_for(
-            "get_sales_for_period",
+            "get_pos_orders_for_period",
             "get_sales_data",
             "start_datetime",
             "end_datetime",
@@ -394,7 +394,7 @@ class TestWrappedArgumentsAreReachable:
             "path_template": "/staff?pos={{ posIdentifier }}",
         }
         tool = m.tool_for(
-            "get_staff_item_orders_for_period",
+            "get_pos_orders_for_period",
             "get_staff_item_orders",
             "start",
             "end",
@@ -417,7 +417,7 @@ class TestWrappedArgumentsAreReachable:
         m = self._module()
         wrapped_row = self._wrapped()
         tool = m.tool_for(
-            "get_sales_for_period",
+            "get_pos_orders_for_period",
             "get_sales_data",
             "start_datetime",
             "end_datetime",

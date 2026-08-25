@@ -287,14 +287,14 @@ class TestAllVenuesFanOut:
     answer the question that actually gets asked, or it gets routed around.
     """
 
-    def _tool(self, name="loadedhub__get_sales_for_period", multi_venue=True):
+    def _tool(self, name="loadedhub__get_sales", multi_venue=True):
         from app.mcp.projection import McpTool
 
         return McpTool(
             name=name,
             kind="connector",
             connector="loadedhub",
-            action="get_sales_for_period",
+            action="get_sales",
             playbook_slug=None,
             method="GET",
             access="read",

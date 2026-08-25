@@ -6,7 +6,7 @@
   "purpose": "A weekly venue performance dashboard: show last week's sales per day for the selected venue, with the trading window Norm resolves (not calendar weeks), the total, the best day and the daily average.",
   "spec": {
     "actions": [
-      { "connector": "loadedhub", "action": "get_sales_for_period" }
+      { "connector": "loadedhub", "action": "get_sales" }
     ],
     "writes": [],
     "scopes": ["mcp:reports:read"],

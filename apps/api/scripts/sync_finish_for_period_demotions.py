@@ -39,9 +39,12 @@ import sys
 
 sys.path.insert(0, ".")
 
-#: The three remaining raw twins (action → its date-safe front).
+#: The three remaining raw twins (action → its date-safe front). Kept at
+#: CURRENT doctrine: the sales family's front is get_sales since 24 Aug
+#: 2026 (sync_sales_config.py), so a replay demotes toward it, never
+#: toward a retired wrapper name.
 DEMOTIONS = {
-    "get_pos_item_sales": "get_pos_item_sales_for_period",
+    "get_pos_item_sales": "get_sales",
     "get_roster": "get_roster_for_period",
     "get_timeclock_entries": "get_timeclock_entries_for_period",
 }
@@ -76,7 +79,13 @@ PROMPT_PATCHES = [
     ),
     (
         "use get_pos_item_sales and rank by revenue",
+        "use get_sales with breakdown 'items' and rank by revenue",
+    ),
+    # Replay guard: a prompt already patched to the (now retired) wrapper
+    # moves on to current doctrine.
+    (
         "use get_pos_item_sales_for_period and rank by revenue",
+        "use get_sales with breakdown 'items' and rank by revenue",
     ),
     (
         "Always call resolve_dates before making API calls that need dates.",
