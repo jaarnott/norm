@@ -89,12 +89,13 @@ Python defining `run(params, call_api, log)`, sandboxed: no imports, no I/O; `ca
 # get_received_invoices_for_period when the invoice surface consolidated;
 # get_sales replaced get_sales_for_period and the sales wrappers when the
 # sales domain consolidated.)
+# (get_labour replaced get_roster_for_period and get_staff_members when
+# the labour domain consolidated.)
 PROBE_ACTIONS = [
     "get_sales",
     "get_invoices",
     "get_stock_items",
-    "get_roster_for_period",
-    "get_staff_members",
+    "get_labour",
     "get_received_items_for_period",
 ]
 

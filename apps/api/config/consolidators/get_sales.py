@@ -346,8 +346,14 @@ def _resolve_venues(params, call_api):
         v = venues_param.strip()
         if v.lower() in ("all", "all venues", "*", "group"):
             listed = call_api("norm", "list_venues", {"connector": "loadedhub"})
-            data = listed.get("data") if isinstance(listed, dict) else None
-            rows = (data or {}).get("venues") if isinstance(data, dict) else None
+            # call_api hands internal norm.* results back UNWRAPPED
+            # ({connector, venues}); tolerate an enveloped copy too.
+            data = (
+                listed.get("data")
+                if isinstance(listed, dict) and "data" in listed
+                else listed
+            )
+            rows = data.get("venues") if isinstance(data, dict) else None
             names = [
                 r["name"]
                 for r in rows or []
@@ -462,7 +468,14 @@ def _breakdown_total(window, venues, compare, call_api, call_api_parallel, log):
         rows.append(row)
 
     def _total(key):
-        vals = [r[key] for r in rows if isinstance(r.get(key), (int, float))]
+        # A venue with ANY error is excluded from every total — mixing one
+        # venue's budget into a group total whose actual it is missing from
+        # would misstate the variance.
+        vals = [
+            r[key]
+            for r in rows
+            if not r.get("errors") and isinstance(r.get(key), (int, float))
+        ]
         return round(sum(vals), 2) if vals else None
 
     totals = {"actual": _total("actual")}

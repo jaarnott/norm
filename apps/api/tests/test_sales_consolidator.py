@@ -29,14 +29,17 @@ WINDOW = {
     "description": "This week",
 }
 
+# The REAL shape call_api hands back for internal norm.* tools: UNWRAPPED
+# ({connector, venues}) — the live venues='all' path failed on first contact
+# because the mock wrongly modelled a {data: ...} envelope. The consolidator
+# tolerates both; the mock now matches production.
 VENUES = {
-    "data": {
-        "venues": [
-            {"id": "v1", "name": "La Zeppa", "connected": True},
-            {"id": "v2", "name": "Glass Goose", "connected": True},
-            {"id": "v3", "name": "Mr Murdochs", "connected": False},
-        ]
-    }
+    "connector": "loadedhub",
+    "venues": [
+        {"id": "v1", "name": "La Zeppa", "connected": True},
+        {"id": "v2", "name": "Glass Goose", "connected": True},
+        {"id": "v3", "name": "Mr Murdochs", "connected": False},
+    ],
 }
 
 
@@ -201,6 +204,26 @@ class TestTotals:
         assert {p["start_datetime"] for p in ly_fetches} == {
             "2025-08-18T07:00:00+12:00"
         }
+
+    def test_an_enveloped_list_venues_result_also_works(self):
+        api = Api()
+
+        def call(connector, action, p=None):
+            if action == "list_venues":
+                return {"success": True, "data": dict(VENUES)}
+            return api._for(connector, action, p)
+
+        from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+
+        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
+        exec(CODE, ns)
+        out = ns["run"](
+            {"venue": "La Zeppa", "period": "this week", "venues": "all"},
+            call,
+            api.log,
+            None,
+        )
+        assert {r["venue"] for r in out["rows"]} == {"La Zeppa", "Glass Goose"}
 
     def test_a_failing_venue_is_a_flagged_row_not_a_silent_gap(self):
         api = Api()

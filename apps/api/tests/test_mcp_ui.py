@@ -63,6 +63,31 @@ class TestRegistry:
         assert ui_resource_for("loadedhub", "get_roster") == DISPLAY_BLOCK_URI
         assert component_for("loadedhub", "get_roster") == "roster_editor"
 
+    def test_get_labour_roster_view_keeps_the_grid(self):
+        """get_labour replaced get_roster_for_period as the card's MCP
+        surface (25 Aug 2026) — its roster view must keep the grid alive."""
+        from app.mcp.ui_apps import component_for
+
+        assert ui_resource_for("loadedhub", "get_labour") == DISPLAY_BLOCK_URI
+        assert (
+            component_for("loadedhub", "get_labour", {"view": "roster", "data": []})
+            == "roster_editor"
+        )
+
+    def test_get_labour_other_views_fall_through_to_generic_table(self):
+        """One action, many shapes: an attendance summary handed to the
+        roster grid would render garbage. The gate sends every non-roster
+        view down the generic_table path (component None → no block)."""
+        from app.mcp.ui_apps import component_for
+
+        for payload in (
+            {"view": "attendance", "rows": []},
+            {"view": "staff", "rows": []},
+            {"view": "timeclock", "data": []},
+            None,  # no result to inspect → no grid
+        ):
+            assert component_for("loadedhub", "get_labour", payload) is None
+
     def test_stock_order_playbook_renders_the_real_editor(self):
         """create_stock_order binds to display-block — the SAME
         PurchaseOrderEditor the web app mounts — not the hand-written summary
@@ -421,3 +446,36 @@ class TestConsolidatorEnvelopeUnwrapping:
         # `data` alone (no window) is a plausible connector payload, not an envelope.
         payload = {"data": [1, 2, 3]}
         assert self._block(payload)["data"] == payload
+
+    def _labour_block(self, payload):
+        from app.mcp.execution import NormMcpContext
+
+        tool = McpTool(
+            name="loadedhub__get_labour",
+            kind="connector",
+            connector="loadedhub",
+            action="get_labour",
+            playbook_slug=None,
+            method="GET",
+            access="read",
+            scopes=frozenset({"mcp:roster:read"}),
+            description="Labour",
+            input_schema={"type": "object", "properties": {}},
+            ui_resource=DISPLAY_BLOCK_URI,
+        )
+        ctx = NormMcpContext(principal=None, db=None, config_db=None)
+        return ctx._as_display_block(tool, payload)
+
+    def test_labour_roster_view_becomes_a_grid_block(self):
+        roster = [{"rosteredShifts": [{"staffMemberFirstName": "Ana"}]}]
+        window = {"description": "This week", "trading_aligned": True}
+        block = self._labour_block({"view": "roster", "window": window, "data": roster})
+        assert block["component"] == "roster_editor"
+        assert block["data"] == roster
+        assert block["props"]["window"] == window
+
+    def test_labour_attendance_view_passes_through_unblocked(self):
+        payload = {"view": "attendance", "window": {}, "rows": [], "totals": {}}
+        out = self._labour_block(payload)
+        # No component key: the display app falls back to generic_table.
+        assert out == payload

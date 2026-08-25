@@ -1201,12 +1201,20 @@ def _handle_search_tool_result(
 
 
 def _show_component(
-    params: dict, db: Session, thread_id: str | None, expected_action: str | None = None
+    params: dict,
+    db: Session,
+    thread_id: str | None,
+    expected_action: str | None = None,
+    accept=None,
 ) -> dict:
     """Generic handler that retrieves a prior tool call's data for display.
 
     The LLM calls this when it wants to show a visual component to the user,
-    referencing a previous data-fetching tool call by ID.
+    referencing a previous data-fetching tool call by ID. `accept` filters
+    the fallback search by payload — a domain tool serves several views
+    under one action name, and only some of them are drawable (get_labour:
+    the roster view is the grid's shape, an attendance summary is not). An
+    explicit source_tool_call_id is trusted as given.
     """
     from app.db.models import ToolCall
 
@@ -1231,7 +1239,15 @@ def _show_component(
                 else [expected_action]
             )
             q = q.filter(ToolCall.action.in_(actions))
-        tc = q.order_by(ToolCall.created_at.desc()).first()
+        candidates = q.order_by(ToolCall.created_at.desc()).limit(10).all()
+        tc = next(
+            (
+                c
+                for c in candidates
+                if c.result_payload and (accept is None or accept(c.result_payload))
+            ),
+            None,
+        )
 
     if not tc or not tc.result_payload:
         return {"success": False, "data": {}, "error": "Source tool call not found"}
@@ -1242,13 +1258,19 @@ def _show_component(
 @register("norm", "show_roster")
 def _show_roster(params: dict, db: Session, thread_id: str | None) -> dict:
     """Display the roster as a visual weekly grid."""
-    # Both names: the raw read (older threads / page loads) and the
-    # get_roster_for_period wrapper that replaced it on the agent surface.
+    # All three names: the raw read (older threads / page loads), the
+    # get_roster_for_period wrapper that replaced it on the agent surface,
+    # and get_labour — the labour domain tool whose roster view carries the
+    # same raw payload (in the {window, data} envelope the card unwraps).
     return _show_component(
         params,
         db,
         thread_id,
-        expected_action=("get_roster", "get_roster_for_period"),
+        expected_action=("get_roster", "get_roster_for_period", "get_labour"),
+        # Only a roster-shaped get_labour result may feed the grid — its
+        # other views (attendance/timeclock summaries) carry a `view` tag
+        # that is not 'roster'; the legacy tools carry no tag at all.
+        accept=lambda p: not isinstance(p, dict) or p.get("view") in (None, "roster"),
     )
 
 

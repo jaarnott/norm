@@ -187,7 +187,7 @@ class TestDrift:
                     "consolidator_config": {"function_code": code, "wraps": "x"},
                 },
                 {
-                    "action": "get_roster_for_period",
+                    "action": "get_pos_orders_for_period",
                     "consolidator_config": {"function_code": "EDITED", "wraps": "y"},
                 },
             ],
@@ -195,12 +195,12 @@ class TestDrift:
         report = cc.coverage_report(db_session, db_session)
         c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
         states = {d["action"]: d["state"] for d in c["drift"]}
-        assert states == {"get_roster_for_period": "differs_from_file"}
+        assert states == {"get_pos_orders_for_period": "differs_from_file"}
 
     def test_the_real_matcher_resolves_every_live_style_name(self):
         # No monkeypatching: the shipped canonical map must resolve the stem
-        # (get_budgets), the get_-prefixed stem (staff_attendance →
-        # get_staff_attendance), and the shared files (for_period.py for
+        # (get_budgets), the get_-prefixed stem fallback, and the shared
+        # files (for_period.py for
         # wrappers via `wraps`; review_and_receive_invoices.py for
         # receive_loadedhub_invoice via _SHARED_CANONICAL).
         canonical = cc._canonical_files()

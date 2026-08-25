@@ -57,6 +57,8 @@ MONTH_LABEL = "July 2026"
 
 DINNER = [{"start_hour": 17, "end_hour": 22, "label": "dinner"}]
 
+# family tags let a re-run refresh ONE family's goldens (merging into the
+# existing file) while another family's old tools are already retired.
 BATTERY_WEEKLY = [
     ("loadedhub", "get_sales_for_period", {}),
     ("loadedhub", "get_pos_item_sales_for_period", {}),
@@ -168,11 +170,13 @@ def _shape(results: dict) -> dict:
 
     rva = results.get("get_roster_vs_actual_for_period")
     if rva:
-        sums = (rva.get("summary") or {}).get("column_sums") or {}
+        # Sum the raw rows and round once — the old wrapper's summary
+        # rounded per addition, drifting by pennies over a week.
+        rows = _rows(rva.get("data"))
         out["roster_vs_actual"] = {
-            "row_count": len(_rows(rva.get("data"))),
+            "row_count": len(rows),
             "sums": {
-                k: sums.get(k)
+                k: round(sum(r.get(k) or 0 for r in rows), 2)
                 for k in (
                     "rosteredCost",
                     "actualCost",
@@ -201,7 +205,34 @@ def _shape(results: dict) -> dict:
     return out
 
 
-def main() -> None:
+_FAMILY = {
+    "get_sales_for_period": "sales",
+    "get_pos_item_sales_for_period": "sales",
+    "get_staff_orders_for_period": "sales",
+    "get_pos_discounts_for_period": "sales",
+    "get_budgets": "sales",
+    "get_periodic_sales": "sales",
+    "get_staff_attendance": "labour",
+    "get_roster_vs_actual_for_period": "labour",
+    "get_timeclock_entries_for_period": "labour",
+}
+
+_SHAPE_KEYS = {
+    "sales": (
+        "window",
+        "sales",
+        "item_sales",
+        "staff_orders",
+        "discounts",
+        "budget",
+        "periodic_dinner",
+        "_period_phrase",
+    ),
+    "labour": ("attendance", "roster_vs_actual", "timeclock"),
+}
+
+
+def main(family: str | None = None) -> None:
     from app.agents.internal_tools import execute_consolidator
     from app.db.config_models import ConnectorSpec
     from app.db.engine import SessionLocal, _ConfigSessionLocal
@@ -232,6 +263,8 @@ def main() -> None:
             for period, battery in batches:
                 raw = {}
                 for connector, action, extra in battery:
+                    if family and _FAMILY.get(action, "sales") != family:
+                        continue
                     config = configs.get((connector, action))
                     if not config:
                         errors.append(f"no live row for {connector}.{action}")
@@ -261,6 +294,23 @@ def main() -> None:
         for e in errors:
             print(" ", e)
         sys.exit(1)
+
+    if family:
+        # Merge: refresh only this family's keys, keep the rest verbatim.
+        existing = json.loads(OUT.read_text())
+        keep = _SHAPE_KEYS[family]
+        for venue, periods in goldens.items():
+            for label, shaped in periods.items():
+                slot = existing["goldens"].setdefault(venue, {}).setdefault(label, {})
+                for k in keep:
+                    if k in shaped:
+                        slot[k] = shaped[k]
+        existing["_meta"]["captured_at_" + family] = datetime.now(
+            timezone.utc
+        ).isoformat(timespec="seconds")
+        OUT.write_text(json.dumps(existing, indent=1, sort_keys=True) + "\n")
+        print(f"\nmerged {family} goldens into {OUT}")
+        return
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(
@@ -299,4 +349,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    main(family=arg.removeprefix("--family=") if arg else None)
