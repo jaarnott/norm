@@ -1199,6 +1199,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const blockingIssues = issues.filter((i) => i.blocking);
   const warningIssues = issues.filter((i) => !i.blocking);
   const blockingOpen = blockingIssues.filter((i) => issueStateOf(i) === 'open');
+  // A GATED blocker (e.g. "the copy's unit isn't in Loaded — create it", gated on
+  // auto_create_units) only stops UNATTENDED auto-receive. A person reviewing the
+  // card is the authority that gate defers to, so it must not grey out the manual
+  // Receive — a line that already holds a valid unit is receivable as-is, and a
+  // wrong suggestion (a misread '4x5L' on a '5 L' line) should never trap it.
+  // Genuine receive-invalidity — no item/unit/supplier — is still caught by
+  // `unresolved` / `supplierBlocking` below, so nothing unsafe slips through.
+  const manualBlockingOpen = blockingOpen.filter((i) => !i.gate);
   const liveConfidence: 'ready' | 'needs_review' | null =
     reviewed ? (blockingOpen.length ? 'needs_review' : 'ready') : null;
   const pendingSuggestions = suggestions.filter((s) => stateOf(s.id) === 'pending');
@@ -1257,11 +1265,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // Everything standing between the user and a receive, counted ONCE — the
   // per-line NEW badges and the blocked list are two views of the same set.
   const blockedCount = useMemo(
-    () => new Set([...unresolved.map((l) => String(l.id)), ...blockingOpen.map((i) => i.id)]).size,
-    [unresolved, blockingOpen],
+    () => new Set([...unresolved.map((l) => String(l.id)), ...manualBlockingOpen.map((i) => i.id)]).size,
+    [unresolved, manualBlockingOpen],
   );
   const receiveBlocked = status === 'saving' || unresolved.length > 0
-    || supplierBlocking || noLines || blockingOpen.length > 0;
+    || supplierBlocking || noLines || manualBlockingOpen.length > 0;
 
   const includesTax = !!doc.unit_cost_includes_tax;
   const totals = useMemo(() => {
