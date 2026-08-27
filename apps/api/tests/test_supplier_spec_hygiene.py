@@ -281,6 +281,30 @@ class TestNoDuplicateSpecIsBorn:
         assert created is True
 
 
+def _bind_config_session(monkeypatch, db_session):
+    """Bind the RW config session factory to the test transaction.
+
+    Anything that stages a dojo sample or trains a spec opens its OWN
+    ``_ConfigSessionLocal`` — and the config DB is SHARED WITH PRODUCTION. An
+    unbound test reads the real spec roster, so it passes locally off live data
+    and fails in CI against an empty one. That is exactly how
+    `test_the_hints_reach_the_training_tool_s_own_guard` went green on this
+    machine and red on the first push (27 Aug 2026).
+    """
+
+    class _Shim:
+        def __init__(self, s):
+            self._s = s
+
+        def __getattr__(self, k):
+            return getattr(self._s, k)
+
+        def close(self):  # the fixture owns the transaction
+            pass
+
+    monkeypatch.setattr("app.db.engine._ConfigSessionLocal", lambda: _Shim(db_session))
+
+
 class TestTheSenseiAsksUnderEverySpellingItKnows:
     """Kaans, 26 Aug 2026: nine invoices a day for three weeks.
 
@@ -366,6 +390,7 @@ class TestTheSenseiAsksUnderEverySpellingItKnows:
         simply moves one layer down."""
         from app.agents import internal_tools as IT
 
+        _bind_config_session(monkeypatch, db_session)
         monkeypatch.setattr(
             "app.services.spec_dojo.stage_invoice_sample",
             lambda *_a, **_k: pytest.fail("staged a sample for a covered supplier"),
@@ -428,6 +453,7 @@ class TestTheRosterIsAskedAboutTheNameOnThePaper:
         discard the caller's — which would have thrown the printed name away
         and filed the Neat Meat copy under Coca Cola."""
         filed = {}
+        _bind_config_session(monkeypatch, db_session)
         monkeypatch.setattr(
             "app.services.spec_dojo.find_or_create_spec_for_supplier",
             lambda _c, name, *hints: (
@@ -464,6 +490,7 @@ class TestTheRosterIsAskedAboutTheNameOnThePaper:
         this sample under that business's spec — the Eurovintage fault
         arriving by a new road."""
         filed = {}
+        _bind_config_session(monkeypatch, db_session)
         monkeypatch.setattr(
             "app.services.spec_dojo.find_or_create_spec_for_supplier",
             lambda _c, name, *hints: (
@@ -499,6 +526,7 @@ class TestTheRosterIsAskedAboutTheNameOnThePaper:
         """The ordinary path is unchanged: same business, aliases offered, so
         no duplicate spec row is born for a spelling variant."""
         filed = {}
+        _bind_config_session(monkeypatch, db_session)
         monkeypatch.setattr(
             "app.services.spec_dojo.find_or_create_spec_for_supplier",
             lambda _c, name, *hints: (
