@@ -8,10 +8,25 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 # ── Primary (read-write) engine ──────────────────────────────────
+# A POOL IS PER INSTANCE, AND THE DATABASE IS NOT.
+#
+# pool_size + max_overflow is the ceiling ONE Cloud Run instance may hold, so
+# the number that has to fit is (max instances x that ceiling). At 10+20 with
+# maxScale=3 that was 90 against a db-g1-small serving ~50 — the app was
+# provisioned for nearly twice what the database can give it.
+#
+# It only bit during a deploy, when the old revision still holds its pool while
+# the new one starts: on 27 Aug 2026 the production migrate job could not get a
+# connection at all ("remaining connection slots are reserved…") and the deploy
+# failed with 47 of ~50 in use.
+#
+# 5+12 = at most 12 per instance, 36 at full scale, leaving headroom for the
+# migrate job, the Cloud SQL admin connections and a person with a proxy. Raise
+# these only together with the instance tier, and check maxScale when you do.
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=7,
     pool_timeout=30,
     pool_recycle=1800,
     pool_pre_ping=True,
@@ -23,10 +38,13 @@ _read_engine = None
 _ReadSessionLocal = None
 
 if settings.DATABASE_READ_URL:
+    # Same budget as the primary — a replica is a separate instance, but an
+    # environment that points this at the PRIMARY doubles that instance's
+    # footprint, which is exactly the sum that overran above.
     _read_engine = create_engine(
         settings.DATABASE_READ_URL,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=5,
+        max_overflow=7,
         pool_timeout=30,
         pool_recycle=1800,
         pool_pre_ping=True,
