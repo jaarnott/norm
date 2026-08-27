@@ -317,8 +317,10 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
                     : 'no suggestions'}
                   {(r.auto?.gates_needed || []).length > 0 && ` · waiting on ${(r.auto?.gates_needed || []).length} flag(s)`}
                 </span>
-                <span style={{ width: 90, color: '#aaa', fontSize: '0.7rem', textAlign: 'right' }}>
-                  {r.created_at ? new Date(r.created_at).toLocaleDateString() : ''}
+                <span style={{ width: 140, color: '#aaa', fontSize: '0.7rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {r.created_at
+                    ? `${new Date(r.created_at).toLocaleDateString()} ${new Date(r.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                    : ''}
                 </span>
               </div>
               {openRow === r.id && (

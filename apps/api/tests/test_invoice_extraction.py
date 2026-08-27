@@ -12,6 +12,23 @@ from app.db.models import DocumentExtraction
 from app.services import invoice_extraction as ie
 
 
+from types import SimpleNamespace  # noqa: E402
+
+import base64  # noqa: E402
+
+
+def _tiny_jpeg() -> bytes:
+    """A real 1x1 JPEG — build_content_block re-encodes images, so the bytes
+    have to actually decode."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (1, 1), (255, 0, 0)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
 class _FakeLoaded:
     def __init__(self, fail: bool = False):
         self.fail = fail
@@ -223,3 +240,84 @@ class TestCachedExtract:
             .count()
             == 0
         )
+
+
+class TestTheCopyIsSentAsWhateverItActuallyIs:
+    """Loaded attaches whatever the supplier sent, and plenty of it is a photo.
+
+    SABATO 1110818 and RESOTECH 253769 are genuine 2.5MB JPEGs. Every copy used
+    to be sent as an Anthropic `document` block, which accepts application/pdf
+    ONLY — so those 400'd on every run, forever, and were reported as
+    "unreadable copy" (12 of 39 such findings, 24-25 Aug 2026).
+    """
+
+    def _block_for(self, monkeypatch, data, content_type):
+        import app.services.invoice_extraction as IE
+
+        seen = {}
+
+        def _fake_call_llm(**kw):
+            seen["documents"] = kw.get("documents")
+            return {"invoice_number": "IN1"}, None
+
+        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", _fake_call_llm)
+        monkeypatch.setattr(IE, "_extraction_cache_put", lambda *a, **k: None)
+
+        lh = SimpleNamespace(
+            file_base64=lambda fid: (base64.b64encode(data).decode(), content_type)
+        )
+        IE._extract_uncached(None, lh, "f-1", "instructions", "key", None)
+        return seen["documents"][0]
+
+    def test_a_pdf_is_still_a_document(self, monkeypatch):
+        block = self._block_for(monkeypatch, b"%PDF-1.4 body", "application/pdf")
+        assert block["type"] == "document"
+        assert block["source"]["media_type"] == "application/pdf"
+
+    def test_a_jpeg_is_sent_as_an_image(self, monkeypatch):
+        jpeg = _tiny_jpeg()
+        block = self._block_for(monkeypatch, jpeg, "image/jpeg")
+        assert block["type"] == "image"
+        assert block["source"]["media_type"].startswith("image/")
+
+    def test_the_bytes_beat_a_lying_header(self, monkeypatch):
+        """A supplier's server calling a JPEG application/pdf must not put us
+        back where we started."""
+        block = self._block_for(monkeypatch, _tiny_jpeg(), "application/pdf")
+        assert block["type"] == "image"
+
+    def test_a_generic_header_is_resolved_by_the_bytes(self, monkeypatch):
+        block = self._block_for(
+            monkeypatch, b"%PDF-1.4 body", "application/octet-stream"
+        )
+        assert block["type"] == "document"
+        assert block["source"]["media_type"] == "application/pdf"
+
+
+class TestFailuresSayWhoseFaultTheyAre:
+    def test_a_transient_failure_is_labelled(self):
+        import anthropic
+        import httpx
+
+        from app.services.invoice_extraction import _error_result
+
+        exc = anthropic.APIStatusError(
+            message="overloaded_error",
+            response=httpx.Response(529, request=httpx.Request("POST", "https://x")),
+            body={"type": "error", "error": {"type": "overloaded_error"}},
+        )
+        assert _error_result(exc)["transient"] is True
+
+    def test_a_bad_document_is_not_labelled_transient(self):
+        """A 400 IS the document's fault and must keep reading as unreadable."""
+        import anthropic
+        import httpx
+
+        from app.services.invoice_extraction import _error_result
+
+        exc = anthropic.APIStatusError(
+            message="invalid_request_error",
+            response=httpx.Response(400, request=httpx.Request("POST", "https://x")),
+            body={"type": "error", "error": {"type": "invalid_request_error"}},
+        )
+        assert "transient" not in _error_result(exc)

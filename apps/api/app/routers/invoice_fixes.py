@@ -28,6 +28,7 @@ supplier variant so future invoices match.
 
 from __future__ import annotations
 
+import copy
 import datetime as _dt
 import json
 import logging
@@ -1310,7 +1311,7 @@ def _squash_review_into_drafts(
     """
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.services.invoice_review import review_invoice
+    from app.services.invoice_review import carry_forward_decisions, review_invoice
 
     # PO policy derives from the venue's receive_without_po gate (review_invoice
     # default): the card must tell the story autopilot acts on — a PO-less
@@ -1326,10 +1327,22 @@ def _squash_review_into_drafts(
         logger.info("review PO reference unavailable: %s", exc)
 
     for target in docs:
-        payload = dict(fresh)
+        # A DEEP copy per twin: carrying a decision re-applies it to the lines,
+        # and a shallow dict() shares those lists between every draft.
+        payload = copy.deepcopy(fresh)
         for k in ("working_document_id", "thread_id", "venue_id"):
             if k in (target.data or {}):
                 payload[k] = target.data[k]
+        # The review clears suggestions/issues/actions and reseeds the working
+        # values from Loaded. Without this, re-reviewing threw away what the
+        # user had already accepted and then reported it as ignored.
+        carried = carry_forward_decisions(target.data or {}, payload)
+        if carried:
+            logger.info(
+                "review: carried %d prior decision(s) onto %s",
+                carried,
+                target.id,
+            )
         target.data = payload
         target.version += 1
         flag_modified(target, "data")

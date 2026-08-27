@@ -291,8 +291,20 @@ def run(params, call_api, log, call_api_parallel=None):
         if not isinstance(pdf, dict) or pdf.get("error"):
             err = pdf.get("error") if isinstance(pdf, dict) else "unreadable"
             checks["pdf_readable"] = "fail"
-            reasons.append("Could not read the attached invoice copy: " + str(err))
-            doc_side("(unreadable)")
+            # A transient failure says nothing about the document. Calling it
+            # "unreadable" sent people hunting invoice copies that were fine —
+            # 27 of 39 such findings on 24-25 Aug 2026 were the extraction
+            # service being briefly unavailable, and every one of those copies
+            # reads. Name what actually happened, and say it will retry.
+            if isinstance(pdf, dict) and pdf.get("transient"):
+                reasons.append(
+                    "Could not check this invoice — the extraction service was "
+                    "briefly unavailable. The copy is fine; the next run retries it."
+                )
+                doc_side("(not checked)")
+            else:
+                reasons.append("Could not read the attached invoice copy: " + str(err))
+                doc_side("(unreadable)")
             return finalize()
         checks["pdf_readable"] = "pass"
 
@@ -405,6 +417,13 @@ def run(params, call_api, log, call_api_parallel=None):
                     "id": c.get("id"),
                     "fileId": c.get("fileId"),
                     "supplierName": c.get("supplierName"),
+                    # The account's supplier RECORD, not just its feed
+                    # spelling. Without it the evidence service cannot reach
+                    # that supplier's Loaded aliases, so it never matched the
+                    # spec: 'Kaans Catering' found none while the spec is filed
+                    # under "Kaan's Catering Supplies", and the copy was read
+                    # with the generic prompt every single day.
+                    "supplierId": c.get("supplierId"),
                     "purchaseOrderNumber": c.get("purchaseOrderNumber"),
                 }
                 for c in candidates

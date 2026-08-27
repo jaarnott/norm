@@ -195,6 +195,23 @@ class TestManualEdits:
         doc = _doc(lines=[_line(total_cost=999.0)], subtotal=1.0)
         assert AM.manual_edits(doc) == []
 
+    def test_a_received_date_is_never_a_manual_edit(self):
+        """Norm never populates received_at — it comes from Loaded's
+        `receivedAt`, and the only writer is the editor's date field. So when
+        Loaded's draft carries no received date, a person filling one in read
+        as a hand-edit and the whole receive as EDITED with every other header
+        field matching exactly (INV2007071, 26 Aug 2026)."""
+        doc = _doc(received_at="2026-08-20")
+        doc["loaded_snapshot"]["header"]["received_at"] = None
+        assert AM.manual_edits(doc) == []
+        assert AM.classify_outcome(doc, received=True)["outcome"] != "edited"
+
+    def test_other_header_fields_are_still_watched(self):
+        """The exemption must be received_at ALONE — a changed total is a real
+        edit and must keep reading as one."""
+        doc = _doc(total=999.0)
+        assert AM.manual_edits(doc) == ["header.total"]
+
     def test_enricher_fields_are_not_manual(self):
         doc = _doc(
             lines=[
@@ -689,7 +706,9 @@ class TestAutoVerdict:
         )
         out = AM.auto_verdict(doc)
         assert out["verdict"] == "differed"
-        assert any(d["path"] == "outcome" and d["auto"] == "deleted" for d in out["diffs"])
+        assert any(
+            d["path"] == "outcome" and d["auto"] == "deleted" for d in out["diffs"]
+        )
 
     def test_a_hand_added_line_differs(self):
         doc = self._reviewed(lines=[_line(), _line(id="new-1", description="EXTRA")])
@@ -702,16 +721,28 @@ class TestAutoVerdict:
             "id": "add_line:rep-9",
             "kind": "add_line",
             "line_id": "rep-9",
-            "payload": _line(id="rep-9", description="Freight", unit="Each",
-                             linked_unit_id="u-each", unit_ratio=1,
-                             quantity_received=1, unit_cost=9.0),
+            "payload": _line(
+                id="rep-9",
+                description="Freight",
+                unit="Each",
+                linked_unit_id="u-each",
+                unit_ratio=1,
+                quantity_received=1,
+                unit_cost=9.0,
+            ),
         }
         doc = self._reviewed(
             lines=[
                 _line(),
-                _line(id="rep-9", description="Freight", unit="Each",
-                      linked_unit_id="u-each", unit_ratio=1,
-                      quantity_received=1, unit_cost=9.0),
+                _line(
+                    id="rep-9",
+                    description="Freight",
+                    unit="Each",
+                    linked_unit_id="u-each",
+                    unit_ratio=1,
+                    quantity_received=1,
+                    unit_cost=9.0,
+                ),
             ],
             suggestions=[add],
         )

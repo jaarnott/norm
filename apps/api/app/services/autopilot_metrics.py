@@ -34,7 +34,12 @@ _HEADER_FIELDS = (
     "linked_purchase_order_id",
     "issued_at",
     "due_at",
-    "received_at",
+    # `received_at` is deliberately NOT here. Norm never populates it — the
+    # value comes from Loaded's `receivedAt` and the only writer is the
+    # editor's date field — so when Loaded's draft carries no received date,
+    # a person filling one in read as a hand-edit and the whole receive as
+    # EDITED. INV2007071 (26 Aug 2026) was recorded edited on that single
+    # field with every other header value matching its baseline exactly.
     "total",
     "tax_amount",
     "discount_amount",

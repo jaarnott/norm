@@ -37,6 +37,13 @@ logger = logging.getLogger(__name__)
 SOURCE_STORED = "stored"
 SOURCE_EXTRACTED = "extracted"
 
+# Brand-new suppliers the sensei may train in one reconciliation run. Matches
+# the receive consolidator's `max_sensei`, for the same reason: training reads
+# a PDF and calls the LLM, so a venue meeting a dozen new suppliers at once
+# should spread that over runs rather than pay for it in one morning. The
+# backlog is not lost — the next run picks up where this one stopped.
+MAX_SENSEI_PER_RUN = 2
+
 
 def stored_header(db: Session, venue_id: str, invoice_id: str) -> dict | None:
     """The extraction the RECEIVE flow already made for this invoice, if any.
@@ -87,20 +94,20 @@ def copy_headers(
 ) -> dict[str, dict]:
     """``{invoice_id: header}`` for every invoice, cheapest source first.
 
-    ``invoices`` items need ``id`` and may carry ``fileId``, ``supplierName``
-    and ``purchaseOrderNumber``. The returned header is a ``PDF_SCHEMA`` header
-    plus ``_source`` (stored | extracted), ``_po_verdict``/``_po_note``, and on
-    failure ``error``.
+    ``invoices`` items need ``id`` and may carry ``fileId``, ``supplierName``,
+    ``supplierId`` and ``purchaseOrderNumber``. ``supplierId`` is what buys the
+    supplier's Loaded aliases, and those decide which spec is found — without
+    it a supplier filed under a different spelling reads with the generic
+    prompt. The returned header is a ``PDF_SCHEMA`` header plus ``_source``
+    (stored | extracted), ``_po_verdict``/``_po_note``, and on failure
+    ``error``.
 
     The PO verdict is stamped HERE rather than by the caller: the consolidator
     that consumes this runs sandboxed and cannot import anything, and the rule
     for telling our PO number from the supplier's is worth having in exactly
     one tested place.
     """
-    from app.services.invoice_extraction import (
-        extract_invoice_copies_parallel,
-        pdf_instructions_for,
-    )
+    from app.services.invoice_extraction import extract_invoice_copies_parallel
 
     out: dict[str, dict] = {}
     pending: list[dict] = []
@@ -122,21 +129,63 @@ def copy_headers(
         pending.append(inv)
 
     if pending:
+        # THE receive path's composer, not a second implementation. This module
+        # exists to read the copy with the supplier's spec, but it composed from
+        # Loaded's feed spelling alone: 'Kaans Catering' matches no spec, so
+        # reconciliation ran the generic prompt (2818 chars) while receiving ran
+        # the spec's (6315) carrying Kaans' 'External Document No.' rule.
+        # Instructions are CACHE-KEY material, so it was self-sealing — with the
+        # spec absent from the key, fixing it in the dojo invalidated nothing
+        # and the pre-fix answer was served for ever. Composing identically
+        # puts both paths on one cache row, as the docstring already promises.
+        #
+        # The sensei runs here too, on the same terms receiving uses: a
+        # spec-less supplier is a spec-less supplier, whether the invoice came
+        # from Bidfood or from a sister venue. Both paths are unattended
+        # (receiving runs under the autopilot ladder), so the budget, not the
+        # audience, is what bounds it.
+        from app.services.invoice_review import (
+            _maybe_sensei,
+            account_suppliers,
+            extraction_instructions,
+            supplier_aliases,
+        )
+
+        # Once per run: the account's own record of which names are different
+        # businesses, which vets every alias below.
+        suppliers = account_suppliers(lh)
+
         # One instruction set per SUPPLIER, not per invoice: composing it hits
-        # the config DB for the spec, and a run is mostly a handful of
-        # suppliers with many invoices each.
-        by_supplier: dict[str, str] = {}
+        # the config DB for the spec and Loaded for the aliases, and a run is
+        # mostly a handful of suppliers with many invoices each.
+        by_supplier: dict[tuple, str] = {}
         requests = []
+        budget = MAX_SENSEI_PER_RUN
         for inv in pending:
             name = str(inv.get("supplierName") or "")
-            if name not in by_supplier:
-                by_supplier[name] = pdf_instructions_for(
-                    config_db, loaded_supplier=name or None
+            sup_id = inv.get("supplierId") or inv.get("linkedSupplierId")
+            key = (name, str(sup_id or ""))
+            if key not in by_supplier:
+                detail = {"supplierName": name or None, "linkedSupplierId": sup_id}
+                aliases = supplier_aliases(lh, detail, suppliers)
+                # BEFORE the instructions are composed — a spec trained now has
+                # to be in this pass's cache key, not the next one's.
+                if (
+                    name
+                    and budget > 0
+                    and inv.get("fileId")
+                    and _maybe_sensei(
+                        db, config_db, venue_id, str(inv.get("id")), name, *aliases
+                    )
+                ):
+                    budget -= 1
+                by_supplier[key] = extraction_instructions(
+                    config_db, lh, detail, aliases
                 )
             requests.append(
                 {
                     "file_id": inv.get("fileId"),
-                    "instructions": by_supplier[name],
+                    "instructions": by_supplier[key],
                     "venue_key": venue_id,
                 }
             )

@@ -196,6 +196,41 @@ class TestLineSuggestions:
         # suggestions never block
         assert data["confidence"] == "ready"
 
+    def test_a_quantity_loaded_cannot_store_is_not_suggested(self):
+        """Loaded keeps quantities to 2dp — measured across all 868 it holds in
+        production, none finer. SI03448887 (26 Aug 2026) carried suggestions for
+        0.565 and 0.216 against Loaded's 0.57 and 0.22: accept, PUT, Loaded
+        rounds it back, the next open regenerates the suggestion. Permanently
+        pending, and every receive read 'autopilot would have differed'."""
+        det, ext = DETAIL(), EXTRACTION()
+        det["lines"][0]["quantityReceived"] = 0.57
+        ext["lines"][0]["quantity"] = 0.565
+        data = _review(detail=det, extraction=ext)
+        assert not [
+            s for s in data["suggestions"] if s.get("field") == "quantity_received"
+        ]
+
+    def test_a_real_difference_still_is(self):
+        """The precision rule must only silence sub-cent noise."""
+        det, ext = DETAIL(), EXTRACTION()
+        det["lines"][0]["quantityReceived"] = 2.0
+        ext["lines"][0]["quantity"] = 3.0
+        data = _review(detail=det, extraction=ext)
+        s = next(s for s in data["suggestions"] if s["field"] == "quantity_received")
+        assert s["proposed"] == 3.0
+
+    def test_what_it_proposes_is_a_value_loaded_can_keep(self):
+        """A rounded-away difference that is still real proposes the STORABLE
+        number — applying 0.565 would be rounded to 0.57 by Loaded and the
+        suggestion would return on the next open."""
+        det, ext = DETAIL(), EXTRACTION()
+        det["lines"][0]["quantityReceived"] = 1.0
+        ext["lines"][0]["quantity"] = 0.565
+        data = _review(detail=det, extraction=ext)
+        s = next(s for s in data["suggestions"] if s["field"] == "quantity_received")
+        assert s["proposed"] == 0.57
+        assert s["apply"] == {"quantity_received": 0.57}
+
     def test_cost_diff_becomes_suggestion(self):
         det = DETAIL()
         det["lines"][0]["unitCostExclTax"] = 40.0
@@ -832,7 +867,7 @@ class TestBatchModes:
             lambda db, lh_, reqs: [extractions[i] for i in range(len(reqs))],
         )
         monkeypatch.setattr(
-            IR, "extraction_instructions", lambda cdb, lh_, det: "INSTR"
+            IR, "extraction_instructions", lambda cdb, lh_, det, al=None: "INSTR"
         )
         monkeypatch.setattr(
             "app.services.spec_dojo.prefetch_replica_reference",
@@ -902,7 +937,9 @@ class TestBatchModes:
         monkeypatch.setattr(
             IR, "extract_invoice_copies_parallel", lambda d, l_, r: [EXTRACTION()]
         )
-        monkeypatch.setattr(IR, "extraction_instructions", lambda c, l_, d_: "INSTR")
+        monkeypatch.setattr(
+            IR, "extraction_instructions", lambda c, l_, d_, al=None: "INSTR"
+        )
         monkeypatch.setattr(
             "app.services.spec_dojo.prefetch_replica_reference",
             lambda d, c, v: REFERENCE(),
@@ -2384,3 +2421,398 @@ class TestDestructiveGates:
         assert any("struck" in d for d in done)
         assert any("receive unreconciled totals" in d for d in done)
         assert IR.compute_confidence(data) == "ready"
+
+
+class TestDecisionsSurviveARereview:
+    """A review REBUILDS the payload from Loaded and clears suggestions,
+    issues and suggestion_actions. Without carrying decisions across,
+    accepting a suggestion and then re-reviewing (the dojo pass, or simply
+    reopening the card) threw the accept away: the working value reverted to
+    Loaded's, the suggestion came back, and the receive was recorded as
+    "ignored". SI03448887 (26 Aug 2026) was reported EDITED with four ignored
+    suggestions the user had in fact actioned.
+    """
+
+    def _previous(self, *, action="accepted", proposed=0.57):
+        return {
+            "lines": [{"id": "ld-1", "quantity_received": proposed}],
+            "suggestions": [
+                {
+                    "id": "line_value:quantity_received:ld-1",
+                    "kind": "line_value",
+                    "field": "quantity_received",
+                    "line_id": "ld-1",
+                    "apply": {"quantity_received": proposed},
+                }
+            ],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "line_value:quantity_received:ld-1",
+                    "action": action,
+                    "by": "user",
+                    "at": "2026-08-26T08:00:00+00:00",
+                }
+            ],
+        }
+
+    def _fresh(self, *, proposed=0.57):
+        return {
+            "lines": [{"id": "ld-1", "quantity_received": 5.0}],
+            "suggestions": [
+                {
+                    "id": "line_value:quantity_received:ld-1",
+                    "kind": "line_value",
+                    "field": "quantity_received",
+                    "line_id": "ld-1",
+                    "apply": {"quantity_received": proposed},
+                }
+            ],
+            "issues": [],
+            "suggestion_actions": [],
+        }
+
+    def test_an_accept_survives_and_is_re_applied(self):
+        fresh = self._fresh()
+        carried = IR.carry_forward_decisions(self._previous(), fresh)
+        assert carried == 1
+        assert fresh["lines"][0]["quantity_received"] == 0.57  # re-applied
+        assert fresh["suggestion_actions"][0]["action"] == "accepted"
+
+    def test_a_dismissal_survives_without_touching_the_values(self):
+        fresh = self._fresh()
+        IR.carry_forward_decisions(self._previous(action="dismissed"), fresh)
+        assert fresh["lines"][0]["quantity_received"] == 5.0  # untouched
+        assert fresh["suggestion_actions"][0]["action"] == "dismissed"
+
+    def test_a_changed_proposal_is_asked_again(self):
+        """Holding someone to an answer they never gave is worse than asking
+        twice — the number moved, so the decision does not transfer."""
+        fresh = self._fresh(proposed=9.99)
+        carried = IR.carry_forward_decisions(self._previous(proposed=0.57), fresh)
+        assert carried == 0
+        assert fresh["suggestion_actions"] == []
+        assert fresh["lines"][0]["quantity_received"] == 5.0
+
+    def test_a_suggestion_that_no_longer_exists_carries_nothing(self):
+        fresh = {"lines": [], "suggestions": [], "issues": [], "suggestion_actions": []}
+        assert IR.carry_forward_decisions(self._previous(), fresh) == 0
+
+    def test_a_waved_blocker_survives_while_it_is_still_raised(self):
+        previous = {
+            "suggestions": [],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "unit_missing:ld-1",
+                    "action": "accepted",
+                    "by": "user",
+                }
+            ],
+        }
+        fresh = {
+            "lines": [],
+            "suggestions": [],
+            "issues": [{"id": "unit_missing:ld-1", "blocking": True}],
+            "suggestion_actions": [],
+        }
+        assert IR.carry_forward_decisions(previous, fresh) == 1
+
+    def test_a_blocker_no_longer_raised_carries_nothing(self):
+        previous = {
+            "suggestions": [],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "unit_missing:ld-1",
+                    "action": "accepted",
+                    "by": "user",
+                }
+            ],
+        }
+        fresh = {"lines": [], "suggestions": [], "issues": [], "suggestion_actions": []}
+        assert IR.carry_forward_decisions(previous, fresh) == 0
+
+    def test_a_first_review_carries_nothing(self):
+        assert IR.carry_forward_decisions({}, self._fresh()) == 0
+
+
+class TestALineThatDisagreesWithItself:
+    """Bidfood 90ea78ed, 26 Aug 2026. The copy printed 0.92 x $53.61 with a
+    line total of $49.48 — 16c adrift, because the supplier billed a weight
+    Loaded cannot store (0.923 kg becomes 0.92). Loaded then refused the whole
+    receive with `invoice-totals-mismatch`, declared 495.47 vs its own lines'
+    495.28, and nothing on our side had compared the two.
+    """
+
+    #: Loaded holds 0.92 x 53.61 = 49.32; the copy bills 49.48. Tax at 15% of
+    #: the BILLED figure, and the invoice total is billed + tax — exactly the
+    #: shape of Bidfood 90ea78ed.
+    TAX = round(49.48 * 0.15, 2)
+
+    def _doc(self, *, loaded_cost=53.61, printed_total=49.48, declared=None):
+        det, ext = DETAIL(), EXTRACTION()
+        det["lines"][0]["quantityReceived"] = 0.92
+        det["lines"][0]["unitCostExclTax"] = loaded_cost
+        det["lines"][0]["totalCostExclTax"] = round(0.92 * loaded_cost, 4)
+        det["lines"][0]["taxAmount"] = self.TAX
+        det["total"] = (
+            declared if declared is not None else round(printed_total + self.TAX, 2)
+        )
+        det["taxAmount"] = self.TAX
+        ext["lines"][0]["quantity"] = 0.92
+        ext["lines"][0]["unit_price_ex_tax"] = 53.61
+        ext["lines"][0]["line_total_ex_tax"] = printed_total
+        return _review(detail=det, extraction=ext)
+
+    def test_the_fix_is_suggested_on_the_line(self):
+        """49.48 / 0.92 = 53.7826… -> 53.78, and 0.92 x 53.78 restores 49.48."""
+        s = next(s for s in self._doc()["suggestions"] if s.get("field") == "unit_cost")
+        assert s["proposed"] == 53.78
+        assert "$49.48" in s["explanation"] and "$49.32" in s["explanation"]
+        assert s["apply"] == {"unit_cost": 53.78}
+
+    def test_accepting_the_fix_makes_the_line_match_the_invoice(self):
+        data = self._doc()
+        s = next(s for s in data["suggestions"] if s.get("field") == "unit_cost")
+        IR.apply_suggestion(data, s)
+        ln = next(x for x in data["lines"] if str(x["id"]) == str(s["line_id"]))
+        assert round(ln["quantity_received"] * ln["unit_cost"], 2) == 49.48
+
+    def test_a_copy_that_agrees_with_itself_suggests_no_correction(self):
+        data = self._doc(printed_total=49.32, declared=49.32 * 1.15)
+        assert not [
+            s
+            for s in data["suggestions"]
+            if s.get("field") == "unit_cost" and "match the invoice" in s["explanation"]
+        ]
+
+    def test_a_gap_the_rounding_story_cannot_explain_suggests_nothing(self):
+        """2 x $10 billed at $90 implies 9 units, not a rounded 2 — the figure
+        that was misread is anyone's guess, and inventing a $45 unit price
+        would be worse than saying nothing."""
+        data = self._doc(loaded_cost=10.0, printed_total=90.0)
+        assert not [
+            s
+            for s in data["suggestions"]
+            if s.get("field") == "unit_cost" and "match the invoice" in s["explanation"]
+        ]
+
+    def test_an_ordinary_price_difference_still_reads_as_one(self):
+        """Loaded simply holding a different price is not a totals problem and
+        must keep its own plain explanation."""
+        data = self._doc(loaded_cost=40.0, printed_total=49.32)
+        s = next(s for s in data["suggestions"] if s.get("field") == "unit_cost")
+        assert s["proposed"] == 53.61
+        assert "prices" in s["explanation"]
+
+
+class TestTheCopyDecidesWhichLayoutReadsIt:
+    """Pass 2 — the printed name re-selects the spec.
+
+    Pass 1 has no choice but to pick the layout from Loaded's supplier: the
+    printed name does not exist until the copy has been read. That leaves one
+    hole nothing could see. An invoice printed by supplier B but filed in
+    Loaded under supplier A is read with A's prompt, and stays that way for
+    good, because the extraction cache row is keyed to those instructions.
+
+    Production had exactly that: a `Neat Meat` invoice sitting on Loaded's
+    `Coca Cola` supplier record, read with Coca Cola's prompt while a
+    `NEAT MEAT` spec existed. The model was even asked `supplier_differs` and
+    said true — and nothing anywhere read the answer.
+
+    So once the copy has been read, the name printed on it is the higher
+    authority (the order `resolve_supplier` already states) and re-selects the
+    layout. Once, never a loop, and only when the spec actually changes.
+    """
+
+    class _Spec:
+        def __init__(self, id, name, instructions="notes"):
+            self.id, self.name, self.instructions = id, name, instructions
+
+    def _wire(self, monkeypatch, by_name, second=None):
+        """`find_spec_for_supplier` over a tiny roster, and a recording
+        extractor standing in for the model."""
+        calls = []
+
+        def _find(_cdb, *names):
+            for n in names:
+                hit = by_name.get(str(n or "").lower())
+                if hit:
+                    return hit
+            return None
+
+        def _extract(_db, _lh, _file_id, *, instructions, venue_key):  # noqa: ARG001
+            calls.append(instructions)
+            return second if second is not None else {"supplier_name": "unchanged"}
+
+        monkeypatch.setattr(IR, "find_spec_for_supplier", _find)
+        monkeypatch.setattr(IR, "extract_invoice_copy", _extract)
+        monkeypatch.setattr(
+            IR,
+            "compose_pdf_instructions",
+            lambda _c, **kw: "INSTR:" + str(kw.get("spec_name")),
+        )
+        return calls
+
+    def test_a_copy_printed_by_another_business_is_re_read(self, monkeypatch):
+        """The Neat Meat invoice, on Loaded's Coca Cola record."""
+        neat = self._Spec("s-neat", "NEAT MEAT")
+        calls = self._wire(
+            monkeypatch,
+            {"coca cola": self._Spec("s-coke", "Coca Cola"), "neat meat": neat},
+            second={"supplier_name": "Neat Meat", "invoice_number": "SECOND"},
+        )
+        out, used = IR.reread_under_printed_spec(
+            None,
+            object(),
+            None,
+            "v-1",
+            "f-1",
+            {"supplierName": "Coca Cola"},
+            [],
+            {"supplier_name": "Neat Meat"},
+        )
+        assert calls == ["INSTR:NEAT MEAT"]
+        assert out["invoice_number"] == "SECOND"
+        assert used is neat
+
+    def test_the_same_business_spelled_differently_is_not_re_read(self, monkeypatch):
+        """77% of production invoices print a different STRING to Loaded's
+        ('Bidfood Limited' vs 'Bidfood'). Re-reading those would double the
+        extraction bill to learn nothing."""
+        bidfood = self._Spec("s-bid", "Bidfood")
+        calls = self._wire(
+            monkeypatch, {"bidfood": bidfood, "bidfood limited": bidfood}
+        )
+        out, used = IR.reread_under_printed_spec(
+            None,
+            object(),
+            None,
+            "v-1",
+            "f-1",
+            {"supplierName": "Bidfood"},
+            [],
+            {"supplier_name": "Bidfood Limited"},
+        )
+        assert calls == []
+        assert out["supplier_name"] == "Bidfood Limited"
+        assert used is bidfood
+
+    def test_a_printed_name_with_no_spec_keeps_the_first_read(self, monkeypatch):
+        """Nothing to switch TO. Pass 1's spec stands, and the printed name is
+        handed to the sensei instead (covered below)."""
+        calls = self._wire(
+            monkeypatch, {"coca cola": self._Spec("s-coke", "Coca Cola")}
+        )
+        _out, used = IR.reread_under_printed_spec(
+            None,
+            object(),
+            None,
+            "v-1",
+            "f-1",
+            {"supplierName": "Coca Cola"},
+            [],
+            {"supplier_name": "Someone Brand New"},
+        )
+        assert calls == []
+        assert used.name == "Coca Cola"
+
+    def test_an_unreadable_second_pass_never_loses_the_first(self, monkeypatch):
+        """A failed re-read must not cost us the read we already have."""
+        calls = self._wire(
+            monkeypatch,
+            {
+                "coca cola": self._Spec("s-coke", "Coca Cola"),
+                "neat meat": self._Spec("s-neat", "NEAT MEAT"),
+            },
+            second={"error": "model unavailable"},
+        )
+        out, _used = IR.reread_under_printed_spec(
+            None,
+            object(),
+            None,
+            "v-1",
+            "f-1",
+            {"supplierName": "Coca Cola"},
+            [],
+            {"supplier_name": "Neat Meat", "invoice_number": "FIRST"},
+        )
+        assert len(calls) == 1
+        assert out["invoice_number"] == "FIRST"
+
+    def test_a_copy_with_no_printed_supplier_is_not_re_read(self, monkeypatch):
+        calls = self._wire(
+            monkeypatch, {"coca cola": self._Spec("s-coke", "Coca Cola")}
+        )
+        IR.reread_under_printed_spec(
+            None,
+            object(),
+            None,
+            "v-1",
+            "f-1",
+            {"supplierName": "Coca Cola"},
+            [],
+            {"supplier_name": None},
+        )
+        assert calls == []
+
+    def test_it_re_reads_once_not_in_a_loop(self, monkeypatch):
+        """The second read names the same supplier again; feeding it back must
+        not trigger a third."""
+        neat = self._Spec("s-neat", "NEAT MEAT")
+        calls = self._wire(
+            monkeypatch,
+            {"coca cola": self._Spec("s-coke", "Coca Cola"), "neat meat": neat},
+            second={"supplier_name": "Neat Meat"},
+        )
+        out, used = IR.reread_under_printed_spec(
+            None,
+            object(),
+            None,
+            "v-1",
+            "f-1",
+            {"supplierName": "Coca Cola"},
+            [],
+            {"supplier_name": "Neat Meat"},
+        )
+        again, _ = IR.reread_under_printed_spec(
+            None,
+            object(),
+            None,
+            "v-1",
+            "f-1",
+            {"supplierName": "Coca Cola"},
+            [],
+            out,
+        )
+        assert len(calls) == 2  # one per explicit call, never recursive
+        assert used is neat and again["supplier_name"] == "Neat Meat"
+
+    def test_loaded_s_supplier_stays_in_the_second_prompt(self, monkeypatch):
+        """The supplier-differs clause is what lets the model say the two
+        disagree, and Loaded's name is still a true statement about Loaded."""
+        seen = {}
+        self._wire(
+            monkeypatch,
+            {
+                "coca cola": self._Spec("s-coke", "Coca Cola"),
+                "neat meat": self._Spec("s-neat", "NEAT MEAT"),
+            },
+            second={"supplier_name": "Neat Meat"},
+        )
+        monkeypatch.setattr(
+            IR,
+            "compose_pdf_instructions",
+            lambda _c, **kw: seen.update(kw) or "INSTR",
+        )
+        IR.reread_under_printed_spec(
+            None,
+            object(),
+            None,
+            "v-1",
+            "f-1",
+            {"supplierName": "Coca Cola"},
+            ["COKE NZ"],
+            {"supplier_name": "Neat Meat"},
+        )
+        assert seen["loaded_supplier"] == "Coca Cola"
+        assert seen["loaded_aliases"] == ["COKE NZ"]
+        assert seen["spec_name"] == "NEAT MEAT"

@@ -1070,6 +1070,26 @@ def build_replica(
                     + (f" − discount {disc_f:.2f}" if disc_f else "")
                     + f" ≠ total {total_f:.2f}"
                 )
+            if not problems and (sub_f is None or tax_f is None or total_f is None):
+                # Nothing to reconcile AGAINST is not the same as reconciling.
+                # This branch used to fall through in silence, which reads
+                # exactly like a pass: Bidfood 90ea78ed (26 Aug 2026) extracted
+                # no header totals at all, so the check ran and said nothing
+                # while the document was 16c out.
+                missing = [
+                    name
+                    for name, val in (
+                        ("subtotal", sub_f),
+                        ("tax", tax_f),
+                        ("total", total_f),
+                    )
+                    if val is None
+                ]
+                log.append(
+                    "totals not checked against the copy: it carries no "
+                    + ", ".join(missing)
+                    + f" (its lines add to {line_sum:.2f})"
+                )
             if problems:
                 msg = (
                     "the copy's totals don't reconcile: "

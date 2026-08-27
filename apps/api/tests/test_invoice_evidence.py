@@ -92,9 +92,10 @@ class TestItReadsWhatReceivingAlreadyProduced:
             seen["supplier"] = loaded_supplier
             return "SPEC INSTRUCTIONS FOR " + str(loaded_supplier)
 
-        monkeypatch.setattr(
-            "app.services.invoice_extraction.pdf_instructions_for", _instr
-        )
+        # Patch where it is USED: invoice_review binds pdf_instructions_for at
+        # import, so patching invoice_extraction's copy rebinds nothing (and
+        # leaks a stale fake into the module for every later test).
+        monkeypatch.setattr("app.services.invoice_review.pdf_instructions_for", _instr)
         monkeypatch.setattr(
             "app.services.invoice_extraction.extract_invoice_copies_parallel",
             lambda db, lh, requests, **k: [
@@ -118,7 +119,7 @@ class TestItReadsWhatReceivingAlreadyProduced:
         with many invoices each."""
         calls = []
         monkeypatch.setattr(
-            "app.services.invoice_extraction.pdf_instructions_for",
+            "app.services.invoice_review.pdf_instructions_for",
             lambda c, **k: calls.append(k.get("loaded_supplier")) or "I",
         )
         monkeypatch.setattr(
@@ -584,3 +585,186 @@ class TestThePoVerdict:
         verdict, note = EV.po_verdict(None, {})
         assert verdict == "absent"
         assert "No PO number on the received invoice or the invoice copy" in note
+
+
+class TestItComposesInstructionsExactlyLikeReceiving:
+    """The Kaans regression, pinned.
+
+    For three weeks every Kaans invoice failed on "no PO number" while the
+    receive card read it correctly off the same PDF. Reconciliation composed
+    from Loaded's feed spelling alone — 'Kaans Catering' matches no spec, so it
+    ran the generic prompt while receiving ran the one carrying that supplier's
+    'External Document No.' rule.
+
+    Instructions are cache-key material, which made it self-sealing: with the
+    spec absent from the key, fixing the spec in the dojo could not invalidate
+    the stale extraction. So this pins BOTH halves — that the composer is
+    receiving's own, and that the aliases reach it, because dropping either one
+    silently restores the generic prompt and no assertion elsewhere notices.
+    """
+
+    class _AliasLh:
+        def __init__(self):
+            self.asked = []
+
+        def get(self, path):
+            self.asked.append(path)
+            return [{"name": "CATERING SUPPLIES LTD"}, {"name": "Kaan's Catering"}]
+
+        def invoice(self, invoice_id):  # pragma: no cover - not reached here
+            raise AssertionError("no detail read is needed for a matched PO")
+
+    def _run(self, monkeypatch, invoices, sensei=None):
+        seen = {}
+
+        def _fake_extract(_db, _lh, requests):
+            seen["requests"] = requests
+            return [{"invoice_number": "SI1"} for _ in requests]
+
+        monkeypatch.setattr(
+            "app.services.invoice_extraction.extract_invoice_copies_parallel",
+            _fake_extract,
+        )
+        # The composed instructions ARE the cache key, so render the identity
+        # and the aliases that went into them — that is what these assert on.
+        monkeypatch.setattr(
+            "app.services.invoice_review.extraction_instructions",
+            lambda config_db, lh, detail, aliases=None: (
+                "INSTR:" + repr(sorted(detail.items())) + repr(aliases)
+            ),
+        )
+        # Training is stubbed unless a test is watching it: the real one would
+        # reach a config DB these tests do not have.
+        monkeypatch.setattr(
+            "app.services.invoice_review._maybe_sensei",
+            sensei if sensei is not None else (lambda *_a, **_k: False),
+        )
+        lh = self._AliasLh()
+        EV.copy_headers(_Db([]), None, lh, "v-1", invoices)
+        return seen.get("requests", []), lh
+
+    def test_the_supplier_identity_reaches_the_composer(self, monkeypatch):
+        """Name AND id: the id is what buys the aliases, and an alias is how a
+        global spec is found under the account's own spelling."""
+        requests, _lh = self._run(
+            monkeypatch,
+            [
+                {
+                    "id": "inv-1",
+                    "fileId": "f-1",
+                    "supplierName": "Kaans Catering",
+                    "supplierId": "sup-9",
+                }
+            ],
+        )
+        assert "'supplierName', 'Kaans Catering'" in requests[0]["instructions"]
+        assert "'linkedSupplierId', 'sup-9'" in requests[0]["instructions"]
+
+    def test_two_suppliers_sharing_a_name_do_not_share_instructions(self, monkeypatch):
+        """The cache key is per identity, not per printed name."""
+        requests, _lh = self._run(
+            monkeypatch,
+            [
+                {
+                    "id": "i1",
+                    "fileId": "f1",
+                    "supplierName": "Service Foods",
+                    "supplierId": "s1",
+                },
+                {
+                    "id": "i2",
+                    "fileId": "f2",
+                    "supplierName": "Service Foods",
+                    "supplierId": "s2",
+                },
+            ],
+        )
+        assert requests[0]["instructions"] != requests[1]["instructions"]
+
+    @staticmethod
+    def _sensei_spy(calls, trained=True):
+        """Records what the sensei was asked, and with which identity hints."""
+
+        def _spy(_db, _cdb, _venue, invoice_id, supplier, *aliases):
+            calls.append((invoice_id, supplier, list(aliases)))
+            return trained
+
+        return _spy
+
+    def test_it_trains_a_spec_less_supplier_before_composing(self, monkeypatch):
+        """A spec-less supplier is a spec-less supplier — sister venue or not.
+        Training must land BEFORE the instructions are composed, because a
+        fresh spec is part of this pass's cache key, not the next one's."""
+        calls = []
+        self._run(
+            monkeypatch,
+            [
+                {
+                    "id": "inv-1",
+                    "fileId": "f-1",
+                    "supplierName": "The Glass Goose",
+                    "supplierId": "s-1",
+                }
+            ],
+            sensei=self._sensei_spy(calls),
+        )
+        assert [c[1] for c in calls] == ["The Glass Goose"]
+
+    def test_the_sensei_is_asked_with_the_same_aliases_extraction_uses(
+        self, monkeypatch
+    ):
+        """THE bug: asked under the bare feed name, a supplier filed under a
+        different spelling looks spec-less for ever, so the guard never fires
+        and a working spec is re-analysed on every invoice."""
+        calls = []
+        self._run(
+            monkeypatch,
+            [
+                {
+                    "id": "inv-1",
+                    "fileId": "f-1",
+                    "supplierName": "Kaans Catering",
+                    "supplierId": "s-1",
+                }
+            ],
+            sensei=self._sensei_spy(calls),
+        )
+        assert calls[0][2] == ["CATERING SUPPLIES LTD", "Kaan's Catering"]
+
+    def test_the_budget_is_spent_only_on_suppliers_it_trained(self, monkeypatch):
+        """Suppliers that already have a spec cost nothing: `_maybe_sensei`
+        returns False and the budget survives for one that needs it."""
+        calls = []
+        self._run(
+            monkeypatch,
+            [
+                {"id": f"i{n}", "fileId": "f", "supplierName": f"S{n}", "supplierId": n}
+                for n in range(EV.MAX_SENSEI_PER_RUN + 3)
+            ],
+            sensei=self._sensei_spy(calls, trained=False),
+        )
+        assert len(calls) == EV.MAX_SENSEI_PER_RUN + 3
+
+    def test_a_run_meeting_many_new_suppliers_stops_at_the_budget(self, monkeypatch):
+        """Training reads a PDF and calls the LLM. The rest wait for the next
+        run rather than landing in one morning."""
+        calls = []
+        self._run(
+            monkeypatch,
+            [
+                {"id": f"i{n}", "fileId": "f", "supplierName": f"S{n}", "supplierId": n}
+                for n in range(EV.MAX_SENSEI_PER_RUN + 3)
+            ],
+            sensei=self._sensei_spy(calls, trained=True),
+        )
+        assert len(calls) == EV.MAX_SENSEI_PER_RUN
+
+    def test_an_invoice_with_no_copy_is_never_sent_for_training(self, monkeypatch):
+        """The sensei learns from the PDF; there is nothing to learn from."""
+        calls = []
+        self._run(
+            monkeypatch,
+            [{"id": "inv-1", "supplierName": "Nobody Ltd", "supplierId": "s-1"}],
+            sensei=self._sensei_spy(calls),
+        )
+        assert calls == []

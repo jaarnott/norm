@@ -26,6 +26,7 @@ working values at the top level (Loaded-populated, then edited), plus
 from __future__ import annotations
 
 import datetime
+import decimal
 import logging
 import re
 
@@ -34,6 +35,7 @@ from sqlalchemy.orm import Session
 from app.services import invoice_line_match as line_match
 from app.services import venue_autopilot as _VA
 from app.services.invoice_extraction import (
+    compose_pdf_instructions,
     extract_invoice_copy,
     extract_invoice_copies_parallel,
     find_spec_for_supplier,
@@ -65,6 +67,15 @@ DOC_SCHEMA = "replica_v1"
 _QTY_TOL = 0.001
 _MONEY_TOL = 0.011
 
+#: Loaded stores received quantities to 2 decimal places — measured across
+#: every quantity it holds in production (868 values: 714 at 0dp, 72 at 1dp,
+#: 82 at 2dp, none finer). A suggestion proposing more precision than that can
+#: never be satisfied: accept 0.565, PUT it, Loaded stores 0.57, the next open
+#: reseeds from Loaded and the suggestion returns — permanently pending, and
+#: every receive reads "autopilot would have differed" (SI03448887, 26 Aug
+#: 2026). So the copy's quantity is judged at the precision Loaded can keep.
+_LOADED_QTY_DP = 2
+
 # extracted_snapshot header projection — verbatim extraction values.
 _SNAPSHOT_HEADER_KEYS = (
     "document_type",
@@ -86,6 +97,22 @@ def _f(v: object) -> float | None:
         return float(v)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _storable_qty(value: object) -> object:
+    """The copy's quantity as Loaded would keep it. Non-numbers pass through.
+
+    HALF-UP, not Python's ``round``: 0.565 banker's-rounds to 0.56 while Loaded
+    stores 0.57, and proposing 0.56 against Loaded's 0.57 would invent the very
+    difference this is meant to remove.
+    """
+    f = _f(value)
+    if f is None:
+        return value
+    quantum = decimal.Decimal(1).scaleb(-_LOADED_QTY_DP)
+    return float(
+        decimal.Decimal(str(f)).quantize(quantum, rounding=decimal.ROUND_HALF_UP)
+    )
 
 
 def _differ(a: object, b: object, tol: float) -> bool:
@@ -251,9 +278,56 @@ def _sugg(
     out.append(entry)
 
 
+def _money(value: object) -> str:
+    f = _f(value)
+    return "$" + format(f, ",.2f") if f is not None else str(value)
+
+
+def _reconciled_unit_cost(rl: dict) -> tuple[object, object]:
+    """``(unit_cost_to_propose, billed_total_if_it_disagreed)``.
+
+    A supplier billing by weight prints a quantity Loaded cannot hold: 0.923 kg
+    becomes 0.92, and the line's money moves. The copy then contradicts itself —
+    Bidfood 90ea78ed (26 Aug 2026) printed 0.92 x 53.61 with a line total of
+    49.48, sixteen cents adrift, and Loaded rejected the whole receive with
+    ``invoice-totals-mismatch``.
+
+    The MONEY is the fact worth keeping: it is what the supplier charged and
+    what the statement reconciles against. The quantity cannot be corrected
+    (Loaded rounds it straight back), so solve for the unit cost that
+    reproduces the billed total at the quantity Loaded can store. Only when
+    that cost actually reproduces it — otherwise say nothing and let the totals
+    gate ask a person rather than invent a number that nearly works.
+    """
+    cost, qty, billed = (
+        rl.get("unit_cost"),
+        _f(rl.get("quantity_received")),
+        _f(rl.get("total_cost")),
+    )
+    if _f(cost) is None or not qty or billed is None:
+        return cost, None
+    if abs(qty * _f(cost) - billed) <= _MONEY_TOL:
+        return cost, None  # the copy agrees with itself
+    # Only when the ROUNDED-QUANTITY story actually explains the gap: the
+    # quantity implied by the billed total at the printed price must round to
+    # the quantity on the line. 49.48 / 53.61 = 0.9229… -> 0.92, which is what
+    # Loaded holds, so "the supplier billed 0.923 kg" fits. A line billing $90
+    # for 2 x $10 implies 9 units, nothing to do with rounding — there the
+    # figure that was misread is anyone's guess, and inventing a $45 unit price
+    # would be worse than saying nothing.
+    implied = billed / _f(cost)
+    if abs(round(implied, _LOADED_QTY_DP) - round(qty, _LOADED_QTY_DP)) > 1e-9:
+        return cost, None
+    fixed = round(billed / qty, 2)
+    if abs(qty * fixed - billed) > _MONEY_TOL:
+        return cost, None  # no storable cost reproduces the billed total
+    return fixed, billed
+
+
 def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> None:
     desc = ln.get("description") or rl.get("description") or ln.get("code") or "line"
-    if _differ(ln.get("quantity_received"), rl.get("quantity_received"), _QTY_TOL) and (
+    copy_qty = _storable_qty(rl.get("quantity_received"))
+    if _differ(ln.get("quantity_received"), copy_qty, _QTY_TOL) and (
         rl.get("quantity_received") is not None
     ):
         _sugg(
@@ -262,28 +336,39 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
             field="quantity_received",
             line_id=lid,
             current=ln.get("quantity_received"),
-            proposed=rl.get("quantity_received"),
+            proposed=copy_qty,
             explanation=(
-                f"the copy bills quantity {rl.get('quantity_received')} for "
+                f"the copy bills quantity {copy_qty} for "
                 f"'{desc}' — Loaded read {ln.get('quantity_received')}"
             ),
-            apply={"quantity_received": rl.get("quantity_received")},
+            # The STORABLE value, not the copy's raw one: applying 0.565 would
+            # be silently rounded to 0.57 by Loaded and the suggestion would
+            # come straight back on the next open.
+            apply={"quantity_received": copy_qty},
         )
-    if _differ(ln.get("unit_cost"), rl.get("unit_cost"), _MONEY_TOL) and (
-        rl.get("unit_cost") is not None
-    ):
+    copy_cost, billed = _reconciled_unit_cost(rl)
+    if _differ(ln.get("unit_cost"), copy_cost, _MONEY_TOL) and copy_cost is not None:
         _sugg(
             suggestions,
             "line_value",
             field="unit_cost",
             line_id=lid,
             current=ln.get("unit_cost"),
-            proposed=rl.get("unit_cost"),
+            proposed=copy_cost,
             explanation=(
-                f"the copy prices '{desc}' at {rl.get('unit_cost')} — "
-                f"Loaded read {ln.get('unit_cost')}"
+                (
+                    f"the copy bills {_money(billed)} for '{desc}' but "
+                    f"{rl.get('quantity_received')} x {_money(rl.get('unit_cost'))} "
+                    f"is {_money(_f(rl.get('quantity_received')) * _f(rl.get('unit_cost')))}"
+                    f" — unit cost {copy_cost} makes the line match the invoice"
+                )
+                if billed is not None
+                else (
+                    f"the copy prices '{desc}' at {copy_cost} — "
+                    f"Loaded read {ln.get('unit_cost')}"
+                )
             ),
-            apply={"unit_cost": rl.get("unit_cost")},
+            apply={"unit_cost": copy_cost},
         )
     # The batched unit resolver's answer (sibling lines, catalogue/item
     # context, product knowledge — see unit_resolver.py) OVERRIDES the
@@ -970,6 +1055,39 @@ _ISSUE_GATES = {
 }
 
 
+#: A cent of drift across a dozen lines is rounding, not a disagreement.
+_TOTALS_TOL = 0.02
+
+
+def _totals_view(data: dict) -> tuple[float, float, float, object]:
+    """``(line_sum, tax, derived_total, declared_total)`` — deliberately the
+    arithmetic the CARD shows, so a blocker can never contradict the figures on
+    screen."""
+    live = [ln for ln in data.get("lines") or [] if not ln.get("struck")]
+
+    def _line_total(ln: dict) -> float:
+        # EXACTLY what the receive sends: do_receive recomputes each line as
+        # quantity x unit cost and never trusts a stored total_cost, which can
+        # still hold the copy's PRINTED figure. Summing total_cost here made
+        # the gate disagree with Loaded's own validation and would have blocked
+        # 19 receives that in fact went through.
+        q, c = _f(ln.get("quantity_received")), _f(ln.get("unit_cost"))
+        if q is not None and c is not None:
+            return round(q * c, 4)
+        return _f(ln.get("total_cost")) or 0.0
+
+    line_sum = sum(_line_total(ln) for ln in live)
+    line_tax = [t for t in (_f(ln.get("tax_amount")) for ln in live) if t]
+    tax = sum(line_tax) if line_tax else (_f(data.get("tax_amount")) or 0.0)
+    return line_sum, tax, round(line_sum + tax, 2), _f(data.get("total"))
+
+
+def totals_reconcile(data: dict) -> bool:
+    """Does this document add up? Used by the blocker's clears_when."""
+    _, _, derived, declared = _totals_view(data)
+    return declared is None or abs(derived - declared) <= _TOTALS_TOL
+
+
 def _finalise_issues(
     replica_issues: list[dict],
     extra_issues: list[dict],
@@ -1541,6 +1659,67 @@ def apply_suggestion(data: dict, s: dict) -> dict | None:
     return before
 
 
+def carry_forward_decisions(previous: dict, fresh: dict) -> int:
+    """Re-apply the decisions a person already made, where the question is
+    unchanged. Returns how many were carried.
+
+    A review REBUILDS the payload from Loaded and clears ``suggestions``,
+    ``issues`` and ``suggestion_actions``. Without this, accepting a
+    suggestion and then re-reviewing (the dojo pass, or simply reopening the
+    card) silently threw the accept away: the working value reverted to
+    Loaded's, the suggestion came back, and the receive was recorded as
+    "ignored". SI03448887 (26 Aug 2026) was reported EDITED with four ignored
+    suggestions that had in fact been actioned.
+
+    The decision is only carried when the SAME suggestion id is regenerated
+    with the SAME proposal. A changed proposal is a different question, and
+    holding someone to an answer they never gave is worse than asking twice.
+    """
+    if not isinstance(previous, dict) or not isinstance(fresh, dict):
+        return 0
+    prior_actions: dict[str, dict] = {}
+    for a in previous.get("suggestion_actions") or []:
+        if isinstance(a, dict) and a.get("suggestion_id"):
+            prior_actions[str(a["suggestion_id"])] = a
+    if not prior_actions:
+        return 0
+
+    prior_suggestions = {
+        str(s.get("id")): s
+        for s in previous.get("suggestions") or []
+        if isinstance(s, dict) and s.get("id")
+    }
+    actions = fresh.setdefault("suggestion_actions", [])
+    carried = 0
+
+    def _same_question(before: dict, now: dict) -> bool:
+        return (before.get("apply") or {}) == (now.get("apply") or {}) and (
+            before.get("payload") or {}
+        ) == (now.get("payload") or {})
+
+    for s in fresh.get("suggestions") or []:
+        sid = str(s.get("id") or "")
+        action = prior_actions.get(sid)
+        before = prior_suggestions.get(sid)
+        if not action or before is None or not _same_question(before, s):
+            continue
+        if action.get("action") == "accepted":
+            apply_suggestion(fresh, s)
+        actions.append(dict(action))
+        carried += 1
+
+    # A waved blocker ("I have checked this") is a decision too, and it lives
+    # in the ISSUE id namespace with no proposal to compare — carry it only
+    # while the same blocker is still raised.
+    for issue in fresh.get("issues") or []:
+        iid = str(issue.get("id") or "")
+        action = prior_actions.get(iid)
+        if action and iid not in {str(a.get("suggestion_id")) for a in actions}:
+            actions.append(dict(action))
+            carried += 1
+    return carried
+
+
 def auto_accept_all(data: dict, *, actor: str = "norm") -> int:
     """Autopilot's accept: apply every suggestion and record each action.
     Returns the number applied."""
@@ -1681,14 +1860,20 @@ def review_invoice(
             }
         )
     else:
+        # One alias fetch feeds both the sensei's guard and the cache key; the
+        # supplier list vets those aliases and is reused by the replica below.
+        suppliers = account_suppliers(lh)
+        aliases = supplier_aliases(lh, detail, suppliers)
         if allow_sensei and detail.get("supplierName"):
-            _maybe_sensei(db, config_db, venue_id, invoice_id, detail["supplierName"])
+            _maybe_sensei(
+                db, config_db, venue_id, invoice_id, detail["supplierName"], *aliases
+            )
         if extraction is None:
             extraction = extract_invoice_copy(
                 db,
                 lh,
                 file_id,
-                instructions=extraction_instructions(config_db, lh, detail),
+                instructions=extraction_instructions(config_db, lh, detail, aliases),
                 venue_key=venue_id,
             )
         if not isinstance(extraction, dict) or extraction.get("error"):
@@ -1720,6 +1905,17 @@ def review_invoice(
                 }
             )
         else:
+            # PASS 2 — the copy decides which layout reads it.
+            extraction, spec_used = reread_under_printed_spec(
+                db, config_db, lh, venue_id, file_id, detail, aliases, extraction
+            )
+            # The supplier the COPY names may be one Norm has never seen, even
+            # when Loaded's name matched something. Ask the roster about the
+            # printed name too, or a business filed under someone else's Loaded
+            # record is never trained.
+            printed = extraction.get("supplier_name")
+            if allow_sensei and printed and spec_used is None:
+                _maybe_sensei(db, config_db, venue_id, invoice_id, str(printed))
             data["extracted_snapshot"] = _extracted_snapshot(extraction)
             # Feed the Norm supplier-product catalogue: every successful
             # extraction's printed sizes are supplier-stated physical facts
@@ -1754,7 +1950,7 @@ def review_invoice(
                 # a real identity hint when the printed name resolves to
                 # nothing on its own.
                 loaded_supplier_name=data.get("supplier_name"),
-                **(reference or {}),
+                **_with_suppliers(reference, suppliers),
             )
             data["replica"] = replica
             # A decisive resolver verdict is an enrichment verdict — record
@@ -1985,22 +2181,58 @@ def review_invoice(
     return data
 
 
-def extraction_instructions(config_db: Session, lh, detail: dict) -> str:
+def account_suppliers(lh) -> list[dict]:
+    """The venue's Loaded supplier records. Best-effort — callers fetch this
+    ONCE per run and pass it down; it is the account's own answer to "are these
+    two different businesses", which every alias is checked against."""
+    try:
+        rows = lh.get("/1.0/stock/internal/suppliers")
+        return rows if isinstance(rows, list) else []
+    except Exception as exc:  # noqa: BLE001 — the check degrades, never fails
+        logger.info("supplier list unavailable: %s", exc)
+        return []
+
+
+def supplier_aliases(
+    lh, detail: dict, suppliers: list[dict] | None = None
+) -> list[str]:
+    """This account's spellings for the invoice's supplier, sorted and vetted.
+
+    One fetch, one order: aliases decide BOTH which spec matches and what goes
+    in the extraction cache key, so the sort is not cosmetic — an unstable
+    order would re-extract every invoice on every run.
+
+    Vetted because Loaded's list is what its document scanning has seen, not a
+    curated registry: see ``admissible_aliases``.
+    """
+    from app.services.spec_dojo import loaded_supplier_aliases
+    from app.services.supplier_identity import admissible_aliases
+
+    name = detail.get("supplierName")
+    if not name:
+        return []
+    try:
+        found = loaded_supplier_aliases(lh, detail)
+    except Exception as exc:  # noqa: BLE001 — aliases are hints
+        logger.info("supplier aliases unavailable: %s", exc)
+        return []
+    if suppliers is None:
+        suppliers = account_suppliers(lh)
+    return sorted(admissible_aliases(name, found, suppliers))
+
+
+def extraction_instructions(
+    config_db: Session, lh, detail: dict, aliases: list[str] | None = None
+) -> str:
     """The composed extraction instructions for one invoice (cache-key
     material): main prompt + Loaded's supplier (with its stored aliases,
-    sorted for key stability) + the matching supplier spec's notes."""
-    aliases: list[str] = []
-    sup_id = detail.get("linkedSupplierId")
-    if detail.get("supplierName") and sup_id:
-        try:
-            rows = lh.get(f"/1.0/stock/internal/suppliers/{sup_id}/aliases")
-            aliases = sorted(
-                str(a.get("name"))
-                for a in (rows if isinstance(rows, list) else [])
-                if isinstance(a, dict) and a.get("name")
-            )
-        except Exception as exc:  # noqa: BLE001 — aliases are hints
-            logger.info("supplier aliases unavailable: %s", exc)
+    sorted for key stability) + the matching supplier spec's notes.
+
+    Pass ``aliases`` when the caller already fetched them — the same list has
+    to reach the sensei's guard, and Loaded should be asked only once.
+    """
+    if aliases is None:
+        aliases = supplier_aliases(lh, detail)
     return pdf_instructions_for(
         config_db,
         loaded_supplier=detail.get("supplierName"),
@@ -2008,14 +2240,108 @@ def extraction_instructions(config_db: Session, lh, detail: dict) -> str:
     )
 
 
+def _with_suppliers(reference: dict | None, suppliers: list[dict]) -> dict:
+    """The replica's reference bundle, carrying the supplier list we already
+    fetched to vet the aliases — so Loaded is asked for it once, not twice. A
+    caller that supplied its own list keeps it."""
+    ref = dict(reference or {})
+    if ref.get("suppliers") is None:
+        ref["suppliers"] = suppliers
+    return ref
+
+
+def reread_under_printed_spec(
+    db: Session,
+    config_db: Session,
+    lh,
+    venue_id: str,
+    file_id: object,
+    detail: dict,
+    aliases: list[str],
+    extraction: dict,
+) -> tuple[dict, object]:
+    """Re-read the copy when the name PRINTED on it names a different layout.
+
+    Pass 1 has no choice but to pick the layout from Loaded's supplier — the
+    printed name does not exist until the copy has been read. Once it does it
+    is the higher authority (the ordering ``resolve_supplier`` already states),
+    and it is the only thing that catches an invoice filed in Loaded against
+    the wrong business: a Neat Meat invoice sitting on the Coca Cola record was
+    read with Coca Cola's prompt and stayed that way for good, because the
+    extraction cache row is keyed to those very instructions.
+
+    Returns the extraction to use and the spec it was read under. One re-read,
+    never a loop, and only when the spec actually changes — measured at ~1% of
+    invoices, so the second call costs almost nothing.
+    """
+    printed = extraction.get("supplier_name")
+    if config_db is None:
+        # No roster to consult, so nothing to re-select against. Best-effort,
+        # like the alias fetch above — a review without a config DB is a
+        # harness, not a venue.
+        return extraction, None
+    was = find_spec_for_supplier(config_db, detail.get("supplierName"), *aliases)
+    if not printed:
+        return extraction, was
+    now = find_spec_for_supplier(config_db, printed)
+    if now is None or (was is not None and str(now.id) == str(was.id)):
+        return extraction, was
+    # Loaded's supplier stays in the prompt's supplier-differs clause: it is
+    # still a true statement about what Loaded records, and the clause is what
+    # lets the model say the two disagree.
+    second = extract_invoice_copy(
+        db,
+        lh,
+        file_id,
+        instructions=compose_pdf_instructions(
+            config_db,
+            loaded_supplier=detail.get("supplierName"),
+            loaded_aliases=aliases,
+            spec_notes=now.instructions or "",
+            spec_name=now.name,
+        ),
+        venue_key=venue_id,
+    )
+    if not isinstance(second, dict) or second.get("error"):
+        # A failed re-read must not lose the read we already have.
+        logger.info(
+            "second pass failed for '%s' (spec %s); keeping the first read",
+            printed,
+            now.name,
+        )
+        return extraction, was
+    logger.info(
+        "second pass: copy prints '%s' → re-read under spec '%s' (Loaded says '%s')",
+        printed,
+        now.name,
+        detail.get("supplierName"),
+    )
+    return second, now
+
+
 def _maybe_sensei(
-    db: Session, config_db: Session, venue_id: str, invoice_id: str, supplier: str
-) -> None:
+    db: Session,
+    config_db: Session,
+    venue_id: str,
+    invoice_id: str,
+    supplier: str,
+    *aliases: object,
+) -> bool:
     """Train the sensei for a spec-less supplier BEFORE extraction (the
-    engine's ordering rule) — fail-open, the review continues regardless."""
+    engine's ordering rule) — fail-open, the review continues regardless.
+    Returns whether training was attempted, so callers spend their budget on
+    suppliers that actually needed it rather than on ones already covered.
+
+    ``aliases`` are not optional decoration: a global spec is filed under ONE
+    canonical name and the account's spellings vary, so the bare feed name
+    answers the wrong question. 'Kaans Catering' found no spec while
+    "Kaan's Catering Supplies" sat there working, and the guard fell through —
+    re-staging a dojo sample and re-analysing that spec, auto-apply live, on
+    every new invoice. Ask with the same hints extraction uses.
+    """
     try:
-        if find_spec_for_supplier(config_db, supplier) is not None:
-            return
+        if find_spec_for_supplier(config_db, supplier, *aliases) is not None:
+            return False
         from app.agents.internal_tools import _sensei_train_supplier
 
         _sensei_train_supplier(
@@ -2023,12 +2349,15 @@ def _maybe_sensei(
                 "venue_id": venue_id,
                 "invoice_id": invoice_id,
                 "supplier_name": supplier,
+                "aliases": [str(a) for a in aliases],
             },
             db,
             None,
         )
+        return True
     except Exception as exc:  # noqa: BLE001 — sensei must never sink a review
         logger.warning("sensei training failed for %s: %s", supplier, exc)
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -2106,6 +2435,10 @@ def review_invoices(
         except Exception as exc:  # noqa: BLE001 — one bad invoice never sinks the batch
             logger.warning("invoice %s unavailable: %s", iid, exc)
 
+    # Once for the whole batch: the account's own record of which names are
+    # different businesses, which every alias below is vetted against.
+    suppliers = account_suppliers(lh)
+
     # Sensei first, budgeted, one per supplier — a fresh spec must exist
     # BEFORE its supplier's extraction runs (the instructions are cache-key
     # material).
@@ -2121,11 +2454,15 @@ def review_invoices(
             if not name or not det.get("fileId") or key in seen:
                 continue
             seen.add(key)
-            if find_spec_for_supplier(config_db, name) is not None:
-                continue
-            budget -= 1
-            _maybe_sensei(db, config_db, venue_id, iid, name)
-            sensei_runs.append({"invoice_id": iid, "supplier_name": name})
+            # With the account's own spellings — the bare feed name matches no
+            # spec for a supplier filed under a different one, which spent the
+            # budget retraining suppliers that were already covered. The helper
+            # owns the "does it need one" decision; the budget only counts the
+            # suppliers it actually trained.
+            aliases = supplier_aliases(lh, det, suppliers)
+            if _maybe_sensei(db, config_db, venue_id, iid, name, *aliases):
+                budget -= 1
+                sensei_runs.append({"invoice_id": iid, "supplier_name": name})
 
     # Parallel extraction warm-up (cache-first; misses fan out).
     order = [iid for iid in invoice_ids if iid in details]
@@ -2135,7 +2472,9 @@ def review_invoices(
         requests.append(
             {
                 "file_id": det.get("fileId"),
-                "instructions": extraction_instructions(config_db, lh, det),
+                "instructions": extraction_instructions(
+                    config_db, lh, det, supplier_aliases(lh, det, suppliers)
+                ),
                 "venue_key": venue_id,
             }
             if det.get("fileId")

@@ -322,6 +322,42 @@ def _cache_key(venue_key: object, file_id: object, instructions: str) -> str:
     )
 
 
+#: Magic bytes beat the Content-Type header, which is a supplier's server
+#: talking. Only used to CORRECT a header — an unrecognised signature leaves
+#: whatever was declared, so a type we simply don't know stays honest.
+_MAGIC_TYPES = (
+    (b"%PDF", "application/pdf"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF8", "image/gif"),
+    (b"RIFF", "image/webp"),
+)
+
+
+def _sniff_media_type(data: bytes, declared: str | None) -> str | None:
+    for signature, media_type in _MAGIC_TYPES:
+        if data.startswith(signature):
+            return media_type
+    return declared
+
+
+def _error_result(exc: Exception) -> dict:
+    """An extraction failure, labelled with WHOSE fault it is.
+
+    A transient one says nothing about the document — on 24-25 Aug 2026, 27 of
+    39 "unreadable copy" findings were Anthropic being briefly unavailable, and
+    every one of those invoices reads perfectly. Reporting them as unreadable
+    sends someone hunting a file that is fine, so callers get the flag and can
+    word it honestly.
+    """
+    from app.interpreter.llm_interpreter import _is_transient_llm_error
+
+    out = {"error": str(exc)}
+    if _is_transient_llm_error(exc):
+        out["transient"] = True
+    return out
+
+
 def _extract_uncached(
     session: Session,
     lh,
@@ -332,7 +368,20 @@ def _extract_uncached(
 ) -> dict:
     from app.interpreter.llm_interpreter import call_llm
 
+    import base64 as _b64
+
+    from app.services.attachments import build_content_block
+
     content_b64, content_type = lh.file_base64(file_id)
+    raw = _b64.b64decode(content_b64)
+    # Loaded attaches whatever the supplier sent, and plenty of it is a photo
+    # rather than a PDF (SABATO 1110818 and RESOTECH 253769 are 2.5MB JPEGs).
+    # Anthropic's `document` block accepts application/pdf ONLY, so calling
+    # everything a document 400'd those copies on every run, forever.
+    # build_content_block picks image vs document AND fits an oversized image
+    # inside Anthropic's per-image limit — the same builder chat attachments
+    # and recipe extraction already use.
+    block = build_content_block(raw, _sniff_media_type(raw, content_type), None)
     parsed, _ = call_llm(
         system_prompt=extraction_system_prompt(),
         user_prompt=instructions or "Extract the fields from the attached document.",
@@ -340,16 +389,7 @@ def _extract_uncached(
         thread_id=thread_id,
         call_type="extraction",
         max_tokens=4096,
-        documents=[
-            {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": content_type or "application/pdf",
-                    "data": content_b64,
-                },
-            }
-        ],
+        documents=[block],
     )
     if not isinstance(parsed, dict):
         return {"error": "extraction did not return an object"}
@@ -385,7 +425,7 @@ def extract_invoice_copy(
         return _extract_uncached(db, lh, file_id, instructions, key, thread_id)
     except Exception as exc:  # noqa: BLE001 — an unreadable copy is a finding
         logger.warning("invoice extraction failed for file %s: %s", file_id, exc)
-        return {"error": str(exc)}
+        return _error_result(exc)
 
 
 def extract_invoice_copies_parallel(
@@ -440,7 +480,7 @@ def extract_invoice_copies_parallel(
             logger.warning(
                 "invoice extraction failed for file %s: %s", r.get("file_id"), exc
             )
-            return i, {"error": str(exc)}
+            return i, _error_result(exc)
         finally:
             worker_db.close()
 

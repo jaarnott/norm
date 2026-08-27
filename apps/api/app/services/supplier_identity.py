@@ -167,6 +167,32 @@ def live_suppliers(suppliers) -> list[dict]:
     ]
 
 
+def admissible_aliases(supplier_name, aliases, suppliers) -> list[str]:
+    """The aliases that may act as identity hints for this supplier.
+
+    Loaded's alias list is not a curated registry — it is what its own document
+    scanning has seen, so it holds OCR debris ('BIDERESH CHRISTCHURCH',
+    'Burovintage Ltd') and, where a supplier record was renamed or repurposed,
+    the name of a DIFFERENT business. That matters because these hints choose
+    the extraction prompt: Glass Goose's 'La Zeppa' record carries the alias
+    'Oravida', and every invoice from the sister venue was read with Oravida's
+    layout.
+
+    The account is the authority on its own identities, so let it answer: an
+    alias that is the name of ANOTHER live supplier record in the same account
+    is the account stating those are two businesses, and cannot also be this
+    one's spelling. Nothing else is second-guessed — a legal name that looks
+    nothing like the trading name ('Ahi Mokopuna Limited Partnership' for
+    Akaroa Salmon) is exactly what an alias list is for.
+    """
+    own = norm(supplier_name)
+    others = {
+        norm(s.get("name")) for s in live_suppliers(suppliers) if norm(s.get("name"))
+    }
+    others.discard(own)
+    return [a for a in (aliases or []) if norm(a) not in others]
+
+
 def alias_candidates(names, suppliers, *, limit: int = 3) -> list[dict]:
     """Which suppliers are worth an aliases fetch, best first.
 

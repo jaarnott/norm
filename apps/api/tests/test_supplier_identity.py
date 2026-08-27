@@ -10,6 +10,7 @@ hand-rolled string comparison in several places that disagreed.
 from types import SimpleNamespace
 
 from app.services.supplier_identity import (
+    admissible_aliases,
     alias_candidates,
     alias_conflict,
     match_spec,
@@ -221,3 +222,65 @@ class TestAliasConflict:
 
     def test_an_unclaimed_name_is_free(self):
         assert alias_conflict([SERVICE_FOODS], "Bidfood", spec_id="euro") is None
+
+
+class TestTheAccountMayNotContradictItself:
+    """Loaded's alias list is not a curated registry.
+
+    It is what Loaded's own document scanning has seen, so it holds OCR debris
+    ('BIDERESH CHRISTCHURCH', 'Burovintage Ltd') and, where a supplier record
+    was renamed or repurposed, the name of a different business outright. Those
+    aliases choose the extraction prompt: Glass Goose's 'La Zeppa' record
+    carries the alias 'Oravida', so every invoice from the sister venue was
+    read with Oravida's layout. Across the five venues, 160 of 376 records
+    carry aliases and two of them name another business.
+
+    The account is the authority on its own identities, so it is asked: an
+    alias that IS another live supplier record cannot also be this one's
+    spelling. Nothing else is second-guessed.
+    """
+
+    ACCOUNT = [
+        {"id": "1", "name": "La Zeppa"},
+        {"id": "2", "name": "Oravida"},
+        {"id": "3", "name": "Kaans Catering"},
+        {"id": "4", "name": "Akaroa Salmon"},
+    ]
+
+    def test_an_alias_naming_another_supplier_record_is_dropped(self):
+        """The live fault, verbatim."""
+        assert admissible_aliases("La Zeppa", ["Oravida"], self.ACCOUNT) == []
+
+    def test_an_ordinary_spelling_survives(self):
+        """The Kaans win this whole exercise exists to keep."""
+        keep = ["CATERING SUPPLIES LTD", "Kaan's Catering Supplies Ltd"]
+        assert admissible_aliases("Kaans Catering", keep, self.ACCOUNT) == keep
+
+    def test_a_legal_name_that_looks_nothing_like_the_trading_name_survives(self):
+        """Exactly what an alias list is FOR — 'Ahi Mokopuna Limited
+        Partnership' is Akaroa Salmon. Only the account's own contradiction
+        disqualifies an alias, never mere dissimilarity."""
+        assert admissible_aliases(
+            "Akaroa Salmon", ["Ahi Mokopuna Limited Partnership"], self.ACCOUNT
+        ) == ["Ahi Mokopuna Limited Partnership"]
+
+    def test_a_supplier_may_carry_its_own_name(self):
+        """Loaded often lists the record's own name among its aliases; that is
+        not a contradiction with anything."""
+        assert admissible_aliases("La Zeppa", ["LA ZEPPA"], self.ACCOUNT) == [
+            "LA ZEPPA"
+        ]
+
+    def test_spelling_and_punctuation_do_not_smuggle_one_past(self):
+        assert admissible_aliases("La Zeppa", ["  oravida "], self.ACCOUNT) == []
+
+    def test_a_deleted_supplier_record_does_not_veto(self):
+        """Only LIVE records speak for the account — a removed one is not a
+        statement that two businesses exist today."""
+        account = [*self.ACCOUNT[:1], {"id": "2", "name": "Oravida", "removedAt": "x"}]
+        assert admissible_aliases("La Zeppa", ["Oravida"], account) == ["Oravida"]
+
+    def test_no_account_list_means_nothing_is_vetoed(self):
+        """The list is best-effort (one Loaded call). If it is unavailable the
+        aliases must still work — degrade, never blank."""
+        assert admissible_aliases("La Zeppa", ["Oravida"], []) == ["Oravida"]

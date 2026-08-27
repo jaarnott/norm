@@ -30,7 +30,11 @@ from app.services.invoice_extraction import (
     main_prompt,
 )
 
-__all__ = ["MAIN_PROMPT_NAME", "find_spec_for_supplier"]  # re-exported for callers
+__all__ = [
+    "MAIN_PROMPT_NAME",
+    "find_spec_for_supplier",
+    "loaded_supplier_aliases",
+]  # re-exported for callers
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +309,7 @@ def compare_extractions(expected: dict, current: dict) -> list[dict]:
 # supplier notes with it too) and is re-exported here for existing callers.
 
 
-def _loaded_supplier_aliases(lh, detail: dict) -> list[str]:
+def loaded_supplier_aliases(lh, detail: dict) -> list[str]:
     """This account's other spellings for the invoice's supplier, best-effort.
 
     Loaded holds them per supplier record and the venue maintains them, so
@@ -348,7 +352,12 @@ def find_or_create_spec_for_supplier(
 
 
 def stage_invoice_sample(
-    db: Session, venue_id: str, invoice_id: str, *, draft: bool
+    db: Session,
+    venue_id: str,
+    invoice_id: str,
+    *,
+    draft: bool,
+    supplier_name: str | None = None,
 ) -> dict:
     """File a Loaded invoice as a dojo sample — the shared engine behind
     Add-to-Dojo (permanent) and the Dojo page's triage staging (draft).
@@ -357,7 +366,10 @@ def stage_invoice_sample(
     creates the ``SupplierSpecSample`` with its source ids. Idempotent on
     ``(spec_id, source_invoice_id)``: an existing sample is reused, and an
     existing DRAFT is promoted when ``draft=False`` is requested. Opens its
-    own RW config session (request config sessions are read-only)."""
+    own RW config session (request config sessions are read-only).
+
+    ``supplier_name`` overrides Loaded's — pass the name PRINTED on the copy
+    when the two name different businesses."""
     from app.db.config_models import SupplierSpecSample
     from app.db.engine import _ConfigSessionLocal
     from app.services.received_invoice import LoadedInvoiceClient
@@ -368,10 +380,21 @@ def stage_invoice_sample(
         det = lh.invoice(invoice_id)
         if not det.get("fileId"):
             raise RuntimeError("no invoice copy attached — nothing to add")
-        supplier = det.get("supplierName") or ""
-        spec, created = find_or_create_spec_for_supplier(
-            wcdb, supplier, *_loaded_supplier_aliases(lh, det)
+        # Loaded's name unless the caller knows better. It knows better in one
+        # case: the copy is printed by a business Loaded has filed under some
+        # OTHER supplier record, and the printed name is the one the roster
+        # should answer for. Loaded's aliases are then withheld deliberately —
+        # they are that other business's spellings, and offering them would
+        # file this sample under its spec, which is the Eurovintage fault
+        # arriving by a new road.
+        loaded_name = det.get("supplierName") or ""
+        supplier = str(supplier_name or loaded_name or "")
+        hints = (
+            loaded_supplier_aliases(lh, det)
+            if norm(supplier) == norm(loaded_name)
+            else []
         )
+        spec, created = find_or_create_spec_for_supplier(wcdb, supplier, *hints)
         existing = (
             wcdb.query(SupplierSpecSample)
             .filter(

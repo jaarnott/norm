@@ -2327,7 +2327,13 @@ def _sensei_train_supplier(params: dict, db: Session, thread_id: str | None) -> 
             # sensei already ruled — never retrain on every review.
             from app.db.config_models import SupplierSpecSample
 
-            existing = spec_dojo.find_spec_for_supplier(wcdb, name)
+            # With the caller's identity hints: without them a supplier whose
+            # Loaded spelling differs from its spec name never matches, so the
+            # "already ruled" guard below cannot fire and the sensei retrains a
+            # working spec on every review.
+            existing = spec_dojo.find_spec_for_supplier(
+                wcdb, name, *(params.get("aliases") or ())
+            )
             if existing is not None:
                 if (existing.instructions or "").strip():
                     return _out(
@@ -2351,8 +2357,11 @@ def _sensei_train_supplier(params: dict, db: Session, thread_id: str | None) -> 
                         spec_name=existing.name,
                     )
 
+            # The caller's name, not Loaded's: for a copy printed by a business
+            # filed under someone else's Loaded record they are different, and
+            # the guard above just ruled on the caller's one.
             staged = spec_dojo.stage_invoice_sample(
-                db, str(venue_id), invoice_id, draft=False
+                db, str(venue_id), invoice_id, draft=False, supplier_name=name
             )
             if staged["already_in_dojo"]:
                 return _out(

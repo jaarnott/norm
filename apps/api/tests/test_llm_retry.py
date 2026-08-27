@@ -191,3 +191,52 @@ class TestRetryLoop:
             with pytest.raises(anthropic.APIStatusError):
                 _call()
         assert client.messages.stream.call_count == 1
+
+
+class TestTheOneShotPathRetriesToo:
+    """`call_llm` had only the SDK's own retry, and it is the path that reads
+    invoice copies — up to 10 concurrent document calls per venue, the most
+    overload-prone thing Norm does. On 24-25 Aug 2026 that cost 27 invoices a
+    day, each reported to the user as an "unreadable copy" when the document
+    was perfectly readable.
+    """
+
+    def _reply(self, text="{}"):
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=text)],
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        )
+
+    def _call(self):
+        from app.interpreter.llm_interpreter import call_llm
+
+        return call_llm(system_prompt="s", user_prompt="u", db=None)
+
+    def test_an_overload_is_retried_then_succeeds(self, _patched):
+        client = MagicMock()
+        client.messages.create.side_effect = [
+            _status_error(529, "overloaded_error"),
+            self._reply('{"invoice_number": "IN1"}'),
+        ]
+        with patch("anthropic.Anthropic", return_value=client):
+            parsed, _ = self._call()
+        assert parsed["invoice_number"] == "IN1"
+        assert client.messages.create.call_count == 2
+
+    def test_a_bad_request_is_never_retried(self, _patched):
+        """Retrying cannot fix a 400, and three attempts would triple the cost
+        of every genuine failure — including the non-PDF copies."""
+        client = MagicMock()
+        client.messages.create.side_effect = _status_error(400, "invalid_request_error")
+        with patch("anthropic.Anthropic", return_value=client):
+            with pytest.raises(anthropic.APIStatusError):
+                self._call()
+        assert client.messages.create.call_count == 1
+
+    def test_it_gives_up_after_max_attempts(self, _patched):
+        client = MagicMock()
+        client.messages.create.side_effect = _status_error(529, "overloaded_error")
+        with patch("anthropic.Anthropic", return_value=client):
+            with pytest.raises(anthropic.APIStatusError):
+                self._call()
+        assert client.messages.create.call_count == 3  # _LLM_MAX_ATTEMPTS

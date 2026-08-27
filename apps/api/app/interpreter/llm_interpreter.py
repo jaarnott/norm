@@ -93,19 +93,46 @@ def call_llm(
         user_content = dated_user_prompt
 
     # Explicit timeout on these one-shot calls (classification, summaries) so a
-    # stalled request can't hang; SDK auto-retry stays on since there is no
-    # manual retry around this path.
+    # stalled request can't hang.
     client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
     llm_call_id = None
     t0 = time.time()
 
     try:
-        response = client.messages.create(
-            model=resolved_model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_content}],
-        )
+        # Retry transient failures, the same way call_llm_with_tools does. This
+        # path had only the SDK's own retry, which does not cover Anthropic
+        # answering 200 and then failing — and this is the path that reads
+        # invoice copies, up to 10 concurrent document calls per venue, the most
+        # overload-prone thing Norm does. On 24-25 Aug 2026 that cost 27 invoices
+        # a day, each reported to the user as an "unreadable copy" when the
+        # document was perfectly readable.
+        for attempt in range(_LLM_MAX_ATTEMPTS):
+            try:
+                response = client.messages.create(
+                    model=resolved_model,
+                    max_tokens=max_tokens,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_content}],
+                )
+                break
+            except Exception as call_exc:
+                # A 4xx is never retried: retrying cannot fix a bad request, and
+                # three attempts would triple the cost of every genuine failure.
+                if attempt < _LLM_MAX_ATTEMPTS - 1 and _is_transient_llm_error(
+                    call_exc
+                ):
+                    logger.warning(
+                        "llm_transient_retry",
+                        extra={
+                            "thread_id": thread_id,
+                            "call_type": call_type,
+                            "attempt": attempt + 1,
+                            "error": str(call_exc)[:160],
+                        },
+                    )
+                    time.sleep(_llm_retry_backoff(attempt))
+                    continue
+                raise
         # First TEXT block, not content[0] — a response can lead with a
         # non-text block, and indexing blindly would read the wrong one.
         raw = next(
