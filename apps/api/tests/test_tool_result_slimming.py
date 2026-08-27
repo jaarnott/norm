@@ -77,6 +77,20 @@ class TestCardBodiesNeverReachTheModel:
 
     TOOL_DEF = {"working_document": {"items_path": "fix_invoices"}}
 
+    @staticmethod
+    def _envelope(payload):
+        """EXACTLY what `_execute_tool_call` hands the slim call site. The bare
+        payload is what `tc.result_payload` holds and what builds the cards —
+        they are NOT interchangeable, and testing only the bare shape is how
+        this shipped as a no-op (thread 9e71aa33, 27 Aug 2026)."""
+        return {
+            "success": True,
+            "data": payload,
+            "reference": None,
+            "error": None,
+            "auth_failed": False,
+        }
+
     def _result(self, cards=2):
         card = {
             "invoice_id": "inv-1",
@@ -141,3 +155,82 @@ class TestCardBodiesNeverReachTheModel:
         odd = {"fix_invoices": {"not": "a list"}}
         assert _without_card_bodies(odd, self.TOOL_DEF) == odd
         assert _without_card_bodies("not a dict", self.TOOL_DEF) == "not a dict"
+
+
+class TestItStripsTheShapeProductionActuallyPasses:
+    """The regression that made the first attempt a no-op.
+
+    `_execute_tool_call` returns an ENVELOPE — {"success", "data", "reference",
+    "error", "auth_failed"} — and `data` is the payload holding `fix_invoices`.
+    The working document and the cards are built from `tc.result_payload`,
+    which is that bare `data`. Checking only the top level therefore matched
+    nothing: 335,982 chars went to the model as a "too large, go and search"
+    stub, while every test — written against the bare payload — passed.
+    """
+
+    TOOL_DEF = {"working_document": {"items_path": "fix_invoices"}}
+
+    def _payload(self, cards=23):
+        return {
+            "venue": "Freeman & Grey",
+            "reviewed": cards,
+            "summary": {"received": 0, "skipped": cards},
+            "skipped": [
+                {"reference": f"INV{n}", "reason": "unit missing"} for n in range(14)
+            ],
+            "fix_invoices": [
+                {"invoice_id": f"inv-{n}", "lines": [{"d": "X" * 400}] * 20}
+                for n in range(cards)
+            ],
+        }
+
+    def _envelope(self, payload):
+        return {
+            "success": True,
+            "data": payload,
+            "reference": None,
+            "error": None,
+            "auth_failed": False,
+        }
+
+    def test_the_bodies_are_stripped_from_inside_data(self):
+        out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)
+        assert "fix_invoices" not in out["data"]
+        assert out["data"]["fix_invoices_count"] == 23
+
+    def test_the_envelope_itself_is_preserved(self):
+        """The caller reads success/auth_failed off it."""
+        out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)
+        assert out["success"] is True and out["auth_failed"] is False
+
+    def test_the_summary_inside_data_survives(self):
+        out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)
+        assert out["data"]["reviewed"] == 23
+        assert len(out["data"]["skipped"]) == 14
+
+    def test_the_original_payload_is_untouched(self):
+        """tc.result_payload IS this dict — the cards are built from it after."""
+        payload = self._payload()
+        _without_card_bodies(self._envelope(payload), self.TOOL_DEF)
+        assert len(payload["fix_invoices"]) == 23
+
+    def test_the_real_size_no_longer_trips_the_cap(self):
+        """Production's numbers: 335k in, well under budget out, no stub."""
+        env = self._envelope(self._payload())
+        assert len(json.dumps(env)) > 150_000
+        before = _slim_tool_result(env, "tc", max_chars=60_000)
+        after = _slim_tool_result(
+            _without_card_bodies(env, self.TOOL_DEF), "tc", max_chars=60_000
+        )
+        assert "_too_large" in before
+        assert "_too_large" not in after
+        assert json.loads(after)["data"]["reviewed"] == 23
+
+    def test_a_bare_payload_still_works(self):
+        """Some callers pass the unwrapped payload; both shapes are handled."""
+        out = _without_card_bodies(self._payload(), self.TOOL_DEF)
+        assert "fix_invoices" not in out and out["fix_invoices_count"] == 23
+
+    def test_an_envelope_for_a_non_fan_out_tool_is_left_alone(self):
+        env = self._envelope({"items": [{"a": 1}]})
+        assert _without_card_bodies(env, {"action": "get_sales"}) == env

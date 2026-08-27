@@ -1662,16 +1662,31 @@ def _without_card_bodies(result: object, tool_def: dict | None) -> object:
 
     Replaced with a count rather than dropped, so the model can still say how
     many cards are below without going looking for them.
+
+    Looks inside ``data`` as well as at the top level, because the two shapes
+    are not interchangeable here: ``_execute_tool_call`` hands this the ENVELOPE
+    (``{"success", "data", "reference", ...}``) while the working document and
+    the cards are built from ``tc.result_payload``, which is the bare ``data``.
+    Checking only the top level made this a no-op in production — 335k went to
+    the model as a "too large, go and search" stub while the tests, written
+    against the bare payload, all passed (thread 9e71aa33, 27 Aug 2026).
     """
     items_path = ((tool_def or {}).get("working_document") or {}).get("items_path")
-    if not items_path or not isinstance(result, dict) or items_path not in result:
+    if not items_path or not isinstance(result, dict):
         return result
-    items = result.get(items_path)
-    if not isinstance(items, list):
-        return result
+    if isinstance(result.get(items_path), list):
+        return _drop_items(result, items_path)
+    inner = result.get("data")
+    if isinstance(inner, dict) and isinstance(inner.get(items_path), list):
+        return {**result, "data": _drop_items(inner, items_path)}
+    return result
+
+
+def _drop_items(payload: dict, items_path: str) -> dict:
+    """``payload`` without ``items_path``, carrying its length in its place."""
     return {
-        **{k: v for k, v in result.items() if k != items_path},
-        f"{items_path}_count": len(items),
+        **{k: v for k, v in payload.items() if k != items_path},
+        f"{items_path}_count": len(payload[items_path]),
     }
 
 
