@@ -525,9 +525,26 @@ def _execute_loop(
                 tool_def = _find_tool_def(connector, action, db, config_db=config_db)
                 summary_fields = tool_def.get("summary_fields") if tool_def else None
 
+                # The card data is not the model's to read. A fan-out tool's
+                # items_path holds one complete document per card, and the card
+                # that gets built from it carries only a working_document_id —
+                # the browser fetches the rest. So the model narrates the
+                # summary beside it and never needs the bodies.
+                #
+                # Leaving them in did real damage: the review's fix_invoices is
+                # 62k of the result's 63k, which tripped the size cap, and the
+                # cap's array branch then kept the nested suggestions and threw
+                # the counts away. The model was handed one sample suggestion
+                # and told to go searching — 13 search calls on one run, ~10 per
+                # run over a fortnight — to retype what the card was already
+                # showing (thread 8a270c60, 26 Aug 2026).
+                #
+                # Stripped from a COPY: tc.result_payload keeps the bodies, and
+                # the fan-out below still builds every document and card.
+                for_llm = _without_card_bodies(result, tool_def)
                 # Transform already applied in _execute_tool_call — just slim for LLM context
                 slimmed = _slim_tool_result(
-                    result,
+                    for_llm,
                     block.id,
                     summary_fields=summary_fields,
                     max_chars=_tool_max_result_chars(tool_def),
@@ -1630,6 +1647,32 @@ def _truncate_nested_arrays(obj, max_items: int = 3):
             truncated.append(f"... {len(obj) - max_items} more items")
         return truncated
     return obj
+
+
+def _without_card_bodies(result: object, tool_def: dict | None) -> object:
+    """``result`` minus the per-card document bodies, for the LLM's copy.
+
+    A fan-out tool's ``working_document.items_path`` holds one COMPLETE
+    document per card. Each becomes a working-document row, and the card built
+    from it carries only ``{"working_document_id": id}`` — the browser fetches
+    the body itself. The model writes the summary that sits beside the cards,
+    so those bodies are weight it can only be hurt by: they are what pushes a
+    result past the size cap, and past it the model loses the counts and
+    reasons the summary is actually made of.
+
+    Replaced with a count rather than dropped, so the model can still say how
+    many cards are below without going looking for them.
+    """
+    items_path = ((tool_def or {}).get("working_document") or {}).get("items_path")
+    if not items_path or not isinstance(result, dict) or items_path not in result:
+        return result
+    items = result.get(items_path)
+    if not isinstance(items, list):
+        return result
+    return {
+        **{k: v for k, v in result.items() if k != items_path},
+        f"{items_path}_count": len(items),
+    }
 
 
 def _slim_tool_result(

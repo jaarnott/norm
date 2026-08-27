@@ -25,6 +25,7 @@ same per-supplier instructions, landing on the same cache row.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import re
 
@@ -45,7 +46,114 @@ SOURCE_EXTRACTED = "extracted"
 MAX_SENSEI_PER_RUN = 2
 
 
-def stored_header(db: Session, venue_id: str, invoice_id: str) -> dict | None:
+def _as_utc(value: object) -> datetime.datetime | None:
+    """A timezone-aware UTC datetime from a stored value, or None.
+
+    Snapshots carry an ISO string, rows carry a datetime, and older rows carry
+    a naive one — comparing a naive to an aware datetime raises, which on this
+    path would sink a whole reconciliation run.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime.datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=datetime.timezone.utc)
+    return value.astimezone(datetime.timezone.utc)
+
+
+def _read_under_an_older_prompt(doc, stale_before) -> bool:
+    """Was this snapshot read before the supplier's instructions last changed?
+
+    Compared against when the REVIEW ran, not the row's ``updated_at``: a
+    document is touched by later edits (accepting a suggestion, receiving it)
+    that do not re-read the copy, and those would make a stale extraction look
+    current.
+    """
+    if stale_before is None:
+        return False
+    when = (doc.data or {}).get("reviewed_at")
+    read_at = _as_utc(when) or _as_utc(doc.created_at)
+    if read_at is None:
+        return True  # cannot date it — do not gamble on it being current
+    return read_at < stale_before
+
+
+def _supplier_alias_cache(lh, config_db: Session):
+    """``inv -> {"key", "detail", "aliases", "stale_before"}``, once per supplier.
+
+    Both halves of ``copy_headers`` need the same answer — the stored-snapshot
+    check needs to know when this supplier's prompt last moved, and the
+    extraction needs the aliases that compose it — and each answer costs a
+    Loaded call. Resolved once here and shared.
+
+    ``stale_before`` is the newest of the supplier's spec and the main prompt:
+    either one changes the instructions, so a snapshot read before it is out of
+    date. It is deliberately NOT the newest spec in the roster — a fix to one
+    supplier must not re-read every other supplier's invoices.
+    """
+    from app.services.invoice_extraction import find_spec_for_supplier
+    from app.services.invoice_review import account_suppliers, supplier_aliases
+
+    suppliers = account_suppliers(lh) if lh is not None else []
+    main_changed = _main_prompt_changed_at(config_db)
+    cache: dict[tuple, dict] = {}
+
+    def resolve(inv: dict) -> dict:
+        name = str(inv.get("supplierName") or "")
+        sup_id = inv.get("supplierId") or inv.get("linkedSupplierId")
+        key = (name, str(sup_id or ""))
+        if key not in cache:
+            detail = {"supplierName": name or None, "linkedSupplierId": sup_id}
+            aliases = supplier_aliases(lh, detail, suppliers) if lh is not None else []
+            spec_changed = None
+            if config_db is not None and name:
+                try:
+                    spec = find_spec_for_supplier(config_db, name, *aliases)
+                    spec_changed = _as_utc(getattr(spec, "updated_at", None))
+                except Exception as exc:  # noqa: BLE001 — freshness is advisory
+                    logger.info("spec freshness unavailable for '%s': %s", name, exc)
+            stamps = [t for t in (spec_changed, main_changed) if t is not None]
+            cache[key] = {
+                "key": key,
+                "detail": detail,
+                "aliases": aliases,
+                "stale_before": max(stamps) if stamps else None,
+            }
+        return cache[key]
+
+    return resolve
+
+
+def _main_prompt_changed_at(config_db: Session) -> datetime.datetime | None:
+    """When the shared main extraction prompt last changed — it is in every
+    supplier's instructions, so editing it dates every snapshot."""
+    if config_db is None:
+        return None
+    try:
+        from app.db.config_models import SupplierInvoiceSpec
+        from app.services.invoice_extraction import MAIN_PROMPT_NAME
+
+        row = (
+            config_db.query(SupplierInvoiceSpec)
+            .filter(SupplierInvoiceSpec.name == MAIN_PROMPT_NAME)
+            .first()
+        )
+        return _as_utc(getattr(row, "updated_at", None))
+    except Exception as exc:  # noqa: BLE001 — freshness is advisory
+        logger.info("main prompt freshness unavailable: %s", exc)
+        return None
+
+
+def stored_header(
+    db: Session,
+    venue_id: str,
+    invoice_id: str,
+    stale_before: datetime.datetime | None = None,
+) -> dict | None:
     """The extraction the RECEIVE flow already made for this invoice, if any.
 
     `invoice_review` writes it verbatim onto the working document as
@@ -53,6 +161,16 @@ def stored_header(db: Session, venue_id: str, invoice_id: str) -> dict | None:
     LLM call to repeat. Deleted and superseded documents are skipped, but a
     RECEIVED one is exactly what reconciliation wants: the invoice is received,
     that is why it is being reconciled.
+
+    ``stale_before`` is when this supplier's instructions last changed. A
+    snapshot older than that was read under a prompt that no longer exists, and
+    reusing it makes the saving permanent: six Kaans invoices read on 17-21 Aug
+    2026 carried no PO, and because reconciliation kept preferring those
+    snapshots it never re-read the copies — so fixing the spec on 26 Aug healed
+    only the three invoices extracted after it, and the other six failed every
+    morning against a prompt nobody could see. The extraction CACHE is keyed on
+    the instructions and would have re-read them; this path bypasses the cache,
+    so it has to ask the same question itself.
     """
     from app.db.models import WorkingDocument
 
@@ -69,6 +187,7 @@ def stored_header(db: Session, venue_id: str, invoice_id: str) -> dict | None:
         for d in rows
         if (d.external_ref or {}).get("invoice_id") == invoice_id
         and not (d.data or {}).get("is_deleted")
+        and not _read_under_an_older_prompt(d, stale_before)
     ]
     if not docs:
         return None
@@ -111,12 +230,15 @@ def copy_headers(
 
     out: dict[str, dict] = {}
     pending: list[dict] = []
+    aliases_for = _supplier_alias_cache(lh, config_db)
 
     for inv in invoices:
         iid = str(inv.get("id") or "")
         if not iid:
             continue
-        header = stored_header(db, venue_id, iid)
+        # Ask per SUPPLIER when its prompt last moved, so only the invoices
+        # whose spec has changed since they were read get re-read.
+        header = stored_header(db, venue_id, iid, aliases_for(inv)["stale_before"])
         if header is not None:
             out[iid] = {**header, "_source": SOURCE_STORED}
             continue
@@ -146,28 +268,22 @@ def copy_headers(
         # audience, is what bounds it.
         from app.services.invoice_review import (
             _maybe_sensei,
-            account_suppliers,
             extraction_instructions,
-            supplier_aliases,
         )
-
-        # Once per run: the account's own record of which names are different
-        # businesses, which vets every alias below.
-        suppliers = account_suppliers(lh)
 
         # One instruction set per SUPPLIER, not per invoice: composing it hits
         # the config DB for the spec and Loaded for the aliases, and a run is
-        # mostly a handful of suppliers with many invoices each.
+        # mostly a handful of suppliers with many invoices each. The aliases
+        # were already resolved above for the staleness check — same cache.
         by_supplier: dict[tuple, str] = {}
         requests = []
         budget = MAX_SENSEI_PER_RUN
         for inv in pending:
+            ctx = aliases_for(inv)
             name = str(inv.get("supplierName") or "")
-            sup_id = inv.get("supplierId") or inv.get("linkedSupplierId")
-            key = (name, str(sup_id or ""))
+            key = ctx["key"]
             if key not in by_supplier:
-                detail = {"supplierName": name or None, "linkedSupplierId": sup_id}
-                aliases = supplier_aliases(lh, detail, suppliers)
+                detail, aliases = ctx["detail"], ctx["aliases"]
                 # BEFORE the instructions are composed — a spec trained now has
                 # to be in this pass's cache key, not the next one's.
                 if (

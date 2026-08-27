@@ -11,6 +11,8 @@ when reading fresh use the same schema and the same per-supplier instructions
 so the cache row is shared rather than paid for twice.
 """
 
+import datetime
+
 import pytest
 
 from app.services import invoice_evidence as EV
@@ -768,3 +770,122 @@ class TestItComposesInstructionsExactlyLikeReceiving:
             sensei=self._sensei_spy(calls),
         )
         assert calls == []
+
+
+class TestAStoredReadGoesStaleWhenItsPromptChanges:
+    """The Kaans failure's second half, and the more expensive one.
+
+    Reconciliation prefers the extraction receiving already made, so it does not
+    pay to read the same paper twice. That saving became permanent: six Kaans
+    invoices were read 17-21 Aug 2026 under a prompt with no 'External Document
+    No.' rule and stored with no PO. Fixing the spec on 26 Aug re-read nothing,
+    because every run kept preferring those snapshots — so the three invoices
+    extracted after the fix reconciled and the other six failed every morning,
+    against a prompt that no longer existed anywhere.
+
+    The extraction CACHE is keyed on the instructions and would have re-read
+    them; this path bypasses the cache, so it asks the same question itself.
+    """
+
+    HDR = {"customer_purchase_order_number": None, "supplier_order_number": "SO0024"}
+    AUG_18 = datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc)
+    AUG_26 = datetime.datetime(2026, 8, 26, 1, 59, tzinfo=datetime.timezone.utc)
+
+    def _doc(self, reviewed_at):
+        d = _Doc("inv-1", self.HDR)
+        d.data["reviewed_at"] = reviewed_at
+        return d
+
+    def test_a_read_from_before_the_spec_moved_is_not_used(self):
+        db = _Db([self._doc("2026-08-18T20:49:41Z")])
+        assert EV.stored_header(db, "v-1", "inv-1", self.AUG_26) is None
+
+    def test_a_read_from_after_it_still_is(self):
+        """The three that already worked must not start paying to be re-read."""
+        db = _Db([self._doc("2026-08-26T08:29:31Z")])
+        assert EV.stored_header(db, "v-1", "inv-1", self.AUG_26) == self.HDR
+
+    def test_with_no_known_change_nothing_is_re_read(self):
+        """A supplier with no spec has no prompt to have changed."""
+        db = _Db([self._doc("2026-08-18T20:49:41Z")])
+        assert EV.stored_header(db, "v-1", "inv-1", None) == self.HDR
+
+    def test_an_undateable_read_is_not_gambled_on(self):
+        db = _Db([self._doc(None)])
+        db._docs[0].created_at = None
+        assert EV.stored_header(db, "v-1", "inv-1", self.AUG_26) is None
+
+    def test_a_naive_timestamp_does_not_sink_the_run(self):
+        """Older rows carry naive datetimes; comparing one to an aware datetime
+        raises, and on this path that would fail the whole reconciliation."""
+        d = self._doc(None)
+        d.created_at = datetime.datetime(2026, 8, 18)  # no tzinfo
+        assert EV.stored_header(_Db([d]), "v-1", "inv-1", self.AUG_26) is None
+
+    def test_it_is_the_review_time_that_counts_not_a_later_edit(self):
+        """Accepting a suggestion or receiving touches the row without re-reading
+        the copy. Dating the snapshot by the row would make a stale extraction
+        look current."""
+        d = self._doc("2026-08-18T20:49:41Z")
+        d.updated_at = 99  # a much later touch
+        assert EV.stored_header(_Db([d]), "v-1", "inv-1", self.AUG_26) is None
+
+
+class TestOnlyTheChangedSupplierIsReRead:
+    """A spec fix for one supplier must not re-read every other supplier's
+    invoices — that would turn a 16-cent prompt tweak into a whole venue's
+    extraction bill."""
+
+    def test_the_freshness_floor_is_per_supplier(self, monkeypatch):
+        seen = {}
+
+        class _Spec:
+            def __init__(self, when):
+                self.updated_at = when
+
+        specs = {
+            "Kaans Catering": _Spec(
+                datetime.datetime(2026, 8, 26, tzinfo=datetime.timezone.utc)
+            ),
+            "Bidfood": _Spec(
+                datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+            ),
+        }
+        monkeypatch.setattr(
+            "app.services.invoice_extraction.find_spec_for_supplier",
+            lambda _c, name, *a: specs.get(name),
+        )
+        monkeypatch.setattr(EV, "_main_prompt_changed_at", lambda _c: None)
+        monkeypatch.setattr(
+            "app.services.invoice_review.account_suppliers", lambda _lh: []
+        )
+        monkeypatch.setattr(
+            "app.services.invoice_review.supplier_aliases", lambda *a, **k: []
+        )
+        resolve = EV._supplier_alias_cache(object(), object())
+        for name in ("Kaans Catering", "Bidfood"):
+            seen[name] = resolve({"supplierName": name, "supplierId": "s"})[
+                "stale_before"
+            ]
+        assert seen["Kaans Catering"].day == 26
+        assert seen["Bidfood"].day == 1
+
+    def test_the_main_prompt_dates_every_supplier(self, monkeypatch):
+        """It is in every supplier's instructions, so editing it dates them all."""
+        edited = datetime.datetime(2026, 8, 27, tzinfo=datetime.timezone.utc)
+        monkeypatch.setattr(
+            "app.services.invoice_extraction.find_spec_for_supplier",
+            lambda *a, **k: None,
+        )
+        monkeypatch.setattr(EV, "_main_prompt_changed_at", lambda _c: edited)
+        monkeypatch.setattr(
+            "app.services.invoice_review.account_suppliers", lambda _lh: []
+        )
+        monkeypatch.setattr(
+            "app.services.invoice_review.supplier_aliases", lambda *a, **k: []
+        )
+        resolve = EV._supplier_alias_cache(object(), object())
+        assert (
+            resolve({"supplierName": "Anyone", "supplierId": "s"})["stale_before"]
+            == edited
+        )
