@@ -1311,7 +1311,7 @@ def build_replica(
                     dup_file_id = row.get("fileId")
                     dup_msg = (
                         f"invoice {inv_no} was already received on {dup_date} — "
-                        "this is a duplicate"
+                        "delete this duplicate"
                     )
                 warnings.append(dup_msg)
                 log.append(dup_msg)
