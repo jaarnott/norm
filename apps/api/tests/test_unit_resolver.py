@@ -2,7 +2,8 @@
 
 The model only ever picks from the venue's real units (or names a unit to
 CREATE explicitly); its confidence is part of the answer, and category rules
-(beverage ⇒ volume) trump it. Failure of any kind returns {} — the caller
+trump a type-violating pick (packaging ⇒ count; a beverage may be either).
+Failure of any kind returns {} — the caller
 parks the line as unit_missing exactly as if this module did not exist.
 """
 
@@ -93,26 +94,39 @@ class TestTheCall:
         assert out["rep-1"]["create_name"] is None
 
     def test_category_rules_trump_the_model(self):
-        # A beverage picked as a COUNT unit is invalid whatever the model's
-        # confidence — beverages are always volumes.
+        # A category rule still overrides a type-violating pick where the
+        # category is genuinely constrained: packaging is a count, so a VOLUME
+        # pick for it is invalid whatever the model's confidence.
         out = resolve_units(
             LINES,
             ["rep-1"],
             UNITS,
-            category_by_line={"rep-1": "beverage"},
-            ask_llm=lambda p: _answer(unit_id="u-each"),
+            category_by_line={"rep-1": "packaging"},
+            ask_llm=lambda p: _answer(unit_id="u-700"),
         )
         r = out["rep-1"]
         assert r["unit"] is None and r["confidence"] == "low"
-        # a volume pick for a beverage is fine
-        out = resolve_units(
+
+    def test_a_beverage_may_be_a_volume_or_a_count(self):
+        # Poured drinks are volumes, but a drink sold as an each (a 12 pack) is a
+        # count — the category no longer bans either; the prompt makes the call
+        # (27 Aug 2026, superseding "beverages are always volumes").
+        vol = resolve_units(
             LINES,
             ["rep-1"],
             UNITS,
             category_by_line={"rep-1": "beverage"},
             ask_llm=lambda p: _answer(unit_id="u-700"),
         )
-        assert out["rep-1"]["unit"]["id"] == "u-700"
+        assert vol["rep-1"]["unit"]["id"] == "u-700"
+        cnt = resolve_units(
+            LINES,
+            ["rep-1"],
+            UNITS,
+            category_by_line={"rep-1": "beverage"},
+            ask_llm=lambda p: _answer(unit_id="u-each"),
+        )
+        assert cnt["rep-1"]["unit"]["id"] == "u-each"
 
     def test_garbage_confidence_reads_as_low(self):
         out = resolve_units(

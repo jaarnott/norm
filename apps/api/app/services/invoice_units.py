@@ -78,12 +78,17 @@ def is_packaging_word(text: object) -> bool:
 
 
 # Category → the unit TYPES a delivered unit may be. Validators independent
-# of any venue's data — a beverage stocked as a count is a setup error, not a
-# preference (the user's rule, 18 Aug 2026: beverages are always volumes).
+# of any venue's data. A beverage may be a volume OR a count: poured/portioned
+# drinks (wine, spirits, kegs, cordials) are volumes, but a drink sold as a whole
+# sealed each (bottled/canned beer, cider, RTDs, soft drinks) is a pack of eaches
+# — a count (the user's rule, 27 Aug 2026, superseding the 18-Aug "beverages are
+# always volumes"). The poured-vs-whole call is made in the extraction/resolver
+# prompts, not by a blanket type ban; this only stops a legitimate pack being
+# rejected as a type violation.
 # Deliberately small and data-driven; enforced only where the category is
 # KNOWN (dojo/enrichment set categories — 'unknown' constrains nothing).
 CATEGORY_UNIT_TYPES: dict[str, set[str]] = {
-    "beverage": {"volume"},
+    "beverage": {"volume", "count"},
     # food is NOT constrained: fixed packs (weight/volume), random weight
     # (Kilo) and genuine counts (each pie) are all legitimate.
     "packaging": {"count"},

@@ -16,8 +16,8 @@ Doctrine (inherited from unit_guess, which this supersedes for this path):
 - Confidence is part of the answer: low confidence parks the line exactly as
   if this module didn't exist. The model can't make anything worse than the
   status quo.
-- Category rules (beverage ⇒ volume) invalidate a type-violating pick where
-  the line's category is known.
+- Category rules invalidate a type-violating pick where the line's category is
+  known (a beverage may be a volume OR a count — poured vs sold-as-an-each).
 """
 
 from __future__ import annotations
@@ -49,9 +49,12 @@ _SYSTEM_PROMPT = (
     "contain mistakes.\n"
     "- Product knowledge: standard retail packs for known branded goods.\n\n"
     "Rules:\n"
-    "- Beverages are ALWAYS volumes (a spirit, syrup, juice or beer is never "
-    "delivered as a bare count) — a venue stocking one as 'Each' is a setup "
-    "error, not a convention to copy.\n"
+    "- Beverages: pick the unit by how the venue SELLS the item. Poured or "
+    "portioned by the glass, nip or measure (wine, spirits, kegs, cordials, "
+    "juice used as a mixer) → a VOLUME ('700ml', '12x750ml', '50L'). Sold as a "
+    "whole sealed EACH (bottled/canned beer, cider, RTDs, soft drinks) → a PACK "
+    "OF EACHES ('12 pack', '24 pack') — count the units, not the ml. Never a "
+    "bare count with no size for a poured drink.\n"
     "- Random-weight goods billed per kg (meat/seafood/produce) → the unit "
     "is the kilo unit.\n"
     "- Pick unit_id FROM THE UNITS LIST ONLY. If the correct physical unit "
