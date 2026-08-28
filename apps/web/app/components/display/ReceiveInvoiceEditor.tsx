@@ -2036,6 +2036,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     if (issue) void runIssueAction(issue);
   };
 
+  // Same idea for the create-STOCK-ITEM decision. The server folds the
+  // create_item suggestion into the item_unmatched blocker, so itemSuggFor no
+  // longer fires and "create it as 'Lime'" would show only in the bottom
+  // blocked list. The blocker already carries the line and the proposed name,
+  // so mirror the unit chip: read them off the same blocker (one source, so
+  // the chip and the blocked row can never disagree) and accept via the same
+  // runIssueAction the bottom Accept uses.
+  const pendingItemIssue = (lineId: string | number): Issue | undefined =>
+    blockingIssues.find(
+      (i) => String(i.line_id) === String(lineId)
+        && i.action?.kind === 'create_item'
+        && issueStateOf(i) === 'open',
+    );
+  const pendingItemName = (lineId: string | number): string | null =>
+    (pendingItemIssue(lineId)?.action?.payload?.name as string | undefined) || null;
+  const runPendingItem = (lineId: string | number) => {
+    const issue = pendingItemIssue(lineId);
+    if (issue) void runIssueAction(issue);
+  };
+
   const issueRow = (i: Issue) => {
     const st = issueStateOf(i);
     const open = st === 'open';
@@ -2443,6 +2463,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       : itemSugg.current
                         ? `${fmtVal(itemSugg.current)} → ${fmtVal(itemSugg.proposed)}`
                         : `link to '${fmtVal(itemSugg.proposed)}'`,
+                  )}
+                  {/* Same as the unit chip below, for the create-STOCK-ITEM
+                      decision: the server folds the create_item suggestion into
+                      the item_unmatched blocker, so itemSugg is empty and
+                      "create it as 'Lime'" would show only in the bottom blocked
+                      list. Read it off the same blocker and offer it as a
+                      one-click chip under the item name; same runIssueAction the
+                      bottom Accept uses, so the two can't disagree. */}
+                  {!struck && !dojo && viewMode === 'norm' && pendingItemName(l.id) && (
+                    <div>
+                      <span style={chipStyle}
+                        title={`'${l.description}' isn't in the Loaded catalogue — create it as '${pendingItemName(l.id)}'`}>
+                        <span>{`→ create '${pendingItemName(l.id)}'`}</span>
+                        <button type="button" onClick={() => runPendingItem(l.id)}
+                          disabled={!!actioningIssue}
+                          title={`Create '${pendingItemName(l.id)}' in Loaded and link it`}
+                          aria-label="Create this stock item"
+                          style={{ ...chipBtn, color: '#2e7d4f' }}>✓</button>
+                      </span>
+                    </div>
                   )}
                   {/* No stock item at all — link an existing one or CREATE it;
                       must be resolved before receiving. */}
