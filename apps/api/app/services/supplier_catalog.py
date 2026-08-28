@@ -6,11 +6,11 @@ printed evidence from extractions, keep provenance honest, answer lookups.
 Nothing here calls a model — enrichment is a later, separate phase.
 
 Two rules carry the whole design:
-- The resolver (analyser) verdict is the authority. A unit the resolver has
-  worked out ('enriched') OUTRANKS a raw extraction read ('printed'), which is
-  only provisional — a poisoned read never buries a verdict. A venue receive
-  ('practice') and the reserved 'human' tier are kept as evidence but never win
-  the ranking (28 Aug 2026 — analyser-on-top; see docs/unit-resolution.md).
+- Authority order: an admin's dojo-verified unit ('human') is the top truth,
+  then the resolver's worked-out verdict ('enriched'); a raw extraction read
+  ('printed') is only provisional, so a poisoned read never buries a verdict. A
+  venue receive ('practice') is kept as evidence but never wins the ranking
+  (28 Aug 2026 — enriched lifted above printed; see docs/unit-resolution.md).
 - Conflict is data, not a vote: two different sizes at one tier leave
   ``unit_name`` empty with both sightings kept — a question for the resolver,
   never a majority decision.
@@ -35,13 +35,15 @@ from app.services.invoice_units import (
 
 logger = logging.getLogger(__name__)
 
-# The resolver's worked-out verdict ('enriched') is the authority; a raw
-# extraction read ('printed') is only provisional and is outranked. 'human' and
-# 'practice' (a receive) are recorded as evidence elsewhere but are NOT ranking
-# sources — a receive can carry a user's mistake and must never bury a verdict,
-# and nothing writes 'human' today. A provenance absent here scores -1 (never
-# answers). Flipped 28 Aug 2026 (was human>printed>enriched>practice).
-_RANK = {"enriched": 1, "printed": 0}
+# Authority order for a product's unit: an admin's dojo-verified unit ('human')
+# is the top truth, then the resolver's worked-out verdict ('enriched'); a raw
+# extraction read ('printed') is only provisional and is outranked by both.
+# 'practice' (a receive) is recorded as evidence but is NOT a ranking source — a
+# receive can carry a user's mistake and must never bury a read or a verdict. A
+# provenance absent here scores -1 (never answers). 28 Aug 2026: 'enriched'
+# lifted ABOVE 'printed' (was printed>enriched), 'practice' dropped from the
+# ranking; 'human' stays on top (dojo baselines write it — config_models.py).
+_RANK = {"human": 2, "enriched": 1, "printed": 0}
 
 # Bare weight words = random-weight billing (meat/produce priced per kg).
 # A SIZED weight ('1kg', '500g') is a fixed pack — the digit is the tell.

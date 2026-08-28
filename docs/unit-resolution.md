@@ -15,22 +15,25 @@ size printed** — `37.5` is the alcohol %, `X1` a quantity) was read as "1 pack
 Receiving is meant to run on **autopilot at scale**, so there is no human
 correcting units. Norm has to catch and fix its own dud units.
 
-## The two sources, and the order between them
+## The sources, and the order between them
 
 Norm keeps a shared, cross-customer memory of each product's unit
-(`supplier_products`, keyed by supplier + code). A row's unit can come from two
+(`supplier_products`, keyed by supplier + code). A row's unit can come from three
 sources, and the order is what matters:
 
-1. **The resolver's verdict** (`enriched`) — the analyser worked the unit out
-   from evidence. **This is the authority.**
-2. **The AI's raw read** (`printed`) — what the extraction read off an invoice.
+1. **An admin's dojo-verified unit** (`human`) — set as a dojo baseline. The top
+   truth.
+2. **The resolver's verdict** (`enriched`) — the analyser worked the unit out
+   from evidence. The authority below a human verification.
+3. **The AI's raw read** (`printed`) — what the extraction read off an invoice.
    **Provisional only.**
 
-The rank lives in `supplier_catalog._RANK` (`{"enriched": 1, "printed": 0}`). A
-verdict outranks a read, so a resolver answer can never be buried by a poisoned
-read. Two sources were **removed** as ranking inputs (28 Aug 2026):
+The rank lives in `supplier_catalog._RANK` (`{"human": 2, "enriched": 1,
+"printed": 0}`). A verdict outranks a read, so a resolver answer can never be
+buried by a poisoned read; a human verification outranks both. The change on
+28 Aug 2026 was lifting `enriched` **above** `printed` (it used to sit below).
+One source was **removed** as a ranking input:
 
-- **`human`** — a reserved top tier that nothing ever wrote. Dropped.
 - **`practice`** (what a receive actually used) — kept as evidence for the
   hygiene report, but **never a ranking source**: a receive can carry a user's
   mistake, and once receiving is automated a receive just echoes Norm's own

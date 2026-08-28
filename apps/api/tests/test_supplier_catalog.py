@@ -1,9 +1,8 @@
 """supplier_catalog — global physical facts, provenance-honest.
 
-The rules under test everywhere (28 Aug 2026: analyser-on-top):
-- the resolver's verdict ('enriched') is the authority and outranks a raw
-  extraction read ('printed'); a receive ('practice') is evidence only and
-  never wins; there is no 'human' ranking tier;
+The rules under test everywhere (28 Aug 2026):
+- authority order human > enriched (the resolver verdict) > printed (a raw
+  read); a receive ('practice') is evidence only and never wins;
 - a raw read is provisional — the catalogue does not hand it back as an
   answer; and conflict is a question, never a majority vote.
 """
@@ -135,6 +134,37 @@ class TestObserve:
         row = _row(db_session)
         assert row.unit_name == "700ml" and row.provenance == "printed"
         assert "practice" in (row.evidence or {})  # kept as evidence
+
+    def test_human_verification_is_the_top_truth(self, db_session):
+        # An admin's dojo-verified unit ('human') outranks everything — even the
+        # resolver's verdict (config_models: dojo baselines write it).
+        _spec(db_session)
+        sc.observe_extraction(db_session, _ext(invoice="A"), provenance="printed")
+        row = _row(db_session)
+        sc.apply_enrichment(
+            db_session,
+            row,
+            unit_name="1L",
+            pack_type="fixed",
+            unit_type="volume",
+            category="beverage",
+            why="resolver says 1L",
+        )
+        assert row.unit_name == "1L" and row.provenance == "enriched"
+        sc.observe_extraction(
+            db_session,
+            _ext(
+                invoice="B",
+                lines=[
+                    {"code": "4183758", "description": "MALFY", "unit_of_measure": "700ml"}
+                ],
+            ),
+            provenance="human",
+        )
+        row = _row(db_session)
+        assert row.unit_name == "700ml" and row.provenance == "human"
+        a = sc.catalog_unit_for_line(db_session, "Trents", "4183758")
+        assert a and a["unit_name"] == "700ml" and a["provenance"] == "human"
 
     def test_random_weight_is_kilo_not_a_pack(self, db_session):
         _spec(db_session, name="Harbour Fish")
