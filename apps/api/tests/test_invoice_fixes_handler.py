@@ -1736,9 +1736,10 @@ class TestItemMatch:
         assert out["L1"]["matched_item"] is None
         assert out["L1"]["suggested_group_id"] is None
 
-    def test_match_routes_by_department(self, monkeypatch):
-        # food0 is a food item, bev0 a beverage item. A food-classified line must
-        # only ever see the food slice, so its index-0 match resolves to food0.
+    def test_consumable_lines_share_all_consumables(self, monkeypatch):
+        # A consumable line (food OR beverage) searches EVERY consumable — food,
+        # beverage and uncategorised — so a food item filed under a beverage group
+        # (limes for the bar) is reachable from a food line. Cleaning stays out.
         cands = [
             {
                 "id": "food0",
@@ -1747,10 +1748,17 @@ class TestItemMatch:
                 "groupName": "Meats",
             },
             {"id": "bev0", "name": "COKE", "groupId": "g-bot", "groupName": "Bottled"},
+            {
+                "id": "clean0",
+                "name": "BLEACH",
+                "groupId": "g-clean",
+                "groupName": "Cleaning",
+            },
         ]
         groups = [
             {"id": "g-meat", "name": "Meats", "category": "Food"},
             {"id": "g-bot", "name": "Bottled", "category": "Beverage"},
+            {"id": "g-clean", "name": "Cleaning", "category": "Cleaning"},
         ]
         lines = [
             {
@@ -1768,6 +1776,7 @@ class TestItemMatch:
                 "unit": "",
             },
         ]
+        prompts: dict = {}
 
         def fake(**kw):
             ids = _ids_in(kw["user_prompt"])
@@ -1777,26 +1786,18 @@ class TestItemMatch:
                     {"classes": [{"line_id": i, "class": cls[i]} for i in ids]},
                     None,
                 )
-            # each subset call sees exactly one line; index 0 of its own slice
-            return (
-                {
-                    "matches": [
-                        {
-                            "line_id": i,
-                            "match_index": 0,
-                            "suggested_name": None,
-                            "suggested_group_index": None,
-                        }
-                        for i in ids
-                    ]
-                },
-                None,
-            )
+            # a match call: record the catalogue this slice was handed
+            for i in ids:
+                prompts[i] = kw["user_prompt"]
+            return ({"matches": []}, None)
 
         monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", fake)
-        out = IF._match_stock_items(lines, groups, cands, db=None)
-        assert out["L1"]["matched_item"]["id"] == "food0"
-        assert out["L2"]["matched_item"]["id"] == "bev0"
+        IF._match_stock_items(lines, groups, cands, db=None)
+        # both the food line and the beverage line are offered food0 AND bev0, and
+        # neither is offered the cleaning item
+        for i in ("L1", "L2"):
+            assert "CHICKEN" in prompts[i] and "COKE" in prompts[i]
+            assert "BLEACH" not in prompts[i]
 
     def test_match_empty_on_error(self, monkeypatch):
         def boom(**kw):

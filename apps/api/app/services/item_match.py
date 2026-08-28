@@ -294,10 +294,18 @@ def _match_stock_items(
     supplier_name: str | None = None,
 ) -> dict:
     """Match each NEW-item line to an existing catalogue item (to link), else
-    suggest a normalized name + group (to create). First classifies each line
-    food/beverage/other and matches it against only that department's items — an
-    invoice is usually all one department, so this is typically ONE small match
-    call. Uncategorised items are included in every department so nothing is hidden.
+    suggest a normalized name + group (to create). Classifies each line
+    food/beverage/other and matches a CONSUMABLE line (food or beverage) against
+    every consumable item — food, beverage AND uncategorised — holding back only
+    cleaning/packaging ('other').
+
+    A consumable is a consumable whichever department a venue happens to file it
+    under: a bar shelves limes (a food/produce item) as a BEVERAGE for cocktails,
+    so a food-classified 'LIMES' line must still see that beverage-filed Lime. The
+    old split (a food line saw only food-category items) hid exactly those
+    cross-filed items and forced a spurious 'create it' (Service Foods VEGF390,
+    28 Aug 2026). Only non-consumables stay out — a lime must never match a mop —
+    so the candidate list stays smaller than the full catalogue.
     """
     if not lines or not candidates:
         return {}
@@ -307,8 +315,9 @@ def _match_stock_items(
     def _cat(it: dict) -> str:
         return cat_by_group.get(it.get("groupId"), "")
 
-    food = [c for c in candidates if "food" in _cat(c) or not _cat(c)]
-    bev = [c for c in candidates if "bev" in _cat(c) or not _cat(c)]
+    consumable = [
+        c for c in candidates if "food" in _cat(c) or "bev" in _cat(c) or not _cat(c)
+    ]
 
     buckets: dict[str, list] = {"food": [], "beverage": [], "other": []}
     for ln in lines:
@@ -316,9 +325,13 @@ def _match_stock_items(
 
     out: dict = {}
     if buckets["food"]:
-        out.update(_match_subset(buckets["food"], groups, food, db, supplier_name))
+        out.update(
+            _match_subset(buckets["food"], groups, consumable, db, supplier_name)
+        )
     if buckets["beverage"]:
-        out.update(_match_subset(buckets["beverage"], groups, bev, db, supplier_name))
+        out.update(
+            _match_subset(buckets["beverage"], groups, consumable, db, supplier_name)
+        )
     if buckets["other"]:
         out.update(
             _match_subset(buckets["other"], groups, candidates, db, supplier_name)
