@@ -658,6 +658,30 @@ class TestAnalyseSample:
         assert s.expected == _extraction()  # baselined
         assert (s.analysis or {}).get("status") == "applied"
 
+    def test_new_supplier_that_reads_fine_gets_the_no_rules_spec(
+        self, db_session, monkeypatch
+    ):
+        # A brand-new supplier whose invoices already read correctly still ends
+        # with a spec — the standard NO_RULES_SPEC note, auto-applied like any
+        # other — so every supplier goes through one path and the auto-spec
+        # trigger's "has a spec?" check terminates. (An EXISTING spec that reads
+        # fine is left untouched — see test_green_analysis_ready.)
+        spec, s = self._seed(db_session)
+        spec.instructions = ""  # brand-new supplier: empty holder
+        db_session.flush()
+        monkeypatch.setattr(
+            "app.interpreter.llm_interpreter.call_llm",
+            lambda *a, **k: (self._canned_proposal(), None),
+        )
+        monkeypatch.setattr(spec_dojo, "run_extraction", lambda *a, **k: _extraction())
+        out = spec_dojo.analyse_sample(db_session, db_session, s.id)
+        assert out["spec_not_needed"] is True
+        assert out["proposed_instructions"] == spec_dojo.NO_RULES_SPEC
+        assert out["status"] == "applied" and out["auto_applied"] is True
+        db_session.refresh(s)
+        assert spec.instructions == spec_dojo.NO_RULES_SPEC  # the note IS the spec
+        assert s.expected == _extraction()  # baselined like any green sample
+
     def _seed_auto_apply_with_source(self, db_session, monkeypatch):
         # A brand-new supplier whose sample came from a real invoice — the
         # self-training auto-apply case, wired for the heal follow-through.
@@ -1955,3 +1979,79 @@ class TestInterruptedAnalysis:
         db_session.add(sample)
         db_session.flush()
         assert _sample_meta(sample)["analysis_status"] == "failed"
+
+
+class TestAutostudyTrigger:
+    """The Receive Invoice screen's auto-spec trigger
+    (``spec_dojo.autostudy_if_spec_less``): study a supplier that has no
+    content-bearing spec, and never block the screen. The gate is one rule — a
+    spec WITH content is done; anything else is studied. stage + enqueue are
+    stubbed (the queue's own dedup is tested in test_sensei_runner)."""
+
+    def _spec(self, db, name, *, instructions="", enabled=True):
+        spec = SupplierInvoiceSpec(
+            name=name, aliases=[], instructions=instructions, enabled=enabled
+        )
+        db.add(spec)
+        db.flush()
+        return spec
+
+    def _record(self, monkeypatch):
+        calls = {"staged": [], "enqueued": []}
+        monkeypatch.setattr(
+            spec_dojo,
+            "stage_invoice_sample",
+            lambda db, vid, iid, **k: (
+                calls["staged"].append((vid, iid)) or {"sample_id": f"sample-{iid}"}
+            ),
+        )
+        from app.services import sensei_runner
+
+        monkeypatch.setattr(
+            sensei_runner,
+            "enqueue",
+            lambda sid, *a, **k: (calls["enqueued"].append(sid) or "queued"),
+        )
+        return calls
+
+    def test_a_spec_with_content_is_not_studied(self, db_session, monkeypatch):
+        self._spec(db_session, "Acme", instructions="read column 2 as the size")
+        calls = self._record(monkeypatch)
+        review = {"supplier_name": "Acme"}
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-1", review)
+        assert calls["staged"] == [] and calls["enqueued"] == []
+        assert "sensei_studying" not in review
+
+    def test_a_spec_less_supplier_starts_a_study(self, db_session, monkeypatch):
+        calls = self._record(monkeypatch)
+        review = {"supplier_name": "Newco"}
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-9", review)
+        assert calls["staged"] == [("v1", "inv-9")]
+        assert calls["enqueued"] == ["sample-inv-9"]
+        assert review["sensei_studying"] is True
+
+    def test_an_empty_holder_spec_is_still_studied(self, db_session, monkeypatch):
+        # A spec ROW with no instructions (a study still in flight, or a failed
+        # one) is NOT "done": the gate checks content, not row existence, so a
+        # missing/empty spec always studies again.
+        self._spec(db_session, "Holder", instructions="")
+        calls = self._record(monkeypatch)
+        review = {"supplier_name": "Holder"}
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-2", review)
+        assert calls["staged"] == [("v1", "inv-2")]
+        assert review["sensei_studying"] is True
+
+    def test_no_supplier_name_is_a_noop(self, db_session, monkeypatch):
+        calls = self._record(monkeypatch)
+        review = {}
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-1", review)
+        assert calls["staged"] == [] and "sensei_studying" not in review
+
+    def test_a_staging_error_never_escapes(self, db_session, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("no invoice copy attached — nothing to add")
+
+        monkeypatch.setattr(spec_dojo, "stage_invoice_sample", boom)
+        review = {"supplier_name": "Errco"}
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-1", review)
+        assert "sensei_studying" not in review

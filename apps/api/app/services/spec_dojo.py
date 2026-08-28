@@ -52,6 +52,17 @@ logger = logging.getLogger(__name__)
 # real run takes 35-120s, so this threshold only ever catches corpses.
 STALE_ANALYSIS_MINUTES = 15
 
+# The founding spec written when a study finds a brand-new supplier already reads
+# correctly under the main prompt. Every studied supplier ends with a spec, so the
+# auto-spec trigger's "has a spec?" check is the only state it needs (no study
+# history). The text must add NO reading rules — it is composed verbatim into the
+# extraction prompt (compose_instructions) — while telling an admin the supplier
+# was reviewed.
+NO_RULES_SPEC = (
+    "Standard layout — no supplier-specific extraction rules are required. "
+    "(Reviewed by Norm's dojo.)"
+)
+
 
 def analysis_view(analysis: dict | None) -> dict | None:
     """The analysis as a client should see it — never an eternal lie.
@@ -440,6 +451,57 @@ def stage_invoice_sample(
         }
     finally:
         wcdb.close()
+
+
+def autostudy_if_spec_less(
+    db: Session,
+    config_db: Session,
+    venue_id: str,
+    invoice_id: str,
+    review: dict,
+) -> None:
+    """Start a background dojo study when a reviewed invoice's supplier has no
+    working spec yet — the Receive Invoice screen's auto-spec trigger.
+
+    The screen calls this on both opening and Re-analysing an invoice. It is
+    fail-open and side-effect only: it never raises and never blocks the
+    screen, and it mutates ``review`` only to set the ``sensei_studying`` flag
+    the card surfaces. The study itself is unchanged — the invoice is staged as
+    a dojo sample and QUEUED on the durable sensei queue
+    (``sensei_runner.enqueue``); the background worker (Cloud Run job when
+    deployed) does the ~2-minute analysis and writes the spec, or records "no
+    spec needed". This is the same machinery the "Norm can't do this one"
+    button uses; here it starts automatically where it never started before.
+
+    The whole gate is one rule: **a supplier with a spec that has content is
+    done; anything else gets studied.** No study-history to track — because every
+    study now leaves a spec behind (a real one, or the ``NO_RULES_SPEC`` note when
+    the supplier already reads fine), the presence of a content-bearing spec IS
+    the "already handled" record. A missing spec (never studied, or an admin
+    deleted it) simply studies again. In-flight double-runs can't happen:
+    ``sensei_runner.enqueue`` refuses to queue a run that is already
+    queued/running, and ``stage_invoice_sample`` is idempotent per invoice.
+    """
+    try:
+        supplier = str((review or {}).get("supplier_name") or "").strip()
+        if not supplier:
+            return
+        from app.services import sensei_runner
+
+        spec = find_spec_for_supplier(config_db, supplier)
+        if spec is not None and (spec.instructions or "").strip():
+            return  # a spec with content already exists — nothing to study
+
+        staged = stage_invoice_sample(db, venue_id, invoice_id, draft=False)
+        sensei_runner.enqueue(staged["sample_id"])
+        review["sensei_studying"] = True
+        logger.info(
+            "autostudy: queued dojo study for spec-less supplier %r (invoice %s)",
+            supplier,
+            invoice_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — must never break the review/screen
+        logger.info("autostudy skipped for invoice %s: %s", invoice_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1466,7 +1528,14 @@ def analyse_sample(
             current_ok and not str(proposal.get("alias_of") or "").strip()
         )
         if spec_not_needed:
-            proposal["proposed_instructions"] = ""
+            # Leave every supplier with a spec so they all go through one path.
+            # A brand-new (empty) holder gets a standard "no rules needed" note
+            # that auto-applies below like any spec (inert to the extractor,
+            # visible as reviewed to an admin); an existing real spec is left
+            # untouched — no note churned over its rules.
+            proposal["proposed_instructions"] = (
+                NO_RULES_SPEC if not (spec.instructions or "").strip() else ""
+            )
         # A green proposal's ground truth becomes the sample's stored expected
         # values when the baseline is still AGENT-OWNED: empty, or exactly the
         # previous proposal's ground truth (i.e. auto-populated and untouched)

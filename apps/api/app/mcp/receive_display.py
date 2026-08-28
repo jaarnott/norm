@@ -219,6 +219,13 @@ def _attach_suggestions(
         data.clear()
         data.update(fresh)
         data.update(keep)
+        # Auto-spec: opening a spec-less supplier's invoice starts a background
+        # dojo study (async) and surfaces the "studying…" note on the card.
+        from app.services.spec_dojo import autostudy_if_spec_less
+
+        autostudy_if_spec_less(
+            db, config_db, venue_id, str(data.get("invoice_id") or ""), data
+        )
     except Exception as exc:  # noqa: BLE001 — suggestions are enhancement
         logger.info("receive_display: review/suggestions failed: %s", exc)
 

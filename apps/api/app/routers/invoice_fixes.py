@@ -1326,6 +1326,14 @@ def _squash_review_into_drafts(
     except Exception as exc:  # noqa: BLE001 — reference data is enhancement
         logger.info("review PO reference unavailable: %s", exc)
 
+    # Auto-spec: a spec-less supplier's invoice, worked in the screen, kicks off
+    # a background dojo study (async) so a spec gets created without going
+    # through the chat receive flow. Set on ``fresh`` BEFORE the per-draft deep
+    # copy below so every open draft carries the "studying…" note. Fail-open.
+    from app.services.spec_dojo import autostudy_if_spec_less
+
+    autostudy_if_spec_less(db, config_db, venue_id, invoice_id, fresh)
+
     for target in docs:
         # A DEEP copy per twin: carrying a decision re-applies it to the lines,
         # and a shallow dict() shares those lists between every draft.

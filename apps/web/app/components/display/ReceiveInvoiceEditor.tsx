@@ -218,6 +218,9 @@ interface DocData {
   doc_schema?: string;
   reviewed_at?: string | null;
   confidence?: 'ready' | 'needs_review';
+  // The supplier has no reading-instructions yet, so Norm has queued a
+  // background dojo study of this invoice; a spec appears once it finishes.
+  sensei_studying?: boolean;
   suggestions?: Suggestion[];
   issues?: Issue[];
   suggestion_actions?: SuggestionAction[];
@@ -2141,6 +2144,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {isCredit && !dojo && (
         <div style={{ padding: '5px 10px', background: '#fdecea', color: '#a4322a', borderBottom: '1px solid #f0c2bc', fontSize: '0.66rem', fontWeight: 600 }}>
           Credit note — receiving this reverses stock and cost (quantities are negative).
+        </div>
+      )}
+      {/* This supplier has no reading-instructions yet — Norm is studying the
+          invoice in the background to write them (async; a spec appears when the
+          study finishes). Set by the review's auto-spec trigger. */}
+      {docLive.sensei_studying && !dojo && (
+        <div style={{ padding: '5px 10px', background: '#eef4fb', color: '#2c5a8c', borderBottom: '1px solid #cfe0f2', fontSize: '0.66rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span aria-hidden>⏳</span>
+          Norm is studying this supplier to create reading instructions — a spec will appear shortly.
         </div>
       )}
       {/* Header — editable form (Loaded-parity) */}
