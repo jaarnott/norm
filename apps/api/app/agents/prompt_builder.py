@@ -592,7 +592,11 @@ Default to **markdown tables** for data. Use `render_chart` when the user asks f
                 )
             if has_system_email:
                 email_lines.append(
-                    "- **Report email** (`norm_email__send_report_email`): Send your response as a formatted email. Just provide `to` and `subject`."
+                    "- **Report email** (`norm_email__send_report_email`): Send your response as a formatted email. "
+                    "Pass `content_markdown` with the report itself — `to` and `subject` alone only work in an "
+                    "interactive chat, where a previous turn's reply is already on the thread. On a SCHEDULED run "
+                    "there is no such reply yet (your message is written after the tool returns), so omitting "
+                    "`content_markdown` sends nothing."
                 )
             if has_gmail and user_id:
                 cfg = (

@@ -234,3 +234,93 @@ class TestItStripsTheShapeProductionActuallyPasses:
     def test_an_envelope_for_a_non_fan_out_tool_is_left_alone(self):
         env = self._envelope({"items": [{"a": 1}]})
         assert _without_card_bodies(env, {"action": "get_sales"}) == env
+
+
+class TestAToolCanNameItsOwnCardKeys:
+    """`llm_omit` — for a tool whose card is the whole run, not a list of cards.
+
+    Reconciliation returns every invoice and every four-field comparison so a
+    reader can check one; that is ~63% of a payload reaching 64k. The chat and
+    the emailed report are written from the compact `report` beside them. With
+    all of it in context the model rendered a four-row table per invoice, ticks
+    included, burying the four lines that needed a person (29 Aug 2026, six
+    venues). Measured over eight real production runs: 87,550 -> 3,097 chars.
+    """
+
+    TOOL_DEF = {"llm_omit": ["results", "reconciled", "not_reconciled", "statements"]}
+
+    def _payload(self):
+        return {
+            "venue": "Dunedin Social Club",
+            "summary": {"reconciled": 0, "not_reconciled": 1},
+            "report": {
+                "counts": {"reconciled": 0, "not_reconciled": 1},
+                "exceptions": [
+                    {
+                        "cause": "po_missing_in_loaded",
+                        "title": "Needs a PO number added in Loaded",
+                        "invoices": [
+                            {"invoice": "4364523", "detail": "copy shows 3459273"}
+                        ],
+                    }
+                ],
+                "statements_not_yet_issued": 14,
+            },
+            "results": [{"invoice": f"I{n}", "po_doc": "x ✓"} for n in range(20)],
+            "reconciled": [{"comparison": {"po_number": {}}} for _ in range(9)],
+            "not_reconciled": [{"comparison": {"po_number": {}}}],
+            "statements": [{"supplier_name": f"S{n}"} for n in range(67)],
+        }
+
+    def _envelope(self, payload):
+        return {"success": True, "data": payload, "error": None}
+
+    def test_the_named_keys_go_and_the_report_stays(self):
+        out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)[
+            "data"
+        ]
+        for key in self.TOOL_DEF["llm_omit"]:
+            assert key not in out
+        assert out["report"]["exceptions"][0]["invoices"][0]["detail"] == (
+            "copy shows 3459273"
+        )
+        assert out["summary"]["not_reconciled"] == 1
+
+    def test_each_omitted_key_leaves_its_count(self):
+        """So the model can say "67 statements" without going to look."""
+        out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)[
+            "data"
+        ]
+        assert out["statements_count"] == 67
+        assert out["results_count"] == 20
+        assert out["reconciled_count"] == 9
+
+    def test_it_works_on_the_envelope_the_call_site_is_handed(self):
+        """The bare payload is NOT a stand-in: `_execute_tool_call` returns
+        {"success", "data", …} and checking only the top level shipped this as a
+        no-op once already (thread 9e71aa33)."""
+        env = self._envelope(self._payload())
+        out = _without_card_bodies(env, self.TOOL_DEF)
+        assert out["success"] is True
+        assert "results" not in out["data"]
+
+    def test_the_original_is_untouched_for_the_card(self):
+        payload = self._payload()
+        _without_card_bodies(self._envelope(payload), self.TOOL_DEF)
+        assert len(payload["statements"]) == 67 and len(payload["results"]) == 20
+
+    def test_items_path_and_llm_omit_can_coexist(self):
+        """A fan-out tool that also names extra keys drops both, once each."""
+        td = {"working_document": {"items_path": "cards"}, "llm_omit": ["extra"]}
+        payload = {"cards": [{"a": 1}], "extra": [{"b": 2}, {"b": 3}], "keep": 1}
+        out = _without_card_bodies(payload, td)
+        assert out == {"keep": 1, "cards_count": 1, "extra_count": 2}
+
+    def test_a_tool_naming_nothing_is_untouched(self):
+        payload = {"results": [{"a": 1}]}
+        assert _without_card_bodies(payload, {"action": "get_sales"}) == payload
+
+    def test_a_named_key_that_is_absent_or_not_a_list_is_ignored(self):
+        """Never invent a count for something that isn't there."""
+        out = _without_card_bodies({"statements": {"not": "a list"}}, self.TOOL_DEF)
+        assert out == {"statements": {"not": "a list"}}

@@ -772,3 +772,131 @@ class TestSplitOrdersAreRecorded:
         api = api_for(make_received())
         run_consolidator(api, mode="approve_fixes")
         assert api.split_writes == []
+
+
+class TestTheReportTheEmailIsWrittenFrom:
+    """The compact `report` — what a person reads, beside the card's detail.
+
+    The 29 Aug 2026 run across six venues rendered a four-row comparison table
+    for EVERY invoice, ticks included, and buried the four lines that needed
+    someone at the very bottom. Worse, one of those lines — three invoices
+    where Loaded holds no PO though the copy shows one — was a single job
+    scattered across three venue sections.
+
+    So the report groups by CAUSE, because the cause is the job, and it is
+    classified from `checks`/`comparison` rather than the reason prose: the
+    wording changes, the structure does not. Replayed over eight real
+    production runs, every exception classified and none fell through.
+    """
+
+    def _causes(self, result):
+        return {e["cause"]: e for e in result["report"]["exceptions"]}
+
+    def test_loaded_missing_a_po_the_copy_shows_is_its_own_cause(self):
+        """The fixable one, and the most common: someone adds the number in
+        Loaded. It must be separable from a genuine disagreement."""
+        inv = make_received(purchaseOrderNumber=None)
+        out = run_consolidator(
+            api_for(inv, make_pdf(customer_purchase_order_number="3459273"))
+        )
+        ex = self._causes(out)["po_missing_in_loaded"]
+        assert ex["invoices"][0]["detail"] == "copy shows 3459273"
+        assert ex["invoices"][0]["invoice"] == "1008102"
+
+    def test_two_real_po_numbers_are_a_disagreement_not_a_gap(self):
+        out = run_consolidator(
+            api_for(
+                make_received(purchaseOrderNumber="1520600"),
+                make_pdf(customer_purchase_order_number="1519999"),
+            )
+        )
+        causes = self._causes(out)
+        assert "po_mismatch" in causes and "po_missing_in_loaded" not in causes
+
+    def test_a_credit_is_filed_as_a_credit_even_with_no_copy(self):
+        """It reads as both; a credit needs a person whatever else is true, so
+        the credit is the job and it must not be double-counted."""
+        out = run_consolidator(
+            api_for(make_received(total=-51.37, fileId=None), pdf=None)
+        )
+        causes = self._causes(out)
+        assert "credit_manual" in causes and "no_copy" not in causes
+        assert sum(len(e["invoices"]) for e in out["report"]["exceptions"]) == 1
+
+    def test_every_exception_carries_what_the_email_needs(self):
+        out = run_consolidator(api_for(make_received(fileId=None), pdf=None))
+        entry = out["report"]["exceptions"][0]["invoices"][0]
+        assert set(entry) == {"venue", "invoice", "supplier", "total", "detail"}
+
+    def test_a_reconciled_invoice_raises_no_exception(self):
+        out = run_consolidator(api_for(make_received()))
+        assert out["report"]["counts"]["reconciled"] == 1
+        assert out["report"]["exceptions"] == []
+
+    def test_a_statement_not_yet_issued_is_counted_not_listed(self):
+        """A month in progress reads as "$0.00 vs reconciled", which is not a
+        discrepancy. La Zeppa returned 67 such rows for two invoices of real
+        work; listing them is what drowned the report."""
+        out = run_consolidator(
+            api_for(
+                make_received(),
+                # The live shape: no statement issued yet (amount 0), but
+                # invoices already reconciled against the period.
+                statement=make_statement(statementAmount=0, reconciledAmount=182.09),
+            )
+        )
+        assert out["report"]["statements_not_yet_issued"] == 1
+        assert out["report"]["statement_differences"] == []
+
+    def test_a_real_difference_is_listed(self):
+        out = run_consolidator(
+            api_for(make_received(), statement=make_statement(statementAmount=1600.00))
+        )
+        diffs = out["report"]["statement_differences"]
+        assert len(diffs) == 1 and diffs[0]["supplier"] == "Angus Meats"
+
+    def test_a_statement_that_balances_is_neither(self):
+        out = run_consolidator(
+            api_for(
+                make_received(),
+                statement=make_statement(statementAmount=0, reconciledAmount=0),
+            )
+        )
+        assert out["report"]["statement_differences"] == []
+        assert out["report"]["statements_not_yet_issued"] == 0
+
+    def test_a_rounding_difference_is_counted_not_listed(self):
+        """A cent across a month of invoices is rounding. The old report put
+        "$5,377.56 vs $5,377.55 -> $0.01" beside a real $4,045 crossover, which
+        is how a real one gets missed."""
+        out = run_consolidator(
+            api_for(
+                make_received(),
+                statement=make_statement(
+                    statementAmount=182.10, reconciledAmount=182.09
+                ),
+            )
+        )
+        assert out["report"]["statement_differences"] == []
+        assert out["report"]["statements_off_by_rounding"] == 1
+
+    def test_a_difference_worth_acting_on_survives_the_filter(self):
+        """The Dunedin Bidfood crossover is ~$4,045 — it must never be filtered."""
+        out = run_consolidator(
+            api_for(
+                make_received(),
+                statement=make_statement(
+                    statementAmount=4227.09, reconciledAmount=182.09
+                ),
+            )
+        )
+        diffs = out["report"]["statement_differences"]
+        assert len(diffs) == 1 and diffs[0]["difference"] == "$4,045.00"
+        assert out["report"]["statements_off_by_rounding"] == 0
+
+    def test_the_card_keeps_the_detail_the_report_leaves_out(self):
+        """The report is a projection, never a replacement — the comparisons
+        still ship for the card and for anyone checking one invoice."""
+        out = run_consolidator(api_for(make_received()))
+        assert out["reconciled"][0]["comparison"]["po_number"]["match"] is True
+        assert out["results"] and out["statements"]

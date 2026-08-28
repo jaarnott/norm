@@ -271,11 +271,20 @@ RECONCILE_CONSOLIDATOR_TOOL = {
             "record_split_order",
         ],
     },
+    # The card's data, not the model's. Every invoice and every four-field
+    # comparison is here for a reader who wants to check one — ~63% of a
+    # payload that reaches 64k — while the chat and the emailed report are
+    # written from the compact `report` key the consolidator builds beside
+    # them. Before this, the model received all of it and dutifully rendered a
+    # four-row table per invoice, ticks included, burying the four lines that
+    # actually needed a person (29 Aug 2026 run, six venues).
+    "llm_omit": ["results", "reconciled", "not_reconciled", "statements"],
     # NOTE: deliberately NO display_component. A display block triggers the
     # tool loop's "display-only" early-exit (tool_loop.py Phase F) whenever the
     # model's pre-tool preamble exceeds 120 chars — which silently ends the
-    # turn WITHOUT feeding the report back to the LLM. The playbook has the
-    # LLM render the summary table in markdown instead.
+    # turn WITHOUT feeding the report back to the LLM. `suppress_display_early_exit`
+    # is the escape hatch (the receive tool relies on it) and is what a
+    # reconciliation card would need; until that card exists, no component here.
 }
 
 CONSOLIDATOR_TOOL = {
@@ -458,11 +467,14 @@ RUN MODE — DO THIS FIRST, before reconciling. Do NOT run the reconciliation un
    - If it returns a set mode: go straight to step 1. The user can change it any time by asking — call set_workflow_mode.
 
 1. Call reconcile_received_invoices for the venue (default window: last 30 days of statements) — do NOT pass any dry_run or mode param; the run mode alone governs what is written. Before calling it, write at most ONE short status line — the full report comes after the tool returns.
-2. Report the results, using the tool's exact values and reasons verbatim (never soften or re-derive them). Start with a compact markdown summary table built from the tool's results rows — | Invoice | Supplier | Statement | Total | Outcome | — one row per invoice. Then three sections:
-   - "Reconciled" (in approve-all mode these read "awaiting your approval") and "Could not reconcile": for EVERY invoice render a markdown comparison table from the tool's comparison data showing the actual values checked on each side — | Field | Received invoice (Loaded) | Invoice copy | Match | — with rows for invoice number, PO number, invoice date, and total incl tax. The Match cell comes from the field's `match` value: true → ✓, false → ✗, null → — (check not run). Copy the values exactly as returned; never invent or reformat them.
-   - "Could not reconcile" additionally lists the exact reasons (missing copy, PO mismatch, date mismatch, total mismatch, credit).
-   - "Suppliers needing a statement": supplier, invoice count, how many would reconcile once a statement exists.
-3. Include each statement's amount vs reconciled amount difference from the tool's statements summary.
+2. Write the report from the tool's `report` block, and ONLY from it. The tool also returns every invoice and every field comparison — that detail is for a person checking one invoice, not for the report. Never render a per-invoice comparison table.
+   - Open with one line: how many reconciled out of how many invoices, across how many venues.
+   - Then the exceptions, one section per entry in `report.exceptions`, IN THE ORDER GIVEN. Use the entry's `title` as the heading and its `hint` (when present) as a short line beneath. List each invoice as: venue — supplier — invoice number — the entry's `detail`. Group by the cause the tool gives, NEVER by venue: the same fix at three venues is one job, and splitting it across three venue sections is what made earlier reports unreadable.
+   - Invoices that reconciled get the count in the opening line and nothing else. Do not list them.
+   - Then `report.statement_differences` — one line each: venue, supplier, statement, statement amount vs reconciled amount, difference. Add ONE line for `report.statements_not_yet_issued` if above zero (statements not issued yet — normal mid-month) and ONE for `report.statements_off_by_rounding` if above zero (differences under a dollar). Never list either.
+   - Then `report.needs_statement`: supplier, invoice count, how many would reconcile once a statement exists.
+   - Use the tool's values verbatim. Never soften a reason, re-derive a number, or invent a total.
+3. If nothing needs a person — no exceptions, no differences, nothing needing a statement — say so in one sentence and stop. A quiet night is a short report.
 4. If needs_statement is non-empty, ASK THE USER whether Norm should create those statements. Only after the user explicitly says yes, call the tool again with create_missing_statements=true and suppliers set to the confirmed supplier names. Never create statements unprompted. Remind the user that an auto-created statement's number and amount must be updated from the paper statement.
 
 If the user asks about a specific invoice, use get_invoices (invoice_id for one invoice; kind 'statements' or 'received' for the lists) plus the returned reasons — do not guess. Never claim you can edit statement amounts or fix mismatches; that is done in Loaded by a person.""",

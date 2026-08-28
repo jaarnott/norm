@@ -588,11 +588,41 @@ def _send_report_email(params: dict, db: Session, thread_id: str | None) -> dict
     # Build HTML from markdown + display blocks
     report_html = build_report_html(content_markdown, display_blocks)
 
-    # Build thread URL for "View in Norm" button
-    domain = settings.CORS_ALLOWED_ORIGINS.split(",")[0].strip().rstrip("/")
-    if domain == "*":
-        domain = "https://bettercallnorm.com"
-    thread_url = f"{domain}/app" if not thread_id else f"{domain}/app"
+    # "View in Norm" — an actual deep link to the conversation.
+    #
+    # Both branches of the ternary this replaces were identical
+    # (`f"{domain}/app" if not thread_id else f"{domain}/app"`), so every report
+    # ever sent landed the reader on the app home with the report nowhere in
+    # sight. It also derived the host from CORS_ALLOWED_ORIGINS rather than
+    # settings.app_url, which `links.thread_link` already does properly.
+    #
+    # A SCHEDULED run's thread_id is the throwaway "[Auto] …" execution thread,
+    # created per run and holding only the prompt; the run is mirrored into the
+    # task's persistent conversation thread. Link to that one, or the reader
+    # arrives at an empty thread.
+    from app.mcp.links import thread_link
+
+    target_thread = thread_id
+    if thread_id:
+        try:
+            from app.db.models import AutomatedTask, AutomatedTaskRun
+
+            run = (
+                db.query(AutomatedTaskRun)
+                .filter(AutomatedTaskRun.thread_id == thread_id)
+                .first()
+            )
+            if run is not None:
+                task = (
+                    db.query(AutomatedTask)
+                    .filter(AutomatedTask.id == run.automated_task_id)
+                    .first()
+                )
+                if task is not None and task.conversation_thread_id:
+                    target_thread = str(task.conversation_thread_id)
+        except Exception as exc:  # noqa: BLE001 — a link must never sink a send
+            logger.info("could not resolve the conversation thread: %s", exc)
+    thread_url = thread_link(target_thread) if target_thread else settings.app_url
 
     # Render via template
     import datetime

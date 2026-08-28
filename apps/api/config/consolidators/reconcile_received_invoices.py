@@ -696,6 +696,154 @@ def run(params, call_api, log, call_api_parallel=None):
         }
         for v in reconciled + not_reconciled + needs_statement_rows
     ]
+    # ── The report the chat/email is written from ────────────────────────
+    # Everything above is the CARD's data — every invoice, every comparison.
+    # This is the part a person reads: what needs doing, grouped by the job
+    # rather than by venue, because the job is the same job. On the 29 Aug run
+    # three invoices across three venues all needed the same fix (a PO added in
+    # Loaded) and appeared in three separate sections, under eight tables of
+    # ticks for the invoices that were already fine.
+    #
+    # Classified from `checks`/`comparison`, never from the reason prose: the
+    # wording changes, the structure does not.
+    _CAUSES = [
+        (
+            "credit_manual",
+            "Credits — reconcile by hand",
+            "Loaded cannot auto-reconcile a credit",
+        ),
+        (
+            "po_missing_in_loaded",
+            "Needs a PO number added in Loaded",
+            "the copy shows the order number; the received invoice has none",
+        ),
+        ("po_mismatch", "PO numbers disagree", ""),
+        ("invoice_number_mismatch", "Invoice numbers disagree", ""),
+        ("date_mismatch", "Invoice dates disagree", ""),
+        ("total_mismatch", "Totals disagree", ""),
+        ("no_copy", "No invoice copy attached", "attach the copy in Loaded"),
+        ("copy_unreadable", "Invoice copy could not be read", ""),
+        (
+            "not_checked",
+            "Not checked this run",
+            "the extraction service was briefly unavailable; the next run retries",
+        ),
+        ("other", "Could not reconcile", ""),
+    ]
+
+    def cause_of(v):
+        ch, comp = v.get("checks") or {}, v.get("comparison") or {}
+        # A credit needs a person whatever else is true of it, so it wins.
+        if ch.get("credit") == "fail":
+            return "credit_manual"
+        if ch.get("file_attached") == "fail":
+            return "no_copy"
+        if ch.get("pdf_readable") == "fail":
+            doc = str((comp.get("invoice_number") or {}).get("document") or "")
+            return "not_checked" if "not checked" in doc else "copy_unreadable"
+        if ch.get("po_match") == "fail":
+            po = comp.get("po_number") or {}
+            # The fixable shape: Loaded holds nothing, the copy holds a number.
+            if (
+                not str(po.get("loaded") or "").strip()
+                and str(po.get("document") or "").strip()
+            ):
+                return "po_missing_in_loaded"
+            return "po_mismatch"
+        for key, cause in (
+            ("invoice_number_match", "invoice_number_mismatch"),
+            ("date_match", "date_mismatch"),
+            ("total_match", "total_mismatch"),
+        ):
+            if ch.get(key) == "fail":
+                return cause
+        return "other"
+
+    def detail_of(v, cause):
+        comp = v.get("comparison") or {}
+        if cause == "po_missing_in_loaded":
+            return "copy shows " + str((comp.get("po_number") or {}).get("document"))
+        field = {
+            "po_mismatch": "po_number",
+            "invoice_number_mismatch": "invoice_number",
+            "date_mismatch": "invoice_date",
+            "total_mismatch": "total_incl_tax",
+        }.get(cause)
+        if field:
+            c = comp.get(field) or {}
+            return (
+                "Loaded " + str(c.get("loaded")) + " vs copy " + str(c.get("document"))
+            )
+        return (v.get("reasons") or [""])[0]
+
+    by_cause = {}
+    for v in not_reconciled + needs_statement_rows:
+        c = cause_of(v)
+        by_cause.setdefault(c, []).append(
+            {
+                "venue": venue,
+                "invoice": v.get("invoice_number"),
+                "supplier": v.get("supplier_name"),
+                "total": v.get("total"),
+                "detail": detail_of(v, c),
+            }
+        )
+    exceptions = [
+        {"cause": c, "title": title, "hint": hint, "invoices": by_cause[c]}
+        for c, title, hint in _CAUSES
+        if c in by_cause
+    ]
+
+    # A statement that has not been issued yet reads as "$0.00 vs reconciled",
+    # which is not a discrepancy — it is the month in progress. La Zeppa on
+    # 28 Aug returned 67 such rows for two invoices of real work. Count them;
+    # list only the differences a person could act on.
+    # A cent or two either way is rounding across a month of invoices, not a
+    # discrepancy — the old report carried lines like "$5,377.56 vs $5,377.55 →
+    # $0.01" beside a real $4,045 crossover, which is how a real one gets
+    # missed. Count them; list what a person could act on.
+    _ROUNDING = D("1.00")
+    differences, not_yet_issued, rounding = [], 0, 0
+    for s in statements:
+        amount = dec(s.get("statementAmount")) or D(0)
+        reconciled_amt = dec(s.get("reconciledAmount")) or D(0)
+        gap = amount - reconciled_amt
+        if not gap:
+            continue
+        if not amount and reconciled_amt:
+            not_yet_issued += 1
+            continue
+        if abs(gap) < _ROUNDING:
+            rounding += 1
+            continue
+        differences.append(
+            {
+                "venue": venue,
+                "statement": s.get("statementNumber"),
+                "supplier": s.get("supplierName"),
+                "statement_amount": money(amount),
+                "reconciled_amount": money(reconciled_amt),
+                "difference": money(gap),
+            }
+        )
+
+    report = {
+        "venue": venue,
+        "counts": {
+            "reconciled": len(reconciled),
+            "not_reconciled": len(not_reconciled),
+            "needs_statement": len(needs_statement_rows),
+            "invoices": len(reconciled)
+            + len(not_reconciled)
+            + len(needs_statement_rows),
+        },
+        "exceptions": exceptions,
+        "statement_differences": differences,
+        "statements_not_yet_issued": not_yet_issued,
+        "statements_off_by_rounding": rounding,
+        "needs_statement": needs_statement,
+    }
+
     return {
         "venue": venue,
         "dry_run": dry_run,
@@ -711,6 +859,8 @@ def run(params, call_api, log, call_api_parallel=None):
         "split_orders_recorded": split_applied,
         "split_orders_suggested": split_suggestions,
         "statements": statement_summaries,
+        # What the chat/email is written from — see the block above.
+        "report": report,
         "summary": {
             "reconciled": len(reconciled),
             "not_reconciled": len(not_reconciled),

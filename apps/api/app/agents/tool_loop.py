@@ -1670,24 +1670,34 @@ def _without_card_bodies(result: object, tool_def: dict | None) -> object:
     Checking only the top level made this a no-op in production — 335k went to
     the model as a "too large, go and search" stub while the tests, written
     against the bare payload, all passed (thread 9e71aa33, 27 Aug 2026).
+
+    Two ways a tool names those keys. A FAN-OUT tool names one implicitly, via
+    ``working_document.items_path`` — that list IS the cards. A tool whose card
+    is the whole run names them explicitly with ``llm_omit``: reconciliation
+    returns every invoice and every four-field comparison for the card, ~63% of
+    a payload that runs to 64k, while the model writes from the compact
+    ``report`` beside them.
     """
-    items_path = ((tool_def or {}).get("working_document") or {}).get("items_path")
-    if not items_path or not isinstance(result, dict):
+    wd = (tool_def or {}).get("working_document") or {}
+    keys = [k for k in [wd.get("items_path")] if k]
+    keys += [k for k in ((tool_def or {}).get("llm_omit") or []) if k not in keys]
+    if not keys or not isinstance(result, dict):
         return result
-    if isinstance(result.get(items_path), list):
-        return _drop_items(result, items_path)
+    if any(isinstance(result.get(k), list) for k in keys):
+        return _drop_items(result, keys)
     inner = result.get("data")
-    if isinstance(inner, dict) and isinstance(inner.get(items_path), list):
-        return {**result, "data": _drop_items(inner, items_path)}
+    if isinstance(inner, dict) and any(isinstance(inner.get(k), list) for k in keys):
+        return {**result, "data": _drop_items(inner, keys)}
     return result
 
 
-def _drop_items(payload: dict, items_path: str) -> dict:
-    """``payload`` without ``items_path``, carrying its length in its place."""
-    return {
-        **{k: v for k, v in payload.items() if k != items_path},
-        f"{items_path}_count": len(payload[items_path]),
-    }
+def _drop_items(payload: dict, keys: list[str]) -> dict:
+    """``payload`` without ``keys``, each carrying its length in its place."""
+    out = {k: v for k, v in payload.items() if k not in keys}
+    for k in keys:
+        if isinstance(payload.get(k), list):
+            out[f"{k}_count"] = len(payload[k])
+    return out
 
 
 def _slim_tool_result(
