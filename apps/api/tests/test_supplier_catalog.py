@@ -1,8 +1,11 @@
 """supplier_catalog — global physical facts, provenance-honest.
 
-The two rules under test everywhere: truth never comes from venue practice
-(lower provenance can never overwrite higher), and conflict is a question,
-never a majority vote.
+The rules under test everywhere (28 Aug 2026: analyser-on-top):
+- the resolver's verdict ('enriched') is the authority and outranks a raw
+  extraction read ('printed'); a receive ('practice') is evidence only and
+  never wins; there is no 'human' ranking tier;
+- a raw read is provisional — the catalogue does not hand it back as an
+  answer; and conflict is a question, never a majority vote.
 """
 
 from app.db.config_models import SupplierInvoiceSpec, SupplierProduct
@@ -116,43 +119,22 @@ class TestObserve:
         assert row.pack_type == "unknown"
         assert len(row.evidence["printed"]) == 2  # both sightings kept
 
-    def test_practice_never_overwrites_printed_and_human_beats_both(self, db_session):
+    def test_a_receive_never_overwrites_a_read(self, db_session):
+        # A receive (practice) is evidence only — it can carry a user's
+        # mistake, so it never changes the row's answer, and there is no
+        # 'human' ranking tier (28 Aug 2026).
         _spec(db_session)
         sc.observe_extraction(db_session, _ext(invoice="A"), provenance="printed")
-        # venue practice says 1L — advisory tier, must change nothing
-        sc.observe_extraction(
+        # venue receives it as 1L — recorded as evidence, must change nothing
+        sc.observe_practice(
             db_session,
-            _ext(
-                invoice="B",
-                lines=[
-                    {
-                        "code": "4183758",
-                        "description": "MALFY",
-                        "unit_of_measure": "1L",
-                    }
-                ],
-            ),
-            provenance="practice",
+            "Trents",
+            "B",
+            [{"code": "4183758", "description": "MALFY", "unit": "1L"}],
         )
         row = _row(db_session)
         assert row.unit_name == "700ml" and row.provenance == "printed"
-        # a human verification of 1L outranks everything below it
-        sc.observe_extraction(
-            db_session,
-            _ext(
-                invoice="C",
-                lines=[
-                    {
-                        "code": "4183758",
-                        "description": "MALFY",
-                        "unit_of_measure": "1L",
-                    }
-                ],
-            ),
-            provenance="human",
-        )
-        row = _row(db_session)
-        assert row.unit_name == "1L" and row.provenance == "human"
+        assert "practice" in (row.evidence or {})  # kept as evidence
 
     def test_random_weight_is_kilo_not_a_pack(self, db_session):
         _spec(db_session, name="Harbour Fish")
@@ -214,7 +196,9 @@ class TestEnrichmentAndArbitration:
         a = sc.catalog_unit_for_line(db_session, "Trents", "SH1")
         assert a and a["unit_name"] == "750ml" and a["provenance"] == "enriched"
 
-    def test_enrichment_never_overrules_a_printed_page(self, db_session):
+    def test_a_resolver_verdict_overrules_a_read(self, db_session):
+        # The analyser's verdict is the authority — it OUTRANKS a raw read
+        # (28 Aug 2026). This is how a poisoned read heals.
         _spec(db_session)
         sc.observe_extraction(db_session, _ext(invoice="A"), provenance="printed")
         row = _row(db_session)
@@ -225,13 +209,16 @@ class TestEnrichmentAndArbitration:
             pack_type="fixed",
             unit_type="volume",
             category="beverage",
-            why="model opinion",
+            why="resolver: the cross-supplier line is 1L",
         )
-        assert row.unit_name == "700ml" and row.provenance == "printed"
+        assert row.unit_name == "1L" and row.provenance == "enriched"
+        a = sc.catalog_unit_for_line(db_session, "Trents", "4183758")
+        assert a and a["unit_name"] == "1L"
 
-    def test_enrichment_breaks_a_printed_tie_by_agreeing_with_one_side(
-        self, db_session
-    ):
+    def test_a_resolver_verdict_settles_a_conflicting_read(self, db_session):
+        # Two different reads for one code are a conflict (no answer); the
+        # resolver's verdict settles it — and now wins outright as the top
+        # tier, not as a tie-breaker from below.
         _spec(db_session)
         sc.observe_extraction(db_session, _ext(invoice="A"), provenance="printed")
         sc.observe_extraction(
@@ -239,11 +226,7 @@ class TestEnrichmentAndArbitration:
             _ext(
                 invoice="B",
                 lines=[
-                    {
-                        "code": "4183758",
-                        "description": "MALFY",
-                        "unit_of_measure": "1L",
-                    }
+                    {"code": "4183758", "description": "MALFY", "unit_of_measure": "1L"}
                 ],
             ),
             provenance="printed",
@@ -253,16 +236,18 @@ class TestEnrichmentAndArbitration:
         sc.apply_enrichment(
             db_session,
             row,
-            unit_name="0.7 L",  # equivalent to one side, spelling differs
+            unit_name="700ml",
             pack_type="fixed",
             unit_type="volume",
             category="beverage",
             why="Malfy gins are 700ml in NZ",
         )
-        assert row.unit_name == "700ml"  # the agreed printed sighting wins
-        assert row.provenance == "enriched"  # the decider owns the answer
+        assert row.unit_name == "700ml" and row.provenance == "enriched"
 
-    def test_an_arbiter_agreeing_with_neither_decides_nothing(self, db_session):
+    def test_a_resolver_verdict_wins_even_over_conflicting_reads(self, db_session):
+        # The resolver verdict is the top tier: it wins outright, even when it
+        # agrees with NEITHER raw read below it (no longer a tie-breaker that
+        # must match a sighting).
         _spec(db_session)
         sc.observe_extraction(db_session, _ext(invoice="A"), provenance="printed")
         sc.observe_extraction(
@@ -270,11 +255,7 @@ class TestEnrichmentAndArbitration:
             _ext(
                 invoice="B",
                 lines=[
-                    {
-                        "code": "4183758",
-                        "description": "MALFY",
-                        "unit_of_measure": "1L",
-                    }
+                    {"code": "4183758", "description": "MALFY", "unit_of_measure": "1L"}
                 ],
             ),
             provenance="printed",
@@ -287,13 +268,16 @@ class TestEnrichmentAndArbitration:
             pack_type="fixed",
             unit_type="volume",
             category="beverage",
-            why="wrong",
+            why="resolver decides 2L",
         )
-        assert row.unit_name is None  # still an open question
+        assert row.unit_name == "2L" and row.provenance == "enriched"
 
 
 class TestPractice:
-    def test_practice_measures_answer_nothing_but_are_kept(self, db_session):
+    def test_a_receive_only_row_has_no_answer_but_is_kept(self, db_session):
+        # A receive is evidence, never the answer: a practice-only row carries
+        # no unit_name and the catalogue stays silent (28 Aug 2026), but the
+        # sighting IS kept for the divergence report.
         _spec(db_session)
         sc.observe_practice(
             db_session,
@@ -302,8 +286,8 @@ class TestPractice:
             [{"code": "P1", "description": "THING", "unit": "700 mL"}],
         )
         row = _row(db_session, "P1")
-        assert row.provenance == "practice"
-        assert row.unit_name == "700 mL"  # best-known, honestly labelled
+        assert row.unit_name is None  # a receive never becomes the answer
+        assert "practice" in (row.evidence or {})  # but it is kept
         assert sc.catalog_unit_for_line(db_session, "Trents", "P1") is None
 
     def test_count_words_are_recorded_as_divergence_evidence_only(self, db_session):
@@ -359,14 +343,28 @@ class TestRelatedEvidence:
 
 
 class TestAnswer:
-    def test_fixed_printed_answers(self, db_session):
+    def test_a_raw_read_does_not_answer_a_verdict_does(self, db_session):
+        # A raw extraction read is provisional — the catalogue does NOT hand it
+        # back (the line is verified by the resolver instead). Only a resolver
+        # verdict answers (28 Aug 2026).
         _spec(db_session)
         sc.observe_extraction(db_session, _ext(), provenance="printed")
+        assert sc.catalog_unit_for_line(db_session, "Trents", "4183758") is None
+        row = _row(db_session)
+        sc.apply_enrichment(
+            db_session,
+            row,
+            unit_name="700ml",
+            pack_type="fixed",
+            unit_type="volume",
+            category="beverage",
+            why="resolver confirms 700ml",
+        )
         a = sc.catalog_unit_for_line(db_session, "Trents", "4183758")
         assert a == {
             "unit_name": "700ml",
             "pack_type": "fixed",
-            "provenance": "printed",
+            "provenance": "enriched",
         }
 
     def test_questions_and_practice_answer_nothing(self, db_session):
@@ -411,9 +409,11 @@ class TestAnswer:
 
 
 class TestLearnFromResolver:
-    """High-confidence resolver verdicts become enrichment — the catalogue
-    self-fills from invoices instead of waiting for the offline script
-    ('HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7', 4366904, 19 Aug 2026)."""
+    """High- and medium-confidence resolver verdicts become enrichment — the
+    catalogue self-fills from invoices, and a verdict outranks a raw read so a
+    poisoned row heals ('HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7', 4366904;
+    analyser-on-top 28 Aug 2026). LOW confidence is deferred (re-run next
+    sighting)."""
 
     def _line(self, **over):
         ln = {
@@ -439,7 +439,9 @@ class TestLearnFromResolver:
         row = _row(db_session, "99054")
         assert "invoice unit resolver" in (row.evidence or {}).get("enriched_note", "")
 
-    def test_an_answered_row_is_never_touched(self, db_session):
+    def test_a_raw_read_is_overwritten_by_a_resolver_verdict(self, db_session):
+        # The heal: a row that only carries a raw read is re-resolved and the
+        # verdict wins (the read does not 'answer', so learn does not skip).
         _spec(db_session, name="Hancocks")
         sc.observe_extraction(
             db_session,
@@ -455,11 +457,33 @@ class TestLearnFromResolver:
             ),
             provenance="printed",
         )
-        assert sc.learn_from_resolver(db_session, "Hancocks", [self._line()]) == 0
+        assert sc.learn_from_resolver(db_session, "Hancocks", [self._line()]) == 1
         a = sc.catalog_unit_for_line(db_session, "Hancocks", "99054")
-        assert a["unit_name"] == "1L" and a["provenance"] == "printed"
+        assert a["unit_name"] == "700 mL" and a["provenance"] == "enriched"
 
-    def test_count_words_and_hedges_never_become_answers(self, db_session):
+    def test_a_row_with_a_verdict_is_never_touched(self, db_session):
+        # A row that already carries a resolver verdict is left alone.
+        n1 = sc.learn_from_resolver(db_session, "Hancocks", [self._line()])
+        assert n1 == 1
+        n2 = sc.learn_from_resolver(
+            db_session,
+            "Hancocks",
+            [
+                self._line(
+                    unit_resolved={
+                        "unit_name": "1L",
+                        "create_name": None,
+                        "confidence": "high",
+                        "why": "second opinion",
+                    }
+                )
+            ],
+        )
+        assert n2 == 0  # not touched
+        a = sc.catalog_unit_for_line(db_session, "Hancocks", "99054")
+        assert a["unit_name"] == "700 mL"  # first verdict kept
+
+    def test_count_words_and_low_confidence_never_become_answers(self, db_session):
         lines = [
             # a count word must never be an answer
             self._line(
@@ -470,19 +494,38 @@ class TestLearnFromResolver:
                     "why": "a per-item charge",
                 }
             ),
-            # anything below high confidence is a person's call
+            # LOW confidence is deferred — re-run next sighting, not stored
             self._line(
                 code="11111",
                 unit_resolved={
                     "unit_name": "700 mL",
                     "create_name": None,
-                    "confidence": "medium",
-                    "why": "probably a bottle",
+                    "confidence": "low",
+                    "why": "a guess",
                 },
             ),
         ]
         assert sc.learn_from_resolver(db_session, "Hancocks", lines) == 0
         assert sc.catalog_unit_for_line(db_session, "Hancocks", "99054") is None
+        assert sc.catalog_unit_for_line(db_session, "Hancocks", "11111") is None
+
+    def test_medium_confidence_is_recorded_with_its_confidence(self, db_session):
+        # We record high AND medium verdicts (with their confidence); only low
+        # is deferred.
+        ln = self._line(
+            code="med1",
+            unit_resolved={
+                "unit_name": "700 mL",
+                "create_name": None,
+                "confidence": "medium",
+                "why": "likely a bottle",
+            },
+        )
+        assert sc.learn_from_resolver(db_session, "Hancocks", [ln]) == 1
+        a = sc.catalog_unit_for_line(db_session, "Hancocks", "med1")
+        assert a and a["unit_name"] == "700 mL"
+        row = _row(db_session, "med1")
+        assert list(row.evidence["enriched"].values())[0]["confidence"] == "medium"
 
     def test_no_supplier_key_writes_nothing(self, db_session):
         assert sc.learn_from_resolver(db_session, None, [self._line()]) == 0

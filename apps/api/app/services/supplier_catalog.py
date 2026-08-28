@@ -6,11 +6,14 @@ printed evidence from extractions, keep provenance honest, answer lookups.
 Nothing here calls a model — enrichment is a later, separate phase.
 
 Two rules carry the whole design:
-- Truth never comes from venue practice; provenance ranks every sighting and
-  a lower tier can never overwrite a higher tier's answer.
-- Conflict is data, not a vote: two different printed sizes for one code
-  leave ``unit_name`` empty with both sightings kept — a question for
-  enrichment or a human, never a majority decision.
+- The resolver (analyser) verdict is the authority. A unit the resolver has
+  worked out ('enriched') OUTRANKS a raw extraction read ('printed'), which is
+  only provisional — a poisoned read never buries a verdict. A venue receive
+  ('practice') and the reserved 'human' tier are kept as evidence but never win
+  the ranking (28 Aug 2026 — analyser-on-top; see docs/unit-resolution.md).
+- Conflict is data, not a vote: two different sizes at one tier leave
+  ``unit_name`` empty with both sightings kept — a question for the resolver,
+  never a majority decision.
 """
 
 from __future__ import annotations
@@ -32,7 +35,13 @@ from app.services.invoice_units import (
 
 logger = logging.getLogger(__name__)
 
-_RANK = {"human": 3, "printed": 2, "enriched": 1, "practice": 0}
+# The resolver's worked-out verdict ('enriched') is the authority; a raw
+# extraction read ('printed') is only provisional and is outranked. 'human' and
+# 'practice' (a receive) are recorded as evidence elsewhere but are NOT ranking
+# sources — a receive can carry a user's mistake and must never bury a verdict,
+# and nothing writes 'human' today. A provenance absent here scores -1 (never
+# answers). Flipped 28 Aug 2026 (was human>printed>enriched>practice).
+_RANK = {"enriched": 1, "printed": 0}
 
 # Bare weight words = random-weight billing (meat/produce priced per kg).
 # A SIZED weight ('1kg', '500g') is a fixed pack — the digit is the tell.
@@ -259,14 +268,15 @@ def observe_practice(
     invoice_no: str | None,
     lines: list[dict],
 ) -> dict:
-    """Record what a venue actually RECEIVED — the advisory bottom tier.
+    """Record what a venue actually RECEIVED — kept as evidence only.
 
     ``lines`` carry {code, description, unit} where ``unit`` is the unit the
-    receive used. Unlike printed harvesting, count words ARE recorded here —
-    tagged ``count_word`` so they can never become an answer — because
-    practice is the divergence detector: 'every venue receives this syrup as
-    Each' is exactly the evidence the hygiene report needs against a truth
-    tier that says Litre. Best-effort; caller owns the commit.
+    receive used. Practice is NOT a ranking source (28 Aug 2026): a receive can
+    carry a user's mistake and must never win over a resolver verdict or bury a
+    read. It is still recorded — tagged ``count_word`` for bare words — because
+    it is the divergence detector the hygiene report reads ('every venue
+    receives this syrup as Each' against a verdict that says Litre).
+    Best-effort; caller owns the commit.
     """
     if not supplier_key:
         return {"observed": 0, "skipped": "no supplier key"}
@@ -362,14 +372,16 @@ def apply_enrichment(
     unit_type: str | None,
     category: str | None,
     why: str,
+    confidence: str = "high",
 ) -> None:
-    """Write one enrichment verdict (provenance ``enriched``).
+    """Write one enrichment verdict (provenance ``enriched``) — the resolver's
+    (or the offline enrichment's) worked-out answer.
 
-    The enriched tier sits below printed/human, so it can only ANSWER where
-    they are silent — or break their tie via arbitration (_recompute_current).
-    Category lands on the row directly: it is classification, not size
-    evidence, and every tier benefits from it. Caller validates confidence
-    and category rules BEFORE calling; caller owns the commit.
+    The enriched tier now OUTRANKS a raw extraction read, so a decisive verdict
+    is the authority (28 Aug 2026). ``confidence`` is recorded with the verdict
+    so the caller/receive path can re-run a low-confidence one; category lands
+    on the row directly (it is classification, not size evidence). Caller
+    validates category rules BEFORE calling; caller owns the commit.
     """
     ev = copy.deepcopy(row.evidence or {})
     if unit_name:
@@ -384,6 +396,7 @@ def apply_enrichment(
             "pack_type": pack_type,
             "unit_type": unit_type or "",
             "why": why,
+            "confidence": confidence,
         }
     ev["enriched_note"] = why
     row.evidence = ev
@@ -394,16 +407,19 @@ def apply_enrichment(
 
 
 def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> int:
-    """Record HIGH-confidence resolver verdicts as enrichment — only where
-    the catalogue has no answer today.
+    """Record resolver verdicts as enrichment — the self-healing write.
 
     The batched unit resolver reasons from richer evidence than the offline
     enrichment script (sibling lines, venue stocking, cross-supplier rows),
     so a decisive verdict IS an enrichment verdict — recording it means the
     NEXT invoice for this (supplier, code) resolves from the catalogue tier
     without spending a model call ('HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7',
-    4366904, 19 Aug 2026). Count words never become an answer, and a row that
-    already answers is never touched. Caller owns the commit.
+    4366904, 19 Aug 2026). We record HIGH and MEDIUM verdicts (with their
+    confidence); LOW is left unrecorded so the line is put through the resolver
+    again on its next sighting. Because the enriched tier now outranks a raw
+    read, this verdict wins over an earlier printed read — that is how a
+    poisoned row heals (28 Aug 2026). Count words never become an answer, and a
+    row that already carries a verdict is left alone. Caller owns the commit.
     """
     if not supplier_key:
         return 0
@@ -412,7 +428,7 @@ def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> 
         if not isinstance(ln, dict):
             continue
         ur = ln.get("unit_resolved")
-        if not (isinstance(ur, dict) and ur.get("confidence") == "high"):
+        if not isinstance(ur, dict) or ur.get("confidence") not in ("high", "medium"):
             continue
         code = str(ln.get("code") or "").strip()
         unit_name = str(ur.get("unit_name") or ur.get("create_name") or "").strip()
@@ -420,7 +436,7 @@ def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> 
         if not code or not unit_name or classified is None:
             continue  # a count word must never become an answer
         if catalog_unit_for_line(config_db, supplier_key, code) is not None:
-            continue  # printed/human/earlier enrichment already answers
+            continue  # a resolver verdict already answers — leave it alone
         row = lookup(config_db, supplier_key, code)
         if row is None:
             row = SupplierProduct(
@@ -437,6 +453,7 @@ def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> 
             unit_type=classified[2],
             category=None,
             why=str(ur.get("why") or "").strip() + " (invoice unit resolver)",
+            confidence=str(ur.get("confidence") or "high"),
         )
         written += 1
     return written
@@ -511,17 +528,18 @@ def catalog_unit_for_line(
 ) -> dict | None:
     """The catalogue's ANSWER for a line, or None when it has a question.
 
-    Only speaks when it genuinely knows: a fixed pack with a unit at
-    provenance printed-or-better, or random weight (→ Kilo). 'variable',
-    'unknown', conflicts and practice-only entries answer nothing — the page
-    or the resolver must decide.
+    Speaks ONLY for a resolver verdict (provenance ``enriched`` — the analyser
+    has signed the unit off), as a fixed pack with a unit or random weight
+    (→ Kilo). A raw extraction read (``printed``), a conflict, 'variable' /
+    'unknown', and practice-only entries answer nothing: an unverified unit is
+    provisional, so the line is put through the resolver instead (28 Aug 2026).
     """
     row = lookup(config_db, supplier_key, code)
     if row is None:
         return None
-    # Everything above venue practice may answer: printed pages and human
-    # verification outrank enrichment, but where they are silent the
-    # enrichment IS the answer — resolving open questions is its whole job.
+    # Only a resolver verdict answers. A raw read is provisional and must be
+    # verified, so it is NOT handed back here — the receive routes it to the
+    # resolver. (_RANK: printed < enriched, so a printed row scores below.)
     if _RANK.get(row.provenance, -1) < _RANK["enriched"]:
         return None
     if row.pack_type == "random_weight":

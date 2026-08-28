@@ -298,5 +298,6 @@ Use it to visually verify UI changes on `http://localhost:3000`:
 | Agents | `app/agents/base.py`, `app/agents/tool_loop.py`, `app/agents/router.py` |
 | LLM | `app/interpreter/llm_interpreter.py` |
 | Email | `app/services/email_service.py`, `app/templates/email/` |
+| Invoice units | `docs/unit-resolution.md` (how a product's delivered unit is chosen — self-healing), `app/services/supplier_catalog.py`, `app/services/unit_resolver.py`, `app/services/invoice_replica.py` |
 | Deploy | `.github/workflows/deploy.yml`, `.github/workflows/deploy-env.yml` |
 | Infra | `infra/terraform/main.tf`, `infra/terraform/modules/` |

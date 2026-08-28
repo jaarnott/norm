@@ -528,20 +528,24 @@ class TestCatalogueTierAndResolver:
 
         db.add(SupplierInvoiceSpec(name="Akaroa Salmon", aliases=[], instructions="x"))
         db.flush()
-        sc.observe_extraction(
+        # The catalogue answers with a RESOLVER VERDICT (enriched), not a raw
+        # read — a raw read is provisional and never handed back (28 Aug 2026).
+        # Seed a verdict for (Akaroa Salmon, NEW1) = 6x 750ml.
+        sc.learn_from_resolver(
             db,
-            {
-                "supplier_name": "Akaroa Salmon NZ Ltd",
-                "invoice_number": "PAST-1",
-                "lines": [
-                    {
-                        "code": "NEW1",
-                        "description": "CIDER MYSTERY PACK",
-                        "unit_of_measure": "6x 750ml",
-                    }
-                ],
-            },
-            provenance="printed",
+            "Akaroa Salmon",
+            [
+                {
+                    "code": "NEW1",
+                    "description": "CIDER MYSTERY PACK",
+                    "unit_resolved": {
+                        "unit_name": "6x 750ml",
+                        "create_name": None,
+                        "confidence": "high",
+                        "why": "sibling lines print 6x750mL at the same price",
+                    },
+                }
+            ],
         )
 
     def _sizeless_line(self, **over):
@@ -593,6 +597,41 @@ class TestCatalogueTierAndResolver:
         ln = doc["lines"][0]
         assert ln["linked_unit_id"] is None
         assert ln["unit_create_name"] == "6x 750ml"
+
+    def test_a_poisoned_read_does_not_answer_and_routes_to_the_resolver(
+        self, db_session
+    ):
+        # A catalogue row carrying only a raw extraction read ('1 pack' for a
+        # bottle of rum) is provisional — it must NOT be handed back at receive,
+        # so the sizeless line falls through to the resolver rather than
+        # receiving the poisoned unit (28 Aug 2026 self-healing).
+        from app.db.config_models import SupplierInvoiceSpec
+        from app.services import supplier_catalog as sc
+
+        db_session.add(
+            SupplierInvoiceSpec(name="Akaroa Salmon", aliases=[], instructions="x")
+        )
+        db_session.flush()
+        sc.observe_extraction(
+            db_session,
+            {
+                "supplier_name": "Akaroa Salmon NZ Ltd",
+                "invoice_number": "P",
+                "lines": [
+                    {
+                        "code": "NEW1",
+                        "description": "CIDER MYSTERY PACK",
+                        "unit_of_measure": "1 pack",
+                    }
+                ],
+            },
+            provenance="printed",
+        )
+        doc = self._build_cfg(db_session, self._sizeless_line())  # no resolver
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] is None  # the poisoned read never applied
+        assert any(i["code"] == "unit_missing" for i in doc["issues"])
+        assert not any("Norm catalogue" in e for e in doc["resolution_log"])
 
     def test_resolver_offers_but_never_links(self):
         seen = {}

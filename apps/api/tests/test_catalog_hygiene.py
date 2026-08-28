@@ -64,21 +64,23 @@ class TestVenueHygiene:
     def test_catalogue_disagreement_and_category_rule_both_flag(
         self, client, admin_headers, hygiene_env
     ):
-        # Truth: the SHOTT product is 1L (printed) — the venue stocks Each.
-        sc.observe_extraction(
+        # Truth: the SHOTT product is 1L (a resolver verdict) — the venue stocks
+        # Each. A raw read is no longer treated as truth (28 Aug 2026).
+        sc.learn_from_resolver(
             hygiene_env,
-            {
-                "supplier_name": "Trents Wholesale Limited",
-                "invoice_number": "A",
-                "lines": [
-                    {
-                        "code": "SH1",
-                        "description": "SHOTT ELDERFLOWER",
-                        "unit_of_measure": "1L",
-                    }
-                ],
-            },
-            provenance="printed",
+            "Trents",
+            [
+                {
+                    "code": "SH1",
+                    "description": "SHOTT ELDERFLOWER",
+                    "unit_resolved": {
+                        "unit_name": "1L",
+                        "create_name": None,
+                        "confidence": "high",
+                        "why": "SHOTT syrups sell in 1L glass bottles",
+                    },
+                }
+            ],
         )
         res = client.get("/api/supplier-catalog/hygiene/v-1", headers=admin_headers)
         assert res.status_code == 200

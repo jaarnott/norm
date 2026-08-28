@@ -1,5 +1,6 @@
 """Resolve delivered units for lines where NOTHING says the size — the
-batched LLM residue call behind Norm's unit accuracy.
+batched LLM residue call behind Norm's unit accuracy. The analyser whose
+verdict is the authority in the self-healing model (see docs/unit-resolution.md).
 
 Runs after every deterministic tier has passed (supplier variant, the page's
 own derived unit, the Norm supplier-product catalogue): what remains are
@@ -44,10 +45,15 @@ _SYSTEM_PROMPT = (
     "- SIBLING LINES on the same invoice: the same brand family at the same "
     "unit price is almost always the same pack size ('MALFY GIN CON LIMONE "
     "700ML' at $54.88 answers 'MALFY GIN ROSA PINK GRAPEF' at $54.88).\n"
-    "- CATALOGUE EVIDENCE provided per line (how venues already stock the "
-    "matched product) — treat as evidence, not authority: venue setups "
-    "contain mistakes.\n"
-    "- Product knowledge: standard retail packs for known branded goods.\n\n"
+    "- PRODUCT (world) KNOWLEDGE: the size a known branded product comes in — a "
+    "rum is a poured volume, a branded wine is 750ml, lemons sell by the kilo. "
+    "This is ALWAYS available; lean on it and be confident even when the "
+    "venue's own catalogue is empty (a brand-new venue).\n"
+    "- CATALOGUE EVIDENCE provided per line (how a venue already stocks the "
+    "matched product, plus cross-supplier rows) — a MINOR factor, evidence not "
+    "authority: venue setups contain mistakes and a new venue has none. Never "
+    "let a thin or missing catalogue lower your confidence on its own — "
+    "siblings and product knowledge can decide it without any catalogue.\n\n"
     "Rules:\n"
     "- Beverages: pick the unit by how the venue SELLS the item. Poured or "
     "portioned by the glass, nip or measure (wine, spirits, kegs, cordials, "

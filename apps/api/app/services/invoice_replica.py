@@ -29,6 +29,9 @@ Resolution order per line (conservative → generous):
 
 Every decision lands in ``resolution_log`` — the troubleshooting record.
 Never raises: any stage degrades and logs.
+
+Unit resolution is the self-healing model: a raw read is provisional and the
+resolver's verdict is the authority — see docs/unit-resolution.md.
 """
 
 from __future__ import annotations
