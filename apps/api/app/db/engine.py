@@ -20,13 +20,24 @@ log = logging.getLogger(__name__)
 # connection at all ("remaining connection slots are reserved…") and the deploy
 # failed with 47 of ~50 in use.
 #
-# 5+12 = at most 12 per instance, 36 at full scale, leaving headroom for the
-# migrate job, the Cloud SQL admin connections and a person with a proxy. Raise
-# these only together with the instance tier, and check maxScale when you do.
+# THE FLOOR IS ONE INSTANCE'S PEAK, NOT THE DATABASE'S TOTAL.
+#
+# A consolidator's parallel fan-out opens a session PER CALL, up to 20 at once
+# (function_executor `_worker`, ThreadPoolExecutor(min(len(calls), 20))), and
+# the tool loop runs up to 8 read-only calls concurrently, each with its own
+# session. So one instance can genuinely want ~20 at a peak, and a pool below
+# that fails the work outright rather than merely queueing it: 5+7 was chosen
+# on 27 Aug 2026 from the database total alone and get_pos_item_sales died on
+# it with "QueuePool limit of size 5 overflow 7 reached, connection timed out".
+#
+# 10+12 = 22 per instance, which covers that 20-way fan-out with a little room.
+# The other half of the sum is maxScale, set on the Cloud Run service and NOT
+# in this repo: 22 x 3 is 66 against a db-g1-small serving ~50 (it refused new
+# connections at 49). Keep maxScale at 2 on this tier, or raise the tier first.
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_size=5,
-    max_overflow=7,
+    pool_size=10,
+    max_overflow=12,
     pool_timeout=30,
     pool_recycle=1800,
     pool_pre_ping=True,
@@ -43,8 +54,8 @@ if settings.DATABASE_READ_URL:
     # footprint, which is exactly the sum that overran above.
     _read_engine = create_engine(
         settings.DATABASE_READ_URL,
-        pool_size=5,
-        max_overflow=7,
+        pool_size=10,
+        max_overflow=12,
         pool_timeout=30,
         pool_recycle=1800,
         pool_pre_ping=True,
