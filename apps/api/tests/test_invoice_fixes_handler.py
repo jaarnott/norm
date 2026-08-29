@@ -2223,3 +2223,58 @@ def test_heal_review_never_triggers_autostudy(monkeypatch):
     )
     assert IF.heal_review(None, None, "v1", "inv-1") is True
     assert captured.get("trigger_autostudy") is False
+
+
+def test_heal_review_clears_studying_flag_and_does_not_loop(
+    db_session, venue, monkeypatch
+):
+    """E2E on the review+draft path against a real WorkingDocument: a study's
+    heal re-reviews the card, DROPS the 'studying' flag, and triggers NO new
+    study — the two halves of the ATOMIC loop fix. Before e711b8c the heal
+    re-ran autostudy, which on an orphaned spec re-studied forever."""
+    import datetime as dt
+
+    from app.db.models import WorkingDocument
+
+    doc = WorkingDocument(
+        doc_type="received_invoice",
+        venue_id=venue.id,
+        connector_name="loadedhub",
+        sync_mode="submit",
+        external_ref={"invoice_id": "inv-1"},
+        data={"doc_schema": "replica_v1", "sensei_studying": True},
+        version=5,
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    db_session.add(doc)
+    db_session.flush()
+
+    fresh = {
+        "doc_schema": "replica_v1",
+        "reviewed_at": "2026-08-29T00:00:00+00:00",
+        "supplier_name": "Feed Co",
+        "lines": [],
+    }
+    monkeypatch.setattr(
+        "app.services.invoice_review.review_invoice", lambda *a, **k: dict(fresh)
+    )
+    monkeypatch.setattr(
+        IF,
+        "_Loaded",
+        lambda db, cdb, v: type("L", (), {"invoice": lambda self, i: {}})(),
+    )
+    monkeypatch.setattr(IF, "_wipe_validation_caches", lambda db, inv: None)
+    monkeypatch.setattr(IF, "_attach_po_reference", lambda *a, **k: None)
+    monkeypatch.setattr(IF, "attach_item_names", lambda *a, **k: None)
+    monkeypatch.setattr(IF, "enrich_loaded_snapshot", lambda *a, **k: None)
+    n = {"autostudy": 0}
+    monkeypatch.setattr(
+        "app.services.spec_dojo.autostudy_if_spec_less",
+        lambda *a, **k: n.__setitem__("autostudy", n["autostudy"] + 1),
+    )
+
+    assert IF.heal_review(db_session, db_session, venue.id, "inv-1") is True
+    db_session.refresh(doc)
+    assert "sensei_studying" not in (doc.data or {})  # flag cleared
+    assert doc.version == 6  # draft re-written
+    assert n["autostudy"] == 0  # NO new study triggered
