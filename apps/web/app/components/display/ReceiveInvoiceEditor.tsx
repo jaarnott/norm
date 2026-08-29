@@ -2179,7 +2179,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {docLive.sensei_studying && !dojo && (
         <div style={{ padding: '5px 10px', background: '#eef4fb', color: '#2c5a8c', borderBottom: '1px solid #cfe0f2', fontSize: '0.66rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span aria-hidden>⏳</span>
-          Norm is studying this supplier to create reading instructions — a spec will appear shortly.
+          Norm is studying this supplier to create reading instructions. This may take 2 - 3 minutes.
         </div>
       )}
       {/* Header — editable form (Loaded-parity) */}
