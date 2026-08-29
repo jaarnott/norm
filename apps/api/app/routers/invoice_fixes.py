@@ -1377,6 +1377,28 @@ def heal_review(
     return True
 
 
+def clear_studying_on_drafts(db: Session, venue_id: str, invoice_id: str) -> bool:
+    """Turn OFF the ``sensei_studying`` flag on an invoice's open drafts, without
+    re-reviewing them. The autostudy trigger set the flag; a study that finishes
+    without applying a spec (an existing spec, a not-green proposal, a failure)
+    would otherwise leave the card stuck showing "studying". This just drops the
+    flag so the card falls back to its current review; auto-apply uses
+    ``heal_review`` (a full re-review under the new spec) instead. Bumps the
+    version so an open web card's poll adopts it. Returns whether any changed."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    changed = False
+    for target in _open_docs_for(db, venue_id, invoice_id):
+        if (target.data or {}).get("sensei_studying"):
+            target.data = {**target.data, "sensei_studying": False}
+            target.version += 1
+            flag_modified(target, "data")
+            changed = True
+    if changed:
+        db.commit()
+    return changed
+
+
 @router.post("/invoice-fixes/review")
 def review_receive_draft(
     body: ReviewRequest,

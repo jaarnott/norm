@@ -473,24 +473,40 @@ def autostudy_if_spec_less(
     spec needed". This is the same machinery the "Norm can't do this one"
     button uses; here it starts automatically where it never started before.
 
-    The whole gate is one rule: **a supplier with a spec that has content is
-    done; anything else gets studied.** No study-history to track — because every
-    study now leaves a spec behind (a real one, or the ``NO_RULES_SPEC`` note when
-    the supplier already reads fine), the presence of a content-bearing spec IS
-    the "already handled" record. A missing spec (never studied, or an admin
-    deleted it) simply studies again. In-flight double-runs can't happen:
-    ``sensei_runner.enqueue`` refuses to queue a run that is already
-    queued/running, and ``stage_invoice_sample`` is idempotent per invoice.
+    Study when the supplier has no content-bearing spec AND this invoice has not
+    already been staged. Two skips, both needed:
+    - a spec WITH content already covers the supplier — nothing to do;
+    - this invoice already has a (non-draft) dojo sample — it has been studied,
+      so don't study it again. This second guard is what stops a loop when a
+      study files its spec under a CANONICAL name (e.g. the footer entity
+      'Atomic Coffee Roasters') that the Loaded feed name ('ATOMIC') can't match
+      here: the content check misses the orphaned spec, but the sample is still
+      there. Deleting the spec cascades its samples, so "delete to re-study"
+      still works.
+    ``sensei_runner.enqueue`` refuses to queue a run already queued/running, and
+    ``stage_invoice_sample`` is idempotent per invoice.
     """
     try:
         supplier = str((review or {}).get("supplier_name") or "").strip()
         if not supplier:
             return
+        from app.db.config_models import SupplierSpecSample
         from app.services import sensei_runner
 
         spec = find_spec_for_supplier(config_db, supplier)
         if spec is not None and (spec.instructions or "").strip():
             return  # a spec with content already exists — nothing to study
+
+        if (
+            config_db.query(SupplierSpecSample.id)
+            .filter(
+                SupplierSpecSample.source_invoice_id == invoice_id,
+                SupplierSpecSample.draft.isnot(True),
+            )
+            .first()
+            is not None
+        ):
+            return  # this invoice was already studied — don't loop
 
         staged = stage_invoice_sample(db, venue_id, invoice_id, draft=False)
         sensei_runner.enqueue(staged["sample_id"])
@@ -1182,6 +1198,25 @@ def _heal_source_review(db: Session, config_db: Session, sample) -> None:
         )
 
 
+def _clear_studying_flag(db: Session, sample) -> None:
+    """Take the source invoice's card OUT of the autostudy 'studying' state when
+    the study is done but applied no spec (an existing spec, a not-green
+    proposal, a failure) — without a full re-review. The card keeps its current
+    review; the flag just turns off so it stops showing 'studying'. Auto-apply
+    (or an existing spec) uses ``_heal_source_review`` instead. Best-effort."""
+    if not (sample.source_venue_id and sample.source_invoice_id):
+        return
+    try:
+        from app.routers.invoice_fixes import clear_studying_on_drafts
+
+        venue_id = resolve_sample_venue_id(db, sample)
+        if venue_id is None:
+            return
+        clear_studying_on_drafts(db, venue_id, str(sample.source_invoice_id))
+    except Exception as exc:  # noqa: BLE001 — must never fail the analysis
+        logger.warning("clear studying flag failed for sample %s: %s", sample.id, exc)
+
+
 def analyse_sample(
     db: Session,
     config_db: Session,
@@ -1604,14 +1639,29 @@ def analyse_sample(
                 )
             except Exception as exc:  # noqa: BLE001 — proposal stays reviewable
                 logger.warning("auto-apply failed for sample %s: %s", sample.id, exc)
-            else:
-                # The invoice that raised this sample still carries its
-                # pre-fix review; re-run it under the prompt just written so
-                # the card heals without waiting for a human's Re-analyse.
+        # The study is done: take the source card out of the autostudy 'studying'
+        # state whatever the outcome. If the supplier now has a spec (applied
+        # just now, or one that already existed), re-review the invoice under it
+        # so the card heals to the spec-based read; otherwise just drop the flag
+        # and the card keeps its main-prompt review. A study that never
+        # auto-applied (existing spec, not-green, failure) used to leave the card
+        # stuck on 'studying'.
+        try:
+            if (spec.instructions or "").strip():
                 _heal_source_review(db, config_db, sample)
+            else:
+                _clear_studying_flag(db, sample)
+        except Exception as exc:  # noqa: BLE001 — card update must never fail analysis
+            logger.warning(
+                "post-analysis card update failed for %s: %s", sample.id, exc
+            )
         return stored
     except Exception as exc:  # noqa: BLE001 — a failed analysis must record, not crash
         logger.warning("dojo analysis failed for sample %s: %s", sample_id, exc)
+        try:
+            _clear_studying_flag(db, sample)  # a failed study must still un-stick the card
+        except Exception:  # noqa: BLE001 — sample may be unbound; ignore
+            pass
         return _store(
             {
                 "status": "failed",

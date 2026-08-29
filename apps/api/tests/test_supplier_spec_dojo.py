@@ -739,6 +739,62 @@ class TestAnalyseSample:
         db_session.refresh(s)
         assert (s.analysis or {}).get("status") == "applied"
 
+    def test_a_finished_study_heals_the_card_when_a_spec_already_exists(
+        self, db_session, monkeypatch
+    ):
+        # ATOMIC (29 Aug): the study finished spec_not_needed because a spec
+        # already existed, so nothing auto-applied and the card stayed stuck on
+        # "studying" — the heal only ran on auto-apply. Now ANY completion with a
+        # content-spec re-reviews the card under it.
+        spec, s = self._seed(db_session)  # spec.instructions = "notes" (content)
+        s.source_venue_id, s.source_invoice_id = "v-src", "inv-atomic"
+        db_session.flush()
+        monkeypatch.setattr(
+            "app.interpreter.llm_interpreter.call_llm",
+            lambda *a, **k: (self._canned_proposal(), None),
+        )
+        monkeypatch.setattr(spec_dojo, "run_extraction", lambda *a, **k: _extraction())
+        monkeypatch.setattr(
+            spec_dojo, "resolve_sample_venue_id", lambda *a, **k: "v-here"
+        )
+        healed: list = []
+        cleared: list = []
+        monkeypatch.setattr(
+            "app.routers.invoice_fixes.heal_review",
+            lambda db, cdb, v, i: (healed.append((v, i)) or True),
+        )
+        monkeypatch.setattr(
+            "app.routers.invoice_fixes.clear_studying_on_drafts",
+            lambda db, v, i: (cleared.append((v, i)) or True),
+        )
+        out = spec_dojo.analyse_sample(db_session, db_session, s.id)
+        assert out["spec_not_needed"] is True and out.get("auto_applied") is None
+        assert healed == [("v-here", "inv-atomic")]  # re-reviewed under the spec
+        assert cleared == []  # a content-spec heals; it doesn't flag-clear
+
+    def test_a_failed_study_still_unsticks_the_card(self, db_session, monkeypatch):
+        # A study that raises must not leave the card stuck on "studying": the
+        # failure path drops the flag too (no spec, so no re-review).
+        spec, s = self._seed(db_session)
+        s.source_venue_id, s.source_invoice_id = "v-src", "inv-x"
+        db_session.flush()
+        monkeypatch.setattr(
+            spec_dojo, "resolve_sample_venue_id", lambda *a, **k: "v-here"
+        )
+
+        def boom(*a, **k):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", boom)
+        cleared: list = []
+        monkeypatch.setattr(
+            "app.routers.invoice_fixes.clear_studying_on_drafts",
+            lambda db, v, i: (cleared.append((v, i)) or True),
+        )
+        out = spec_dojo.analyse_sample(db_session, db_session, s.id)
+        assert out["status"] == "failed"
+        assert cleared == [("v-here", "inv-x")]
+
     def test_green_analysis_keeps_admin_expected(self, db_session, monkeypatch):
         # An admin-entered baseline is never clobbered by the agent's ground
         # truth — the agent only fills the gap when nothing is stored yet.
@@ -2040,6 +2096,32 @@ class TestAutostudyTrigger:
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-2", review)
         assert calls["staged"] == [("v1", "inv-2")]
         assert review["sensei_studying"] is True
+
+    def test_an_already_studied_invoice_is_not_restudied(
+        self, db_session, monkeypatch
+    ):
+        # The orphaned-spec loop (ATOMIC, 29 Aug): a study filed its spec under a
+        # canonical name ('Atomic Coffee Roasters') the Loaded feed name ('ATOMIC')
+        # can't match, so the content check misses it — but a non-draft sample for
+        # this invoice means it was already studied, so we must NOT study again.
+        spec = self._spec(
+            db_session, "Atomic Coffee Roasters", instructions="footer entity rules"
+        )
+        db_session.add(
+            SupplierSpecSample(
+                spec_id=spec.id,
+                label="a.pdf",
+                pdf_bytes=b"%PDF",
+                source_invoice_id="inv-atomic",
+                analysis={"status": "ready"},
+            )
+        )
+        db_session.flush()
+        calls = self._record(monkeypatch)
+        review = {"supplier_name": "ATOMIC"}  # Loaded name — no spec matches it
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-atomic", review)
+        assert calls["staged"] == [] and calls["enqueued"] == []
+        assert "sensei_studying" not in review
 
     def test_no_supplier_name_is_a_noop(self, db_session, monkeypatch):
         calls = self._record(monkeypatch)
