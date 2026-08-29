@@ -26,8 +26,8 @@ import uuid
 
 import pytest
 
-from app.db.config_models import AgentConnectorBinding, ConnectorSpec, McpCapability
-from app.db.models import ConnectorConfig, Organization, User, UserVenueAccess, Venue
+from app.db.config_models import AgentConnectionBinding, ConnectionSpec, McpCapability
+from app.db.models import Connection, Organization, User, UserVenueAccess, Venue
 from app.mcp.principal import McpPrincipal
 
 SYNC_SCRIPT = (
@@ -132,7 +132,7 @@ def wired(db_session, monkeypatch):
     db_session.flush()
     db_session.add(UserVenueAccess(user_id=user.id, venue_id=venue.id))
     db_session.add(
-        ConnectorConfig(
+        Connection(
             id=str(uuid.uuid4()),
             connector_name="loadedhub",
             enabled="true",
@@ -142,7 +142,7 @@ def wired(db_session, monkeypatch):
     )
     db_session.add_all(
         [
-            ConnectorSpec(
+            ConnectionSpec(
                 connector_name="loadedhub",
                 display_name="LoadedHub",
                 execution_mode="template",
@@ -151,7 +151,7 @@ def wired(db_session, monkeypatch):
                 tools=[GET_SALES_DATA, tool],
                 enabled=True,
             ),
-            ConnectorSpec(
+            ConnectionSpec(
                 connector_name="norm",
                 display_name="Norm",
                 execution_mode="internal",
@@ -159,7 +159,7 @@ def wired(db_session, monkeypatch):
                 tools=[RESOLVE_DATES],
                 enabled=True,
             ),
-            AgentConnectorBinding(
+            AgentConnectionBinding(
                 agent_slug="ops",
                 connector_name="loadedhub",
                 capabilities=[
@@ -168,7 +168,7 @@ def wired(db_session, monkeypatch):
                 ],
                 enabled=True,
             ),
-            AgentConnectorBinding(
+            AgentConnectionBinding(
                 agent_slug="ops",
                 connector_name="norm",
                 capabilities=[{"action": "resolve_dates", "enabled": True}],

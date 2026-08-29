@@ -184,13 +184,13 @@ def _declared(spec: dict, key: str, connector: str, action: str) -> bool:
 
 
 def _tool_method(config_db: Session, connector: str, action: str) -> str:
-    """The action's HTTP method from its ConnectorSpec — the source of truth for
+    """The action's HTTP method from its ConnectionSpec — the source of truth for
     'is this a write', so an app cannot relabel one."""
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector)
         .first()
     )
     for tool in (spec.tools if spec else None) or []:
@@ -233,12 +233,12 @@ def _tool_read_only(config_db: Session, connector: str, action: str) -> bool:
     Anything unreadable or absent means "not marked", i.e. still a write — the
     fail-closed direction.
     """
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
     try:
         spec = (
-            config_db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == connector)
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == connector)
             .first()
         )
         if not spec or (spec.execution_mode or "") != "mcp":

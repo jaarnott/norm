@@ -1,6 +1,6 @@
 """Curation of the MCP surface — Settings → MCP.
 
-Candidates are **computed, not stored**: every ConnectorSpec action and every
+Candidates are **computed, not stored**: every ConnectionSpec action and every
 Playbook, left-joined against ``mcp_capabilities``. A new connector or playbook
 therefore appears here the moment it exists, disabled. Nothing has to be
 registered in a second place; the toggle is the only decision.
@@ -109,14 +109,14 @@ def list_capabilities(
     Candidates are derived from config, so this list can never fall behind the
     connectors and playbooks that actually exist.
     """
-    from app.db.config_models import ConnectorSpec, McpCapability, Playbook
+    from app.db.config_models import ConnectionSpec, McpCapability, Playbook
 
     existing = {
         (c.kind, c.target, c.action): c for c in config_db.query(McpCapability).all()
     }
     out: list[McpCapabilityOut] = []
 
-    for spec in config_db.query(ConnectorSpec).order_by(ConnectorSpec.connector_name):
+    for spec in config_db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name):
         for tool in spec.tools or []:
             action = tool.get("action") or ""
             if not action:
@@ -203,15 +203,15 @@ def upsert_capability(
     Validates before saving. A refusal here is the point: it's what stops a
     toggle from widening the v1 read/draft boundary.
     """
-    from app.db.config_models import ConnectorSpec, McpCapability, Playbook
+    from app.db.config_models import ConnectionSpec, McpCapability, Playbook
 
     action = body.action or ""
 
     # ── Validate the target exists, and derive its method ────────────
     if body.kind == "connector":
         spec = (
-            config_db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == body.target)
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == body.target)
             .first()
         )
         if not spec:

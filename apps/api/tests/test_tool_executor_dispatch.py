@@ -19,12 +19,12 @@ from app.connectors.tool_executor import (
     _resolve_credentials,
     execute_connector_tool,
 )
-from app.db.config_models import ConnectorSpec
-from app.db.models import ConnectorConfig, Venue
+from app.db.config_models import ConnectionSpec
+from app.db.models import Connection, Venue
 
 
 def _spec(db, connector_name, tools, execution_mode="internal"):
-    spec = ConnectorSpec(
+    spec = ConnectionSpec(
         connector_name=connector_name,
         display_name=connector_name,
         execution_mode=execution_mode,
@@ -44,7 +44,7 @@ def _venue(db, name):
 
 
 def _config(db, connector_name, venue_id, secret):
-    c = ConnectorConfig(
+    c = Connection(
         connector_name=connector_name,
         venue_id=venue_id,
         enabled="true",
@@ -61,7 +61,7 @@ def connector():
 
     The suite runs against the same database as local dev (ci.yml points
     DATABASE_URL and CONFIG_DATABASE_URL at the same local postgres), which
-    holds real ConnectorConfig rows. A fixed name like "loadedhub" collides
+    holds real Connection rows. A fixed name like "loadedhub" collides
     with them, and `.first()` may return the real row instead of the fixture's.
     """
     return f"testconn_{uuid.uuid4().hex[:12]}"

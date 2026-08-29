@@ -48,7 +48,7 @@ def main() -> None:
     args = ap.parse_args()
 
     from app.db.engine import SessionLocal, _ConfigSessionLocal
-    from app.db.models import ConnectorConfig, Venue
+    from app.db.models import Connection, Venue
     from app.services.received_invoice import LoadedInvoiceClient
 
     db, cdb = SessionLocal(), _ConfigSessionLocal()
@@ -56,10 +56,10 @@ def main() -> None:
     try:
         venues = {v.id: v.name for v in db.query(Venue).all()}
         creds = (
-            db.query(ConnectorConfig)
+            db.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == "loadedhub",
-                ConnectorConfig.enabled == "true",
+                Connection.connector_name == "loadedhub",
+                Connection.enabled == "true",
             )
             .all()
         )

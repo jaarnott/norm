@@ -32,8 +32,8 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.config_models import ConnectorSpec
-from app.db.models import ConnectorConfig
+from app.db.config_models import ConnectionSpec
+from app.db.models import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -98,18 +98,18 @@ class LoadedInvoiceClient:
         from app.connectors.spec_executor import _apply_auth
 
         spec = (
-            config_db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "loadedhub")
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
             .first()
         )
         if not spec:
             raise HTTPException(404, "loadedhub connector spec not found")
         cred = (
-            db.query(ConnectorConfig)
+            db.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == "loadedhub",
-                ConnectorConfig.enabled == "true",
-                ConnectorConfig.venue_id == venue_id,
+                Connection.connector_name == "loadedhub",
+                Connection.enabled == "true",
+                Connection.venue_id == venue_id,
             )
             .first()
         )

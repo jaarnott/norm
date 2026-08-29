@@ -2,7 +2,7 @@
 
 A tool only reaches a model when three things line up (prompt_builder._collect_tools):
 the @register decorator in code, a row in the connector spec's `tools` JSON, and
-an enabled capability on the calling agent's AgentConnectorBinding. This script
+an enabled capability on the calling agent's AgentConnectionBinding. This script
 does the second and third.
 
 Grants are deliberately narrow. Delegation is decentralised — there is no
@@ -95,7 +95,7 @@ def main() -> None:
 
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
@@ -103,8 +103,8 @@ def main() -> None:
         changes = []
 
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == CONNECTOR)
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == CONNECTOR)
             .first()
         )
         if not spec:
@@ -128,10 +128,10 @@ def main() -> None:
 
         for slug, why in GRANTS.items():
             binding = (
-                db.query(AgentConnectorBinding)
+                db.query(AgentConnectionBinding)
                 .filter(
-                    AgentConnectorBinding.agent_slug == slug,
-                    AgentConnectorBinding.connector_name == CONNECTOR,
+                    AgentConnectionBinding.agent_slug == slug,
+                    AgentConnectionBinding.connector_name == CONNECTOR,
                 )
                 .first()
             )
@@ -143,7 +143,7 @@ def main() -> None:
                 changes.append(f"create '{CONNECTOR}' binding for {slug} ({why})")
                 if not args.dry_run:
                     db.add(
-                        AgentConnectorBinding(
+                        AgentConnectionBinding(
                             agent_slug=slug,
                             connector_name=CONNECTOR,
                             capabilities=[{"action": ACTION, "enabled": True}],

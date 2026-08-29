@@ -70,7 +70,7 @@ def lh():
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             # Stock endpoints scope data by company — same value Norm stores
-            # per venue as ConnectorConfig.config.x_loaded_company_id.
+            # per venue as Connection.config.x_loaded_company_id.
             "x-loaded-company-id": creds["company_id"],
         },
         timeout=60,
@@ -123,13 +123,13 @@ class TestLiveContract:
 
     @staticmethod
     def _venue_id(db):
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
 
         cred = (
-            db.query(ConnectorConfig)
+            db.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == "loadedhub",
-                ConnectorConfig.enabled == "true",
+                Connection.connector_name == "loadedhub",
+                Connection.enabled == "true",
             )
             .first()
         )

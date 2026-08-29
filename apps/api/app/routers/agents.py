@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_config_db, get_config_db_rw
-from app.db.models import AgentConfig, AgentConnectorBinding, ConnectorSpec, User
+from app.db.models import AgentConfig, AgentConnectionBinding, ConnectionSpec, User
 from app.auth.dependencies import get_current_user, require_permission
 from app.services.agent_config_service import (
     update_agent_config,
@@ -59,7 +59,7 @@ def _agent_to_dict(
     slug: str,
     config: AgentConfig | None,
     bindings: list[dict],
-    specs_by_name: dict[str, ConnectorSpec] | None = None,
+    specs_by_name: dict[str, ConnectionSpec] | None = None,
     include_prompt: bool = True,
 ) -> dict:
     specs_by_name = specs_by_name or {}
@@ -117,8 +117,8 @@ async def list_agents(
     user: User = Depends(require_permission("settings:agents")),
 ):
     configs = {r.agent_slug: r for r in config_db.query(AgentConfig).all()}
-    all_bindings = config_db.query(AgentConnectorBinding).all()
-    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectorSpec).all()}
+    all_bindings = config_db.query(AgentConnectionBinding).all()
+    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectionSpec).all()}
 
     bindings_by_slug: dict[str, list[dict]] = {}
     for b in all_bindings:
@@ -158,7 +158,7 @@ async def get_agent(
         raise HTTPException(404, f"Unknown agent: {slug}")
     config = config_db.query(AgentConfig).filter(AgentConfig.agent_slug == slug).first()
     bindings = get_connector_bindings(slug, config_db)
-    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectorSpec).all()}
+    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectionSpec).all()}
     return _agent_to_dict(slug, config, bindings, specs_by_name)
 
 
@@ -186,7 +186,7 @@ async def update_agent(
     )
     config_db.commit()
     bindings = get_connector_bindings(slug, config_db)
-    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectorSpec).all()}
+    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectionSpec).all()}
     return _agent_to_dict(slug, row, bindings, specs_by_name)
 
 
@@ -201,7 +201,7 @@ async def reset_agent_prompt(
     row = reset_prompt(slug, config_db)
     config_db.commit()
     bindings = get_connector_bindings(slug, config_db)
-    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectorSpec).all()}
+    specs_by_name = {s.connector_name: s for s in config_db.query(ConnectionSpec).all()}
     return _agent_to_dict(slug, row, bindings, specs_by_name)
 
 
@@ -236,8 +236,8 @@ async def upsert_binding(
     )
     config_db.commit()
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector)
         .first()
     )
     caps = row.capabilities or []

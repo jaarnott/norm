@@ -374,9 +374,9 @@ class LlmCall(Base):
 # Config models live in config_models.py (may be in a separate DB).
 # Re-exported here for backwards compatibility.
 from app.db.config_models import (  # noqa: F401, E402
-    ConnectorSpec,
+    ConnectionSpec,
     AgentConfig,
-    AgentConnectorBinding,
+    AgentConnectionBinding,
     McpCapability,
     SystemSecret,
 )
@@ -407,7 +407,7 @@ class OAuthState(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
 
 
-class ConnectorConfig(Base):
+class Connection(Base):
     __tablename__ = "connector_configs"
     __table_args__ = (
         UniqueConstraint("connector_name", "venue_id", name="uq_connector_venue"),
@@ -744,6 +744,42 @@ class Subscription(Base):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     organization = relationship("Organization", backref="subscription")
+
+
+class OrgAppEntitlement(Base):
+    """Per-org marketplace state: is App X enabled for org Y?
+
+    The catalog itself is `marketplace_apps` in the CONFIG db (shared, no org
+    scoping); this row is the org-scoped half. **Absence of a row means the
+    app's `bundled` default applies** — bundled apps are on for every org
+    until an owner explicitly turns one off — so seeding the catalog changes
+    nothing and there is no backfill to get wrong. Disabling is a
+    billing/visibility act, never a deletion: app data is retained and
+    re-enabling restores the app over it.
+
+    Absorbs (and will retire) the three `Organization.*_agent_enabled`
+    billing booleans, which were read only by billing math and enforced
+    nowhere. (docs/apps-marketplace-plan.md Phase 1.)
+    """
+
+    __tablename__ = "org_app_entitlements"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "app_slug", name="uq_org_app"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    #: MarketplaceApp.slug (config db — deliberately not a FK across databases).
+    app_slug = Column(String, nullable=False, index=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    #: Stripe subscription item backing a paid app's line item, when priced.
+    stripe_subscription_item_id = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    organization = relationship("Organization")
 
 
 class TokenTopUp(Base):
@@ -1423,3 +1459,7 @@ class AppCall(Base):
     error = Column(Text, nullable=True)
     duration_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now, index=True)
+
+
+# ── Transitional alias (connector → Connection rename, 29 Aug 2026) ──
+ConnectorConfig = Connection

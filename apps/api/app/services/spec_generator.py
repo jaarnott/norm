@@ -9,7 +9,7 @@ from app.interpreter.llm_interpreter import call_llm
 
 _SPEC_GENERATION_SYSTEM_PROMPT = """\
 You are a connector specification generator. Given API documentation, produce a \
-ConnectorSpec JSON that can be used to configure a config-driven connector.
+ConnectionSpec JSON that can be used to configure a config-driven connector.
 
 You MUST respond with ONLY a valid JSON object matching this schema:
 

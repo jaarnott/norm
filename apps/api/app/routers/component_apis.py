@@ -13,9 +13,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_permission
-from app.db.config_models import ComponentApiConfig, ConnectorSpec
+from app.db.config_models import ComponentApiConfig, ConnectionSpec
 from app.db.engine import get_config_db, get_config_db_rw, get_db
-from app.db.models import ConnectorConfig, User
+from app.db.models import Connection, User
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -194,7 +194,7 @@ async def delete_config(
 
 def _render_request(
     cfg: ComponentApiConfig,
-    spec: ConnectorSpec,
+    spec: ConnectionSpec,
     credentials: dict,
     params: dict,
     db: Session,
@@ -297,19 +297,19 @@ async def preview_request(
         raise HTTPException(404, "Config not found")
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == cfg.connector_name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == cfg.connector_name)
         .first()
     )
     if not spec:
         raise HTTPException(404, f"Connector spec not found: {cfg.connector_name}")
 
-    cred_query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == cfg.connector_name,
-        ConnectorConfig.enabled == "true",
+    cred_query = db.query(Connection).filter(
+        Connection.connector_name == cfg.connector_name,
+        Connection.enabled == "true",
     )
     if body.venue_id:
-        cred_query = cred_query.filter(ConnectorConfig.venue_id == body.venue_id)
+        cred_query = cred_query.filter(Connection.venue_id == body.venue_id)
     cred_row = cred_query.first()
     if not cred_row:
         raise HTTPException(400, f"No credentials for {cfg.connector_name}")

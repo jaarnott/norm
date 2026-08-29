@@ -3,7 +3,7 @@
 import uuid
 from unittest.mock import patch, MagicMock
 
-from app.db.models import ConnectorConfig
+from app.db.models import Connection
 
 
 class TestListConnectors:
@@ -23,10 +23,10 @@ class TestConnectorHealth:
     """The /connectors list exposes needs_reconnect (drives the Settings pill)."""
 
     def _broken_row(self, db_session, venue_id=None):
-        from app.db.config_models import ConnectorSpec
+        from app.db.config_models import ConnectionSpec
 
         db_session.add(
-            ConnectorSpec(
+            ConnectionSpec(
                 id=str(uuid.uuid4()),
                 connector_name="loadedhub",
                 display_name="LoadedHub",
@@ -36,7 +36,7 @@ class TestConnectorHealth:
             )
         )
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=venue_id,
                 config={},
@@ -128,8 +128,8 @@ class TestUpsertConnector:
 
         # Verify the key was preserved (still redacted in response)
         row = (
-            db_session.query(ConnectorConfig)
-            .filter(ConnectorConfig.connector_name == "anthropic")
+            db_session.query(Connection)
+            .filter(Connection.connector_name == "anthropic")
             .first()
         )
         assert row.config["api_key"] == "sk-real-key"
@@ -142,7 +142,7 @@ class TestToggleConnector:
     def test_toggle_connector(self, client, db_session, admin_headers):
         # First create a config
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 id=str(uuid.uuid4()),
                 connector_name="anthropic",
                 config={"api_key": "sk-test"},
@@ -163,7 +163,7 @@ class TestToggleConnector:
         self, client, db_session, manager_headers
     ):
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 id=str(uuid.uuid4()),
                 connector_name="anthropic",
                 config={},
@@ -181,7 +181,7 @@ class TestDeleteConnector:
 
     def test_delete_connector_config(self, client, db_session, admin_headers):
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 id=str(uuid.uuid4()),
                 connector_name="anthropic",
                 config={"api_key": "sk-test"},
@@ -200,7 +200,7 @@ class TestDeleteConnector:
 
     def test_delete_as_manager_returns_403(self, client, db_session, manager_headers):
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 id=str(uuid.uuid4()),
                 connector_name="anthropic",
                 config={},
@@ -235,10 +235,10 @@ class TestTestConnector:
 
     def test_test_anthropic_no_key_returns_400(self, client, db_session, admin_headers):
         # Ensure no saved config exists so merged credentials have no api_key
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
 
-        db_session.query(ConnectorConfig).filter(
-            ConnectorConfig.connector_name == "anthropic"
+        db_session.query(Connection).filter(
+            Connection.connector_name == "anthropic"
         ).delete()
         db_session.flush()
 

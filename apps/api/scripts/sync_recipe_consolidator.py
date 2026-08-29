@@ -122,8 +122,8 @@ def main(dry_run: bool = False) -> None:
 
     from app.db.config_models import (
         AgentConfig,
-        AgentConnectorBinding,
-        ConnectorSpec,
+        AgentConnectionBinding,
+        ConnectionSpec,
         McpCapability,
         Playbook,
     )
@@ -133,12 +133,12 @@ def main(dry_run: bool = False) -> None:
     changed: list[str] = []
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "loadedhub")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
             .first()
         )
         if not spec:
-            raise SystemExit("loadedhub ConnectorSpec not found")
+            raise SystemExit("loadedhub ConnectionSpec not found")
         tools = [dict(t) for t in (spec.tools or [])]
 
         # 1. Install/replace the consolidator and the costs backend.
@@ -187,10 +187,10 @@ def main(dry_run: bool = False) -> None:
         #    inherit get_recipes automatically and lose the raws via
         #    engine_only, so they need no touch.
         for b in (
-            db.query(AgentConnectorBinding)
+            db.query(AgentConnectionBinding)
             .filter(
-                AgentConnectorBinding.connector_name == "loadedhub",
-                AgentConnectorBinding.enabled == True,  # noqa: E712
+                AgentConnectionBinding.connector_name == "loadedhub",
+                AgentConnectionBinding.enabled == True,  # noqa: E712
             )
             .all()
         ):
@@ -296,8 +296,8 @@ def main(dry_run: bool = False) -> None:
 
         # 8. The CB write tool's prose pointed at the raws for ids.
         cb = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "cook_brothers_app")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "cook_brothers_app")
             .first()
         )
         if cb:

@@ -122,8 +122,8 @@ def main(dry_run: bool = False, tasks_only: bool = False) -> None:
         from sqlalchemy.orm.attributes import flag_modified
 
         from app.db.config_models import (
-            AgentConnectorBinding,
-            ConnectorSpec,
+            AgentConnectionBinding,
+            ConnectionSpec,
             McpCapability,
         )
         from app.db.engine import _ConfigSessionLocal
@@ -131,12 +131,12 @@ def main(dry_run: bool = False, tasks_only: bool = False) -> None:
         db = _ConfigSessionLocal()
         try:
             spec = (
-                db.query(ConnectorSpec)
-                .filter(ConnectorSpec.connector_name == "loadedhub")
+                db.query(ConnectionSpec)
+                .filter(ConnectionSpec.connector_name == "loadedhub")
                 .first()
             )
             if not spec:
-                raise SystemExit("loadedhub ConnectorSpec not found")
+                raise SystemExit("loadedhub ConnectionSpec not found")
             tools = [dict(t) for t in (spec.tools or [])]
 
             # 0. Widen get_stock_items_raw's transform ADDITIVELY to carry
@@ -177,10 +177,10 @@ def main(dry_run: bool = False, tasks_only: bool = False) -> None:
             #    happened (empty-caps bindings inherit the new tools and lose
             #    the raws via engine_only, so they need no touch).
             for b in (
-                db.query(AgentConnectorBinding)
+                db.query(AgentConnectionBinding)
                 .filter(
-                    AgentConnectorBinding.connector_name == "loadedhub",
-                    AgentConnectorBinding.enabled == True,  # noqa: E712
+                    AgentConnectionBinding.connector_name == "loadedhub",
+                    AgentConnectionBinding.enabled == True,  # noqa: E712
                 )
                 .all()
             ):

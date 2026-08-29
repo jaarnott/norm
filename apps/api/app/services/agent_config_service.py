@@ -2,7 +2,7 @@
 
 from sqlalchemy.orm import Session
 
-from app.db.models import AgentConfig, AgentConnectorBinding
+from app.db.models import AgentConfig, AgentConnectionBinding
 
 
 def get_system_prompt(agent_slug: str, db: Session) -> str:
@@ -53,8 +53,8 @@ def reset_prompt(agent_slug: str, db: Session) -> AgentConfig | None:
 def get_connector_bindings(agent_slug: str, db: Session) -> list[dict]:
     """Return connector bindings for an agent."""
     rows = (
-        db.query(AgentConnectorBinding)
-        .filter(AgentConnectorBinding.agent_slug == agent_slug)
+        db.query(AgentConnectionBinding)
+        .filter(AgentConnectionBinding.agent_slug == agent_slug)
         .all()
     )
     return [
@@ -83,10 +83,10 @@ def get_agent_actions(agent_slug: str, db: Session) -> set[str]:
     """
     actions: set[str] = set()
     rows = (
-        db.query(AgentConnectorBinding)
+        db.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == agent_slug,
-            AgentConnectorBinding.enabled == True,  # noqa: E712
+            AgentConnectionBinding.agent_slug == agent_slug,
+            AgentConnectionBinding.enabled == True,  # noqa: E712
         )
         .all()
     )
@@ -129,13 +129,13 @@ def upsert_connector_binding(
     capabilities: list[dict],
     enabled: bool,
     db: Session,
-) -> AgentConnectorBinding:
+) -> AgentConnectionBinding:
     """Upsert a connector binding."""
     row = (
-        db.query(AgentConnectorBinding)
+        db.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == agent_slug,
-            AgentConnectorBinding.connector_name == connector_name,
+            AgentConnectionBinding.agent_slug == agent_slug,
+            AgentConnectionBinding.connector_name == connector_name,
         )
         .first()
     )
@@ -143,7 +143,7 @@ def upsert_connector_binding(
         row.capabilities = capabilities
         row.enabled = enabled
     else:
-        row = AgentConnectorBinding(
+        row = AgentConnectionBinding(
             agent_slug=agent_slug,
             connector_name=connector_name,
             capabilities=capabilities,
@@ -157,10 +157,10 @@ def upsert_connector_binding(
 def delete_connector_binding(agent_slug: str, connector_name: str, db: Session) -> bool:
     """Remove a connector binding. Returns True if deleted."""
     row = (
-        db.query(AgentConnectorBinding)
+        db.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == agent_slug,
-            AgentConnectorBinding.connector_name == connector_name,
+            AgentConnectionBinding.agent_slug == agent_slug,
+            AgentConnectionBinding.connector_name == connector_name,
         )
         .first()
     )
@@ -175,9 +175,9 @@ def get_all_capabilities_summary(db: Session) -> dict:
     """Returns {slug: {description, capabilities: [...]}} for all agents."""
     configs = {r.agent_slug: r for r in db.query(AgentConfig).all()}
     bindings = (
-        db.query(AgentConnectorBinding)
+        db.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.enabled == True  # noqa: E712
+            AgentConnectionBinding.enabled == True  # noqa: E712
         )
         .all()
     )

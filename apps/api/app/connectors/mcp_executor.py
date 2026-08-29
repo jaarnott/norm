@@ -4,7 +4,7 @@ Handles JSON-RPC 2.0 communication with remote MCP servers:
 - Tool discovery via ``tools/list``
 - Tool execution via ``tools/call``
 - Response parsing (text content + resource embeds)
-- Schema conversion to ConnectorSpec.tools format
+- Schema conversion to ConnectionSpec.tools format
 """
 
 import json
@@ -232,10 +232,10 @@ def mcp_call_tool(
 
 
 def convert_mcp_tools_to_spec(mcp_tools: list[dict]) -> list[dict]:
-    """Convert MCP tool definitions to ConnectorSpec.tools format.
+    """Convert MCP tool definitions to ConnectionSpec.tools format.
 
     MCP tools have: name, description, inputSchema (JSON Schema object).
-    ConnectorSpec tools need: action, method, description, required_fields,
+    ConnectionSpec tools need: action, method, description, required_fields,
     optional_fields, field_descriptions.
     """
     spec_tools: list[dict] = []

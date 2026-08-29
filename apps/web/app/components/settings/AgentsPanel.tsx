@@ -128,10 +128,10 @@ export default function AgentsPanel() {
           />
         </div>
 
-        {/* Connector Bindings */}
+        {/* Connection Bindings */}
         {editing.bindings.length > 0 && (
           <div style={{ marginBottom: 12 }}>
-            <label style={labelStyle}>Connector Bindings</label>
+            <label style={labelStyle}>Connection Bindings</label>
             {editing.bindings.map(binding => (
               <div key={binding.connector_name} style={{ border: '1px solid #edf2f7', borderRadius: 8, padding: '0.75rem', marginBottom: '0.5rem', backgroundColor: '#fafafa' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -152,13 +152,13 @@ export default function AgentsPanel() {
           </div>
         )}
 
-        {/* Add Connector */}
+        {/* Add Connection */}
         {editing.available_connectors && editing.available_connectors.length > 0 && (
           <div style={{ marginBottom: 16 }}>
-            <label style={labelStyle}>Add Connector</label>
+            <label style={labelStyle}>Add Connection</label>
             <select defaultValue="" onChange={e => { if (e.target.value) { handleAddConnector(e.target.value); e.target.value = ''; } }}
               style={{ ...inputStyle, width: 'auto', cursor: 'pointer' }}>
-              <option value="" disabled>Select a connector...</option>
+              <option value="" disabled>Select a connection...</option>
               {editing.available_connectors.map(ac => (
                 <option key={ac.connector_name} value={ac.connector_name}>{ac.display_name}</option>
               ))}

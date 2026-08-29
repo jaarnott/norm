@@ -161,14 +161,14 @@ def main() -> None:
 
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == CONNECTOR)
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == CONNECTOR)
             .first()
         )
         if not spec:
@@ -187,10 +187,10 @@ def main() -> None:
             print(f"spec {CONNECTOR}: {ACTION} already up to date")
 
         binding = (
-            db.query(AgentConnectorBinding)
+            db.query(AgentConnectionBinding)
             .filter(
-                AgentConnectorBinding.agent_slug == AGENT,
-                AgentConnectorBinding.connector_name == CONNECTOR,
+                AgentConnectionBinding.agent_slug == AGENT,
+                AgentConnectionBinding.connector_name == CONNECTOR,
             )
             .first()
         )

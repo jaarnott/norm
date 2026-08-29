@@ -6,12 +6,12 @@ against config/consolidators/*.py, and the added_at stamping listener that
 gives the tools list its "date added" column.
 """
 
-from app.db.config_models import AgentConnectorBinding, ConnectorSpec
+from app.db.config_models import AgentConnectionBinding, ConnectionSpec
 from app.services import consolidator_coverage as cc
 
 
 def _spec(db, name="fakehub", tools=None):
-    s = ConnectorSpec(
+    s = ConnectionSpec(
         connector_name=name,
         display_name=name,
         execution_mode="template",
@@ -25,7 +25,7 @@ def _spec(db, name="fakehub", tools=None):
 
 
 def _bind(db, connector, agent="reports", caps=None):
-    b = AgentConnectorBinding(
+    b = AgentConnectionBinding(
         agent_slug=agent,
         connector_name=connector,
         capabilities=caps if caps is not None else [],
@@ -217,7 +217,7 @@ class TestDrift:
 
 
 class TestAddedAtStamp:
-    """The ConnectorSpec.tools listener: every writer assigns the list, so
+    """The ConnectionSpec.tools listener: every writer assigns the list, so
     new actions get dated with no call-site convention — the tools card's
     "Added" column."""
 

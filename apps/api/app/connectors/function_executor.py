@@ -239,7 +239,7 @@ def execute_function(
     Returns:
         {"success": bool, "data": Any, "_logs": list[str], "error": str | None}
     """
-    from app.db.models import ConnectorSpec, ConnectorConfig, Venue
+    from app.db.models import ConnectionSpec, Connection, Venue
     from app.connectors.spec_executor import execute_spec
 
     options = options or {}
@@ -282,8 +282,8 @@ def execute_function(
             cfg_db = _ConfigSessionLocal()
             try:
                 spec = (
-                    cfg_db.query(ConnectorSpec)
-                    .filter(ConnectorSpec.connector_name == connector)
+                    cfg_db.query(ConnectionSpec)
+                    .filter(ConnectionSpec.connector_name == connector)
                     .first()
                 )
                 if spec is not None:
@@ -401,10 +401,10 @@ def execute_function(
         config_row = _resolve_venue_config(connector, venue_lookup, use_db)
         if not config_row:
             config_row = (
-                use_db.query(ConnectorConfig)
+                use_db.query(Connection)
                 .filter(
-                    ConnectorConfig.connector_name == connector,
-                    ConnectorConfig.enabled == "true",
+                    Connection.connector_name == connector,
+                    Connection.enabled == "true",
                 )
                 .first()
             )

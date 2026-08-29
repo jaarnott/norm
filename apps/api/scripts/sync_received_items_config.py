@@ -25,7 +25,7 @@ It is also switched ON here, in the two places that gate reachability, so the
 whole configuration is reproducible from this file rather than from a one-off
 poke at the shared config DB:
 
-  procurement agent   AgentConnectorBinding.capabilities (alongside the
+  procurement agent   AgentConnectionBinding.capabilities (alongside the
                       invoice-level get_received_invoices_for_period)
   Claude / MCP        McpCapability row, scope mcp:orders:read — the same
                       scope its invoice-level sibling already uses
@@ -165,7 +165,7 @@ def _switch_on(db, dry_run: bool):
     """
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import AgentConnectorBinding, McpCapability
+    from app.db.config_models import AgentConnectionBinding, McpCapability
     from app.mcp.scopes import MCP_SCOPES as _VOCAB
 
     unknown = [s for s in MCP_SCOPES if s not in _VOCAB]
@@ -175,10 +175,10 @@ def _switch_on(db, dry_run: bool):
     changes = []
 
     binding = (
-        db.query(AgentConnectorBinding)
+        db.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == AGENT_SLUG,
-            AgentConnectorBinding.connector_name == CONNECTOR,
+            AgentConnectionBinding.agent_slug == AGENT_SLUG,
+            AgentConnectionBinding.connector_name == CONNECTOR,
         )
         .first()
     )
@@ -240,7 +240,7 @@ def _switch_on(db, dry_run: bool):
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     tool = dict(TOOL)
@@ -252,12 +252,12 @@ def main(dry_run: bool = False) -> None:
     db = _ConfigSessionLocal()
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == CONNECTOR)
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == CONNECTOR)
             .first()
         )
         if not spec:
-            raise SystemExit(f"{CONNECTOR} ConnectorSpec not found in config DB")
+            raise SystemExit(f"{CONNECTOR} ConnectionSpec not found in config DB")
 
         tools = list(spec.tools or [])
         by_action = {t.get("action"): i for i, t in enumerate(tools)}

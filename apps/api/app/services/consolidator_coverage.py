@@ -107,7 +107,7 @@ def _exposure(config_db: Session, db: Session) -> dict[tuple[str, str], dict]:
     connector — recorded as agent slug ``<slug>*`` so the report shows that
     the exposure is implicit.
     """
-    from app.db.config_models import AgentConnectorBinding, McpCapability
+    from app.db.config_models import AgentConnectionBinding, McpCapability
 
     out: dict[tuple[str, str], dict] = {}
 
@@ -116,8 +116,8 @@ def _exposure(config_db: Session, db: Session) -> dict[tuple[str, str], dict]:
 
     all_of: dict[str, list[str]] = {}  # connector → slugs with empty caps
     for b in (
-        config_db.query(AgentConnectorBinding)
-        .filter(AgentConnectorBinding.enabled == True)  # noqa: E712
+        config_db.query(AgentConnectionBinding)
+        .filter(AgentConnectionBinding.enabled == True)  # noqa: E712
         .all()
     ):
         caps = b.capabilities or []
@@ -166,7 +166,7 @@ def _usage(db: Session, days: int) -> dict[str, int]:
 
 def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
     """The migration dashboard payload. Read-only; never raises."""
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
     canonical = _canonical_files()
     exposure = _exposure(config_db, db)
@@ -174,7 +174,7 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
     usage = _usage(db, days)
 
     connectors: list[dict] = []
-    for spec in config_db.query(ConnectorSpec).order_by(ConnectorSpec.connector_name):
+    for spec in config_db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name):
         tools = [t for t in (spec.tools or []) if isinstance(t, dict)]
         if not tools:
             continue

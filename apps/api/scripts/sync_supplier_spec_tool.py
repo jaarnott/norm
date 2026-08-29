@@ -1,4 +1,4 @@
-"""Sync norm.get_supplier_invoice_specs into the `norm` ConnectorSpec.
+"""Sync norm.get_supplier_invoice_specs into the `norm` ConnectionSpec.
 
 Supplier invoice specs are admin-maintained rows (config DB, Settings →
 Supplier Specs): per-supplier extraction instructions + name aliases. The
@@ -43,7 +43,7 @@ TOOL = {
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import ConfigBase, ConnectorSpec
+    from app.db.config_models import ConfigBase, ConnectionSpec
     from app.db.engine import _ConfigSessionLocal, _config_engine
 
     if not dry_run:
@@ -52,10 +52,10 @@ def main(dry_run: bool = False) -> None:
 
     db = _ConfigSessionLocal()
     spec = (
-        db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == "norm").first()
+        db.query(ConnectionSpec).filter(ConnectionSpec.connector_name == "norm").first()
     )
     if not spec:
-        raise SystemExit("norm ConnectorSpec not found in config DB")
+        raise SystemExit("norm ConnectionSpec not found in config DB")
 
     tools = list(spec.tools or [])
     by_action = {t.get("action"): i for i, t in enumerate(tools)}

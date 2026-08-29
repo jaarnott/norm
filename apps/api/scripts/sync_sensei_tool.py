@@ -1,4 +1,4 @@
-"""Sync the norm.sensei_train_supplier function into the `norm` ConnectorSpec.
+"""Sync the norm.sensei_train_supplier function into the `norm` ConnectionSpec.
 
 The review engine calls call_api("norm", "sensei_train_supplier") when an
 invoice's supplier has NO spec prompt: the SENSEI files the invoice into the
@@ -41,15 +41,15 @@ TOOL = {
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     spec = (
-        db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == "norm").first()
+        db.query(ConnectionSpec).filter(ConnectionSpec.connector_name == "norm").first()
     )
     if not spec:
-        raise SystemExit("norm ConnectorSpec not found in config DB")
+        raise SystemExit("norm ConnectionSpec not found in config DB")
 
     tools = list(spec.tools or [])
     by_action = {t.get("action"): i for i, t in enumerate(tools)}

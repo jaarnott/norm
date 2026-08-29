@@ -16,22 +16,22 @@ logger = logging.getLogger(__name__)
 def _access_token_for(connector_name: str, db: Session, user_id: str) -> str | None:
     """Return a valid access token for a per-user email connector, refreshing if due.
 
-    ``get_valid_access_token`` needs the ConnectorSpec (for oauth_config) from the
+    ``get_valid_access_token`` needs the ConnectionSpec (for oauth_config) from the
     **config** database, while the tokens live in the per-environment database —
     so this opens the config session the rest of this module doesn't need.
 
     Email connectors are scoped per user, not per venue (see the
     ``category == "email"`` branch in ``routers/oauth.py``), hence ``user_id``.
     """
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
     from app.services.oauth_service import get_valid_access_token
 
     config_db = _ConfigSessionLocal()
     try:
         spec = (
-            config_db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == connector_name)
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == connector_name)
             .first()
         )
         if not spec:
@@ -117,7 +117,7 @@ def send_on_behalf_gmail(
     thread_id: str | None = None,
 ) -> dict:
     """Send an email from a user's Gmail account via the Gmail API."""
-    from app.db.models import ConnectorConfig, EmailLog, User
+    from app.db.models import Connection, EmailLog, User
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -125,10 +125,10 @@ def send_on_behalf_gmail(
 
     # Find the user's Gmail connector config
     config = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == "gmail",
-            ConnectorConfig.user_id == user_id,
+            Connection.connector_name == "gmail",
+            Connection.user_id == user_id,
         )
         .first()
     )
@@ -224,17 +224,17 @@ def send_on_behalf_outlook(
     thread_id: str | None = None,
 ) -> dict:
     """Send an email from a user's Outlook account via Microsoft Graph API."""
-    from app.db.models import ConnectorConfig, EmailLog, User
+    from app.db.models import Connection, EmailLog, User
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return {"success": False, "error": "User not found"}
 
     config = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == "microsoft_outlook",
-            ConnectorConfig.user_id == user_id,
+            Connection.connector_name == "microsoft_outlook",
+            Connection.user_id == user_id,
         )
         .first()
     )

@@ -1142,7 +1142,7 @@ def _execute_tool_call(
     tc: ToolCall, db: Session, config_db: Session | None = None
 ) -> dict:
     """Execute a tool call against the connector spec and record the result."""
-    from app.db.models import ConnectorSpec
+    from app.db.models import ConnectionSpec
     from app.connectors.spec_executor import execute_spec
 
     _cdb = config_db
@@ -1151,9 +1151,9 @@ def _execute_tool_call(
             "config_db is required — check that config_db is passed through the call chain"
         )
     spec = (
-        _cdb.query(ConnectorSpec)
+        _cdb.query(ConnectionSpec)
         .filter(
-            ConnectorSpec.connector_name == tc.connector_name,
+            ConnectionSpec.connector_name == tc.connector_name,
         )
         .first()
     )
@@ -1330,11 +1330,11 @@ def _execute_tool_call(
 
 
 def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
-    """Select the correct ConnectorConfig based on venue in tool params.
+    """Select the correct Connection based on venue in tool params.
 
     Falls back to venue_id=NULL config for platform connectors.
     """
-    from app.db.models import ConnectorConfig
+    from app.db.models import Connection
     from app.services.venue_service import resolve_venue_id
 
     venue_name = input_params.get("venue") or input_params.get("venue_name")
@@ -1362,11 +1362,11 @@ def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
 
     if venue_id:
         config = (
-            db.query(ConnectorConfig)
+            db.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == connector_name,
-                ConnectorConfig.venue_id == venue_id,
-                ConnectorConfig.enabled == "true",
+                Connection.connector_name == connector_name,
+                Connection.venue_id == venue_id,
+                Connection.enabled == "true",
             )
             .first()
         )
@@ -1375,11 +1375,11 @@ def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
 
     # Fall back to venue-agnostic config (platform connectors only)
     return (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == connector_name,
-            ConnectorConfig.venue_id.is_(None),
-            ConnectorConfig.enabled == "true",
+            Connection.connector_name == connector_name,
+            Connection.venue_id.is_(None),
+            Connection.enabled == "true",
         )
         .first()
     )
@@ -2089,8 +2089,8 @@ def _upsert_working_document(
 def _find_tool_def(
     connector_name: str, action: str, db: Session, config_db: Session | None = None
 ) -> dict | None:
-    """Look up a tool definition from the ConnectorSpec in the database."""
-    from app.db.models import ConnectorSpec
+    """Look up a tool definition from the ConnectionSpec in the database."""
+    from app.db.models import ConnectionSpec
 
     _cdb = config_db
     if _cdb is None:
@@ -2098,8 +2098,8 @@ def _find_tool_def(
             "config_db is required — check that config_db is passed through the call chain"
         )
     spec = (
-        _cdb.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector_name)
+        _cdb.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector_name)
         .first()
     )
     if not spec:

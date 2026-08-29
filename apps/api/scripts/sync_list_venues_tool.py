@@ -40,18 +40,18 @@ TOOL = {
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "norm")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "norm")
             .first()
         )
         if not spec:
-            raise SystemExit("norm ConnectorSpec not found")
+            raise SystemExit("norm ConnectionSpec not found")
         tools = [dict(t) for t in (spec.tools or [])]
         idx = next(
             (i for i, t in enumerate(tools) if t.get("action") == TOOL["action"]), None

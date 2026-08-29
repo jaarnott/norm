@@ -1,6 +1,6 @@
 """Shared secret-lookup helper.
 
-Checks ConnectorConfig in DB first, then falls back to environment variables.
+Checks Connection in DB first, then falls back to environment variables.
 """
 
 import os
@@ -16,15 +16,15 @@ _ENV_VAR_MAP: dict[tuple[str, str], str] = {
 
 
 def get_api_key(connector_name: str, key: str, db: Session | None = None) -> str | None:
-    """Check DB (ConnectorConfig) first, then fall back to env var."""
+    """Check DB (Connection) first, then fall back to env var."""
     if db is not None:
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
 
         row = (
-            db.query(ConnectorConfig)
+            db.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == connector_name,
-                ConnectorConfig.enabled == "true",
+                Connection.connector_name == connector_name,
+                Connection.enabled == "true",
             )
             .first()
         )

@@ -1,4 +1,4 @@
-"""Sync the norm.match_supplier LLM function into the `norm` ConnectorSpec.
+"""Sync the norm.match_supplier LLM function into the `norm` ConnectionSpec.
 
 The review engine's supplier gate (stage 2) calls
 call_api("norm", "match_supplier") when an invoice has no linked supplier or
@@ -42,15 +42,15 @@ TOOL = {
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     spec = (
-        db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == "norm").first()
+        db.query(ConnectionSpec).filter(ConnectionSpec.connector_name == "norm").first()
     )
     if not spec:
-        raise SystemExit("norm ConnectorSpec not found in config DB")
+        raise SystemExit("norm ConnectionSpec not found in config DB")
 
     tools = list(spec.tools or [])
     by_action = {t.get("action"): i for i, t in enumerate(tools)}

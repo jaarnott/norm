@@ -13,7 +13,7 @@ name of this app" was answered with "which app do you mean?".
 import uuid
 
 from app.agents.prompt_builder import build_tool_definitions
-from app.db.models import AgentConnectorBinding, ConnectorSpec
+from app.db.models import AgentConnectionBinding, ConnectionSpec
 
 
 def _bind_one_tool(db, domain):
@@ -21,7 +21,7 @@ def _bind_one_tool(db, domain):
     with one action, bound to the domain."""
     name = f"t-{uuid.uuid4().hex[:8]}"
     db.add(
-        ConnectorSpec(
+        ConnectionSpec(
             id=str(uuid.uuid4()),
             connector_name=name,
             display_name=name,
@@ -41,7 +41,7 @@ def _bind_one_tool(db, domain):
         )
     )
     db.add(
-        AgentConnectorBinding(
+        AgentConnectionBinding(
             id=str(uuid.uuid4()),
             agent_slug=domain,
             connector_name=name,

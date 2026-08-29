@@ -8,9 +8,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from app.db.config_models import ConnectorSpec
+from app.db.config_models import ConnectionSpec
 from app.db.models import (
-    ConnectorConfig,
+    Connection,
     OrganizationMembership,
     Role,
     UserVenueAccess,
@@ -20,7 +20,7 @@ from tests.conftest import _make_organization, _make_user, _make_venue
 
 def _oauth_spec_row(db_session, connector="loadedhub"):
     db_session.add(
-        ConnectorSpec(
+        ConnectionSpec(
             id=str(uuid.uuid4()),
             connector_name=connector,
             display_name="LoadedHub",
@@ -121,7 +121,7 @@ class TestConnectInfo:
         _make_venue(db_session, name="Unrelated Venue")  # no access → excluded
         _oauth_spec_row(db_session)
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=connected_venue.id,
                 config={},
@@ -130,7 +130,7 @@ class TestConnectInfo:
             )
         )
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=broken_venue.id,
                 config={},
@@ -179,7 +179,7 @@ class TestAuthFailurePropagates:
         from app.db.models import ToolCall
 
         db_session.add(
-            ConnectorSpec(
+            ConnectionSpec(
                 id=str(uuid.uuid4()),
                 connector_name="loadedhub",
                 display_name="LoadedHub",
@@ -244,7 +244,7 @@ class TestConnectIntentDetection:
             ("norm", "Norm", "_internal"),
         ]:
             db_session.add(
-                ConnectorSpec(
+                ConnectionSpec(
                     id=str(uuid.uuid4()),
                     connector_name=name,
                     display_name=display,

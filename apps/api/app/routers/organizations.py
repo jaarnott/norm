@@ -12,7 +12,7 @@ from app.db.models import (
     UserVenueAccess,
     Venue,
     User,
-    ConnectorConfig,
+    Connection,
 )
 from app.auth.dependencies import get_current_user, require_permission
 
@@ -77,10 +77,8 @@ def _org_to_dict(org: Organization, db: Session, include_details: bool = False) 
                 "location": v.location,
                 "timezone": v.timezone,
                 "day_start_time": v.day_start_time,
-                "connector_count": db.query(ConnectorConfig)
-                .filter(
-                    ConnectorConfig.venue_id == v.id, ConnectorConfig.enabled == "true"
-                )
+                "connector_count": db.query(Connection)
+                .filter(Connection.venue_id == v.id, Connection.enabled == "true")
                 .count(),
             }
             for v in org.venues
@@ -484,7 +482,7 @@ async def delete_venue(
     db.query(UserVenueAccess).filter(UserVenueAccess.venue_id == venue_id).delete(
         synchronize_session=False
     )
-    db.query(ConnectorConfig).filter(ConnectorConfig.venue_id == venue_id).delete(
+    db.query(Connection).filter(Connection.venue_id == venue_id).delete(
         synchronize_session=False
     )
     db.query(OAuthState).filter(OAuthState.venue_id == venue_id).delete(
@@ -563,9 +561,7 @@ async def list_venue_connectors(
     if not venue:
         raise HTTPException(404, "Venue not found")
 
-    configs = (
-        db.query(ConnectorConfig).filter(ConnectorConfig.venue_id == venue_id).all()
-    )
+    configs = db.query(Connection).filter(Connection.venue_id == venue_id).all()
     return {
         "venue_id": venue_id,
         "venue_name": venue.name,

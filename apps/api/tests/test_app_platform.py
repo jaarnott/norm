@@ -257,7 +257,7 @@ class TestWritePolicy:
         self, db_session, org, author, monkeypatch
     ):
         # An app cannot relabel a write as a read: the method is read off the
-        # ConnectorSpec, never off anything the app declares.
+        # ConnectionSpec, never off anything the app declares.
         app = _app(db_session, org, author)
         v = _version(db_session, app, dict(WRITE_SPEC, writes=[]), author)
         monkeypatch.setattr(AR, "_tool_method", lambda *a: "DELETE")
@@ -274,10 +274,10 @@ class TestReadOnlyOverTransport:
     `training_get_job_opening`)."""
 
     def _spec_with(self, db, connector, action, **over):
-        from app.db.config_models import ConnectorSpec
+        from app.db.config_models import ConnectionSpec
 
         db.add(
-            ConnectorSpec(
+            ConnectionSpec(
                 id=str(uuid.uuid4()),
                 connector_name=connector,
                 display_name=connector,
@@ -739,7 +739,7 @@ class TestBuilderTools:
 
     def test_capabilities_lists_scopes(self, db_session, org, author):
         # The scope half is code-defined and testable without the config DB;
-        # the action half needs live ConnectorSpec rows (covered in the live
+        # the action half needs live ConnectionSpec rows (covered in the live
         # walk).
         from app.agents.internal_tools import get_handler
 

@@ -93,9 +93,9 @@ class TestAuthorizeUrlPkce:
 
 class TestDynamicRegistration:
     def test_register_client_posts_and_stores_client_id(self, db_session):
-        from app.db.config_models import ConnectorSpec
+        from app.db.config_models import ConnectionSpec
 
-        spec = ConnectorSpec(
+        spec = ConnectionSpec(
             connector_name="cb_reg_test",
             display_name="CB",
             execution_mode="mcp",

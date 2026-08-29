@@ -1,4 +1,4 @@
-"""Sync the norm.match_stock_items LLM function into the `norm` ConnectorSpec.
+"""Sync the norm.match_stock_items LLM function into the `norm` ConnectionSpec.
 
 An "LLM function": an internal handler (app/agents/internal_tools.py) whose body
 is one schema-bound call_llm — the resolve_dates pattern. The review engine
@@ -42,16 +42,16 @@ TOOL = {
 
 
 def main(dry_run: bool = False) -> None:
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
     from sqlalchemy.orm.attributes import flag_modified
 
     db = _ConfigSessionLocal()
     spec = (
-        db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == "norm").first()
+        db.query(ConnectionSpec).filter(ConnectionSpec.connector_name == "norm").first()
     )
     if not spec:
-        raise SystemExit("norm ConnectorSpec not found in config DB")
+        raise SystemExit("norm ConnectionSpec not found in config DB")
 
     tools = list(spec.tools or [])
     by_action = {t.get("action"): i for i, t in enumerate(tools)}

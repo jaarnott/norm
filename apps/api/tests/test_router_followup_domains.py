@@ -94,12 +94,12 @@ class TestTheClassifierIsToldWhatEachDomainDoes:
         assert "target_writes" in _followup_system_prompt()
 
     def test_consulting_is_offered_only_to_an_agent_that_can_do_it(self, db_session):
-        from app.db.config_models import AgentConnectorBinding
+        from app.db.config_models import AgentConnectionBinding
 
         assert "consulting" not in _followup_system_prompt(config_db=db_session).lower()
 
         db_session.add(
-            AgentConnectorBinding(
+            AgentConnectionBinding(
                 agent_slug="time_attendance",
                 connector_name="norm",
                 capabilities=[{"action": "delegate_to_agent", "enabled": True}],

@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db, get_config_db
-from app.db.models import ConnectorSpec, ConnectorConfig, User
+from app.db.models import ConnectionSpec, Connection, User
 from app.auth.dependencies import get_current_user, require_role, require_permission
 from app.services.oauth_service import (
     build_authorize_url,
@@ -88,10 +88,10 @@ async def oauth_authorize(
             raise HTTPException(403, "You don't have access to that venue")
 
     spec = (
-        config_db.query(ConnectorSpec)
+        config_db.query(ConnectionSpec)
         .filter(
-            ConnectorSpec.connector_name == connector,
-            ConnectorSpec.auth_type == "oauth2",
+            ConnectionSpec.connector_name == connector,
+            ConnectionSpec.auth_type == "oauth2",
         )
         .first()
     )
@@ -162,10 +162,10 @@ def _reject_wrong_company_token(
         return None  # nothing to validate against — keep legacy behavior
 
     cfg = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == connector_name,
-            ConnectorConfig.venue_id == venue_id,
+            Connection.connector_name == connector_name,
+            Connection.venue_id == venue_id,
         )
         .first()
     )
@@ -245,8 +245,8 @@ async def oauth_callback(
     # a per-venue flow must know which venue it was FOR, to validate the token.
     oauth_state_venue_id = oauth_state.venue_id
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector_name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector_name)
         .first()
     )
     if not spec:
@@ -287,11 +287,11 @@ async def oauth_callback(
             # Also check oauth_metadata of the just-stored (null-venue) config row
             if not company_id:
                 null_cfg = (
-                    db.query(ConnectorConfig)
+                    db.query(Connection)
                     .filter(
-                        ConnectorConfig.connector_name == connector_name,
-                        ConnectorConfig.venue_id.is_(None),
-                        ConnectorConfig.user_id.is_(None),
+                        Connection.connector_name == connector_name,
+                        Connection.venue_id.is_(None),
+                        Connection.user_id.is_(None),
                     )
                     .first()
                 )
@@ -317,13 +317,13 @@ async def oauth_callback(
                 # the token's company. A per-venue flow already stored onto its
                 # own venue row and is validated below instead — running this
                 # move there could clobber fresh tokens with stale null-row ones.
-                # Find the Norm venue whose ConnectorConfig has this x_loaded_company_id
+                # Find the Norm venue whose Connection has this x_loaded_company_id
                 target_cfg = None
                 for cfg in (
-                    db.query(ConnectorConfig)
+                    db.query(Connection)
                     .filter(
-                        ConnectorConfig.connector_name == connector_name,
-                        ConnectorConfig.venue_id.isnot(None),
+                        Connection.connector_name == connector_name,
+                        Connection.venue_id.isnot(None),
                     )
                     .all()
                 ):
@@ -334,11 +334,11 @@ async def oauth_callback(
 
                 # Pull the just-stored tokens from the null-venue row
                 src_cfg = (
-                    db.query(ConnectorConfig)
+                    db.query(Connection)
                     .filter(
-                        ConnectorConfig.connector_name == connector_name,
-                        ConnectorConfig.venue_id.is_(None),
-                        ConnectorConfig.user_id.is_(None),
+                        Connection.connector_name == connector_name,
+                        Connection.venue_id.is_(None),
+                        Connection.user_id.is_(None),
                     )
                     .first()
                 )
@@ -396,14 +396,14 @@ async def oauth_callback(
                 userinfo = resp.json()
                 email = userinfo.get("email")
                 if email:
-                    # Update the ConnectorConfig oauth_metadata with the email
+                    # Update the Connection oauth_metadata with the email
                     from sqlalchemy.orm.attributes import flag_modified
 
                     config_row = (
-                        db.query(ConnectorConfig)
+                        db.query(Connection)
                         .filter(
-                            ConnectorConfig.connector_name == connector_name,
-                            ConnectorConfig.user_id == oauth_state_user_id,
+                            Connection.connector_name == connector_name,
+                            Connection.user_id == oauth_state_user_id,
                         )
                         .first()
                     )
@@ -446,11 +446,9 @@ async def oauth_status(
     If venue_id is provided, returns status for that specific venue.
     Otherwise returns status for the first matching config (legacy behaviour).
     """
-    query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == connector
-    )
+    query = db.query(Connection).filter(Connection.connector_name == connector)
     if venue_id:
-        query = query.filter(ConnectorConfig.venue_id == venue_id)
+        query = query.filter(Connection.venue_id == venue_id)
     config_row = query.first()
 
     if not config_row or not config_row.access_token:
@@ -486,19 +484,15 @@ async def oauth_venues_status(
     from app.db.models import Venue
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector)
         .first()
     )
     if not spec:
         raise HTTPException(404, f"Connector spec not found: {connector}")
 
     venues = db.query(Venue).order_by(Venue.name).all()
-    configs = (
-        db.query(ConnectorConfig)
-        .filter(ConnectorConfig.connector_name == connector)
-        .all()
-    )
+    configs = db.query(Connection).filter(Connection.connector_name == connector).all()
     config_by_venue = {c.venue_id: c for c in configs if c.venue_id}
 
     from datetime import datetime, timezone
@@ -537,11 +531,9 @@ async def oauth_disconnect(
     user: User = Depends(require_role("admin")),
 ):
     """Remove stored OAuth tokens for a connector (optionally scoped to a venue)."""
-    query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == connector
-    )
+    query = db.query(Connection).filter(Connection.connector_name == connector)
     if venue_id:
-        query = query.filter(ConnectorConfig.venue_id == venue_id)
+        query = query.filter(Connection.venue_id == venue_id)
     config_row = query.first()
     if not config_row:
         raise HTTPException(404, f"No config for connector: {connector}")

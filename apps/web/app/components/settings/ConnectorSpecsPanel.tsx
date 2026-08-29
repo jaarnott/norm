@@ -9,6 +9,21 @@ type ViewMode = 'list' | 'create' | 'edit';
 
 export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeChange?: (isEditing: boolean) => void } = {}) {
   const [specs, setSpecs] = useState<ConnectorSpecSummary[]>([]);
+  // connection name -> marketplace Apps that declare it (the app lens)
+  const [usedBy, setUsedBy] = useState<Record<string, string[]>>({});
+
+  useEffect(() => {
+    apiFetch('/api/marketplace')
+      .then(r => (r.ok ? r.json() : { apps: [] }))
+      .then((d: { apps?: { name: string; composition?: { connections?: string[] } }[] }) => {
+        const map: Record<string, string[]> = {};
+        for (const a of d.apps ?? []) {
+          for (const c of a.composition?.connections ?? []) (map[c] ??= []).push(a.name);
+        }
+        setUsedBy(map);
+      })
+      .catch(() => {});
+  }, []);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [editingSpec, setEditingSpec] = useState<ConnectorSpecFull | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -41,7 +56,7 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
   useEffect(() => { fetchSpecs(); }, [fetchSpecs]);
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete connector spec "${name}"?`)) return;
+    if (!confirm(`Delete connection spec "${name}"?`)) return;
     setDeleting(name);
     try {
       const res = await apiFetch(`/api/connector-specs/${name}`, { method: 'DELETE' });
@@ -223,7 +238,7 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
       )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Connector Specs
+          Connection Specs
         </h3>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
@@ -347,7 +362,7 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
       )}
 
       {specs.length === 0 && (
-        <p style={{ color: '#999', fontSize: '0.85rem' }}>No connector specs defined yet.</p>
+        <p style={{ color: '#999', fontSize: '0.85rem' }}>No connection specs defined yet.</p>
       )}
 
       {specs.map(spec => (
@@ -363,6 +378,12 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
             <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{spec.display_name}</span>
               <span style={{ fontSize: '0.75rem', color: '#999', marginLeft: 8 }}>{spec.connector_name}</span>
+              {(usedBy[spec.connector_name] ?? []).length > 0 && (
+                <span title="marketplace Apps that use this connection"
+                  style={badgeStyle('#eef4ee', '#2e7d4f')}>
+                  used by {usedBy[spec.connector_name].join(', ')}
+                </span>
+              )}
               {spec.category && (
                 <span style={badgeStyle('#e6fffa', '#234e52')}>{spec.category}</span>
               )}

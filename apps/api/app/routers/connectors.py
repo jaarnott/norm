@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db, get_config_db
-from app.db.models import ConnectorConfig, ConnectorSpec, User
+from app.db.models import Connection, ConnectionSpec, User
 from app.auth.dependencies import get_current_user, require_permission
 
 router = APIRouter()
@@ -73,11 +73,11 @@ async def list_connectors(
     user: User = Depends(get_current_user),
 ):
     # Filter configs by venue_id (None = platform/global configs)
-    config_query = db.query(ConnectorConfig)
+    config_query = db.query(Connection)
     if venue_id:
-        config_query = config_query.filter(ConnectorConfig.venue_id == venue_id)
+        config_query = config_query.filter(Connection.venue_id == venue_id)
     else:
-        config_query = config_query.filter(ConnectorConfig.venue_id.is_(None))
+        config_query = config_query.filter(Connection.venue_id.is_(None))
     saved = {r.connector_name: r for r in config_query.all()}
     result = []
 
@@ -94,7 +94,7 @@ async def list_connectors(
         )
 
     # Spec-driven connectors from the DB
-    specs = config_db.query(ConnectorSpec).all()
+    specs = config_db.query(ConnectionSpec).all()
     seen = {c["name"] for c in result}
     for spec in specs:
         if spec.connector_name not in seen:
@@ -145,8 +145,8 @@ async def connector_connect_info(
     from app.services.venue_service import get_user_venues
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector)
         .first()
     )
     if not spec:
@@ -156,8 +156,8 @@ async def connector_connect_info(
 
     configs = {
         c.venue_id: c
-        for c in db.query(ConnectorConfig)
-        .filter(ConnectorConfig.connector_name == connector)
+        for c in db.query(Connection)
+        .filter(Connection.connector_name == connector)
         .all()
     }
 
@@ -224,19 +224,19 @@ async def upsert_connector(
     if not meta:
         # Check if it's a spec-driven connector
         spec = (
-            config_db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == name)
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == name)
             .first()
         )
         if not spec:
             raise HTTPException(404, f"Unknown connector: {name}")
 
     # Venue-aware lookup
-    query = db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name)
+    query = db.query(Connection).filter(Connection.connector_name == name)
     if body.venue_id:
-        query = query.filter(ConnectorConfig.venue_id == body.venue_id)
+        query = query.filter(Connection.venue_id == body.venue_id)
     else:
-        query = query.filter(ConnectorConfig.venue_id.is_(None))
+        query = query.filter(Connection.venue_id.is_(None))
     row = query.first()
 
     if row:
@@ -248,7 +248,7 @@ async def upsert_connector(
         row.config = merged
         row.enabled = "true" if body.enabled else "false"
     else:
-        row = ConnectorConfig(
+        row = Connection(
             connector_name=name,
             venue_id=body.venue_id,
             config=body.config,
@@ -270,9 +270,7 @@ async def toggle_connector(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:connectors")),
 ):
-    row = (
-        db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
-    )
+    row = db.query(Connection).filter(Connection.connector_name == name).first()
     if not row:
         raise HTTPException(404, f"No config for connector: {name}")
     row.enabled = "false" if row.enabled == "true" else "true"
@@ -290,9 +288,7 @@ async def delete_connector(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:connectors")),
 ):
-    row = (
-        db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
-    )
+    row = db.query(Connection).filter(Connection.connector_name == name).first()
     if not row:
         raise HTTPException(404, f"No config for connector: {name}")
     db.delete(row)
@@ -317,9 +313,7 @@ async def test_connector(
 
         # Merge saved credentials with form values (skip redacted)
         config_row = (
-            db.query(ConnectorConfig)
-            .filter(ConnectorConfig.connector_name == name)
-            .first()
+            db.query(Connection).filter(Connection.connector_name == name).first()
         )
         credentials = dict(config_row.config) if config_row else {}
         for k, v in body.config.items():
@@ -339,8 +333,8 @@ async def test_connector(
 
     # Spec-driven connectors: use the test_request from the spec
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -353,9 +347,7 @@ async def test_connector(
         }
 
     # Merge saved credentials with any values from the form (non-redacted only)
-    config_row = (
-        db.query(ConnectorConfig).filter(ConnectorConfig.connector_name == name).first()
-    )
+    config_row = db.query(Connection).filter(Connection.connector_name == name).first()
     credentials = config_row.config if config_row else {}
     for k, v in body.config.items():
         if v and v != "••••••••":
@@ -411,7 +403,7 @@ async def execute_connector_action(
     user: User = Depends(get_current_user),
 ):
     """Execute a connector tool directly (no LLM, no task)."""
-    # Check internal tool handlers first — these don't need a ConnectorSpec row
+    # Check internal tool handlers first — these don't need a ConnectionSpec row
     from app.agents.internal_tools import get_handler
 
     handler = get_handler(name, action)
@@ -421,8 +413,8 @@ async def execute_connector_action(
         return result
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -441,10 +433,10 @@ async def execute_connector_action(
 
     # External tools — need credentials
     config_row = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == name,
-            ConnectorConfig.enabled == "true",
+            Connection.connector_name == name,
+            Connection.enabled == "true",
         )
         .first()
     )
@@ -477,10 +469,10 @@ async def download_bamboohr_file(
     from fastapi.responses import Response
 
     config_row = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == "bamboohr",
-            ConnectorConfig.enabled == "true",
+            Connection.connector_name == "bamboohr",
+            Connection.enabled == "true",
         )
         .first()
     )

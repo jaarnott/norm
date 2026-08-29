@@ -13,7 +13,7 @@ work kept intact:
     summary comes back, so a verbose sub-run costs the parent a few hundred
     tokens rather than its whole context.
   * **Decentralised.** No orchestrator. Any agent granted the tool can consult
-    any allowed target; who-may-call-whom is an AgentConnectorBinding row.
+    any allowed target; who-may-call-whom is an AgentConnectionBinding row.
   * **Read-only.** Enforced by the tool set the child is handed, not by asking
     it nicely — the same way Claude's Explore agent is read-only.
 
@@ -134,10 +134,10 @@ def read_only_actions(config_db: Session) -> set[str]:
     Bare names because that is the unit `tool_filter` and the per-agent binding
     allowlist already work in (prompt_builder line ~600).
     """
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
     allowed: set[str] = set()
-    for spec in config_db.query(ConnectorSpec).all():
+    for spec in config_db.query(ConnectionSpec).all():
         for tool in spec.tools or []:
             if is_read_only_tool(tool):
                 allowed.add(tool.get("action"))

@@ -34,6 +34,7 @@ from app.auth.security import hash_password, create_access_token
 from app.routers import (
     auth,
     admin,
+    marketplace,
     threads,
     venues,
     messages,
@@ -50,6 +51,7 @@ from app.routers import (
     connector_specs,
     oauth,
     supplier_specs,
+    supplier_tenders,
     supplier_spec_dojo,
     catalog_hygiene,
     invoice_fixes,
@@ -81,12 +83,14 @@ _test_app.include_router(component_apis.router, prefix="/api")
 _test_app.include_router(connector_specs.router, prefix="/api")
 _test_app.include_router(oauth.router, prefix="/api")
 _test_app.include_router(supplier_specs.router, prefix="/api")
+_test_app.include_router(supplier_tenders.router, prefix="/api")
 _test_app.include_router(supplier_spec_dojo.router, prefix="/api")
 _test_app.include_router(catalog_hygiene.router, prefix="/api")
 _test_app.include_router(invoice_fixes.router, prefix="/api")
 _test_app.include_router(recipe_editor.router, prefix="/api")
 _test_app.include_router(uploads.router, prefix="/api")
 _test_app.include_router(apps_router.router, prefix="/api")
+_test_app.include_router(marketplace.router, prefix="/api")
 
 from app.routers import internal as _internal  # noqa: E402
 from app.routers import mcp as _mcp  # noqa: E402

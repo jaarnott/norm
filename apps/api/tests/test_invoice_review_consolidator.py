@@ -258,7 +258,7 @@ class TestReporting:
 class TestEngineNormToolsPublished:
     """Every norm.* function the engine calls must be PUBLISHED, not just coded.
 
-    The sandbox's call_api resolves a tool from the `norm` ConnectorSpec row
+    The sandbox's call_api resolves a tool from the `norm` ConnectionSpec row
     before routing to the Python handler — a handler with no spec entry dies
     with "Tool not found" at runtime and the engine degrades silently.
     match_supplier shipped exactly that way (8 Aug 2026) because only the
@@ -298,7 +298,7 @@ class TestEngineNormToolsPublished:
         ]
         assert not missing, (
             f"engine calls norm.{missing} but no scripts/sync_*.py publishes it "
-            "into the norm ConnectorSpec — call_api will raise 'Tool not found' "
+            "into the norm ConnectionSpec — call_api will raise 'Tool not found' "
             "in production; add a sync script (see sync_review_invoices_tool.py)"
         )
 

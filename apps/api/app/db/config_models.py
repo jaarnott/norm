@@ -42,7 +42,7 @@ class ConfigBase(DeclarativeBase):
     pass
 
 
-class ConnectorSpec(ConfigBase):
+class ConnectionSpec(ConfigBase):
     __tablename__ = "connector_specs"
 
     id = Column(String, primary_key=True, default=_uuid)
@@ -78,7 +78,7 @@ class AgentConfig(ConfigBase):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
-@event.listens_for(ConnectorSpec.tools, "set", retval=True)
+@event.listens_for(ConnectionSpec.tools, "set", retval=True)
 def _stamp_tool_added_at(target, value, oldvalue, initiator):
     """Stamp ``added_at`` on tool entries NEW to this spec, at assignment.
 
@@ -109,7 +109,7 @@ def _stamp_tool_added_at(target, value, oldvalue, initiator):
     return out
 
 
-class AgentConnectorBinding(ConfigBase):
+class AgentConnectionBinding(ConfigBase):
     __tablename__ = "agent_connector_bindings"
     __table_args__ = (
         UniqueConstraint("agent_slug", "connector_name", name="uq_agent_connector"),
@@ -155,6 +155,57 @@ class ComponentApiConfig(ConfigBase):
         JSON, nullable=True
     )  # {"apiField": "componentField"}
     enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class MarketplaceApp(ConfigBase):
+    """One row per App in the marketplace — the global catalog.
+
+    An **App** is the one user-facing unit: Loaded, BambooHR and the Cook
+    Brothers App (tier ``integration`` — backed by a connector spec and
+    per-venue credentials) sit beside Hiring and Training (tier ``platform`` —
+    backed by an ``App``/``AppVersion`` row) and org-published user apps (tier
+    ``user``). The marketplace cannot tell the tiers apart; trust and
+    implementation are properties of the row, not the storefront.
+    (docs/apps-marketplace-plan.md; extends docs/lite-apps-architecture.md §4.)
+
+    ``composition`` declares everything enabling the app lights up, so the
+    admin screen can answer "what do I get?" from one place::
+
+        spec        <connector_name>            (integration apps)
+        app_slug    <platform App slug>         (platform/user apps)
+        agents      [agent slug, ...]           agents this app powers/joins
+        components  [{key, agent, page: {id, label, icon}|null,
+                      full_width, description}, ...]
+        playbooks   [playbook slug, ...]
+        mcp_domain  <domain tag>|null           claude.ai surface filter
+
+    Every component belongs to exactly ONE app — the seed script
+    (scripts/sync_marketplace_catalog.py) is the reviewed source of these
+    rows and enforces that invariant.
+
+    Entitlement lives in the MAIN db (``org_app_entitlements``): this table is
+    shared by every environment and has no org scoping. Absence of an
+    entitlement row means "the ``bundled`` default applies", so seeding the
+    catalog changes nothing for any org on day one.
+    """
+
+    __tablename__ = "marketplace_apps"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    slug = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=False, default="")
+    icon = Column(String, nullable=True)  # emoji or lucide icon name
+    tier = Column(String, nullable=False)  # integration | platform | user
+    #: Included with every subscription, on by default, toggleable off.
+    bundled = Column(Boolean, nullable=False, default=True)
+    price_cents = Column(Integer, nullable=False, default=0)
+    #: Key into config.py's per-app Stripe price ids (paid apps only).
+    stripe_price_key = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")  # active|pending|disabled
+    composition = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -258,7 +309,7 @@ class McpCapability(ConfigBase):
     """Curation for Norm's outward-facing MCP surface.
 
     A thin enable+scope layer, nothing more. This table holds **no schema** —
-    MCP tool schemas always project from ``ConnectorSpec.tools`` / ``Playbook``
+    MCP tool schemas always project from ``ConnectionSpec.tools`` / ``Playbook``
     at request time, so a capability can never drift from the definition it
     exposes. Adding a connector or playbook makes it a *candidate* the moment
     it exists; a missing row means "not exposed" (fail closed).
@@ -391,3 +442,10 @@ class SupplierProduct(ConfigBase):
     last_seen = Column(DateTime(timezone=True), default=_now)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ── Transitional aliases (connector → Connection rename, 29 Aug 2026) ──
+# Physical table names keep their old spellings until the follow-up drop
+# release; these aliases keep any straggler import working meanwhile.
+ConnectorSpec = ConnectionSpec
+AgentConnectorBinding = AgentConnectionBinding

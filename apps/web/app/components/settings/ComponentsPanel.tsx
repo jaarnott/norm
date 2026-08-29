@@ -636,6 +636,21 @@ export default function ComponentsPanel() {
   const [editDrafts, setEditDrafts] = useState<Record<string, Partial<ComponentApiConfig>>>({});
   const [addingNew, setAddingNew] = useState<Partial<ComponentApiConfig> | null>(null);
   const [saving, setSaving] = useState(false);
+  // component key -> owning marketplace App name (the app lens)
+  const [owningApp, setOwningApp] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    apiFetch('/api/marketplace')
+      .then(r => (r.ok ? r.json() : { apps: [] }))
+      .then((d: { apps?: { name: string; composition?: { components?: { key: string }[] } }[] }) => {
+        const map: Record<string, string> = {};
+        for (const a of d.apps ?? []) {
+          for (const c of a.composition?.components ?? []) map[c.key] = a.name;
+        }
+        setOwningApp(map);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     apiFetch('/api/connector-specs')
@@ -741,6 +756,12 @@ export default function ComponentsPanel() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.25rem' }}>
             <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333' }}>{selectedComponentDef.label}</span>
+            {owningApp[selectedComponentDef.key] && (
+              <span title="the marketplace App this component belongs to"
+                style={{ fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 3, backgroundColor: '#eef4ee', color: '#2e7d4f' }}>
+                App: {owningApp[selectedComponentDef.key]}
+              </span>
+            )}
             <span style={{
               fontSize: '0.58rem', fontWeight: 600, padding: '1px 5px', borderRadius: 3,
               backgroundColor: selectedComponentDef.internal ? '#e2e3e5' : '#d4edda',

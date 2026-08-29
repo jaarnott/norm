@@ -2,7 +2,7 @@
 
 Loaded's only recipe-write API is its legacy ``/wapi`` host, which Norm's own
 OAuth token can't authenticate against. So recipe writes are routed through the
-Cook Brothers App MCP connector's ``kitchen_loadedhub_update_recipe`` tool (its
+Cook Brothers App MCP connector's ``kitchen_record_recipe`` tool (its
 stored per-org token DOES reach the legacy host). Recipe *reads* stay direct on
 the loadedhub connector — see ``sync_recipe_component_apis.py``.
 
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 CONNECTOR = "cook_brothers_app"
-SAVE_ACTION = "kitchen_loadedhub_update_recipe"
+SAVE_ACTION = "kitchen_record_recipe"
 LIST_VENUES_ACTION = "list_venues"
 
 
@@ -45,23 +45,23 @@ def _op(spec, action: str) -> dict:
 
 def _cb_context(venue_id: str, db: Session, config_db: Session):
     """The CB App spec + this venue's credentials, or a clear error."""
-    from app.db.config_models import ConnectorSpec
-    from app.db.models import ConnectorConfig
+    from app.db.config_models import ConnectionSpec
+    from app.db.models import Connection
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == CONNECTOR)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == CONNECTOR)
         .first()
     )
     if not spec:
         raise RecipeSaveError("The Cook Brothers App connector is not configured.")
 
     cfg = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == CONNECTOR,
-            ConnectorConfig.enabled == "true",
-            ConnectorConfig.venue_id == venue_id,
+            Connection.connector_name == CONNECTOR,
+            Connection.enabled == "true",
+            Connection.venue_id == venue_id,
         )
         .first()
     )
@@ -145,24 +145,33 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
     spec, cfg = _cb_context(venue_id, db, config_db)
     cb_venue_id = resolve_cb_venue_id(venue_id, db, config_db)
 
+    # The consolidated kitchen_record_recipe (29 Aug 2026, replacing
+    # kitchen_loadedhub_update_recipe) has a strict schema, verified live:
+    # create = omit recipe_id/version_id (no create flag exists); update needs
+    # BOTH ids (the "version_id resolved from recipe_id" in its description is
+    # not the actual behaviour); ingredients are {kind, name, quantity, unit}
+    # where unit takes a unit NAME or unit id (GUID ok) and name is required;
+    # yield_unit likewise takes name-or-id.
     fields = {"venue_id": cb_venue_id}
-    if is_create:
-        # Belt and suspenders: omit recipe_id/version_id AND flag create, so the
-        # CB tool takes the create branch either way.
-        fields["create"] = True
-    passthrough = (
-        "name",
-        "notes",
-        "is_counted_in_stocktake",
-        "yield_quantity",
-        "yield_unit_id",
-        "lines",
-    )
+    passthrough = ("name", "notes", "is_counted_in_stocktake", "yield_quantity")
     if not is_create:
         passthrough = ("recipe_id", "version_id", *passthrough)
     for k in passthrough:
         if recipe.get(k) is not None:
             fields[k] = recipe[k]
+    if recipe.get("yield_unit_id") is not None:
+        fields["yield_unit"] = recipe["yield_unit_id"]
+    if lines is not None:
+        fields["ingredients"] = [
+            {
+                "kind": ln.get("kind") or "item",
+                "name": (ln.get("name") or "").strip(),
+                "quantity": ln.get("quantity"),
+                "unit": ln.get("unit_id") or ln.get("unit_name") or "",
+            }
+            for ln in lines
+            if isinstance(ln, dict)
+        ]
 
     logger.info(
         "recipe_save",

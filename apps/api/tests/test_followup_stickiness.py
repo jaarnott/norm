@@ -26,7 +26,7 @@ So: three guards, in the order the supervisor applies them.
 
 import pytest
 
-from app.db.config_models import AgentConfig, AgentConnectorBinding, ConnectorSpec
+from app.db.config_models import AgentConfig, AgentConnectionBinding, ConnectionSpec
 from app.services import supervisor
 from tests.conftest import _make_thread
 
@@ -55,7 +55,7 @@ def stub_loop(monkeypatch):
 
 def _bind(db, slug, connector, actions):
     db.add(
-        AgentConnectorBinding(
+        AgentConnectionBinding(
             agent_slug=slug,
             connector_name=connector,
             capabilities=[{"action": a, "enabled": True} for a in actions],
@@ -69,7 +69,7 @@ def _bind(db, slug, connector, actions):
 def roster(db_session):
     """`reports` can consult; `time_attendance` has something worth asking."""
     db_session.add(
-        ConnectorSpec(
+        ConnectionSpec(
             connector_name="norm",
             display_name="Norm",
             auth_type="none",

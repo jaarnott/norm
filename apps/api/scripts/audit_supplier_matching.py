@@ -29,7 +29,7 @@ sys.path.insert(0, ".")
 
 from app.db.config_models import SupplierInvoiceSpec  # noqa: E402
 from app.db.engine import SessionLocal, _ConfigSessionLocal  # noqa: E402
-from app.db.models import ConnectorConfig, Venue  # noqa: E402
+from app.db.models import Connection, Venue  # noqa: E402
 from app.services.invoice_extraction import MAIN_PROMPT_NAME  # noqa: E402
 from app.services.received_invoice import LoadedInvoiceClient  # noqa: E402
 from app.services.supplier_identity import (  # noqa: E402
@@ -50,9 +50,9 @@ def main() -> int:
     ]
     venue_ids = {
         c.venue_id
-        for c in db.query(ConnectorConfig).filter(
-            ConnectorConfig.connector_name == "loadedhub",
-            ConnectorConfig.enabled == "true",
+        for c in db.query(Connection).filter(
+            Connection.connector_name == "loadedhub",
+            Connection.enabled == "true",
         )
         if c.venue_id
     }

@@ -367,6 +367,16 @@ def handle_message(
         # descriptions that use user-facing language rather than verbose
         # tool descriptions from the DB.
         domains = registered_domains()
+        # Marketplace agent gate (docs/apps-marketplace-plan.md Phase 1): an
+        # agent claimed only by Apps this org has disabled is not routable —
+        # the router never sees it, so nothing lands on an agent whose tools
+        # the entitlement filter would empty out. Inert until the catalog is
+        # seeded; unclaimed agents are always allowed.
+        from app.services.entitlements import agent_entitled, org_id_for_user
+
+        _org = org_id_for_user(user_id, db)
+        if _org:
+            domains = [d for d in domains if agent_entitled(d, _org, db, _cdb)]
         # A file attached to this turn only reaches the model on the agent
         # tool-loop path; tell the router so it doesn't send the turn to the
         # no-tool-loop "meta" help reply and silently drop the file.
@@ -1038,10 +1048,10 @@ def _detect_connect_intent(message: str, config_db: Session) -> str | None:
     if not any(v in text for v in _CONNECT_VERBS):
         return None
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
     best = None
-    for spec in config_db.query(ConnectorSpec).filter(ConnectorSpec.enabled == True):  # noqa: E712
+    for spec in config_db.query(ConnectionSpec).filter(ConnectionSpec.enabled == True):  # noqa: E712
         # Skip Norm-internal plumbing — not a user-connectable system.
         if spec.connector_name == "norm" or spec.category == "_platform":
             continue

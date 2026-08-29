@@ -4,7 +4,7 @@ The App Builder turns "describe the app you want" into a saved Norm app. This
 script upserts, in the SHARED config DB:
 
 - the ``agent_configs`` row (system prompt below — it is most of the product);
-- three tool entries on the ``norm`` ConnectorSpec (`list_app_capabilities`,
+- three tool entries on the ``norm`` ConnectionSpec (`list_app_capabilities`,
   `save_app`, `get_app`) whose handlers live in ``app/agents/internal_tools.py``;
 - ``agent_connector_bindings`` for those three plus a handful of loadedhub
   READS, so the builder can probe a data shape live before baking it into an
@@ -160,7 +160,7 @@ def main() -> int:
     args = ap.parse_args()
 
     from app.db.engine import _ConfigSessionLocal
-    from app.db.config_models import AgentConfig, AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConfig, AgentConnectionBinding, ConnectionSpec
 
     db = _ConfigSessionLocal()
     try:
@@ -188,12 +188,12 @@ def main() -> int:
 
         # 2. Tool entries on the norm spec
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "norm")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "norm")
             .first()
         )
         if spec is None:
-            print("ERROR: no 'norm' ConnectorSpec — nothing to attach tools to")
+            print("ERROR: no 'norm' ConnectionSpec — nothing to attach tools to")
             return 1
         tools = list(spec.tools or [])
         by_action = {
@@ -227,10 +227,10 @@ def main() -> int:
                 for a in actions
             ]
             binding = (
-                db.query(AgentConnectorBinding)
+                db.query(AgentConnectionBinding)
                 .filter(
-                    AgentConnectorBinding.agent_slug == AGENT_SLUG,
-                    AgentConnectorBinding.connector_name == connector,
+                    AgentConnectionBinding.agent_slug == AGENT_SLUG,
+                    AgentConnectionBinding.connector_name == connector,
                 )
                 .first()
             )
@@ -247,7 +247,7 @@ def main() -> int:
                 )
                 if not args.dry_run:
                     db.add(
-                        AgentConnectorBinding(
+                        AgentConnectionBinding(
                             agent_slug=AGENT_SLUG,
                             connector_name=connector,
                             capabilities=caps,

@@ -45,10 +45,12 @@ from app.routers import (  # noqa: E402
     workflow_modes,
     playbooks,
     supplier_specs,
+    supplier_tenders,
     supplier_spec_dojo,
     catalog_hygiene,
     templates,
     internal,
+    marketplace,
     mcp,
     mcp_admin,
     mcp_oauth,
@@ -102,12 +104,14 @@ app.include_router(email.router, prefix="/api")
 app.include_router(component_apis.router, prefix="/api")
 app.include_router(invoice_fixes.router, prefix="/api")
 app.include_router(apps_router.router, prefix="/api")
+app.include_router(marketplace.router, prefix="/api")
 app.include_router(recipe_editor.router, prefix="/api")
 app.include_router(uploads.router, prefix="/api")
 app.include_router(workflow_modes.router, prefix="/api")
 app.include_router(memories.router, prefix="/api")
 app.include_router(playbooks.router, prefix="/api")
 app.include_router(supplier_specs.router, prefix="/api")
+app.include_router(supplier_tenders.router, prefix="/api")
 app.include_router(supplier_spec_dojo.router, prefix="/api")
 app.include_router(catalog_hygiene.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")

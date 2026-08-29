@@ -172,11 +172,11 @@ class TestVenueScopedTokenSelection:
         """
         import uuid
 
-        from app.db.config_models import ConnectorSpec
-        from app.db.models import ConnectorConfig, Venue
+        from app.db.config_models import ConnectionSpec
+        from app.db.models import Connection, Venue
         from app.services.oauth_service import get_valid_access_token
 
-        spec = ConnectorSpec(
+        spec = ConnectionSpec(
             connector_name="loadedhub",
             display_name="LoadedHub",
             execution_mode="template",
@@ -193,7 +193,7 @@ class TestVenueScopedTokenSelection:
             token = f"token-for-{name.replace(' ', '-').lower()}"
             tokens[name] = (venue.id, token)
             db_session.add(
-                ConnectorConfig(
+                Connection(
                     connector_name="loadedhub",
                     venue_id=venue.id,
                     enabled="true",
@@ -220,14 +220,14 @@ class TestVenueScopedTokenSelection:
 
         import pytest
 
-        from app.db.config_models import ConnectorSpec
-        from app.db.models import ConnectorConfig, Venue
+        from app.db.config_models import ConnectionSpec
+        from app.db.models import Connection, Venue
         from app.services.oauth_service import (
             get_valid_access_token,
             refresh_access_token,
         )
 
-        spec = ConnectorSpec(
+        spec = ConnectionSpec(
             connector_name="loadedhub",
             display_name="LoadedHub",
             execution_mode="template",
@@ -239,7 +239,7 @@ class TestVenueScopedTokenSelection:
         venue = Venue(id=str(uuid.uuid4()), name="Only Venue")
         db_session.add(venue)
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=venue.id,
                 enabled="true",
@@ -259,7 +259,7 @@ class TestVenueScopedTokenSelection:
 
         # With a global row present, the unscoped lookup returns exactly it.
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=None,
                 enabled="true",
@@ -290,18 +290,18 @@ class TestKeepAliveActuallyRedeems:
     def _isolate(self, db_session):
         # refresh_all_tokens scans every connector row; clear leftover rows from
         # the shared dev database so they can't bleed into the call counts.
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
 
-        db_session.query(ConnectorConfig).delete()
+        db_session.query(Connection).delete()
         db_session.flush()
 
     def _setup(self, db_session, expires_in_days=10):
         import uuid
 
-        from app.db.config_models import ConnectorSpec
-        from app.db.models import ConnectorConfig, Venue
+        from app.db.config_models import ConnectionSpec
+        from app.db.models import Connection, Venue
 
-        spec = ConnectorSpec(
+        spec = ConnectionSpec(
             connector_name="loadedhub",
             display_name="LoadedHub",
             execution_mode="template",
@@ -318,7 +318,7 @@ class TestKeepAliveActuallyRedeems:
         venue = Venue(id=str(uuid.uuid4()), name="Venue A")
         db_session.add(venue)
         db_session.flush()
-        cfg = ConnectorConfig(
+        cfg = Connection(
             connector_name="loadedhub",
             venue_id=venue.id,
             enabled="true",
@@ -550,15 +550,15 @@ class TestKeepAliveRefresh:
         db_session fixture rolls back, and the refresh calls are mocked so
         nothing commits.
         """
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
 
-        db_session.query(ConnectorConfig).delete()
+        db_session.query(Connection).delete()
         db_session.flush()
 
     def _spec_row(self, db_session, connector="loadedhub", expires_at=None):
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
 
-        row = ConnectorConfig(
+        row = Connection(
             connector_name=connector,
             venue_id=None,
             config={},
@@ -666,11 +666,11 @@ class TestRefreshTokenRotation:
     """LoadedHub rotates refresh tokens; a rotated token must be persisted."""
 
     def test_rotated_refresh_token_is_stored(self, db_session):
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
         from app.services.oauth_service import _store_tokens
 
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=None,
                 config={},
@@ -694,10 +694,10 @@ class TestRefreshTokenRotation:
         # Filter on venue_id too: a bare .first() can return an unrelated
         # venue-scoped row for the same connector.
         row = (
-            db_session.query(ConnectorConfig)
+            db_session.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == "loadedhub",
-                ConnectorConfig.venue_id.is_(None),
+                Connection.connector_name == "loadedhub",
+                Connection.venue_id.is_(None),
             )
             .first()
         )
@@ -707,11 +707,11 @@ class TestRefreshTokenRotation:
 
     def test_omitted_refresh_token_preserves_existing(self, db_session):
         """Providers that omit refresh_token on refresh must not blank ours."""
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
         from app.services.oauth_service import _store_tokens
 
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=None,
                 config={},
@@ -731,10 +731,10 @@ class TestRefreshTokenRotation:
         # Filter on venue_id too: a bare .first() can return an unrelated
         # venue-scoped row for the same connector.
         row = (
-            db_session.query(ConnectorConfig)
+            db_session.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == "loadedhub",
-                ConnectorConfig.venue_id.is_(None),
+                Connection.connector_name == "loadedhub",
+                Connection.venue_id.is_(None),
             )
             .first()
         )
@@ -752,11 +752,11 @@ class TestConnectionHealthIsPersisted:
     def _venue_row(self, db_session, *, needs_reconnect=False):
         import uuid
 
-        from app.db.models import ConnectorConfig, Venue
+        from app.db.models import Connection, Venue
 
         venue = Venue(id=str(uuid.uuid4()), name="Health Venue", location="AKL")
         db_session.add(venue)
-        row = ConnectorConfig(
+        row = Connection(
             connector_name="loadedhub",
             venue_id=venue.id,
             config={},

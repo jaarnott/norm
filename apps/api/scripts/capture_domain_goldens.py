@@ -234,15 +234,15 @@ _SHAPE_KEYS = {
 
 def main(family: str | None = None) -> None:
     from app.agents.internal_tools import execute_consolidator
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import SessionLocal, _ConfigSessionLocal
 
     cfg = _ConfigSessionLocal()
     configs = {}
     try:
         for spec in (
-            cfg.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name.in_(["loadedhub", "norm_reports"]))
+            cfg.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name.in_(["loadedhub", "norm_reports"]))
             .all()
         ):
             for t in spec.tools or []:

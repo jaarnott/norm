@@ -31,18 +31,18 @@ ACTION = "get_staff_attendance"
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "loadedhub")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
             .first()
         )
         if not spec:
-            raise SystemExit("loadedhub ConnectorSpec not found")
+            raise SystemExit("loadedhub ConnectionSpec not found")
         tools = [dict(t) for t in (spec.tools or [])]
         kept = [t for t in tools if t.get("action") != ACTION]
         if len(kept) == len(tools):

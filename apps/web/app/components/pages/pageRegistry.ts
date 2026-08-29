@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, Clock, Blocks, LayoutGrid, Grid2x2, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, Clock, Blocks, LayoutGrid, Grid2x2, Gavel, type LucideIcon } from 'lucide-react';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -166,6 +166,16 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     component: 'invoices_dashboard',
     // Self-loading: the dashboard fetches /invoice-fixes/outstanding itself, so
     // no connector loadAction (mirrors SavedReportsBoard's _none pattern).
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    // Self-loading via the supplier_tenders component-api rows. Declared in the
+    // Loaded app's marketplace composition (sync_marketplace_catalog.py).
+    id: 'supplier-tenders',
+    label: 'Supplier Tenders',
+    icon: Gavel,
+    agent: 'procurement',
+    component: 'supplier_tenders',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {

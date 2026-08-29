@@ -13,8 +13,8 @@ no stored company id adopts the token's.
 import uuid
 from unittest.mock import patch
 
-from app.db.models import ConnectorConfig, OAuthState, Venue
-from app.db.config_models import ConnectorSpec
+from app.db.models import Connection, OAuthState, Venue
+from app.db.config_models import ConnectionSpec
 
 COMPANY_A = "aaaaaaaa-1111-2222-3333-444444444444"
 COMPANY_B = "bbbbbbbb-5555-6666-7777-888888888888"
@@ -23,7 +23,7 @@ COMPANY_B = "bbbbbbbb-5555-6666-7777-888888888888"
 def _setup(db_session, *, stored_company, state_venue=True):
     """A loadedhub spec + one venue whose row already holds freshly-exchanged
     tokens (exchange_code stores before the callback validates), + the state."""
-    spec = ConnectorSpec(
+    spec = ConnectionSpec(
         connector_name="loadedhub",
         display_name="LoadedHub",
         execution_mode="template",
@@ -36,7 +36,7 @@ def _setup(db_session, *, stored_company, state_venue=True):
     venue = Venue(id=str(uuid.uuid4()), name="La Zeppa")
     db_session.add(venue)
     db_session.flush()  # venue row must exist before FK'd rows below
-    cfg = ConnectorConfig(
+    cfg = Connection(
         connector_name="loadedhub",
         venue_id=venue.id,
         enabled="true",

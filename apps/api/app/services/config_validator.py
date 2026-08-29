@@ -49,7 +49,7 @@ def check_connector_tools(
 ) -> list[ConfigIssue]:
     """Validate the tools array of a single connector spec.
 
-    ``tools`` is the raw JSON list from ConnectorSpec.tools.
+    ``tools`` is the raw JSON list from ConnectionSpec.tools.
     """
     issues: list[ConfigIssue] = []
 
@@ -486,8 +486,8 @@ def validate_config(db=None, config_db=None) -> dict:
     config can be edited through the Settings UI long after deploy.
     """
     from app.db.engine import SessionLocal, _ConfigSessionLocal
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec, Playbook
-    from app.db.models import ConnectorConfig
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec, Playbook
+    from app.db.models import Connection
     from app.routers.connectors import AVAILABLE_MODELS
 
     owns_db = db is None
@@ -503,7 +503,7 @@ def validate_config(db=None, config_db=None) -> dict:
     try:
         known_actions: set[str] = set()
         engine_only_actions: set[str] = set()
-        for spec in config_db.query(ConnectorSpec).all():
+        for spec in config_db.query(ConnectionSpec).all():
             issues.extend(
                 check_connector_tools(
                     spec.connector_name, spec.execution_mode, spec.tools
@@ -525,14 +525,14 @@ def validate_config(db=None, config_db=None) -> dict:
                 )
             )
 
-        for binding in config_db.query(AgentConnectorBinding).all():
+        for binding in config_db.query(AgentConnectionBinding).all():
             issues.extend(
                 check_binding_capabilities(
                     binding.agent_slug, binding.connector_name, binding.capabilities
                 )
             )
 
-        for row in db.query(ConnectorConfig).all():
+        for row in db.query(Connection).all():
             issues.extend(
                 check_model_selection(row.connector_name, row.config, allowed)
             )
@@ -544,7 +544,7 @@ def validate_config(db=None, config_db=None) -> dict:
         from app.mcp.scopes import MCP_SCOPES
 
         tool_def_by_key: dict = {}
-        for spec in config_db.query(ConnectorSpec).all():
+        for spec in config_db.query(ConnectionSpec).all():
             for tool in spec.tools or []:
                 if isinstance(tool, dict) and tool.get("action"):
                     tool_def_by_key[(spec.connector_name, tool["action"])] = tool

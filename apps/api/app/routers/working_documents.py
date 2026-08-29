@@ -234,12 +234,12 @@ async def create_from_connector(
         data = result.get("data", result)
     else:
         # External connector — use spec executor
-        from app.db.models import ConnectorSpec, ConnectorConfig
+        from app.db.models import ConnectionSpec, Connection
         from app.connectors.spec_executor import execute_spec
 
         spec = (
-            config_db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == body.connector_name)
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == body.connector_name)
             .first()
         )
         if not spec:
@@ -253,14 +253,12 @@ async def create_from_connector(
         if not tool_def:
             raise HTTPException(404, f"Tool not found: {body.action}")
 
-        config_query = db.query(ConnectorConfig).filter(
-            ConnectorConfig.connector_name == body.connector_name,
-            ConnectorConfig.enabled == "true",
+        config_query = db.query(Connection).filter(
+            Connection.connector_name == body.connector_name,
+            Connection.enabled == "true",
         )
         if body.venue_id:
-            config_query = config_query.filter(
-                ConnectorConfig.venue_id == body.venue_id
-            )
+            config_query = config_query.filter(Connection.venue_id == body.venue_id)
         config_row = config_query.first()
         if not config_row:
             raise HTTPException(

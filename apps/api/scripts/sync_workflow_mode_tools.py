@@ -1,4 +1,4 @@
-"""Sync the get/set_workflow_mode internal tools into the `norm` ConnectorSpec.
+"""Sync the get/set_workflow_mode internal tools into the `norm` ConnectionSpec.
 
 These agent-callable tools let a conversation read and change the caller's
 per-workflow run mode (approve_all / approve_fixes / autopilot). Their handlers
@@ -46,15 +46,15 @@ TOOLS = [
 
 def main(dry_run: bool = False) -> None:
     from app.db.engine import _ConfigSessionLocal
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
     from sqlalchemy.orm.attributes import flag_modified
 
     db = _ConfigSessionLocal()
     spec = (
-        db.query(ConnectorSpec).filter(ConnectorSpec.connector_name == "norm").first()
+        db.query(ConnectionSpec).filter(ConnectionSpec.connector_name == "norm").first()
     )
     if not spec:
-        raise SystemExit("norm ConnectorSpec not found in config DB")
+        raise SystemExit("norm ConnectionSpec not found in config DB")
 
     tools = list(spec.tools or [])
     by_action = {t.get("action"): i for i, t in enumerate(tools)}
@@ -72,10 +72,10 @@ def main(dry_run: bool = False) -> None:
     # Bind the two tools to the procurement agent's norm connector so the
     # invoice playbooks can call them (tool_filter narrows from bound tools).
     binding = (
-        db.query(AgentConnectorBinding)
+        db.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == "procurement",
-            AgentConnectorBinding.connector_name == "norm",
+            AgentConnectionBinding.agent_slug == "procurement",
+            AgentConnectionBinding.connector_name == "norm",
         )
         .first()
     )

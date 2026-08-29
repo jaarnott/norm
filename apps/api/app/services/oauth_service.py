@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 import httpx
 from sqlalchemy.orm import Session
 
-from app.db.models import ConnectorConfig, ConnectorSpec, OAuthState, Venue
+from app.db.models import Connection, ConnectionSpec, OAuthState, Venue
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def _generate_pkce() -> tuple[str, str]:
 
 
 def register_client(
-    spec: ConnectorSpec, redirect_uris: list[str], config_db: Session
+    spec: ConnectionSpec, redirect_uris: list[str], config_db: Session
 ) -> str:
     """Dynamically register Norm as an OAuth client (RFC 7591). Returns client_id.
 
@@ -119,7 +119,7 @@ def register_client(
 
 
 def build_authorize_url(
-    spec: ConnectorSpec,
+    spec: ConnectionSpec,
     redirect_uri: str,
     db: Session,
     venue_id: str | None = None,
@@ -176,7 +176,7 @@ def build_authorize_url(
 
 
 def exchange_code(
-    spec: ConnectorSpec,
+    spec: ConnectionSpec,
     code: str,
     state: str,
     redirect_uri: str,
@@ -267,7 +267,7 @@ def exchange_code(
     return token_data
 
 
-def _mark_needs_reconnect(config_row: ConnectorConfig, error: str) -> None:
+def _mark_needs_reconnect(config_row: Connection, error: str) -> None:
     """Flag a connection as broken. Caller commits.
 
     Set only when the provider *rejects* a refresh (a 4xx on the token
@@ -281,7 +281,7 @@ def _mark_needs_reconnect(config_row: ConnectorConfig, error: str) -> None:
 
 
 def refresh_access_token(
-    spec: ConnectorSpec,
+    spec: ConnectionSpec,
     db: Session,
     venue_id: str | None = None,
     user_id: str | None = None,
@@ -303,25 +303,25 @@ def refresh_access_token(
     Concurrency: providers such as LoadedHub *rotate* refresh tokens — each
     successful redemption returns a new refresh token and invalidates the
     previous one. Two concurrent redemptions would race, and the loser's token
-    would be dead. So we take a row lock on the ConnectorConfig for the duration
+    would be dead. So we take a row lock on the Connection for the duration
     of the exchange; non-forced callers re-check expiry under the lock and reuse
     a token another caller just refreshed. (Same shape as the ``with_for_update``
     claim in ``task_scheduler._claim_due_tasks``.)
     """
-    query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == spec.connector_name
+    query = db.query(Connection).filter(
+        Connection.connector_name == spec.connector_name
     )
     if user_id:
-        query = query.filter(ConnectorConfig.user_id == user_id)
+        query = query.filter(Connection.user_id == user_id)
     elif venue_id:
-        query = query.filter(ConnectorConfig.venue_id == venue_id)
+        query = query.filter(Connection.venue_id == venue_id)
     else:
         # No scope given must mean the GLOBAL row — never an arbitrary venue's.
         # Without this filter, a None/None call locked whichever row came back
         # first and SPENT that venue's rotating refresh token, while
         # _store_tokens (which does filter venue IS NULL) filed the new tokens
         # on the global row — silently killing the victim venue's connection.
-        query = query.filter(ConnectorConfig.venue_id.is_(None))
+        query = query.filter(Connection.venue_id.is_(None))
     config_row = query.with_for_update().first()
     if not config_row or not config_row.refresh_token:
         raise ValueError("No refresh token available")
@@ -404,23 +404,23 @@ def refresh_access_token(
 
 
 def get_valid_access_token(
-    spec: ConnectorSpec,
+    spec: ConnectionSpec,
     db: Session,
     venue_id: str | None = None,
     user_id: str | None = None,
 ) -> str:
     """Get a valid access token, refreshing if expired."""
-    query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == spec.connector_name
+    query = db.query(Connection).filter(
+        Connection.connector_name == spec.connector_name
     )
     if user_id:
-        query = query.filter(ConnectorConfig.user_id == user_id)
+        query = query.filter(Connection.user_id == user_id)
     elif venue_id:
-        query = query.filter(ConnectorConfig.venue_id == venue_id)
+        query = query.filter(Connection.venue_id == venue_id)
     else:
         # Unscoped lookup means the GLOBAL row, matching _store_tokens — never
         # an arbitrary venue's token (see refresh_access_token).
-        query = query.filter(ConnectorConfig.venue_id.is_(None))
+        query = query.filter(Connection.venue_id.is_(None))
     config_row = query.first()
     if not config_row or not config_row.access_token:
         raise ValueError(f"No OAuth tokens for connector {spec.connector_name}")
@@ -471,10 +471,10 @@ def refresh_all_tokens(
 
     try:
         rows = (
-            db.query(ConnectorConfig)
+            db.query(Connection)
             .filter(
-                ConnectorConfig.refresh_token.isnot(None),
-                ConnectorConfig.enabled == "true",
+                Connection.refresh_token.isnot(None),
+                Connection.enabled == "true",
             )
             .all()
         )
@@ -491,8 +491,8 @@ def refresh_all_tokens(
                 )
 
             spec = (
-                config_db.query(ConnectorSpec)
-                .filter(ConnectorSpec.connector_name == row.connector_name)
+                config_db.query(ConnectionSpec)
+                .filter(ConnectionSpec.connector_name == row.connector_name)
                 .first()
             )
             if not spec or spec.auth_type != "oauth2" or not spec.oauth_config:
@@ -532,20 +532,18 @@ def _store_tokens(
     venue_id: str | None = None,
     user_id: str | None = None,
 ) -> None:
-    """Store token response in ConnectorConfig."""
-    query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == connector_name
-    )
+    """Store token response in Connection."""
+    query = db.query(Connection).filter(Connection.connector_name == connector_name)
     if user_id:
-        query = query.filter(ConnectorConfig.user_id == user_id)
+        query = query.filter(Connection.user_id == user_id)
     elif venue_id:
-        query = query.filter(ConnectorConfig.venue_id == venue_id)
+        query = query.filter(Connection.venue_id == venue_id)
     else:
-        query = query.filter(ConnectorConfig.venue_id.is_(None))
+        query = query.filter(Connection.venue_id.is_(None))
     config_row = query.first()
 
     if not config_row:
-        config_row = ConnectorConfig(
+        config_row = Connection(
             connector_name=connector_name,
             venue_id=venue_id,
             user_id=user_id,

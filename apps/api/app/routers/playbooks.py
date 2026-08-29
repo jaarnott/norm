@@ -69,21 +69,21 @@ async def list_agent_tools(
     user: User = Depends(get_current_user),
 ):
     """List all available tool actions for an agent."""
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
 
     bindings = (
-        config_db.query(AgentConnectorBinding)
+        config_db.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == agent_slug,
-            AgentConnectorBinding.enabled == True,  # noqa: E712
+            AgentConnectionBinding.agent_slug == agent_slug,
+            AgentConnectionBinding.enabled == True,  # noqa: E712
         )
         .all()
     )
     tools = []
     for binding in bindings:
         spec = (
-            config_db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == binding.connector_name)
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == binding.connector_name)
             .first()
         )
         if not spec:
@@ -196,21 +196,21 @@ async def generate_playbook(
         raise HTTPException(400, "Anthropic API key required")
 
     # Build tool context for the agent
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
 
     bindings = (
-        config_db.query(AgentConnectorBinding)
+        config_db.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.agent_slug == body.agent_slug,
-            AgentConnectorBinding.enabled == True,  # noqa: E712
+            AgentConnectionBinding.agent_slug == body.agent_slug,
+            AgentConnectionBinding.enabled == True,  # noqa: E712
         )
         .all()
     )
     tool_lines = []
     for binding in bindings:
         spec = (
-            config_db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == binding.connector_name)
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == binding.connector_name)
             .first()
         )
         if not spec:

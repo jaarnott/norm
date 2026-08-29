@@ -19,8 +19,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.db.config_models import ConnectorSpec
-from app.db.models import ConnectorConfig
+from app.db.config_models import ConnectionSpec
+from app.db.models import Connection
 
 
 TOOL = {
@@ -49,7 +49,7 @@ def config_client(client, db_session):
 
 @pytest.fixture()
 def spec(db_session):
-    row = ConnectorSpec(
+    row = ConnectionSpec(
         connector_name="loadedhub",
         display_name="LoadedHub",
         execution_mode="template",
@@ -69,7 +69,7 @@ def spec(db_session):
 
 
 def _venue_config(db_session, venue_id):
-    row = ConnectorConfig(
+    row = Connection(
         connector_name="loadedhub",
         venue_id=venue_id,
         enabled="true",

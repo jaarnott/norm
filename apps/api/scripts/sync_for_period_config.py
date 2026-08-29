@@ -7,7 +7,7 @@ serves them all; the tools differ only in the WRAPPED entry below.
 
 The raw actions are left untouched, so dashboards, saved reports and the in-app
 agents keep working exactly as they do. Each new tool is invisible until
-deliberately switched on — for an agent via its AgentConnectorBinding
+deliberately switched on — for an agent via its AgentConnectionBinding
 capabilities, for Claude via Settings → MCP (McpCapability rows are fail-closed).
 
 WHY THESE AND NOT THE OTHERS
@@ -250,7 +250,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     function_code = FUNCTION_CODE_PATH.read_text(encoding="utf-8")
@@ -259,12 +259,12 @@ def main() -> None:
     changes: list[str] = []
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "loadedhub")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
             .first()
         )
         if not spec:
-            raise SystemExit("loadedhub ConnectorSpec not found in config DB")
+            raise SystemExit("loadedhub ConnectionSpec not found in config DB")
 
         tools = list(spec.tools or [])
         by_action = {t.get("action"): i for i, t in enumerate(tools)}
@@ -329,7 +329,7 @@ def main() -> None:
         # produces the worst failure mode this codebase has: project_tools finds
         # no tool_def and silently omits it, so the admin UI shows the
         # capability as on while nothing is ever served.
-        from app.db.config_models import AgentConnectorBinding, McpCapability
+        from app.db.config_models import AgentConnectionBinding, McpCapability
         from sqlalchemy.orm.attributes import flag_modified as _flag
 
         managed = {action for action, *_ in WRAPPED}
@@ -361,8 +361,8 @@ def main() -> None:
                 changes.append("         └ removed its McpCapability row")
 
             for binding in (
-                db.query(AgentConnectorBinding)
-                .filter(AgentConnectorBinding.connector_name == "loadedhub")
+                db.query(AgentConnectionBinding)
+                .filter(AgentConnectionBinding.connector_name == "loadedhub")
                 .all()
             ):
                 caps = list(binding.capabilities or [])
@@ -391,7 +391,7 @@ def main() -> None:
             print(f"\nApplied {len(changes)} change(s).")
             print(
                 "Not reachable by anyone yet — enable deliberately:\n"
-                "  agents: add to the AgentConnectorBinding capabilities\n"
+                "  agents: add to the AgentConnectionBinding capabilities\n"
                 "  Claude: Settings → MCP, enable the loadedhub__*_for_period tools"
             )
     finally:

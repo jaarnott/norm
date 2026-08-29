@@ -135,7 +135,7 @@ def main() -> None:
 
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
@@ -143,7 +143,7 @@ def main() -> None:
         changed = 0
         n_ro = 0
         n_rw = 0
-        for spec in db.query(ConnectorSpec).order_by(ConnectorSpec.connector_name):
+        for spec in db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name):
             dirty = False
             for tool in spec.tools or []:
                 action = tool.get("action") or ""

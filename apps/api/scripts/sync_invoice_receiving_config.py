@@ -585,7 +585,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from app.db.engine import _ConfigSessionLocal
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec, Playbook
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec, Playbook
 
     consolidator = dict(CONSOLIDATOR_TOOL)
     consolidator["consolidator_config"] = {
@@ -630,12 +630,12 @@ def main() -> None:
     changes: list[str] = []
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "loadedhub")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
             .first()
         )
         if not spec:
-            raise SystemExit("loadedhub ConnectorSpec not found in config DB")
+            raise SystemExit("loadedhub ConnectionSpec not found in config DB")
 
         tools = list(spec.tools or [])
         retired = [t for t in tools if t.get("action") in RETIRED_ACTIONS]
@@ -655,10 +655,10 @@ def main() -> None:
         spec.tools = tools
 
         binding = (
-            db.query(AgentConnectorBinding)
+            db.query(AgentConnectionBinding)
             .filter(
-                AgentConnectorBinding.agent_slug == "procurement",
-                AgentConnectorBinding.connector_name == "loadedhub",
+                AgentConnectionBinding.agent_slug == "procurement",
+                AgentConnectionBinding.connector_name == "loadedhub",
             )
             .first()
         )

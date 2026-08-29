@@ -18,7 +18,7 @@ import uuid
 import pytest
 
 from app.db.models import (
-    ConnectorConfig,
+    Connection,
     Thread,
     ToolCall,
     UserVenueAccess,
@@ -127,7 +127,7 @@ class TestDeleteVenue:
             )
         )
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=venue.id,
                 config={},
@@ -149,8 +149,8 @@ class TestDeleteVenue:
             == 0
         )
         assert (
-            db_session.query(ConnectorConfig)
-            .filter(ConnectorConfig.venue_id == venue.id)
+            db_session.query(Connection)
+            .filter(Connection.venue_id == venue.id)
             .count()
             == 0
         ), "OAuth tokens must not outlive the venue"
@@ -182,7 +182,10 @@ class TestEveryVenueReferenceIsHandled:
             obj = getattr(m, name)
             table = getattr(obj, "__tablename__", None)
             if table and hasattr(obj, "venue_id") and name != "Venue":
-                referencing.add(name)
+                # use the class's real name — transitional aliases (e.g.
+                # ConnectorConfig = Connection) would otherwise demand the OLD
+                # name appear in delete_venue's source forever.
+                referencing.add(obj.__name__)
 
         unhandled = {name for name in referencing if name not in source}
         assert not unhandled, (

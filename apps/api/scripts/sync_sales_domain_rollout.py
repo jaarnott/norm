@@ -188,7 +188,7 @@ def main(dry_run: bool = False) -> None:
 
     from app.db.config_models import (
         AgentConfig,
-        AgentConnectorBinding,
+        AgentConnectionBinding,
         McpCapability,
         Playbook,
     )
@@ -199,8 +199,8 @@ def main(dry_run: bool = False) -> None:
     try:
         # ── 1. Bindings: retired names → get_sales (loadedhub), trio out ──
         for b in (
-            db.query(AgentConnectorBinding)
-            .filter(AgentConnectorBinding.enabled == True)  # noqa: E712
+            db.query(AgentConnectionBinding)
+            .filter(AgentConnectionBinding.enabled == True)  # noqa: E712
             .all()
         ):
             caps = [dict(c) for c in (b.capabilities or [])]

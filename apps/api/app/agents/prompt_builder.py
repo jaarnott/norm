@@ -92,10 +92,10 @@ def _collect_tools(
     Returns a deduplicated list of dicts with keys: action, connector,
     required_fields, field_mapping, method, description.
 
-    config_db is used for AgentConnectorBinding and ConnectorSpec queries.
-    db is used for ConnectorConfig (credentials) queries.
+    config_db is used for AgentConnectionBinding and ConnectionSpec queries.
+    db is used for Connection (credentials) queries.
     """
-    from app.db.models import AgentConnectorBinding, ConnectorConfig, ConnectorSpec
+    from app.db.models import AgentConnectionBinding, Connection, ConnectionSpec
 
     _cdb = config_db
     if _cdb is None:
@@ -104,9 +104,9 @@ def _collect_tools(
         )
 
     bindings = (
-        _cdb.query(AgentConnectorBinding)
+        _cdb.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.enabled == True,  # noqa: E712
+            AgentConnectionBinding.enabled == True,  # noqa: E712
         )
         .all()
     )
@@ -114,12 +114,31 @@ def _collect_tools(
     if not bindings:
         return []
 
+    # Marketplace entitlement filter (docs/apps-marketplace-plan.md, the
+    # connections/apps split). A connection stays available while ANY entitled
+    # App declares it; tool actions can additionally be claimed per-app via
+    # composition["tool_actions"] ("connector.action" or "connector.*").
+    # project_tools() gates through this same function, so the MCP surface
+    # honors marketplace toggles with no second code path. Inert until the
+    # catalog is seeded (empty sets), and fail-open by design.
+    from app.services.entitlements import (
+        org_id_for_user,
+        unentitled_connectors,
+        unentitled_tool_actions,
+    )
+
+    _org = org_id_for_user(user_id, db)
+    _blocked = unentitled_connectors(_org, db, _cdb)
+    if _blocked:
+        bindings = [b for b in bindings if b.connector_name not in _blocked]
+    _blocked_actions = unentitled_tool_actions(_org, db, _cdb)
+
     tools: list[dict] = []
     for binding in bindings:
         spec = (
-            _cdb.query(ConnectorSpec)
+            _cdb.query(ConnectionSpec)
             .filter(
-                ConnectorSpec.connector_name == binding.connector_name,
+                ConnectionSpec.connector_name == binding.connector_name,
             )
             .first()
         )
@@ -129,10 +148,10 @@ def _collect_tools(
         # Gate on having an active connection — except internal specs which need no credentials
         if spec.execution_mode != "internal":
             has_config = (
-                db.query(ConnectorConfig)
+                db.query(Connection)
                 .filter(
-                    ConnectorConfig.connector_name == binding.connector_name,
-                    ConnectorConfig.enabled == "true",
+                    Connection.connector_name == binding.connector_name,
+                    Connection.enabled == "true",
                 )
                 .count()
                 > 0
@@ -140,16 +159,16 @@ def _collect_tools(
             if not has_config:
                 continue
 
-        # User-scoped email connectors: require per-user ConnectorConfig
+        # User-scoped email connectors: require per-user Connection
         _USER_SCOPED_CONNECTORS = {"gmail", "microsoft_outlook"}
         if spec.connector_name in _USER_SCOPED_CONNECTORS:
             if not user_id:
                 continue
             has_user_config = (
-                db.query(ConnectorConfig)
+                db.query(Connection)
                 .filter(
-                    ConnectorConfig.connector_name == spec.connector_name,
-                    ConnectorConfig.user_id == user_id,
+                    Connection.connector_name == spec.connector_name,
+                    Connection.user_id == user_id,
                 )
                 .count()
                 > 0
@@ -169,6 +188,11 @@ def _collect_tools(
         for tool in spec.tools or []:
             action = tool.get("action", "")
             if enabled_actions is not None and action not in enabled_actions:
+                continue
+            if _blocked_actions and (
+                f"{binding.connector_name}.{action}" in _blocked_actions
+                or f"{binding.connector_name}.*" in _blocked_actions
+            ):
                 continue
             # Demoted tools ([consolidator-only]/[engine-only]) are for the
             # engine's own call_api, never the agent's menu — the structured
@@ -255,7 +279,7 @@ def build_venue_property(configured_venues: list[str], allow_all: bool = False) 
 
 
 def build_input_schema(tool: dict, extra_properties: dict | None = None) -> dict:
-    """Build a JSON Schema object from a ConnectorSpec tool row.
+    """Build a JSON Schema object from a ConnectionSpec tool row.
 
     Anthropic's ``input_schema`` and MCP's ``inputSchema`` are the same object,
     so this has two consumers: ``build_tool_definitions`` below (Norm's own
@@ -493,7 +517,7 @@ def build_tool_definitions(
 
     # Pre-load venues (needed by both playbook and standard modes for tool definitions)
     from app.services.venue_service import get_user_venues
-    from app.db.models import ConnectorConfig
+    from app.db.models import Connection
 
     user_venues = get_user_venues(db)
 
@@ -576,7 +600,7 @@ Default to **markdown tables** for data. Use `render_chart` when the user asks f
         has_outlook = any(t["connector"] == "microsoft_outlook" for t in tools)
 
         if has_system_email or has_gmail or has_outlook:
-            from app.db.models import ConnectorConfig as CC, User as UserModel
+            from app.db.models import Connection as CC, User as UserModel
 
             # Look up the current user's email
             current_user_email = None
@@ -639,10 +663,10 @@ Default to **markdown tables** for data. Use `render_chart` when the user asks f
             venue_lines = []
             for v in user_venues:
                 configs = (
-                    db.query(ConnectorConfig)
+                    db.query(Connection)
                     .filter(
-                        ConnectorConfig.venue_id == v.id,
-                        ConnectorConfig.enabled == "true",
+                        Connection.venue_id == v.id,
+                        Connection.enabled == "true",
                     )
                     .all()
                 )
@@ -827,11 +851,11 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             configured_venues = [
                 v.name
                 for v in user_venues
-                if db.query(ConnectorConfig)
+                if db.query(Connection)
                 .filter(
-                    ConnectorConfig.connector_name == tool["connector"],
-                    ConnectorConfig.venue_id == v.id,
-                    ConnectorConfig.enabled == "true",
+                    Connection.connector_name == tool["connector"],
+                    Connection.venue_id == v.id,
+                    Connection.enabled == "true",
                 )
                 .count()
                 > 0
@@ -871,13 +895,13 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
         ]
     else:
         # Agent default: derive allowed actions from this agent's connector bindings
-        from app.db.models import AgentConnectorBinding
+        from app.db.models import AgentConnectionBinding
 
         agent_bindings = (
-            _cdb.query(AgentConnectorBinding)
+            _cdb.query(AgentConnectionBinding)
             .filter(
-                AgentConnectorBinding.agent_slug == domain,
-                AgentConnectorBinding.enabled == True,  # noqa: E712
+                AgentConnectionBinding.agent_slug == domain,
+                AgentConnectionBinding.enabled == True,  # noqa: E712
             )
             .all()
         )

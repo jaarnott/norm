@@ -363,16 +363,14 @@ def _get_applicant_resume(params: dict, db: Session, thread_id: str | None) -> d
     """Fetch an applicant's resume from BambooHR and return as a document block for the LLM."""
     import base64
     import httpx
-    from app.db.models import ConnectorConfig
+    from app.db.models import Connection
 
     file_id = params.get("file_id") or params.get("resume_file_id")
     if not file_id:
         return {"success": False, "data": {}, "error": "file_id is required"}
 
     config = (
-        db.query(ConnectorConfig)
-        .filter(ConnectorConfig.connector_name == "bamboohr")
-        .first()
+        db.query(Connection).filter(Connection.connector_name == "bamboohr").first()
     )
     if not config:
         return {
@@ -2111,16 +2109,16 @@ def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
     parallel calls over this list — see get_sales). Names only:
     call_api's venue param takes the venue NAME.
     """
-    from app.db.models import ConnectorConfig, Venue
+    from app.db.models import Connection, Venue
 
     connector = str(params.get("connector") or "loadedhub")
     connected = {
         row[0]
-        for row in db.query(ConnectorConfig.venue_id)
+        for row in db.query(Connection.venue_id)
         .filter(
-            ConnectorConfig.connector_name == connector,
-            ConnectorConfig.enabled == "true",
-            ConnectorConfig.venue_id.isnot(None),
+            Connection.connector_name == connector,
+            Connection.enabled == "true",
+            Connection.venue_id.isnot(None),
         )
         .all()
     }
@@ -2965,7 +2963,7 @@ def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> 
     vocabulary. This is the builder's ground truth — an action not in this list
     does not exist, and a scope not in this list grants nothing."""
     from app.db.engine import _ConfigSessionLocal
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.mcp.scopes import MCP_SCOPES
 
     # The connectors an app may currently draw on. Deliberately curated rather
@@ -2977,8 +2975,8 @@ def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> 
         actions = []
         for cn in connectors:
             spec = (
-                cdb.query(ConnectorSpec)
-                .filter(ConnectorSpec.connector_name == cn)
+                cdb.query(ConnectionSpec)
+                .filter(ConnectionSpec.connector_name == cn)
                 .first()
             )
             for t in (spec.tools if spec else None) or []:

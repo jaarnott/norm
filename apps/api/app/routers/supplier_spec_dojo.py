@@ -544,16 +544,16 @@ def dojo_overview(
     """One fetch for the Dojo page: every venue's outstanding invoices with
     their dojo membership, plus the in-dojo samples still awaiting review
     (no baseline yet, or a pending/failed analysis proposal)."""
-    from app.db.models import ConnectorConfig, Venue
+    from app.db.models import Connection, Venue
     from app.services.received_invoice import LoadedInvoiceClient
 
     connected = {
         v_id
-        for (v_id,) in db.query(ConnectorConfig.venue_id)
+        for (v_id,) in db.query(Connection.venue_id)
         .filter(
-            ConnectorConfig.connector_name == "loadedhub",
-            ConnectorConfig.enabled == "true",
-            ConnectorConfig.venue_id.isnot(None),
+            Connection.connector_name == "loadedhub",
+            Connection.enabled == "true",
+            Connection.venue_id.isnot(None),
         )
         .all()
     }

@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db
-from app.db.models import EmailLog, EmailTemplate, ConnectorConfig, User
+from app.db.models import EmailLog, EmailTemplate, Connection, User
 from app.auth.dependencies import require_permission
 
 router = APIRouter(prefix="/email", tags=["email"])
@@ -194,10 +194,10 @@ async def list_connections(
 ):
     """List the current user's connected email accounts."""
     configs = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.user_id == user.id,
-            ConnectorConfig.connector_name.in_(["gmail", "microsoft_outlook"]),
+            Connection.user_id == user.id,
+            Connection.connector_name.in_(["gmail", "microsoft_outlook"]),
         )
         .all()
     )

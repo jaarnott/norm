@@ -123,7 +123,7 @@ def _apply_auth(
                 token = get_valid_access_token(spec, db, venue_id=venue_id)
             except Exception as exc:
                 # Deliberately do NOT fall back to the config JSON here. OAuth
-                # tokens live in ConnectorConfig columns, so that fallback
+                # tokens live in Connection columns, so that fallback
                 # returns "" and we would send an empty `Bearer `, masking a
                 # real auth failure as a network error.
                 raise ConnectorAuthError(

@@ -14,7 +14,7 @@ variant) are added to the loadedhub spec by ``sync_stock_item_write_actions.py``
 bound here.
 
 The menu actions (list_menus/get_menu/create_menu/update_menu/delete_menu) are
-added to the loadedhub ConnectorSpec by ``sync_menu_actions.py`` — run that first
+added to the loadedhub ConnectionSpec by ``sync_menu_actions.py`` — run that first
 (or alongside); binding an action the spec doesn't define yet is harmless (it is
 simply skipped until the definition exists).
 
@@ -110,7 +110,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    from app.db.config_models import AgentConfig, AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConfig, AgentConnectionBinding, ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
@@ -142,8 +142,8 @@ def main() -> None:
         # OFF (so the binding looks "not set up"), even though the agent's
         # prompt builder defaults a missing `enabled` to True.
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "loadedhub")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
             .first()
         )
         tool_desc = (
@@ -160,10 +160,10 @@ def main() -> None:
             for a in LOADEDHUB_ACTIONS
         ]
         binding = (
-            db.query(AgentConnectorBinding)
+            db.query(AgentConnectionBinding)
             .filter(
-                AgentConnectorBinding.agent_slug == AGENT_SLUG,
-                AgentConnectorBinding.connector_name == "loadedhub",
+                AgentConnectionBinding.agent_slug == AGENT_SLUG,
+                AgentConnectionBinding.connector_name == "loadedhub",
             )
             .first()
         )
@@ -173,7 +173,7 @@ def main() -> None:
             print(f"updating binding {AGENT_SLUG} -> loadedhub ({len(caps)} actions)")
         else:
             db.add(
-                AgentConnectorBinding(
+                AgentConnectionBinding(
                     agent_slug=AGENT_SLUG,
                     connector_name="loadedhub",
                     capabilities=caps,

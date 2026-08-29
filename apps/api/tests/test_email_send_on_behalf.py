@@ -4,13 +4,13 @@ Regression cover for a bug that made both paths raise instead of send:
 
     access_token = get_valid_access_token(db, config)   # (spec, db, ...) expected
 
-`db` bound to `spec` and the ConnectorConfig bound to `db`, so the function ran
+`db` bound to `spec` and the Connection bound to `db`, so the function ran
 `config.query(...)` — AttributeError. Both call sites' try/except blocks start
 *after* that line, so it propagated instead of degrading to the intended
 "token expired, please reconnect" response.
 
 It shipped because nothing tested these functions. The token lookup is now
-`_access_token_for()`, which resolves the ConnectorSpec from the config DB (where
+`_access_token_for()`, which resolves the ConnectionSpec from the config DB (where
 specs live) and passes tokens from the main DB — the two-database split is the
 part that made the original call easy to get wrong.
 """
@@ -28,12 +28,12 @@ from app.services.email_service import (
 
 @pytest.fixture
 def gmail_user(db_session):
-    from app.db.models import ConnectorConfig
+    from app.db.models import Connection
     from tests.conftest import _make_user
 
     user = _make_user(db_session, email="sender@test.com")
     db_session.add(
-        ConnectorConfig(
+        Connection(
             connector_name="gmail",
             user_id=user.id,
             venue_id=None,
@@ -49,12 +49,12 @@ def gmail_user(db_session):
 
 @pytest.fixture
 def outlook_user(db_session):
-    from app.db.models import ConnectorConfig
+    from app.db.models import Connection
     from tests.conftest import _make_user
 
     user = _make_user(db_session, email="sender2@test.com")
     db_session.add(
-        ConnectorConfig(
+        Connection(
             connector_name="microsoft_outlook",
             user_id=user.id,
             venue_id=None,

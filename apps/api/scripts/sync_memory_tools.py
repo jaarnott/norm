@@ -125,15 +125,15 @@ def main() -> None:
 
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     try:
         # 1. Advertise the tools on the `norm` spec.
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "norm")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "norm")
             .first()
         )
         if not spec:
@@ -150,8 +150,8 @@ def main() -> None:
 
         # 2. Enable the capabilities on every `norm` agent binding.
         bindings = (
-            db.query(AgentConnectorBinding)
-            .filter(AgentConnectorBinding.connector_name == "norm")
+            db.query(AgentConnectionBinding)
+            .filter(AgentConnectionBinding.connector_name == "norm")
             .all()
         )
         binding_changes = []

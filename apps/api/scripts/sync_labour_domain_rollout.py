@@ -123,8 +123,8 @@ def main(dry_run: bool = False) -> None:
 
     from app.db.config_models import (
         AgentConfig,
-        AgentConnectorBinding,
-        ConnectorSpec,
+        AgentConnectionBinding,
+        ConnectionSpec,
         McpCapability,
         Playbook,
     )
@@ -135,10 +135,10 @@ def main(dry_run: bool = False) -> None:
     try:
         # ── 1. Bindings: retired names → get_labour ──────────────────────
         for b in (
-            db.query(AgentConnectorBinding)
+            db.query(AgentConnectionBinding)
             .filter(
-                AgentConnectorBinding.enabled == True,  # noqa: E712
-                AgentConnectorBinding.connector_name == "loadedhub",
+                AgentConnectionBinding.enabled == True,  # noqa: E712
+                AgentConnectionBinding.connector_name == "loadedhub",
             )
             .all()
         ):
@@ -226,8 +226,8 @@ def main(dry_run: bool = False) -> None:
 
         # ── 5. Demote get_staff_members to the engine backend ────────────
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "loadedhub")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
             .first()
         )
         if spec:

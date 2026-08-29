@@ -1,7 +1,7 @@
 """Config rows -> MCP tool schemas.
 
 This is the inverse of ``mcp_executor.convert_mcp_tools_to_spec``, which maps
-inbound MCP tools onto ``ConnectorSpec.tools``. Here we go the other way.
+inbound MCP tools onto ``ConnectionSpec.tools``. Here we go the other way.
 
 The projection is deliberately thin. It never *authors* a schema — it reads
 one, via ``prompt_builder.build_input_schema``, the same function that builds
@@ -13,7 +13,7 @@ Five filters narrow the surface, each strictly. A tool is exposed only if it
 passes all of them:
 
 1. **Bound and credentialed** — ``_collect_tools`` gates on an enabled
-   ``AgentConnectorBinding`` capability plus a working ``ConnectorConfig``
+   ``AgentConnectionBinding`` capability plus a working ``Connection``
    (per-venue, and per-user for gmail/outlook). Free reuse of the gating the
    in-app agents already trust.
 2. **Curated** — an enabled ``McpCapability`` row. No row means not exposed.
@@ -266,10 +266,10 @@ def raw_tool_defs(config_db: Session) -> dict[tuple[str, str], dict]:
     signals (see ``write_signals``). So gating uses ``_collect_tools`` and
     signal-checking uses the raw row.
     """
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
     out: dict[tuple[str, str], dict] = {}
-    for spec in config_db.query(ConnectorSpec).all():
+    for spec in config_db.query(ConnectionSpec).all():
         for tool in spec.tools or []:
             action = tool.get("action")
             if action:

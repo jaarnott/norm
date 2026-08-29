@@ -44,7 +44,7 @@ DEMOTIONS: dict[str, dict[str, str]] = {
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
@@ -52,8 +52,8 @@ def main(dry_run: bool = False) -> None:
     try:
         for connector, actions in DEMOTIONS.items():
             spec = (
-                db.query(ConnectorSpec)
-                .filter(ConnectorSpec.connector_name == connector)
+                db.query(ConnectionSpec)
+                .filter(ConnectionSpec.connector_name == connector)
                 .first()
             )
             if not spec:
@@ -79,10 +79,10 @@ def main(dry_run: bool = False) -> None:
                 flag_modified(spec, "tools")
 
             for b in (
-                db.query(AgentConnectorBinding)
+                db.query(AgentConnectionBinding)
                 .filter(
-                    AgentConnectorBinding.connector_name == connector,
-                    AgentConnectorBinding.enabled == True,  # noqa: E712
+                    AgentConnectionBinding.connector_name == connector,
+                    AgentConnectionBinding.enabled == True,  # noqa: E712
                 )
                 .all()
             ):

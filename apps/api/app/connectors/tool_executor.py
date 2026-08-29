@@ -42,7 +42,7 @@ def execute_connector_tool(
     """Execute a connector tool end-to-end, matching the LLM tool loop path.
 
     Steps:
-    1. Look up ConnectorSpec and tool definition
+    1. Look up ConnectionSpec and tool definition
     2. Dispatch to a registered internal handler, or a consolidator, if either
        applies (mirrors tool_loop._execute_tool_call)
     3. Resolve venue-aware credentials
@@ -58,20 +58,20 @@ def execute_connector_tool(
     fallback would otherwise answer a question about venue A using venue B's
     credentials.
     """
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.models import Venue
     from app.connectors.spec_executor import execute_spec
 
     # 1. Look up connector spec
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector_name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector_name)
         .first()
     )
     if not spec:
         available = [
             s.connector_name
-            for s in config_db.query(ConnectorSpec.connector_name).all()
+            for s in config_db.query(ConnectionSpec.connector_name).all()
         ]
         return ToolResult(
             success=False,
@@ -225,17 +225,17 @@ def get_tool_info(
     config_db: Session,
 ) -> dict:
     """Return metadata about a tool: accepted params, field descriptions, etc."""
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector_name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector_name)
         .first()
     )
     if not spec:
         available = [
             s.connector_name
-            for s in config_db.query(ConnectorSpec.connector_name).all()
+            for s in config_db.query(ConnectionSpec.connector_name).all()
         ]
         return {
             "error": f"Connector not found: {connector_name}",
@@ -278,17 +278,17 @@ def get_tool_info(
 
 def list_connector_tools(connector_name: str, config_db: Session) -> dict:
     """Return all available tools for a connector with method, path, and param info."""
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == connector_name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == connector_name)
         .first()
     )
     if not spec:
         available = [
             s.connector_name
-            for s in config_db.query(ConnectorSpec.connector_name).all()
+            for s in config_db.query(ConnectionSpec.connector_name).all()
         ]
         return {
             "error": f"Connector not found: {connector_name}",
@@ -358,15 +358,15 @@ def _resolve_credentials(
     authenticated, venue-scoped path: a request scoped to venue A would be
     answered with venue B's credentials, and the caller would never know.
     """
-    from app.db.models import ConnectorConfig
+    from app.db.models import Connection
 
     if venue_id:
         config = (
-            db.query(ConnectorConfig)
+            db.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == connector_name,
-                ConnectorConfig.venue_id == venue_id,
-                ConnectorConfig.enabled == "true",
+                Connection.connector_name == connector_name,
+                Connection.venue_id == venue_id,
+                Connection.enabled == "true",
             )
             .first()
         )
@@ -376,21 +376,21 @@ def _resolve_credentials(
     if strict_venue:
         # Platform-level configs only — never another venue's.
         return (
-            db.query(ConnectorConfig)
+            db.query(Connection)
             .filter(
-                ConnectorConfig.connector_name == connector_name,
-                ConnectorConfig.venue_id.is_(None),
-                ConnectorConfig.enabled == "true",
+                Connection.connector_name == connector_name,
+                Connection.venue_id.is_(None),
+                Connection.enabled == "true",
             )
             .first()
         )
 
     # Fall back to first enabled config (platform or any venue)
     return (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == connector_name,
-            ConnectorConfig.enabled == "true",
+            Connection.connector_name == connector_name,
+            Connection.enabled == "true",
         )
         .first()
     )

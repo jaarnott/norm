@@ -13,14 +13,14 @@ def get_connector(domain: str, db: Session) -> BaseConnector:
     Used only for legacy code paths that need a BaseConnector.
     Prefer resolve_connector() for spec-driven resolution.
     """
-    from app.db.models import ConnectorConfig
+    from app.db.models import Connection
 
     # Look up the connector config for this domain
     row = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == domain,
-            ConnectorConfig.enabled == "true",
+            Connection.connector_name == domain,
+            Connection.enabled == "true",
         )
         .first()
     )
@@ -46,13 +46,13 @@ def resolve_connector(
     Iterates ALL enabled bindings for this domain so that multiple
     connector specs can coexist (e.g. HR = BambooHR + Deputy).
 
-    Returns (ConnectorSpec, credentials_dict, operation_dict).
+    Returns (ConnectionSpec, credentials_dict, operation_dict).
     Raises ValueError if no matching spec/action is found.
 
-    config_db is used for ConnectorSpec and AgentConnectorBinding queries.
-    db is used for ConnectorConfig (credentials) queries.
+    config_db is used for ConnectionSpec and AgentConnectionBinding queries.
+    db is used for Connection (credentials) queries.
     """
-    from app.db.models import ConnectorSpec, ConnectorConfig, AgentConnectorBinding
+    from app.db.models import ConnectionSpec, Connection, AgentConnectionBinding
 
     _cdb = config_db
     if _cdb is None:
@@ -62,20 +62,20 @@ def resolve_connector(
 
     # Get ALL enabled bindings (tools are no longer agent-scoped)
     bindings = (
-        _cdb.query(AgentConnectorBinding)
+        _cdb.query(AgentConnectionBinding)
         .filter(
-            AgentConnectorBinding.enabled == True,  # noqa: E712
+            AgentConnectionBinding.enabled == True,  # noqa: E712
         )
         .all()
     )
 
-    # For each binding, load the ConnectorSpec and check if it has this action
+    # For each binding, load the ConnectionSpec and check if it has this action
     for binding in bindings:
         spec = (
-            _cdb.query(ConnectorSpec)
+            _cdb.query(ConnectionSpec)
             .filter(
-                ConnectorSpec.connector_name == binding.connector_name,
-                ConnectorSpec.enabled == True,  # noqa: E712
+                ConnectionSpec.connector_name == binding.connector_name,
+                ConnectionSpec.enabled == True,  # noqa: E712
             )
             .first()
         )
@@ -85,10 +85,10 @@ def resolve_connector(
         for op in spec.tools or []:
             if op.get("action") == action:
                 config_row = (
-                    db.query(ConnectorConfig)
+                    db.query(Connection)
                     .filter(
-                        ConnectorConfig.connector_name == binding.connector_name,
-                        ConnectorConfig.enabled == "true",
+                        Connection.connector_name == binding.connector_name,
+                        Connection.enabled == "true",
                     )
                     .first()
                 )

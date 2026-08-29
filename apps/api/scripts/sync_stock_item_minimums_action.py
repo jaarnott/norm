@@ -68,14 +68,14 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == CONNECTOR)
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == CONNECTOR)
             .first()
         )
         if not spec:

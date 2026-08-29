@@ -319,9 +319,9 @@ async def list_available_connectors(
     user: User = Depends(get_current_user),
 ):
     """List all connector names that have specs configured."""
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
 
-    specs = config_db.query(ConnectorSpec.connector_name).all()
+    specs = config_db.query(ConnectionSpec.connector_name).all()
     return {"connectors": sorted(set(s.connector_name for s in specs))}
 
 
@@ -600,13 +600,13 @@ async def refresh_report(
             if venue_id:
                 venue_ids = [venue_id]
             else:
-                from app.db.models import ConnectorConfig
+                from app.db.models import Connection
 
                 venue_configs = (
-                    db.query(ConnectorConfig.venue_id)
+                    db.query(Connection.venue_id)
                     .filter(
-                        ConnectorConfig.connector_name == script["connector"],
-                        ConnectorConfig.enabled == "true",
+                        Connection.connector_name == script["connector"],
+                        Connection.enabled == "true",
                     )
                     .all()
                 )
@@ -774,13 +774,13 @@ def refresh_single_chart(
     if venue_id:
         venue_ids = [venue_id]
     else:
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
 
         venue_configs = (
-            db.query(ConnectorConfig.venue_id)
+            db.query(Connection.venue_id)
             .filter(
-                ConnectorConfig.connector_name == script["connector"],
-                ConnectorConfig.enabled == "true",
+                Connection.connector_name == script["connector"],
+                Connection.enabled == "true",
             )
             .all()
         )
@@ -1049,13 +1049,13 @@ async def test_chart_script(
     if venue_id:
         venue_ids = [venue_id]
     else:
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
 
         venue_configs = (
-            db.query(ConnectorConfig.venue_id)
+            db.query(Connection.venue_id)
             .filter(
-                ConnectorConfig.connector_name == script["connector"],
-                ConnectorConfig.enabled == "true",
+                Connection.connector_name == script["connector"],
+                Connection.enabled == "true",
             )
             .all()
         )

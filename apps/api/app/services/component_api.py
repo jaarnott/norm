@@ -51,8 +51,8 @@ def execute_component_action(
         _apply_auth,
         _jinja_env,
     )
-    from app.db.config_models import ComponentApiConfig, ConnectorSpec
-    from app.db.models import ConnectorConfig
+    from app.db.config_models import ComponentApiConfig, ConnectionSpec
+    from app.db.models import Connection
 
     cfg = (
         config_db.query(ComponentApiConfig)
@@ -68,12 +68,12 @@ def execute_component_action(
             f"No config for {component_key}/{action_name}", status_code=404
         )
 
-    cred_query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == cfg.connector_name,
-        ConnectorConfig.enabled == "true",
+    cred_query = db.query(Connection).filter(
+        Connection.connector_name == cfg.connector_name,
+        Connection.enabled == "true",
     )
     if venue_id:
-        cred_query = cred_query.filter(ConnectorConfig.venue_id == venue_id)
+        cred_query = cred_query.filter(Connection.venue_id == venue_id)
     cred_row = cred_query.first()
     if not cred_row:
         raise ComponentApiError(
@@ -83,8 +83,8 @@ def execute_component_action(
     credentials = cred_row.config or {}
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == cfg.connector_name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == cfg.connector_name)
         .first()
     )
     if not spec:

@@ -6,13 +6,13 @@ resolution order: explicit override → DB selector → Settings default.
 """
 
 from app.config import settings
-from app.db.models import ConnectorConfig
+from app.db.models import Connection
 from app.services.models import RETIRED_MODEL_IDS, agent_model, router_model
 
 
 def _set_selector(db_session, **config):
     """Create the Anthropic platform connector config the selector writes to."""
-    row = ConnectorConfig(
+    row = Connection(
         connector_name="anthropic",
         venue_id=None,
         config=config,
@@ -61,7 +61,7 @@ class TestRetiredSelectionIsIgnored:
 
     def test_every_retired_id_is_rejected(self, db_session):
         for retired in RETIRED_MODEL_IDS:
-            db_session.query(ConnectorConfig).delete()
+            db_session.query(Connection).delete()
             _set_selector(db_session, interpreter_model=retired)
             resolved = agent_model(db_session)
             assert resolved not in RETIRED_MODEL_IDS

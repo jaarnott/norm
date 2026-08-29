@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db, get_config_db, get_config_db_rw, SessionLocal
-from app.db.models import ConnectorSpec, ConnectorConfig, User
+from app.db.models import ConnectionSpec, Connection, User
 from app.auth.dependencies import get_current_user, require_permission
 from app.services.models import agent_model
 
@@ -94,7 +94,7 @@ class GenerateBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _spec_to_dict(spec: ConnectorSpec) -> dict:
+def _spec_to_dict(spec: ConnectionSpec) -> dict:
     return {
         "id": spec.id,
         "connector_name": spec.connector_name,
@@ -127,7 +127,9 @@ async def list_specs(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    specs = config_db.query(ConnectorSpec).order_by(ConnectorSpec.connector_name).all()
+    specs = (
+        config_db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name).all()
+    )
     return {"specs": [_spec_to_dict(s) for s in specs]}
 
 
@@ -153,14 +155,14 @@ async def create_spec(
     user: User = Depends(require_permission("admin:system")),
 ):
     existing = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == body.connector_name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == body.connector_name)
         .first()
     )
     if existing:
         raise HTTPException(409, f"Spec already exists: {body.connector_name}")
 
-    spec = ConnectorSpec(
+    spec = ConnectionSpec(
         connector_name=body.connector_name,
         display_name=body.display_name,
         category=body.category,
@@ -189,8 +191,8 @@ async def get_spec(
     user: User = Depends(get_current_user),
 ):
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -206,8 +208,8 @@ async def update_spec(
     user: User = Depends(require_permission("admin:system")),
 ):
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -230,8 +232,8 @@ async def delete_spec(
     user: User = Depends(require_permission("admin:system")),
 ):
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -253,8 +255,8 @@ async def dry_run(
     from app.connectors.spec_executor import render_request
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -282,9 +284,9 @@ async def dry_run(
 
     # Get credentials (use empty dict for dry-run if none configured)
     config_row = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == name,
+            Connection.connector_name == name,
         )
         .first()
     )
@@ -317,8 +319,8 @@ async def test_spec(
     from app.connectors.spec_executor import execute_spec
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -341,12 +343,12 @@ async def test_spec(
     if operation is None:
         raise HTTPException(400, "No tools defined on this spec")
 
-    config_query = db.query(ConnectorConfig).filter(
-        ConnectorConfig.connector_name == name,
-        ConnectorConfig.enabled == "true",
+    config_query = db.query(Connection).filter(
+        Connection.connector_name == name,
+        Connection.enabled == "true",
     )
     if body.venue_id:
-        config_query = config_query.filter(ConnectorConfig.venue_id == body.venue_id)
+        config_query = config_query.filter(Connection.venue_id == body.venue_id)
     config_row = config_query.first()
     if not config_row:
         raise HTTPException(400, f"No credentials configured for {name}")
@@ -414,8 +416,8 @@ async def preview_mcp_tools(
     )
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -426,10 +428,8 @@ async def preview_mcp_tools(
         )
 
     config_row = (
-        db.query(ConnectorConfig)
-        .filter(
-            ConnectorConfig.connector_name == name, ConnectorConfig.enabled == "true"
-        )
+        db.query(Connection)
+        .filter(Connection.connector_name == name, Connection.enabled == "true")
         .first()
     )
     if not config_row:
@@ -467,8 +467,8 @@ async def sync_mcp_tools(
     from sqlalchemy.orm.attributes import flag_modified
 
     spec = (
-        config_db.query(ConnectorSpec)
-        .filter(ConnectorSpec.connector_name == name)
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == name)
         .first()
     )
     if not spec:
@@ -479,10 +479,8 @@ async def sync_mcp_tools(
         )
 
     config_row = (
-        db.query(ConnectorConfig)
-        .filter(
-            ConnectorConfig.connector_name == name, ConnectorConfig.enabled == "true"
-        )
+        db.query(Connection)
+        .filter(Connection.connector_name == name, Connection.enabled == "true")
         .first()
     )
     if not config_row:
@@ -595,7 +593,7 @@ class AutoBuildConsolidatorBody(BaseModel):
 
 def _build_tools_context(config_db: Session) -> str:
     """Build a text listing of all available connector tools for AI prompts."""
-    specs = config_db.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()  # noqa: E712
+    specs = config_db.query(ConnectionSpec).filter(ConnectionSpec.enabled == True).all()  # noqa: E712
     tools_context = []
     for spec in specs:
         if spec.execution_mode == "internal":
@@ -1066,11 +1064,11 @@ def _build_connector_tools(db, config_db=None) -> list[dict]:
         raise RuntimeError(
             "config_db is required — check that config_db is passed through the call chain"
         )
-    specs = _cdb.query(ConnectorSpec).filter(ConnectorSpec.enabled == True).all()  # noqa: E712
+    specs = _cdb.query(ConnectionSpec).filter(ConnectionSpec.enabled == True).all()  # noqa: E712
 
     # Build venue lookup: connector_name -> list of venue names with configs
     venue_map: dict[str, list[str]] = {}
-    configs = db.query(ConnectorConfig).filter(ConnectorConfig.enabled == "true").all()
+    configs = db.query(Connection).filter(Connection.enabled == "true").all()
     venue_ids = {c.venue_id for c in configs if c.venue_id}
     venues_by_id: dict[str, str] = {}
     if venue_ids:
@@ -1369,8 +1367,8 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
 
                         connector_name, action = parts
                         spec = (
-                            config_db.query(ConnectorSpec)
-                            .filter(ConnectorSpec.connector_name == connector_name)
+                            config_db.query(ConnectionSpec)
+                            .filter(ConnectionSpec.connector_name == connector_name)
                             .first()
                         )
                         if not spec:
@@ -1427,10 +1425,10 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                         # Fallback: if no venue specified, find any enabled config
                         if not config_row:
                             config_row = (
-                                db.query(ConnectorConfig)
+                                db.query(Connection)
                                 .filter(
-                                    ConnectorConfig.connector_name == connector_name,
-                                    ConnectorConfig.enabled == "true",
+                                    Connection.connector_name == connector_name,
+                                    Connection.enabled == "true",
                                 )
                                 .first()
                             )

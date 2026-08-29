@@ -80,6 +80,12 @@ def test_update_sends_ids_and_no_create_flag(capture):
     assert f["version_id"] == "V1"
     assert "create" not in f
     assert f["venue_id"] == "cbven-1"
+    # kitchen_record_recipe shape (verified live): editor lines map to
+    # ingredients {kind, name, quantity, unit} — unit takes the unit id.
+    assert f["ingredients"] == [
+        {"kind": "item", "name": "Egg", "quantity": 2, "unit": "u1"}
+    ]
+    assert "lines" not in f
     assert out["created"] is False
 
 
@@ -101,11 +107,13 @@ def test_create_omits_ids_and_flags_create(capture):
     }
     out = save_recipe("venue-1", recipe, db=None, config_db=None)
     f = capture["fields"]
-    assert f["create"] is True
+    # kitchen_record_recipe has no create flag — creation IS the absence of ids.
+    assert "create" not in f
     assert "recipe_id" not in f
     assert "version_id" not in f
     assert f["name"] == "New Sauce"
-    assert f["yield_unit_id"] == "u9"
+    assert f["yield_unit"] == "u9"
+    assert "yield_unit_id" not in f
     # The required-field gate must be lifted, or a create (no ids) is blocked.
     assert capture["op"]["required_fields"] == []
     # The new ids come back to the caller.
@@ -118,7 +126,9 @@ def test_explicit_create_flag_forces_create_even_with_recipe_id(capture):
     recipe = {"recipe_id": "R1", "create": True, "name": "Forced"}
     save_recipe("venue-1", recipe, db=None, config_db=None)
     f = capture["fields"]
-    assert f["create"] is True
+    # the caller's create flag forces the create branch but never reaches the
+    # wire — kitchen_record_recipe has no such field.
+    assert "create" not in f
     assert "recipe_id" not in f
 
 

@@ -8,7 +8,7 @@ exists to make a regression in that filter fail loudly.
 
 import pytest
 
-from app.db.config_models import ConnectorSpec
+from app.db.config_models import ConnectionSpec
 from app.db.models import Message, Thread
 from app.services import delegation as D
 
@@ -55,7 +55,7 @@ def seeded_specs(db_session):
         # Flagged read-only but not a GET: contradictory config must fail closed.
         {"action": "sneaky_write", "method": "POST", "read_only": True},
     ]
-    spec = ConnectorSpec(
+    spec = ConnectionSpec(
         connector_name="test_delegation",
         display_name="Delegation test",
         auth_type="none",

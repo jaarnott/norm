@@ -122,19 +122,19 @@ DELETE_ACTIONS = ("get_stock_item",)
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import AgentConfig, AgentConnectorBinding, ConnectorSpec
+    from app.db.config_models import AgentConfig, AgentConnectionBinding, ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     changed: list[str] = []
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == "loadedhub")
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
             .first()
         )
         if not spec:
-            raise SystemExit("loadedhub ConnectorSpec not found")
+            raise SystemExit("loadedhub ConnectionSpec not found")
         tools = [dict(t) for t in (spec.tools or [])]
         by_action = {t.get("action"): t for t in tools}
 
@@ -252,10 +252,10 @@ def main(dry_run: bool = False) -> None:
 
         # 5. Binding capabilities: switch the demoted reads off.
         for b in (
-            db.query(AgentConnectorBinding)
+            db.query(AgentConnectionBinding)
             .filter(
-                AgentConnectorBinding.connector_name == "loadedhub",
-                AgentConnectorBinding.enabled == True,  # noqa: E712
+                AgentConnectionBinding.connector_name == "loadedhub",
+                AgentConnectionBinding.enabled == True,  # noqa: E712
             )
             .all()
         ):

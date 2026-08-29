@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
+import AppsDashboard from '../apps/AppsDashboard';
 import ConsolidatorCoveragePanel from './ConsolidatorCoveragePanel';
 import BillingTab from './BillingTab';
 import EmailTab from './EmailTab';
@@ -1065,7 +1066,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
+type SettingsTab = 'apps' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -1390,9 +1391,10 @@ export default function SettingsPanel() {
         {showRoles && <button data-testid="settings-tab-roles" onClick={() => setActiveTab('roles')} style={tabStyle('roles')}>Roles</button>}
         <button data-testid="settings-tab-billing" onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
         <button onClick={() => setActiveTab('email')} style={tabStyle('email')}>Email</button>
+        <button data-testid="settings-tab-apps" onClick={() => setActiveTab('apps')} style={tabStyle('apps')}>Apps</button>
         {(showAgents || showConnectors || showComponents) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
         {showAgents && <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>}
-        {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connectors</button>}
+        {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connections</button>}
         {showComponents && <button data-testid="settings-tab-components" onClick={() => setActiveTab('components')} style={tabStyle('components')}>Components</button>}
         {showPlaybooks && <button data-testid="settings-tab-playbooks" onClick={() => setActiveTab('playbooks')} style={tabStyle('playbooks')}>Playbooks</button>}
         {showSupplierSpecs && <button data-testid="settings-tab-supplier-specs" onClick={() => setActiveTab('supplier-specs')} style={tabStyle('supplier-specs')}>Supplier Specs</button>}
@@ -1431,6 +1433,7 @@ export default function SettingsPanel() {
         {activeTab === 'members' && <UsersTab />}
 
         {/* ============ CONNECTORS TAB ============ */}
+        {activeTab === 'apps' && <AppsDashboard data={{}} props={{ marketplaceOnly: true }} />}
         {activeTab === 'connectors' && (
           <>
             <ConnectorSpecsPanel onViewModeChange={setSpecEditing} />

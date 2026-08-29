@@ -42,18 +42,18 @@ RETIRED = (
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.config_models import ConnectorSpec
+    from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
     try:
         spec = (
-            db.query(ConnectorSpec)
-            .filter(ConnectorSpec.connector_name == CONNECTOR)
+            db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == CONNECTOR)
             .first()
         )
         if not spec:
-            raise SystemExit(f"{CONNECTOR} ConnectorSpec not found")
+            raise SystemExit(f"{CONNECTOR} ConnectionSpec not found")
         tools = [dict(t) for t in (spec.tools or [])]
         kept = [t for t in tools if t.get("action") not in RETIRED]
         removed = [t.get("action") for t in tools if t.get("action") in RETIRED]
