@@ -725,20 +725,28 @@ The user has access to multiple venues:
 - For cross-venue queries, only include venues that have the relevant connector
 """
 
-        # Add page context so the agent knows what the user is viewing
+        # Add page context so the agent knows what the user is viewing.
+        # App-owned pages are labelled from the marketplace catalog (each
+        # composition declares its components' pages), so a new app page needs
+        # no edit here. Only platform chrome that belongs to no app is listed.
         if page_context:
             _page_labels = {
-                "roster": "Roster",
-                "hiring": "Hiring",
-                "orders": "Orders",
-                "recipes": "Recipes",
-                "menus": "Menus",
                 "saved-reports": "Saved Reports",
                 "tasks-hr": "HR Automated Tasks",
                 "tasks-procurement": "Procurement Automated Tasks",
                 "tasks-reports": "Reports Automated Tasks",
+                "apps-hub": "Apps",
             }
-            _page_labels["apps-hub"] = "Apps"
+            try:
+                from app.db.config_models import MarketplaceApp
+
+                for _app in _cdb.query(MarketplaceApp).all():
+                    for _comp in (_app.composition or {}).get("components") or []:
+                        _page = (_comp or {}).get("page") or {}
+                        if _page.get("id") and _page.get("label"):
+                            _page_labels[str(_page["id"])] = str(_page["label"])
+            except Exception:  # a catalog hiccup must never break the prompt
+                logger.warning("page labels: catalog unavailable", exc_info=True)
             _pid = str(page_context.get("page_id") or "")
             if _pid.startswith("app:"):
                 # A pinned user-built app rendered as its own page.

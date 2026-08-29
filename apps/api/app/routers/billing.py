@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.engine import get_db
+from app.db.engine import get_db, get_config_db
 from app.db.models import User, OrganizationMembership
 from app.auth.dependencies import require_permission
 
@@ -44,11 +44,12 @@ def _require_org_owner(user: User, org_id: str, db: Session) -> OrganizationMemb
 async def get_billing(
     org_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("billing:read")),
 ):
     from app.services.billing_service import get_billing_info
 
-    return get_billing_info(db, org_id)
+    return get_billing_info(db, org_id, config_db)
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +89,14 @@ async def subscribe(
     org_id: str,
     body: SubscribeBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("billing:manage")),
 ):
     """Create the Stripe subscription after payment method is collected."""
     from app.services.billing_service import create_subscription
 
     try:
-        result = create_subscription(db, org_id, body.token_plan)
+        result = create_subscription(db, org_id, body.token_plan, config_db)
         db.commit()
         return result
     except Exception as exc:
@@ -116,13 +118,14 @@ async def update_plan(
     org_id: str,
     body: ChangePlanBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("billing:manage")),
 ):
     """Change the token plan (prorated)."""
     from app.services.billing_service import change_plan
 
     try:
-        result = change_plan(db, org_id, body.token_plan)
+        result = change_plan(db, org_id, body.token_plan, config_db)
         db.commit()
         return result
     except Exception as exc:
@@ -145,23 +148,46 @@ async def update_agents(
     org_id: str,
     body: AgentBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("billing:manage")),
 ):
-    """Enable/disable paid agents."""
-    from app.db.models import Organization
+    """Enable/disable paid agent bundles.
+
+    Legacy surface kept for the BillingTab: the body's ``hr``/``procurement``
+    keys map to the catalog apps carrying those stripe_price_keys, and the
+    switch is an org_app_entitlement row — the same one the marketplace
+    enable/disable writes, so billing and access can never disagree.
+    """
+    from app.db.models import Organization, OrgAppEntitlement
+    from app.services.billing_service import get_agent_apps, get_billing_info
 
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
-    if body.hr is not None:
-        org.hr_agent_enabled = body.hr
-    if body.procurement is not None:
-        org.procurement_agent_enabled = body.procurement
+
+    slug_by_key = {a["key"]: a["slug"] for a in get_agent_apps(db, org_id, config_db)}
+    for key, wanted in (("hr", body.hr), ("procurement", body.procurement)):
+        if wanted is None or key not in slug_by_key:
+            continue
+        row = (
+            db.query(OrgAppEntitlement)
+            .filter(
+                OrgAppEntitlement.organization_id == org_id,
+                OrgAppEntitlement.app_slug == slug_by_key[key],
+            )
+            .first()
+        )
+        if row is None:
+            row = OrgAppEntitlement(
+                organization_id=org_id, app_slug=slug_by_key[key], enabled=wanted
+            )
+            db.add(row)
+        else:
+            row.enabled = wanted
     db.flush()
     db.commit()
-    from app.services.billing_service import get_billing_info
 
-    return get_billing_info(db, org_id)
+    return get_billing_info(db, org_id, config_db)
 
 
 # ---------------------------------------------------------------------------

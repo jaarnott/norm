@@ -145,3 +145,47 @@ class TestGenericFallback:
         assert "Current Page Context" in prompt  # the page itself is still named
         assert "What the user has open" not in prompt
         assert "Open App" not in prompt
+
+
+class TestPageLabels:
+    """Page labels come from the marketplace catalog, not a hand-list.
+
+    The old hardcoded map went stale every time a page shipped — it never knew
+    invoices, menu-engineering or supplier-tenders existed. Now an app's
+    composition declares its pages and the label rides along automatically."""
+
+    def test_a_catalog_page_is_labelled_from_its_composition(self, db_session):
+        from app.db.config_models import MarketplaceApp
+
+        db_session.add(
+            MarketplaceApp(
+                slug="loaded-test",
+                name="Loaded",
+                tier="integration",
+                status="active",
+                composition={
+                    "components": [
+                        {
+                            "key": "supplier_tenders",
+                            "page": {
+                                "id": "supplier-tenders",
+                                "label": "Supplier Tenders",
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+        db_session.flush()
+        prompt = _prompt(
+            db_session, {"page_id": "supplier-tenders", "agent": "procurement"}
+        )
+        assert "**Supplier Tenders** page" in prompt
+
+    def test_platform_chrome_keeps_its_fallback_label(self, db_session):
+        prompt = _prompt(db_session, {"page_id": "saved-reports", "agent": "reports"})
+        assert "**Saved Reports** page" in prompt
+
+    def test_an_unknown_page_id_falls_back_to_the_id(self, db_session):
+        prompt = _prompt(db_session, {"page_id": "brand-new-page", "agent": "reports"})
+        assert "**brand-new-page** page" in prompt

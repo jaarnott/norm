@@ -17,8 +17,11 @@ databases via POST /internal/validate-config — that is the half CI can't do.
 """
 
 from app.services.config_validator import (
+    check_binding_actions,
     check_binding_capabilities,
+    check_component_api_row,
     check_connector_tools,
+    check_display_components,
     check_model_selection,
     check_playbook_tool_filter,
 )
@@ -267,6 +270,151 @@ class TestPlaybookToolFilter:
             engine_only_actions={"get_sales_data"},
         )
         assert issues == []
+
+
+class TestBindingActions:
+    """A binding capability that resolves to nothing vanishes SILENTLY.
+
+    ``_collect_tools`` intersects spec tools with the capability set, so a
+    stale action name just contributes nothing. The executive chef lost its
+    recipe write this way on 29 Aug 2026 — the CB App consolidated its tools
+    and ``kitchen_loadedhub_update_recipe`` stopped existing, but the binding
+    kept naming it in every environment until a human noticed Save was broken.
+    """
+
+    SPEC = {"kitchen_record_recipe", "stock_loadedhub_tender"}
+
+    def test_capability_matching_a_spec_tool_passes(self):
+        issues = check_binding_actions(
+            "executive_chef",
+            "cook_brothers_app",
+            [{"action": "kitchen_record_recipe", "enabled": True}],
+            self.SPEC,
+        )
+        assert issues == []
+
+    def test_stale_capability_is_flagged(self):
+        # The exact incident: the cap outlived the tool it named.
+        issues = check_binding_actions(
+            "executive_chef",
+            "cook_brothers_app",
+            [{"action": "kitchen_loadedhub_update_recipe", "enabled": True}],
+            self.SPEC,
+        )
+        assert len(issues) == 1
+        assert "kitchen_loadedhub_update_recipe" in issues[0].problem
+        assert "silently" in issues[0].problem
+        assert issues[0].where == "binding.executive_chef.cook_brothers_app"
+
+    def test_disabled_capability_is_ignored(self):
+        issues = check_binding_actions(
+            "executive_chef",
+            "cook_brothers_app",
+            [{"action": "gone_tool", "enabled": False}],
+            self.SPEC,
+        )
+        assert issues == []
+
+    def test_missing_enabled_key_means_enabled(self):
+        # _collect_tools reads cap.get("enabled", True) — mirror it.
+        issues = check_binding_actions(
+            "executive_chef", "cook_brothers_app", [{"action": "gone_tool"}], self.SPEC
+        )
+        assert len(issues) == 1
+
+    def test_binding_to_a_connector_with_no_spec_is_flagged(self):
+        # Found live on day one: four agents bound to 'microsoft_outlook',
+        # a connector no spec defines.
+        issues = check_binding_actions("procurement", "microsoft_outlook", [], None)
+        assert len(issues) == 1
+        assert "no connection spec" in issues[0].problem
+
+    def test_engine_only_capability_is_flagged(self):
+        issues = check_binding_actions(
+            "reports",
+            "loadedhub",
+            [{"action": "get_sales_data", "enabled": True}],
+            {"get_sales_data", "get_sales"},
+            engine_only_actions={"get_sales_data"},
+        )
+        assert len(issues) == 1
+        assert "engine-only" in issues[0].problem
+
+    def test_malformed_entries_are_left_to_the_shape_check(self):
+        issues = check_binding_actions(
+            "reports", "loadedhub", ["bare-string", {"no": "action"}], self.SPEC
+        )
+        assert issues == []
+
+
+class TestDisplayComponents:
+    """display_component is free text; a name the web registry lacks renders
+    the user a blank display block, silently."""
+
+    KNOWN = {"generic_table", "recipe_editor"}
+
+    def test_known_component_passes(self):
+        issues = check_display_components(
+            "loadedhub",
+            [{"action": "edit_recipe", "display_component": "recipe_editor"}],
+            self.KNOWN,
+        )
+        assert issues == []
+
+    def test_unknown_component_is_flagged(self):
+        issues = check_display_components(
+            "loadedhub",
+            [{"action": "edit_recipe", "display_component": "recipe_edit0r"}],
+            self.KNOWN,
+        )
+        assert len(issues) == 1
+        assert "recipe_edit0r" in issues[0].problem
+        assert issues[0].where == "loadedhub.edit_recipe"
+
+    def test_tools_without_the_field_pass(self):
+        issues = check_display_components(
+            "loadedhub", [{"action": "get_sales"}, "malformed"], self.KNOWN
+        )
+        assert issues == []
+
+
+class TestComponentApiRows:
+    """component_api rows are the HTTP door a page calls at load time. A row
+    is self-contained (its own path_template — action_name is the row's name,
+    never a spec tool), so only two things can dangle: the connector, and the
+    component itself."""
+
+    CONNECTORS = {"loadedhub", "bidfood"}
+    KNOWN = {"recipe_editor"}
+
+    def test_valid_row_passes(self):
+        issues = check_component_api_row(
+            "recipe_editor", "loadedhub", "get_recipes", self.KNOWN, self.CONNECTORS
+        )
+        assert issues == []
+
+    def test_a_row_action_is_not_a_spec_tool(self):
+        # roster_editor.load, recipe_editor.list_units etc. exist ONLY as
+        # component_api rows — that must never be flagged.
+        issues = check_component_api_row(
+            "recipe_editor", "loadedhub", "list_units", self.KNOWN, self.CONNECTORS
+        )
+        assert issues == []
+
+    def test_unknown_connector_is_flagged(self):
+        issues = check_component_api_row(
+            "recipe_editor", "loadedhub_v2", "get_recipes", self.KNOWN, self.CONNECTORS
+        )
+        assert len(issues) == 1
+        assert "no connection spec" in issues[0].problem
+
+    def test_undeclared_component_is_flagged(self):
+        # The two untracked-row components the marketplace inventory found.
+        issues = check_component_api_row(
+            "ghost_component", "loadedhub", "get_recipes", self.KNOWN, self.CONNECTORS
+        )
+        assert len(issues) == 1
+        assert "no app composition declares it" in issues[0].problem
 
 
 class TestBindingCapabilities:

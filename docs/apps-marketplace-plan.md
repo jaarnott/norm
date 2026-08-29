@@ -6,6 +6,40 @@ connectors become marketplace apps, full rename, owner-gated marketplace).
 Keep this document updated as phases land.*
 
 *Progress:*
+- *Phases 0–4 SHIPPED to production 29 Aug (commit `529e930`, pipeline green
+  testing→E2E→staging→prod; migration `p1q2r3s4t5u6` applied; entitlement
+  resolver verified against the prod org — full catalog entitled, nothing
+  blocked, day-one neutral).*
+- *Phase 5 + billing generalization — landed 29 Aug (uncommitted):*
+  - *Validator: `check_binding_actions` (an enabled binding cap must resolve
+    to an agent-visible tool on the bound spec — the CB-drift class, plus
+    engine-only caps and bindings to spec-less connectors),
+    `check_display_components` (free-text display_component must be platform
+    chrome or catalog-declared), `check_component_api_row` (connector must
+    have a spec; component must be declared — rows are otherwise
+    self-contained, action_name is NOT a spec tool). Day-one catch: four
+    enabled `microsoft_outlook` send_email bindings (Mar-2026 relic, no spec
+    anywhere) — disabled in the shared config DB. 24 pre-existing findings
+    remain for triage (marketing/orbit playbook filters naming dead tools,
+    loadedhub allowed_write_actions drift, edit_recipe path_template,
+    mcp.loadedhub.get_stock_item).*
+  - *prompt_builder page labels now read from catalog compositions (platform
+    chrome keeps a 5-entry fallback map; the old map never knew invoices /
+    menu-engineering / supplier-tenders existed).*
+  - *Billing generalized: `get_agent_apps` prices agent bundles from the
+    catalog (owns_agents rows), `PUT /billing/{org}/agents` writes
+    org_app_entitlements (same row the marketplace writes — billing and
+    access ride ONE switch), Stripe items resolve via stripe_price_key.
+    The three Organization booleans are DROPPED (`q2r3s4t5u6v7`; no data
+    copy — they were display-only and unenforced; prod verified all-True).
+    Response keeps the `agents.{hr,procurement,reports}` shape so
+    BillingTab is unchanged, plus a general `agent_apps` list.*
+  - *ui_apps.TOOL_COMPONENT + emit.mjs SOURCES documented as the two
+    deliberate MCP-surface hand-lists.*
+  - *Deferred from Phase 5 (deliberately): FULL_WIDTH_COMPONENTS /
+    COMPONENT_META into the catalog (adds an async fetch to the chat render
+    hot path for two rarely-changing lists), the four binding-walk
+    unification (pure refactor risk), AppVersion.spec dead keys.*
 - *Phase 3 — landed 29 Aug: (0) the connections/apps split implemented —
   compositions now carry `connections[]` + `tool_actions[]`, entitlements
   resolve app-level ("a connection stays available while ANY entitled app

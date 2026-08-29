@@ -99,6 +99,16 @@ DISPLAY_BLOCK_URI = _DISPLAY_BLOCK.uri
 # Which Norm display component draws a tool's result, keyed by
 # (connector, action). Tools listed here render through _DISPLAY_BLOCK.
 #
+# NOTE — this is one of exactly two hand-lists that survive the marketplace
+# catalog on purpose, both scoped to the MCP surface: this map (which tool
+# results get an embedded UI in Claude) and SOURCES in
+# apps/mcp-ui/scripts/emit.mjs (which web components are compiled into the
+# display-block bundle). Adding a component to Claude means touching BOTH,
+# plus `pnpm --filter @norm/mcp-ui build`. Everything else about a component
+# (its owning app, page, agent) lives in the marketplace catalog
+# (scripts/sync_marketplace_catalog.py), which config_validator checks
+# display_component names against.
+#
 # roster_editor is the weekly drag grid / day timeline — rich and interactive,
 # which is the bar. (roster_table would have been the easy binding and the
 # wrong one: it is a table, and Claude draws tables better than we embed them.)

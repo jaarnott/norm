@@ -163,8 +163,7 @@ class TestUpdateAgents:
         with patch("app.services.billing_service.get_billing_info") as mock_info:
             mock_info.return_value = {
                 "organization_id": organization.id,
-                "hr_agent_enabled": True,
-                "procurement_agent_enabled": False,
+                "agents": {"hr": True, "procurement": False},
             }
             resp = client.put(
                 f"/api/billing/{organization.id}/agents",
@@ -172,6 +171,112 @@ class TestUpdateAgents:
                 headers=admin_headers,
             )
             assert resp.status_code == 200
+
+
+class TestAgentEntitlementBilling:
+    """The Organization.*_agent_enabled booleans are gone (q2r3s4t5u6v7):
+    PUT /agents writes org_app_entitlements, and billing prices agent bundles
+    from the marketplace catalog — so billing and access ride ONE switch."""
+
+    def _seed_agent_app(self, db, slug, key, price, bundled):
+        from app.db.config_models import MarketplaceApp
+
+        db.add(
+            MarketplaceApp(
+                slug=slug,
+                name=slug,
+                tier="platform",
+                status="active",
+                bundled=bundled,
+                price_cents=price,
+                stripe_price_key=key,
+                composition={"owns_agents": [key]},
+            )
+        )
+        db.flush()
+
+    def test_put_agents_writes_an_entitlement_row_and_prices_it(
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
+    ):
+        self._seed_agent_app(db_session, "hr-agent", "hr", 1000, bundled=False)
+        resp = client.put(
+            f"/api/billing/{organization.id}/agents",
+            json={"hr": True},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agents"]["hr"] is True
+        assert data["cost_breakdown"]["agents"] == 1000
+
+        from app.db.models import OrgAppEntitlement
+
+        row = (
+            db_session.query(OrgAppEntitlement)
+            .filter_by(organization_id=organization.id, app_slug="hr-agent")
+            .one()
+        )
+        assert row.enabled is True
+
+    def test_disabling_stops_the_charge_and_the_agent_together(
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
+    ):
+        # Bundled = on by default: the org pays and has access with no row.
+        self._seed_agent_app(db_session, "hr-agent", "hr", 1000, bundled=True)
+
+        from app.services.entitlements import agent_entitled
+
+        assert agent_entitled("hr", organization.id, db_session, db_session)
+
+        resp = client.put(
+            f"/api/billing/{organization.id}/agents",
+            json={"hr": False},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agents"]["hr"] is False
+        assert data["cost_breakdown"]["agents"] == 0
+        # The same row the marketplace reads: access follows the money.
+        assert not agent_entitled("hr", organization.id, db_session, db_session)
+
+    def test_unknown_key_is_ignored(
+        self,
+        client,
+        db_session,
+        admin_user,
+        admin_headers,
+        organization,
+        admin_org_membership,
+    ):
+        # No catalog rows at all — the legacy body keys map to nothing and the
+        # endpoint stays a harmless no-op (dark-launch friendly).
+        resp = client.put(
+            f"/api/billing/{organization.id}/agents",
+            json={"hr": True, "procurement": False},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        from app.db.models import OrgAppEntitlement
+
+        assert (
+            db_session.query(OrgAppEntitlement)
+            .filter_by(organization_id=organization.id)
+            .count()
+            == 0
+        )
 
 
 class TestTopUp:

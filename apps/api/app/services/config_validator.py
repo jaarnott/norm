@@ -268,6 +268,114 @@ def _check_stale_aggregates(where: str, tool: dict) -> list[ConfigIssue]:
     ]
 
 
+# Display components that belong to the platform itself rather than to any
+# marketplace app — the non-app-owned half of DisplayBlockRenderer's REGISTRY.
+# App-owned components are validated against the catalog instead, so a new
+# app component needs no edit here; this list only grows with platform chrome.
+PLATFORM_COMPONENTS = frozenset(
+    {
+        "generic_table",
+        "criteria_editor",
+        "automated_task_preview",
+        "automated_task_board",
+        "chart",
+        "report_builder",
+        "saved_reports_board",
+        "apps_dashboard",
+        "app_runner",
+        "tool_approval",
+        "venue_picker",
+        "dashboard_view",
+        "mcp_embed",
+        "connector_connect",
+    }
+)
+
+
+def check_display_components(
+    connector_name: str, tools: list | None, known_components: set[str]
+) -> list[ConfigIssue]:
+    """Every tool's ``display_component`` must name a component that exists.
+
+    The field is free text; ``tool_loop`` emits a display block with whatever
+    it says, and a name the web registry lacks renders the user a blank —
+    silently. Known = platform chrome + every component an app composition
+    declares (the catalog is the registry's server-side mirror).
+    """
+    issues: list[ConfigIssue] = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        component = tool.get("display_component")
+        if component and component not in known_components:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"{connector_name}.{tool.get('action') or '<no action>'}",
+                    problem=(
+                        f"display_component '{component}' is not platform "
+                        "chrome and no app composition declares it — the "
+                        "display block renders blank"
+                    ),
+                    fix=(
+                        "Fix the component name, or declare the component in "
+                        "its app's catalog composition "
+                        "(sync_marketplace_catalog.py)."
+                    ),
+                )
+            )
+    return issues
+
+
+def check_component_api_row(
+    component_key: str,
+    connector_name: str,
+    action_name: str,
+    known_components: set[str],
+    known_connectors: set[str],
+) -> list[ConfigIssue]:
+    """A component_api row must resolve at load time.
+
+    These rows are the HTTP door a page component calls when it mounts. Each
+    row is self-contained (its own path_template and method — action_name is
+    just the row's name, never a spec tool), but ``execute_component_action``
+    still 404s without a connection spec for the row's connector. An unknown
+    component key is the other direction: config serving a component that
+    exists nowhere (two of these were found as untracked DB rows during the
+    marketplace inventory).
+    """
+    where = f"component_api.{component_key}.{action_name}"
+    issues: list[ConfigIssue] = []
+    if connector_name not in known_connectors:
+        issues.append(
+            ConfigIssue(
+                severity="error",
+                where=where,
+                problem=(
+                    f"row names connector '{connector_name}', which has no "
+                    "connection spec — the component's call fails on load"
+                ),
+                fix="Fix the connector name, or delete the row.",
+            )
+        )
+    if component_key not in known_components:
+        issues.append(
+            ConfigIssue(
+                severity="error",
+                where=where,
+                problem=(
+                    f"component '{component_key}' is not platform chrome and "
+                    "no app composition declares it"
+                ),
+                fix=(
+                    "Declare the component in its app's catalog composition "
+                    "(sync_marketplace_catalog.py), or delete the row."
+                ),
+            )
+        )
+    return issues
+
+
 def check_binding_capabilities(
     agent_slug: str, connector_name: str, capabilities: list | None
 ) -> list[ConfigIssue]:
@@ -292,6 +400,82 @@ def check_binding_capabilities(
                     fix=(
                         'Rewrite the entry as {"action": ..., "label": ..., '
                         '"enabled": true} in Settings → Agents.'
+                    ),
+                )
+            )
+    return issues
+
+
+def check_binding_actions(
+    agent_slug: str,
+    connector_name: str,
+    capabilities: list | None,
+    spec_actions: set[str] | None,
+    engine_only_actions: set[str] | None = None,
+) -> list[ConfigIssue]:
+    """Every enabled capability on an enabled binding must resolve to an
+    agent-visible tool on the bound connector's spec.
+
+    Both failure modes are SILENT — ``_collect_tools`` intersects the spec's
+    tools with the capability set, so a capability naming nothing simply
+    contributes nothing and the agent loses the tool without any error. This
+    is how the executive chef lost its recipe write on 29 Aug 2026: the Cook
+    Brothers App consolidated 114 tools down to 45, the re-discovered spec no
+    longer had ``kitchen_loadedhub_update_recipe``, and the binding capability
+    kept pointing at the old name in every environment until a human noticed
+    Save was broken.
+    """
+    issues: list[ConfigIssue] = []
+    where = f"binding.{agent_slug}.{connector_name}"
+
+    if spec_actions is None:
+        issues.append(
+            ConfigIssue(
+                severity="error",
+                where=where,
+                problem=(
+                    f"binding names connector '{connector_name}', which has no "
+                    "connection spec — the agent gets nothing from it"
+                ),
+                fix=("Restore the spec, or delete the binding in Settings → Agents."),
+            )
+        )
+        return issues
+
+    for cap in capabilities or []:
+        if not isinstance(cap, dict):
+            continue  # shape errors are check_binding_capabilities' job
+        action = cap.get("action")
+        if not action or not cap.get("enabled", True):
+            continue
+        if action not in spec_actions:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=(
+                        f"capability '{action}' matches no tool on the "
+                        f"'{connector_name}' spec (renamed or removed) — the "
+                        "agent silently loses it"
+                    ),
+                    fix=(
+                        "Point the capability at the current action name, or "
+                        "remove it in Settings → Agents."
+                    ),
+                )
+            )
+        elif engine_only_actions and action in engine_only_actions:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=(
+                        f"capability '{action}' points at an engine-only "
+                        "backend agents can never see — it is silently dropped"
+                    ),
+                    fix=(
+                        "Replace it with the consolidator that superseded it, "
+                        "or remove it in Settings → Agents."
                     ),
                 )
             )
@@ -503,17 +687,26 @@ def validate_config(db=None, config_db=None) -> dict:
     try:
         known_actions: set[str] = set()
         engine_only_actions: set[str] = set()
-        for spec in config_db.query(ConnectionSpec).all():
+        actions_by_connector: dict[str, set[str]] = {}
+        engine_only_by_connector: dict[str, set[str]] = {}
+        specs = config_db.query(ConnectionSpec).all()
+        for spec in specs:
             issues.extend(
                 check_connector_tools(
                     spec.connector_name, spec.execution_mode, spec.tools
                 )
             )
+            actions_by_connector.setdefault(spec.connector_name, set())
+            engine_only_by_connector.setdefault(spec.connector_name, set())
             for tool in spec.tools or []:
                 if isinstance(tool, dict) and tool.get("action"):
                     known_actions.add(tool["action"])
+                    actions_by_connector[spec.connector_name].add(tool["action"])
                     if tool.get("engine_only"):
                         engine_only_actions.add(tool["action"])
+                        engine_only_by_connector[spec.connector_name].add(
+                            tool["action"]
+                        )
 
         for playbook in config_db.query(Playbook).all():
             issues.extend(
@@ -531,11 +724,51 @@ def validate_config(db=None, config_db=None) -> dict:
                     binding.agent_slug, binding.connector_name, binding.capabilities
                 )
             )
+            if binding.enabled:
+                issues.extend(
+                    check_binding_actions(
+                        binding.agent_slug,
+                        binding.connector_name,
+                        binding.capabilities,
+                        actions_by_connector.get(binding.connector_name),
+                        engine_only_by_connector.get(binding.connector_name),
+                    )
+                )
 
         for row in db.query(Connection).all():
             issues.extend(
                 check_model_selection(row.connector_name, row.config, allowed)
             )
+
+        # Component drift rides the marketplace catalog (the server-side
+        # mirror of the web display registry). An empty catalog means this
+        # environment hasn't seeded the marketplace — skip rather than flag
+        # every app component (the dark-launch property again).
+        from app.db.config_models import ComponentApiConfig, MarketplaceApp
+
+        catalog_rows = config_db.query(MarketplaceApp).all()
+        if catalog_rows:
+            known_components = set(PLATFORM_COMPONENTS)
+            for app_row in catalog_rows:
+                for comp_entry in (app_row.composition or {}).get("components") or []:
+                    if isinstance(comp_entry, dict) and comp_entry.get("key"):
+                        known_components.add(comp_entry["key"])
+            for spec in specs:
+                issues.extend(
+                    check_display_components(
+                        spec.connector_name, spec.tools, known_components
+                    )
+                )
+            for capi in config_db.query(ComponentApiConfig).all():
+                issues.extend(
+                    check_component_api_row(
+                        capi.component_key,
+                        capi.connector_name,
+                        capi.action_name,
+                        known_components,
+                        set(actions_by_connector),
+                    )
+                )
 
         # MCP capability drift: every enabled row must still resolve to a real,
         # read-only connector action or an enabled playbook.
@@ -544,7 +777,7 @@ def validate_config(db=None, config_db=None) -> dict:
         from app.mcp.scopes import MCP_SCOPES
 
         tool_def_by_key: dict = {}
-        for spec in config_db.query(ConnectionSpec).all():
+        for spec in specs:
             for tool in spec.tools or []:
                 if isinstance(tool, dict) and tool.get("action"):
                     tool_def_by_key[(spec.connector_name, tool["action"])] = tool

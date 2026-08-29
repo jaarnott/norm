@@ -61,10 +61,6 @@ class Organization(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    hr_agent_enabled = Column(Boolean, nullable=False, default=False)
-    procurement_agent_enabled = Column(Boolean, nullable=False, default=False)
-    reports_agent_enabled = Column(Boolean, nullable=False, default=True)
-
     venues = relationship("Venue", back_populates="organization")
     memberships = relationship("OrganizationMembership", back_populates="organization")
     roles = relationship("Role", back_populates="organization")

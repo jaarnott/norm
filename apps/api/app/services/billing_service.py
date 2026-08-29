@@ -21,13 +21,49 @@ PLAN_QUOTAS = {
 }
 
 VENUE_PRICE_CENTS = 1000  # $10/month per venue
-AGENT_PRICES_CENTS = {
-    "hr": 1000,  # $10/month
-    "procurement": 500,  # $5/month
-    "reports": 0,  # free
-}
 TOPUP_TOKENS = 500_000  # per top-up unit
 TOPUP_PRICE_CENTS = 1000  # $10 per top-up unit
+
+
+def get_agent_apps(db: Session, org_id: str, config_db=None) -> list[dict]:
+    """The catalog's agent-bundle apps with this org's entitlement state.
+
+    An app whose composition ``owns_agents`` is the billing unit that replaced
+    the three ``Organization.*_agent_enabled`` booleans — the marketplace
+    entitlement now drives BOTH access (the supervisor's agent gate) and the
+    charge, so they can never disagree. Prices live on the catalog rows.
+    """
+    from app.db.config_models import MarketplaceApp
+    from app.services.entitlements import entitled_slugs
+
+    owns_config_db = config_db is None
+    if owns_config_db:
+        from app.db.engine import _ConfigSessionLocal
+
+        config_db = _ConfigSessionLocal()
+    try:
+        rows = [
+            a
+            for a in config_db.query(MarketplaceApp)
+            .filter(MarketplaceApp.status == "active")
+            .order_by(MarketplaceApp.slug)
+            .all()
+            if (a.composition or {}).get("owns_agents")
+        ]
+        entitled = entitled_slugs(org_id, db, config_db)
+        return [
+            {
+                "slug": a.slug,
+                "name": a.name,
+                "key": a.stripe_price_key or a.slug,
+                "price_cents": a.price_cents or 0,
+                "enabled": a.slug in entitled,
+            }
+            for a in rows
+        ]
+    finally:
+        if owns_config_db:
+            config_db.close()
 
 
 class QuotaExceededError(Exception):
@@ -166,7 +202,7 @@ def check_quota_for_user(db: Session, user_id: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_billing_info(db: Session, org_id: str) -> dict:
+def get_billing_info(db: Session, org_id: str, config_db=None) -> dict:
     """Get comprehensive billing info for the dashboard."""
     from app.db.models import Organization, Subscription
 
@@ -185,13 +221,10 @@ def get_billing_info(db: Session, org_id: str) -> dict:
     venue_count = len(org.venues) if org.venues else 0
     quota_info = check_quota(db, org_id)
 
-    # Calculate monthly cost
+    # Calculate monthly cost — agent bundles come from the marketplace catalog
     plan_cost = PLAN_QUOTAS.get(sub.token_plan, {}).get("price_cents", 0) if sub else 0
-    agent_cost = 0
-    if org.hr_agent_enabled:
-        agent_cost += AGENT_PRICES_CENTS["hr"]
-    if org.procurement_agent_enabled:
-        agent_cost += AGENT_PRICES_CENTS["procurement"]
+    agent_apps = get_agent_apps(db, org_id, config_db)
+    agent_cost = sum(a["price_cents"] for a in agent_apps if a["enabled"])
     venue_cost = venue_count * VENUE_PRICE_CENTS
 
     return {
@@ -206,11 +239,10 @@ def get_billing_info(db: Session, org_id: str) -> dict:
             "payment_method_brand": sub.payment_method_brand if sub else None,
         },
         "usage": quota_info,
-        "agents": {
-            "hr": org.hr_agent_enabled,
-            "procurement": org.procurement_agent_enabled,
-            "reports": org.reports_agent_enabled,
-        },
+        # Keyed by stripe_price_key ("hr", "procurement", "reports") so the
+        # existing BillingTab keeps working; agent_apps is the general form.
+        "agents": {a["key"]: a["enabled"] for a in agent_apps},
+        "agent_apps": agent_apps,
         "venue_count": venue_count,
         "monthly_cost_cents": plan_cost + agent_cost + venue_cost,
         "cost_breakdown": {
@@ -287,7 +319,9 @@ def create_setup_intent(db: Session, org_id: str) -> str:
     return intent.client_secret
 
 
-def create_subscription(db: Session, org_id: str, token_plan: str) -> dict:
+def create_subscription(
+    db: Session, org_id: str, token_plan: str, config_db=None
+) -> dict:
     """Create a Stripe Subscription for the org."""
     from app.db.models import Organization, Subscription
 
@@ -323,15 +357,12 @@ def create_subscription(db: Session, org_id: str, token_plan: str) -> dict:
     if price_id:
         items.append({"price": price_id})
 
-    # Agents
-    if org.hr_agent_enabled:
-        hr_price = settings.STRIPE_PRICE_HR
-        if hr_price:
-            items.append({"price": hr_price})
-    if org.procurement_agent_enabled:
-        proc_price = settings.STRIPE_PRICE_PROCUREMENT
-        if proc_price:
-            items.append({"price": proc_price})
+    # Agent bundles — entitled catalog apps with a price
+    for agent_app in get_agent_apps(db, org_id, config_db):
+        if agent_app["enabled"] and agent_app["price_cents"]:
+            agent_price = settings.get_stripe_price_id(agent_app["key"])
+            if agent_price:
+                items.append({"price": agent_price})
 
     # Venues
     venue_count = len(org.venues) if org.venues else 0
@@ -360,10 +391,10 @@ def create_subscription(db: Session, org_id: str, token_plan: str) -> dict:
     db.flush()
 
     _log_event(db, org_id, "subscription_created", {"plan": token_plan})
-    return get_billing_info(db, org_id)
+    return get_billing_info(db, org_id, config_db)
 
 
-def change_plan(db: Session, org_id: str, new_plan: str) -> dict:
+def change_plan(db: Session, org_id: str, new_plan: str, config_db=None) -> dict:
     """Change the token plan on an existing subscription."""
     from app.db.models import Subscription
 
@@ -414,7 +445,7 @@ def change_plan(db: Session, org_id: str, new_plan: str) -> dict:
     db.flush()
 
     _log_event(db, org_id, "plan_changed", {"from": old_plan, "to": new_plan})
-    return get_billing_info(db, org_id)
+    return get_billing_info(db, org_id, config_db)
 
 
 def purchase_top_up(
