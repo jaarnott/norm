@@ -351,6 +351,25 @@ def find_or_create_spec_for_supplier(
     """
     spec = find_spec_for_supplier(config_db, supplier_name, *also_known_as)
     if spec:
+        # Self-heal: the invoice arrives under ``supplier_name``, but the spec may
+        # be filed under a CANONICAL name (a rename) and have been matched only
+        # via an alias hint. Record ``supplier_name`` as an alias so a plain
+        # lookup by it — the autostudy gate — finds the spec directly. Without
+        # this the supplier re-trains on EVERY review: the study keeps finding
+        # the spec (via the Loaded aliases) and concluding "no spec needed", so
+        # no rename ever fires to add the alias, while the gate, which has only
+        # the bare feed name, never sees the renamed spec (ATOMIC, 29 Aug 2026).
+        nm = (supplier_name or "").strip()
+        if (
+            nm
+            and norm(nm) != norm(spec.name)
+            and not any(norm(a) == norm(nm) for a in (spec.aliases or []))
+            and not alias_conflict(
+                config_db.query(SupplierInvoiceSpec).all(), nm, spec_id=spec.id
+            )
+        ):
+            spec.aliases = list(spec.aliases or []) + [nm]
+            config_db.commit()
         return spec, False
     name = (supplier_name or "").strip()
     if not name:
@@ -1729,13 +1748,13 @@ def _config_company_id(cfg) -> str | None:
 
 def _venue_company_id(db: Session, venue_id: str) -> str | None:
     """The Loaded company id a venue's connection is bound to (main DB)."""
-    from app.db.models import ConnectorConfig
+    from app.db.models import Connection
 
     cfg = (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == "loadedhub",
-            ConnectorConfig.venue_id == venue_id,
+            Connection.connector_name == "loadedhub",
+            Connection.venue_id == venue_id,
         )
         .first()
     )
@@ -1753,7 +1772,7 @@ def resolve_sample_venue_id(db: Session, sample) -> str | None:
     is connected to the same Loaded company. None = this environment has no
     venue talking to that company.
     """
-    from app.db.models import ConnectorConfig, Venue
+    from app.db.models import Connection, Venue
 
     vid = sample.source_venue_id
     if vid and db.query(Venue.id).filter(Venue.id == vid).first() is not None:
@@ -1762,11 +1781,11 @@ def resolve_sample_venue_id(db: Session, sample) -> str | None:
     if not company:
         return None
     for cfg in (
-        db.query(ConnectorConfig)
+        db.query(Connection)
         .filter(
-            ConnectorConfig.connector_name == "loadedhub",
-            ConnectorConfig.venue_id.isnot(None),
-            ConnectorConfig.enabled == "true",
+            Connection.connector_name == "loadedhub",
+            Connection.venue_id.isnot(None),
+            Connection.enabled == "true",
         )
         .all()
     ):

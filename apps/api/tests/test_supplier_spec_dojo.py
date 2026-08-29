@@ -761,11 +761,11 @@ class TestAnalyseSample:
         cleared: list = []
         monkeypatch.setattr(
             "app.routers.invoice_fixes.heal_review",
-            lambda db, cdb, v, i: (healed.append((v, i)) or True),
+            lambda db, cdb, v, i: healed.append((v, i)) or True,
         )
         monkeypatch.setattr(
             "app.routers.invoice_fixes.clear_studying_on_drafts",
-            lambda db, v, i: (cleared.append((v, i)) or True),
+            lambda db, v, i: cleared.append((v, i)) or True,
         )
         out = spec_dojo.analyse_sample(db_session, db_session, s.id)
         assert out["spec_not_needed"] is True and out.get("auto_applied") is None
@@ -789,7 +789,7 @@ class TestAnalyseSample:
         cleared: list = []
         monkeypatch.setattr(
             "app.routers.invoice_fixes.clear_studying_on_drafts",
-            lambda db, v, i: (cleared.append((v, i)) or True),
+            lambda db, v, i: cleared.append((v, i)) or True,
         )
         out = spec_dojo.analyse_sample(db_session, db_session, s.id)
         assert out["status"] == "failed"
@@ -824,6 +824,31 @@ class TestAnalyseSample:
 
         found = find_spec_for_supplier(db_session, "ATOMIC")  # findable again
         assert found is not None and found.id == spec.id
+
+    def test_find_or_create_backfills_the_feed_name_as_an_alias(self, db_session):
+        # A spec filed under a canonical (renamed) name, matched only via a Loaded
+        # alias, gains the FEED name the invoice arrives under — so a later plain
+        # lookup by it (the autostudy gate) finds it and the supplier stops
+        # re-training on every review (the ATOMIC self-heal, 29 Aug 2026).
+        spec = SupplierInvoiceSpec(
+            name="Atomic Coffee Roasters",
+            aliases=["ATOMIC LTD"],
+            instructions="rules",
+            enabled=True,
+        )
+        db_session.add(spec)
+        db_session.flush()
+        found, created = spec_dojo.find_or_create_spec_for_supplier(
+            db_session,
+            "ATOMIC",
+            "ATOMIC LTD",  # matched via the Loaded alias hint
+        )
+        assert created is False and found.id == spec.id
+        db_session.refresh(spec)
+        assert "ATOMIC" in (spec.aliases or [])  # feed name backfilled
+        from app.services.invoice_extraction import find_spec_for_supplier
+
+        assert find_spec_for_supplier(db_session, "ATOMIC").id == spec.id
 
     def test_green_analysis_keeps_admin_expected(self, db_session, monkeypatch):
         # An admin-entered baseline is never clobbered by the agent's ground
@@ -1417,14 +1442,12 @@ class TestDojoTriage:
     def test_overview_membership_and_pending_review(
         self, client, admin_headers, db_session, monkeypatch
     ):
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
         from tests.conftest import _make_venue
 
         venue = _make_venue(db_session, name="Overview Venue")
         db_session.add(
-            ConnectorConfig(
-                connector_name="loadedhub", venue_id=venue.id, enabled="true"
-            )
+            Connection(connector_name="loadedhub", venue_id=venue.id, enabled="true")
         )
         db_session.flush()
 
@@ -1873,12 +1896,12 @@ class TestEnvVenueResolution:
         assert spec_dojo.resolve_sample_venue_id(db_session, s) == v.id
 
     def test_cross_env_sample_resolves_by_company(self, db_session):
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
         from tests.conftest import _make_venue
 
         local = _make_venue(db_session, name="Local Twin")
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=local.id,
                 enabled="true",
@@ -1903,12 +1926,12 @@ class TestEnvVenueResolution:
         filing time — without it the sample is forever env-locked."""
         import app.db.engine as engine_mod
         import app.services.received_invoice as RI
-        from app.db.models import ConnectorConfig
+        from app.db.models import Connection
         from tests.conftest import _make_venue
 
         v = _make_venue(db_session, name="Stamp Venue")
         db_session.add(
-            ConnectorConfig(
+            Connection(
                 connector_name="loadedhub",
                 venue_id=v.id,
                 enabled="true",
@@ -2096,7 +2119,7 @@ class TestAutostudyTrigger:
         monkeypatch.setattr(
             sensei_runner,
             "enqueue",
-            lambda sid, *a, **k: (calls["enqueued"].append(sid) or "queued"),
+            lambda sid, *a, **k: calls["enqueued"].append(sid) or "queued",
         )
         return calls
 
