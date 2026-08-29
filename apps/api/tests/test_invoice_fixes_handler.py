@@ -2204,3 +2204,22 @@ class TestReceiveTimeLinking:
             0
         ]
         assert inv_put[2]["lines"][0]["linkedItemId"] == "item-2"
+
+
+def test_heal_review_never_triggers_autostudy(monkeypatch):
+    """A study's own heal must NOT start another study — re-triggering autostudy
+    from the heal is the infinite loop an orphaned spec caused (ATOMIC, 29 Aug
+    2026): study -> heal -> autostudy can't match the renamed spec -> re-study."""
+    captured = {}
+    monkeypatch.setattr(IF, "_open_docs_for", lambda db, v, i: [object()])
+    monkeypatch.setattr(
+        IF,
+        "_Loaded",
+        lambda db, cdb, v: type("L", (), {"invoice": lambda self, i: {}})(),
+    )
+    monkeypatch.setattr(IF, "_wipe_validation_caches", lambda db, inv: None)
+    monkeypatch.setattr(
+        IF, "_squash_review_into_drafts", lambda *a, **k: captured.update(k)
+    )
+    assert IF.heal_review(None, None, "v1", "inv-1") is True
+    assert captured.get("trigger_autostudy") is False

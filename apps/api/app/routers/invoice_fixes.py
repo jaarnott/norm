@@ -1302,12 +1302,25 @@ class ReviewRequest(BaseModel):
 
 
 def _squash_review_into_drafts(
-    db: Session, config_db: Session, venue_id: str, invoice_id: str, docs
+    db: Session,
+    config_db: Session,
+    venue_id: str,
+    invoice_id: str,
+    docs,
+    *,
+    trigger_autostudy: bool = True,
 ) -> None:
     """Run the review pipeline and store the result into every open draft.
 
     Squash semantics: each doc's payload is REPLACED wholesale, keeping only
     its own identity keys. Shared by the /review endpoint and ``heal_review``.
+
+    ``trigger_autostudy`` gates the spec-less auto-study trigger. It MUST be
+    False when this runs as a study's own heal follow-through: a study just
+    finished, and re-triggering another from its heal is an infinite loop
+    whenever the spec it wrote is filed under a name the review can't match
+    (an orphaned spec — ATOMIC, 29 Aug 2026). Only a user-driven review should
+    start a study.
     """
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1330,9 +1343,12 @@ def _squash_review_into_drafts(
     # a background dojo study (async) so a spec gets created without going
     # through the chat receive flow. Set on ``fresh`` BEFORE the per-draft deep
     # copy below so every open draft carries the "studying…" note. Fail-open.
-    from app.services.spec_dojo import autostudy_if_spec_less
+    # NOT when this is a study's own heal (trigger_autostudy=False) — that would
+    # loop.
+    if trigger_autostudy:
+        from app.services.spec_dojo import autostudy_if_spec_less
 
-    autostudy_if_spec_less(db, config_db, venue_id, invoice_id, fresh)
+        autostudy_if_spec_less(db, config_db, venue_id, invoice_id, fresh)
 
     for target in docs:
         # A DEEP copy per twin: carrying a decision re-applies it to the lines,
@@ -1373,7 +1389,11 @@ def heal_review(
         return False
     lh = _Loaded(db, config_db, venue_id)
     _wipe_validation_caches(db, lh.invoice(invoice_id))
-    _squash_review_into_drafts(db, config_db, venue_id, invoice_id, docs)
+    # A study just finished; re-review under the spec but NEVER start another
+    # study from here (that is the infinite loop).
+    _squash_review_into_drafts(
+        db, config_db, venue_id, invoice_id, docs, trigger_autostudy=False
+    )
     return True
 
 
