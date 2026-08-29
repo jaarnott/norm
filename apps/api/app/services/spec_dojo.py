@@ -1653,7 +1653,9 @@ def analyse_sample(
     except Exception as exc:  # noqa: BLE001 — a failed analysis must record, not crash
         logger.warning("dojo analysis failed for sample %s: %s", sample_id, exc)
         try:
-            _clear_studying_flag(db, sample)  # a failed study must still un-stick the card
+            _clear_studying_flag(
+                db, sample
+            )  # a failed study must still un-stick the card
         except Exception:  # noqa: BLE001 — sample may be unbound; ignore
             pass
         return _store(
