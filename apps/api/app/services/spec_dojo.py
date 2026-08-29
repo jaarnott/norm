@@ -473,16 +473,12 @@ def autostudy_if_spec_less(
     spec needed". This is the same machinery the "Norm can't do this one"
     button uses; here it starts automatically where it never started before.
 
-    Study when the supplier has no content-bearing spec AND this invoice has not
-    already been staged. Two skips, both needed:
-    - a spec WITH content already covers the supplier — nothing to do;
-    - this invoice already has a (non-draft) dojo sample — it has been studied,
-      so don't study it again. This second guard is what stops a loop when a
-      study files its spec under a CANONICAL name (e.g. the footer entity
-      'Atomic Coffee Roasters') that the Loaded feed name ('ATOMIC') can't match
-      here: the content check misses the orphaned spec, but the sample is still
-      there. Deleting the spec cascades its samples, so "delete to re-study"
-      still works.
+    The gate is one rule: a supplier with a spec that has content is done;
+    anything else gets studied. This relies on the spec being FINDABLE by the
+    Loaded feed name the invoice arrives under — which is why a canonical rename
+    keeps the original name as an alias (``apply_analysis_proposal``); without
+    that the spec is orphaned, the lookup misses it, and every review re-studies.
+    A missing spec (never studied, or an admin deleted it) studies again.
     ``sensei_runner.enqueue`` refuses to queue a run already queued/running, and
     ``stage_invoice_sample`` is idempotent per invoice.
     """
@@ -490,23 +486,11 @@ def autostudy_if_spec_less(
         supplier = str((review or {}).get("supplier_name") or "").strip()
         if not supplier:
             return
-        from app.db.config_models import SupplierSpecSample
         from app.services import sensei_runner
 
         spec = find_spec_for_supplier(config_db, supplier)
         if spec is not None and (spec.instructions or "").strip():
             return  # a spec with content already exists — nothing to study
-
-        if (
-            config_db.query(SupplierSpecSample.id)
-            .filter(
-                SupplierSpecSample.source_invoice_id == invoice_id,
-                SupplierSpecSample.draft.isnot(True),
-            )
-            .first()
-            is not None
-        ):
-            return  # this invoice was already studied — don't loop
 
         staged = stage_invoice_sample(db, venue_id, invoice_id, draft=False)
         sensei_runner.enqueue(staged["sample_id"])
@@ -1092,7 +1076,17 @@ def apply_analysis_proposal(
             if not alias_conflict(
                 config_db.query(SupplierInvoiceSpec).all(), rename, spec_id=host.id
             ):
+                old_name = host.name
                 host.name = rename
+                # Keep the previous name findable as an alias — it is the Loaded
+                # feed name invoices arrive under. Dropping it orphaned the spec:
+                # a lookup by 'ATOMIC' could no longer find a spec renamed to the
+                # footer entity 'Atomic Coffee Roasters', so every review of that
+                # supplier re-studied forever (29 Aug 2026).
+                if norm(old_name) != norm(rename) and not any(
+                    norm(a) == norm(old_name) for a in (host.aliases or [])
+                ):
+                    host.aliases = list(host.aliases or []) + [old_name]
         if proposed.strip():
             host.instructions = proposed
     if target is not None:

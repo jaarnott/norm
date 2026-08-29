@@ -795,6 +795,36 @@ class TestAnalyseSample:
         assert out["status"] == "failed"
         assert cleared == [("v-here", "inv-x")]
 
+    def test_a_canonical_rename_keeps_the_old_name_as_an_alias(self, db_session):
+        # A rename must not orphan the spec: the previous (Loaded feed) name stays
+        # findable as an alias, so a lookup by the name invoices arrive under still
+        # resolves. Dropping it looped every ATOMIC review forever (29 Aug 2026).
+        spec = _make_spec(db_session, "ATOMIC")  # aliases [], instructions "notes"
+        s = SupplierSpecSample(
+            spec_id=spec.id,
+            label="a.pdf",
+            pdf_bytes=b"%PDF",
+            analysis={
+                "status": "ready",
+                "green": True,
+                "proposed_instructions": "footer entity rules",
+                "canonical_name": "Atomic Coffee Roasters",
+                "ground_truth": _extraction(),
+            },
+        )
+        db_session.add(s)
+        db_session.flush()
+        spec_dojo.apply_analysis_proposal(
+            db_session, s, apply_spec=True, save_expected=True, db=db_session
+        )
+        db_session.refresh(spec)
+        assert spec.name == "Atomic Coffee Roasters"
+        assert "ATOMIC" in (spec.aliases or [])
+        from app.services.invoice_extraction import find_spec_for_supplier
+
+        found = find_spec_for_supplier(db_session, "ATOMIC")  # findable again
+        assert found is not None and found.id == spec.id
+
     def test_green_analysis_keeps_admin_expected(self, db_session, monkeypatch):
         # An admin-entered baseline is never clobbered by the agent's ground
         # truth — the agent only fills the gap when nothing is stored yet.
@@ -2096,32 +2126,6 @@ class TestAutostudyTrigger:
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-2", review)
         assert calls["staged"] == [("v1", "inv-2")]
         assert review["sensei_studying"] is True
-
-    def test_an_already_studied_invoice_is_not_restudied(
-        self, db_session, monkeypatch
-    ):
-        # The orphaned-spec loop (ATOMIC, 29 Aug): a study filed its spec under a
-        # canonical name ('Atomic Coffee Roasters') the Loaded feed name ('ATOMIC')
-        # can't match, so the content check misses it — but a non-draft sample for
-        # this invoice means it was already studied, so we must NOT study again.
-        spec = self._spec(
-            db_session, "Atomic Coffee Roasters", instructions="footer entity rules"
-        )
-        db_session.add(
-            SupplierSpecSample(
-                spec_id=spec.id,
-                label="a.pdf",
-                pdf_bytes=b"%PDF",
-                source_invoice_id="inv-atomic",
-                analysis={"status": "ready"},
-            )
-        )
-        db_session.flush()
-        calls = self._record(monkeypatch)
-        review = {"supplier_name": "ATOMIC"}  # Loaded name — no spec matches it
-        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-atomic", review)
-        assert calls["staged"] == [] and calls["enqueued"] == []
-        assert "sensei_studying" not in review
 
     def test_no_supplier_name_is_a_noop(self, db_session, monkeypatch):
         calls = self._record(monkeypatch)
