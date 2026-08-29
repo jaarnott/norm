@@ -63,6 +63,28 @@ jobs:
             --project ${{ vars.GCP_PROJECT_ID }} \
             --quiet
 
+      # The sensei's ~2-minute analysis runs in a SEPARATE Cloud Run job
+      # (norm-sensei-<env>), on the same norm-api image. A Cloud Run job PINS its
+      # image digest at update time — a `:latest` reference does NOT re-resolve
+      # per execution — so a job left un-updated runs stale code indefinitely.
+      # Nothing here updated it, and it ran weeks-old code while the API moved on:
+      # the 29 Aug auto-spec fixes shipped to the API, but the study kept running
+      # the old image and left invoices stuck on "Norm is studying…". Point it at
+      # the image just deployed. A missing job is tolerated (not every env has one).
+      - name: Update sensei job image
+        run: |
+          set -euo pipefail
+          if ! gcloud run jobs describe norm-sensei-${{ inputs.environment }} \
+                 --region "$REGION" --project ${{ vars.GCP_PROJECT_ID }} >/dev/null 2>&1; then
+            echo "No norm-sensei-${{ inputs.environment }} job — skipping."
+            exit 0
+          fi
+          gcloud run jobs update norm-sensei-${{ inputs.environment }} \
+            --image $REGISTRY/norm-api:${{ inputs.image_tag }} \
+            --region "$REGION" \
+            --project ${{ vars.GCP_PROJECT_ID }} \
+            --quiet
+
       - name: Deploy Web to Cloud Run
         run: |
           gcloud run services update norm-web-${{ inputs.environment }} \
