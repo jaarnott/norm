@@ -586,7 +586,7 @@ def _send_report_email(params: dict, db: Session, thread_id: str | None) -> dict
         }
 
     # Build HTML from markdown + display blocks
-    report_html = build_report_html(content_markdown, display_blocks)
+    report_html = build_report_html(content_markdown, display_blocks, subject=subject)
 
     # "View in Norm" — an actual deep link to the conversation.
     #

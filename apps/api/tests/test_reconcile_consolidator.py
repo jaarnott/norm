@@ -826,7 +826,14 @@ class TestTheReportTheEmailIsWrittenFrom:
     def test_every_exception_carries_what_the_email_needs(self):
         out = run_consolidator(api_for(make_received(fileId=None), pdf=None))
         entry = out["report"]["exceptions"][0]["invoices"][0]
-        assert set(entry) == {"venue", "invoice", "supplier", "total", "detail"}
+        assert set(entry) == {
+            "venue",
+            "invoice",
+            "supplier",
+            "total",
+            "detail",
+            "comparison",
+        }
 
     def test_a_reconciled_invoice_raises_no_exception(self):
         out = run_consolidator(api_for(make_received()))
@@ -864,6 +871,38 @@ class TestTheReportTheEmailIsWrittenFrom:
         )
         assert out["report"]["statement_differences"] == []
         assert out["report"]["statements_not_yet_issued"] == 0
+
+    def test_a_failing_invoice_carries_its_comparison(self):
+        """What shows WHICH field disagreed. Stripping every comparison left
+        the report long and useless at once — per-venue sections rebuilt from
+        the exception list, with none of the detail that justified them."""
+        inv = make_received(purchaseOrderNumber=None)
+        out = run_consolidator(
+            api_for(inv, make_pdf(customer_purchase_order_number="3459273"))
+        )
+        comp = out["report"]["exceptions"][0]["invoices"][0]["comparison"]
+        assert comp["po_number"]["loaded"] in (None, "")
+        assert comp["po_number"]["document"] == "3459273"
+        assert comp["po_number"]["match"] is False
+        # and the fields that DID agree still say so, so a reader can see the
+        # failure is isolated to one field
+        assert comp["total_incl_tax"]["match"] is True
+        assert comp["invoice_number"]["match"] is True
+
+    def test_a_reconciled_invoice_never_reaches_the_report(self):
+        """Four ticks under an invoice that is already fine is exactly what
+        buried the ones that were not — eight of them on the 29 Aug run."""
+        out = run_consolidator(api_for(make_received()))
+        assert out["report"]["exceptions"] == []
+        assert out["report"]["counts"]["reconciled"] == 1
+
+    def test_a_no_copy_failure_still_carries_its_comparison(self):
+        """Even when every copy-side cell is a sentinel — the reader needs to
+        see that Loaded's side exists and the copy's does not."""
+        out = run_consolidator(api_for(make_received(fileId=None), pdf=None))
+        comp = out["report"]["exceptions"][0]["invoices"][0]["comparison"]
+        assert comp["total_incl_tax"]["loaded"]
+        assert "no copy" in str(comp["total_incl_tax"]["document"]).lower()
 
     def test_a_rounding_difference_is_counted_not_listed(self):
         """A cent across a month of invoices is rounding. The old report put

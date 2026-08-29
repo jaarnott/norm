@@ -1,6 +1,7 @@
 """Convert assistant message content (markdown + display blocks) to email-safe HTML."""
 
 import logging
+import re
 
 import markdown as md
 
@@ -20,15 +21,20 @@ _TD_STYLE = 'style="border: 1px solid #e2ddd7; padding: 8px 12px; color: #444;"'
 def build_report_html(
     markdown_text: str,
     display_blocks: list[dict] | None = None,
+    subject: str | None = None,
 ) -> str:
     """Convert markdown text + display blocks into email-safe HTML.
 
     Returns the inner content HTML (not wrapped in a full template).
+
+    `subject` is what the email template renders as its own <h1>. Pass it so a
+    body that opens by restating the subject does not title the email twice.
     """
     parts: list[str] = []
 
     # Convert markdown to HTML
     if markdown_text:
+        markdown_text = _drop_duplicate_title(markdown_text, subject)
         html = md.markdown(
             markdown_text,
             extensions=["tables", "fenced_code", "nl2br"],
@@ -45,6 +51,62 @@ def build_report_html(
                 parts.append(block_html)
 
     return "\n".join(parts)
+
+
+_MONTHS = (
+    "january february march april may june july august september october "
+    "november december jan feb mar apr jun jul aug sep sept oct nov dec"
+).split()
+# What may trail a title without changing which report it names: a date, in any
+# phrasing ("2026-08-29", "29 August 2026", "29th of August").
+_DATE_WORDS = frozenset(_MONTHS) | {"st", "nd", "rd", "th", "of"}
+
+
+def _title_key(text: str) -> str:
+    """Normalise a title for comparison: case, dashes and punctuation don't count."""
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _title_stem(key: str) -> str:
+    """A normalised title with any trailing date dropped, whatever its format."""
+    words = re.sub(r"\d+", " ", key).split()
+    while words and words[-1] in _DATE_WORDS:
+        words.pop()
+    return " ".join(words)
+
+
+def _drop_duplicate_title(markdown_text: str, subject: str | None) -> str:
+    """Remove a leading level-1 heading that just restates the email's subject.
+
+    `report.html` already renders the subject as the email's <h1>, so an LLM
+    that opens its body with the same title — reliably, and with its own dash
+    style — gives the reader the headline twice. Only an H1 is considered: `##`
+    and below are the report's own sections.
+
+    Matching ignores case, punctuation and dash style ("A - B" vs "A — B"), and
+    tolerates the date being written differently on each side. It does not
+    tolerate anything else: a heading that says something the subject does not
+    is the author's, and stays.
+    """
+    if not subject:
+        return markdown_text
+
+    match = re.match(r"[ \t\r\n]*#[ \t]+(.+?)[ \t]*(?:\n|$)", markdown_text)
+    if not match:
+        return markdown_text
+
+    heading_key, subject_key = _title_key(match.group(1)), _title_key(subject)
+    if not heading_key or not subject_key:
+        return markdown_text
+
+    if heading_key != subject_key:
+        heading_stem, subject_stem = _title_stem(heading_key), _title_stem(subject_key)
+        # A stem of only a word or two is too thin to be sure it is the same
+        # report rather than a coincidence.
+        if len(subject_stem) < 12 or heading_stem != subject_stem:
+            return markdown_text
+
+    return markdown_text[match.end() :].lstrip("\n")
 
 
 def _style_tables(html: str) -> str:

@@ -786,6 +786,13 @@ def run(params, call_api, log, call_api_parallel=None):
                 "supplier": v.get("supplier_name"),
                 "total": v.get("total"),
                 "detail": detail_of(v, c),
+                # The four fields, for the invoices that FAILED only. A table
+                # of four ticks under an invoice that reconciled is what made
+                # the old report unreadable — eight of them on the 29 Aug run —
+                # but on a failure this is the part that shows what disagreed,
+                # and stripping it left the report long AND useless. Measured:
+                # +3,873 chars for all 11 failures across six venues.
+                "comparison": v.get("comparison") or {},
             }
         )
     exceptions = [
