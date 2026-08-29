@@ -701,6 +701,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
   };
   const reviewed = docLive.doc_schema === 'replica_v1' && !!docLive.reviewed_at;
+  // While the background dojo study runs, the on-screen review is the main-prompt
+  // ("dud") read — a spec will replace it shortly. Don't dress it up as a finished
+  // review: suppress the confidence chip, the suggestions block, the reviewed
+  // timestamp and the resolved units, and say "studying" instead. Web only.
+  const studying = !embedded && !!docLive.sensei_studying;
   useEffect(() => {
     if (embedded || !venueId || !doc.invoice_id) return;
     if (doc.is_deleted) return; // tombstone — nothing left to review
@@ -2120,7 +2125,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       </div>
     );
   };
-  const confidenceChip = !dojo && liveConfidence && !draftDeleted ? (
+  const confidenceChip = !dojo && liveConfidence && !draftDeleted && !studying ? (
     <span style={{
       fontSize: '0.6rem', fontWeight: 700, padding: '1px 8px', borderRadius: 8, whiteSpace: 'nowrap',
       background: liveConfidence === 'ready' ? '#e7f5ec' : '#fdf6e7',
@@ -2604,6 +2609,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                         <span style={{ color: '#b45309', fontWeight: 600 }}> — NEW</span>
                       )}
                     </span>
+                  ) : studying ? (
+                    // The study will re-resolve the unit; don't show the dud one.
+                    <span style={{ fontSize: '0.78rem', color: '#9ca3af', fontStyle: 'italic' }}>studying…</span>
                   ) : (
                   <select value={l.linked_unit_id || ''} disabled={doneState || struck}
                     onChange={(e) => onUnit(idx, e.target.value)}
@@ -2621,14 +2629,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   )}
                   {/* The server's unit suggestion (the copy's delivered unit
                       resolves to a different Loaded unit). */}
-                  {!struck && viewMode === 'norm' && suggChip(unitSuggFor(l.id))}
+                  {!struck && !studying && viewMode === 'norm' && suggChip(unitSuggFor(l.id))}
                   {/* Same delta, for a unit Loaded does not have yet. The
                       Norm view always shows what LOADED holds and puts the
                       change in a chip beneath it — so this reads
                       "6 X 750ML" with "→ 12x375ml (new)" under it, exactly
                       like the quantity and tax chips, rather than the row
                       quietly displaying a unit that does not exist. */}
-                  {!struck && viewMode === 'norm' && pendingUnitName(l.id) && (
+                  {!struck && !studying && viewMode === 'norm' && pendingUnitName(l.id) && (
                     <div>
                       <span style={chipStyle}
                         title={`the copy's delivered unit '${pendingUnitName(l.id)}' doesn't exist in Loaded — create it`}>
@@ -2645,7 +2653,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       read off the copy (unit_not_in_loaded / unit_missing
                       with a unit_name) — never for a bare unlinked string
                       that came from Loaded. Two-step confirm, the one write. */}
-                  {!struck && !dojo && viewMode === 'norm' && !doneState && !embedded && (() => {
+                  {!struck && !studying && !dojo && viewMode === 'norm' && !doneState && !embedded && (() => {
                     const createName = replicaUnitName(String(l.id));
                     if (!createName) return null;
                     return (
@@ -2948,7 +2956,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           pending first; the SAME objects as the inline chips, so the two
           surfaces can never diverge. The action record renders compactly
           underneath. */}
-      {!dojo && viewMode === 'norm' && (suggestions.length > 0 || (reviewed && !doneState)) && (
+      {!dojo && !studying && viewMode === 'norm' && (suggestions.length > 0 || (reviewed && !doneState)) && (
         <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
             <div style={{ ...microLabel, color: '#8a6d3b' }}>
@@ -3039,7 +3047,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {!dojo && !collapsed && !embedded && !doneState && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.4rem 0.9rem', borderTop: '1px solid #eee' }}>
           <span style={{ fontSize: '0.62rem', color: '#9ca3af' }}>
-            {reviewing ? 'reviewing…' : reviewed ? `reviewed ${String(docLive.reviewed_at).replace('T', ' ').slice(0, 16)}` : 'not yet reviewed'}
+            {reviewing ? 'reviewing…' : studying ? 'Norm is studying this supplier…' : reviewed ? `reviewed ${String(docLive.reviewed_at).replace('T', ' ').slice(0, 16)}` : 'not yet reviewed'}
           </span>
           <button type="button" onClick={() => { void reanalyse(); }} disabled={reviewing}
             title="rebuild this invoice from Loaded and the copy and review it from scratch — resets your edits and accepted suggestions"
