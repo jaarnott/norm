@@ -624,6 +624,28 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     return false;
   };
 
+  // A spec-less supplier's invoice is reviewed under the main prompt while the
+  // background dojo study runs (~1-2 min); when it finishes it auto-applies the
+  // spec and re-reviews this invoice's stored draft (spec_dojo._heal_source_review
+  // → heal_review). This open card has no other trigger to see that, so while the
+  // "studying" flag is set we poll our own doc and adopt the healed version the
+  // moment it lands — the flag clears with it, ending the poll. Web only; the
+  // embedded chat card re-renders on its own and cannot refetch. Capped so a
+  // stuck/failed study never polls forever (the note + Re-analyse still work).
+  const studyPollsRef = useRef(0);
+  useEffect(() => {
+    if (embedded || !docLive.sensei_studying) { studyPollsRef.current = 0; return; }
+    const id = setInterval(() => {
+      studyPollsRef.current += 1;
+      if (studyPollsRef.current > 20) { clearInterval(id); return; } // ~4 min cap
+      refetchOwnDoc();
+    }, 12000);
+    return () => clearInterval(id);
+    // refetchOwnDoc reads only stable values (docUrl + setters); re-running on
+    // its identity would needlessly reset the interval, so it is left out.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded, docLive.sensei_studying]);
+
   // The server review (POST /invoice-fixes/review) — builds/rebuilds the
   // replica_v1 payload. Web-only (embedded cards are pre-reviewed at block
   // build). force=true recomputes AND SQUASHES local edits + the
