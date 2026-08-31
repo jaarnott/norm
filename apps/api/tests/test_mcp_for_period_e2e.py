@@ -213,14 +213,16 @@ def _stub_upstream(monkeypatch, sink):
 
     import httpx
 
-    def fake_request(**kw):
-        return httpx.Response(
-            200,
-            json={"total": 15945},
-            request=httpx.Request("GET", kw.get("url", "https://api.example.com")),
-        )
+    from app.connectors import http_pool
 
-    monkeypatch.setattr(httpx, "request", lambda **kw: fake_request(**kw))
+    def _handler(request):
+        return httpx.Response(200, json={"total": 15945})
+
+    # execute_http now sends through the shared pooled client — intercept at the
+    # transport rather than patching the module-level httpx.request.
+    monkeypatch.setattr(
+        http_pool, "_client", httpx.Client(transport=httpx.MockTransport(_handler))
+    )
 
 
 def _ctx(wired):

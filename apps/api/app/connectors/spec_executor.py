@@ -260,8 +260,16 @@ def execute_http(
         )
         httpx_auth = (credentials.get(username_field, ""), password)
 
+    # Through the shared pool (keep-alive reuse + a per-instance connection
+    # ceiling), so a 20-way fan-out reuses connections instead of opening 20 fresh
+    # sockets. The retry policy stays where it is: transient retry belongs on the
+    # idempotent Loaded reads (LoadedInvoiceClient), while the write path here
+    # keeps its existing single 401-refresh retry in ``execute_spec`` and must not
+    # blindly re-send a mutating request.
+    from app.connectors.http_pool import get_client
+
     try:
-        resp = httpx.request(
+        resp = get_client().request(
             method=rendered.method,
             url=rendered.url,
             headers=rendered.headers,

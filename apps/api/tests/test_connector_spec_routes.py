@@ -100,8 +100,15 @@ class TestTestButtonUsesTheRequestedVenuesToken:
                 "app.services.oauth_service.get_valid_access_token", return_value="tok"
             ) as get_token,
             patch(
-                "app.connectors.spec_executor.httpx.request",
-                return_value=MagicMock(status_code=200, json=lambda: {}, text="{}"),
+                # execute_http now sends through the shared pooled client.
+                "app.connectors.http_pool.get_client",
+                return_value=MagicMock(
+                    request=MagicMock(
+                        return_value=MagicMock(
+                            status_code=200, json=lambda: {}, text="{}"
+                        )
+                    )
+                ),
             ),
         ):
             resp = config_client.post(

@@ -22,15 +22,19 @@ from app.connectors.spec_executor import RenderedRequest, execute_http
 
 class TestBinaryResponseFormat:
     def _respond(self, monkeypatch, content, content_type):
-        def fake_request(**kwargs):
+        # execute_http now goes through the shared pooled client
+        # (app.connectors.http_pool), so intercept at the transport rather than
+        # patching the module-level httpx.request.
+        from app.connectors import http_pool
+
+        def handler(request):
             return httpx.Response(
-                200,
-                content=content,
-                headers={"content-type": content_type},
-                request=httpx.Request("GET", kwargs.get("url", "https://x")),
+                200, content=content, headers={"content-type": content_type}
             )
 
-        monkeypatch.setattr(httpx, "request", lambda **kw: fake_request(**kw))
+        monkeypatch.setattr(
+            http_pool, "_client", httpx.Client(transport=httpx.MockTransport(handler))
+        )
 
     def test_binary_tool_returns_base64(self, monkeypatch):
         pdf_bytes = b"%PDF-1.7 fake"

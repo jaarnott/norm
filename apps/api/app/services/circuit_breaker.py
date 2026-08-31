@@ -105,3 +105,15 @@ anthropic_breaker = CircuitBreaker(
     failure_threshold=5,
     recovery_timeout=60.0,
 )
+
+# Pre-configured breaker for the LoadedHub API. More tolerant than Anthropic's:
+# Loaded sits under everything (receiving, reconciliation, the units the Receive
+# card reads), and each recorded failure already burned its retries in
+# ``http_pool.send`` — so 8 give-ups is a genuine sustained outage, not a blip.
+# A short recovery window probes again quickly so a brief wobble doesn't lock
+# users out for long.
+loaded_breaker = CircuitBreaker(
+    name="loaded",
+    failure_threshold=8,
+    recovery_timeout=30.0,
+)

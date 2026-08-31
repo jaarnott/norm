@@ -138,14 +138,25 @@ class LoadedInvoiceClient:
         self._headers = {k: str(v).strip() for k, v in headers.items()}
 
     def request(self, method: str, path: str, body: object = None) -> object:
-        resp = httpx.request(
-            method,
-            _HOST + path,
-            headers=self._headers,
-            json=body if isinstance(body, (dict, list)) else None,
-            auth=self._auth,
-            timeout=30.0,
-        )
+        # Through the shared pool: keep-alive reuse, a per-instance connection
+        # ceiling, method-aware retry (a receive PUT is never retried on a 5xx —
+        # it may already have applied), and the Loaded circuit breaker.
+        from app.connectors import http_pool
+        from app.services.circuit_breaker import loaded_breaker
+
+        try:
+            resp = http_pool.send(
+                method,
+                _HOST + path,
+                headers=self._headers,
+                json=body if isinstance(body, (dict, list)) else None,
+                auth=self._auth,
+                breaker=loaded_breaker,
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"Loaded {method} {path} → {type(exc).__name__}: {exc}"
+            ) from exc
         if resp.status_code >= 400:
             raise RuntimeError(
                 f"Loaded {method} {path} → {resp.status_code}: {resp.text[:200]}"
@@ -162,12 +173,19 @@ class LoadedInvoiceClient:
         """Download an invoice file and return (base64, content_type)."""
         import base64
 
-        resp = httpx.get(
-            _HOST + f"/1.0/stock/internal/invoices/files/{file_id}",
-            headers=self._headers,
-            auth=self._auth,
-            timeout=30.0,
-        )
+        from app.connectors import http_pool
+        from app.services.circuit_breaker import loaded_breaker
+
+        try:
+            resp = http_pool.send(
+                "GET",
+                _HOST + f"/1.0/stock/internal/invoices/files/{file_id}",
+                headers=self._headers,
+                auth=self._auth,
+                breaker=loaded_breaker,
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"file download → {type(exc).__name__}: {exc}") from exc
         if resp.status_code >= 400:
             raise RuntimeError(f"file download → {resp.status_code}")
         ctype = resp.headers.get("content-type", "application/pdf").split(";")[0]
