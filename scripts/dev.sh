@@ -101,7 +101,12 @@ fi
 PROD_PROXY_PID=""
 if [[ "${PROD_DATABASE_URL:-}" == *"127.0.0.1:5434"* ]]; then
   PROD_SA_KEY="${PROD_SA_KEY:-$ROOT/norm-config-sa.json}"
-  PROD_INSTANCE="${PROD_INSTANCE:-norm-production-491101:australia-southeast1:norm-production}"
+  # norm-prod-db, NOT norm-production: the latter was the pre-Aug-2026 instance,
+  # stopped on 9 Aug and deleted on 31 Aug. Pointing here at a dead instance is
+  # what produces a listener on 5434 that accepts connections and then closes
+  # them ("server closed the connection unexpectedly") — the proxy log says
+  # Error 409, the client never does.
+  PROD_INSTANCE="${PROD_INSTANCE:-norm-production-491101:australia-southeast1:norm-prod-db}"
   PROXY_BIN="$(command -v cloud-sql-proxy || echo "$HOME/.local/bin/cloud-sql-proxy")"
 
   if (exec 3<>/dev/tcp/127.0.0.1/5434) 2>/dev/null; then

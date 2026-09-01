@@ -49,7 +49,12 @@ resource "google_cloud_scheduler_job" "run_due_tasks" {
   name      = "norm-run-due-tasks-${var.environment}"
   project   = var.project_id
   region    = var.region
-  schedule  = "* * * * *" # every minute
+  # Every 5 minutes, not every minute. The endpoint only claims tasks that are
+  # already due, so the cadence is the worst-case lateness of a task, not its
+  # accuracy — and at one task a day, a per-minute poll was 43,200 invocations
+  # a month to do 30 seconds of work. A task now fires up to 5 minutes late;
+  # tighten this if a sub-5-minute schedule is ever needed.
+  schedule  = "*/5 * * * *"
   time_zone = "Etc/UTC"
 
   attempt_deadline = "60s"
