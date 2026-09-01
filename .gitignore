@@ -43,11 +43,19 @@ coverage/
 .turbo/
 
 # Terraform
-infra/terraform/.terraform/
-infra/terraform/*.tfplan
-infra/terraform/tfplan
-infra/terraform/*.tfstate
-infra/terraform/.terraform.lock.hcl
+# Recursive: dev-vm/ is a second root module with its own .terraform (~99 MB of
+# provider binary). The non-recursive patterns only covered infra/terraform/
+# itself, so a new module directory would have committed the lot.
+infra/terraform/**/.terraform/
+# tfplan* not tfplan: saved plans get numbered (tfplan2, tfplan3) when you
+# re-plan, and a plan file embeds the fully resolved config.
+infra/terraform/**/*.tfplan*
+infra/terraform/**/tfplan*
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.*
+infra/terraform/**/.terraform.lock.hcl
+# Real tfvars carry project ids and personal emails; the .example does not.
+infra/terraform/**/terraform.tfvars
 
 # Claude Code local settings (per-developer permissions)
 .claude/settings.local.json

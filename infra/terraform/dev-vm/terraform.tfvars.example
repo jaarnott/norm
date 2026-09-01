@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars and fill in.
+
+# NOT a production project — client work runs on this machine.
+project_id = "norm-dev"
+
+# Principals who may SSH in. Your own Google account, not a service account.
+owners = ["user:you@cookbrothersbars.co.nz"]
+
+# Projects whose Cloud SQL this box may reach through cloud-sql-proxy.
+db_projects = ["norm-production-491101"]
+
+# machine_type          = "e2-standard-4"   # 4 vCPU / 16 GB
+# boot_disk_gb          = 100
+# idle_shutdown_minutes = 45                # 0 disables
