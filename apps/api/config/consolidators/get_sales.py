@@ -821,68 +821,51 @@ def _breakdown_items(
                         label = w.get("label", str(sh) + "-" + str(eh))
                         per_day.append((v, day, sh, eh, label))
                 day = day + datetime.timedelta(days=1)
-        if len(per_day) <= 20:
-            for v, day, sh, eh, label in per_day:
-                calls.append(
-                    (
-                        "loadedhub",
-                        "get_pos_item_sales",
-                        {
-                            "venue": v,
-                            "start_time": day.isoformat()
-                            + "T"
-                            + str(sh).zfill(2)
-                            + ":00:00"
-                            + tz_offset,
-                            "end_time": day.isoformat()
-                            + "T"
-                            + str(eh).zfill(2)
-                            + ":00:00"
-                            + tz_offset,
-                        },
-                    )
-                )
-                meta.append((v, label, None))
-        elif allowed is not None:
-            # The monthly fallback cannot honour a day filter (whole-month
-            # item calls include every weekday) — refuse rather than
-            # silently widen the answer.
+        if len(per_day) > 20:
+            # Item sales cannot be sliced by clock time over a long range: the
+            # feed has no hour-of-day filter, so each day × window is its own
+            # call. The old monthly fallback issued ONE call per month per
+            # window with clock-hour endpoints (e.g. 1 Jun 12:00 → 30 Jun
+            # 15:00) — a span of the WHOLE month, not 12–3pm daily — so every
+            # window silently returned ~the full-period total. Refuse with
+            # guidance instead of lying.
             return {
                 "window": window,
                 "error": (
-                    "too many day-filtered item calls for one request ("
+                    "item sales can't be sliced by clock time over this range: "
+                    "the feed has no hour-of-day filter, so each day × window is "
+                    "a separate call and this needs "
                     + str(len(per_day))
-                    + ") — narrow the period or the windows"
+                    + " (max 20 per call). Narrow the period (e.g. a week at a "
+                    "time) or use fewer windows, then combine the results."
                 ),
             }
-        else:
-            for v in venues:
-                for m_start, m_end in _month_chunks(start_date, end_date):
-                    for w in time_windows:
-                        sh = int(w.get("start_hour", 0))
-                        eh = int(w.get("end_hour", 23))
-                        label = w.get("label", str(sh) + "-" + str(eh))
-                        calls.append(
-                            (
-                                "loadedhub",
-                                "get_pos_item_sales",
-                                {
-                                    "venue": v,
-                                    "start_time": m_start.isoformat()
-                                    + "T"
-                                    + str(sh).zfill(2)
-                                    + ":00:00"
-                                    + tz_offset,
-                                    "end_time": m_end.isoformat()
-                                    + "T"
-                                    + str(eh).zfill(2)
-                                    + ":00:00"
-                                    + tz_offset,
-                                },
-                            )
-                        )
-                        meta.append((v, label, None))
-            log("items: monthly window strategy (" + str(len(calls)) + " calls)")
+        for v, day, sh, eh, label in per_day:
+            # A window whose end hour is not past its start hour crosses
+            # midnight (e.g. 23:00–03:00). Its end lands on the NEXT day —
+            # keeping it on the same day gives start > end, an empty range that
+            # returned $0.
+            end_day = day if eh > sh else day + datetime.timedelta(days=1)
+            calls.append(
+                (
+                    "loadedhub",
+                    "get_pos_item_sales",
+                    {
+                        "venue": v,
+                        "start_time": day.isoformat()
+                        + "T"
+                        + str(sh).zfill(2)
+                        + ":00:00"
+                        + tz_offset,
+                        "end_time": end_day.isoformat()
+                        + "T"
+                        + str(eh).zfill(2)
+                        + ":00:00"
+                        + tz_offset,
+                    },
+                )
+            )
+            meta.append((v, label, None))
     else:
         # Whole-window fetch, day-start aligned via monthly chunks.
         boundary = "T" + str(day_start_hour).zfill(2) + ":00:00"

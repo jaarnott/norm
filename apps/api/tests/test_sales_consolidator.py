@@ -447,6 +447,44 @@ class TestItems:
         assert len(calls) == 7
         assert calls[0]["start_time"].endswith("T17:00:00+12:00")
 
+    def test_items_time_windows_over_a_long_range_is_refused_not_faked(self):
+        # 7 trading days x 4 windows = 28 day×window calls (> 20). The item feed
+        # has no hour-of-day filter, so the old code fell back to ONE
+        # month-spanning call per window (e.g. 17 Aug 12:00 → 23 Aug 15:00) —
+        # a span of the whole range, not 12–3pm daily — so every window
+        # returned ~the full-period total (an impossible "$194k at lunch").
+        # It must refuse with guidance, never silently widen the answer.
+        api = Api()
+        out = run(
+            api,
+            breakdown="items",
+            time_windows=[
+                {"start_hour": 12, "end_hour": 15, "label": "lunch"},
+                {"start_hour": 15, "end_hour": 18, "label": "arvo"},
+                {"start_hour": 18, "end_hour": 21, "label": "dinner"},
+                {"start_hour": 21, "end_hour": 23, "label": "late"},
+            ],
+        )
+        assert out.get("error") and "max 20" in out["error"]
+        # Refused BEFORE fetching — no garbage calls went to the feed.
+        assert not [p for a, p in api.seen if a == "get_pos_item_sales"]
+
+    def test_items_midnight_window_spans_into_the_next_day(self):
+        # A window whose end hour is not past its start hour crosses midnight;
+        # its end must land on the NEXT day. Same-day 23:00 → 03:00 is an empty
+        # range that returned $0 for every after-midnight item.
+        api = Api()
+        out = run(
+            api,
+            breakdown="items",
+            time_windows=[{"start_hour": 23, "end_hour": 3, "label": "late"}],
+        )
+        calls = [p for a, p in api.seen if a == "get_pos_item_sales"]
+        assert len(calls) == 7  # 7 trading days x 1 window, per-day strategy
+        assert calls[0]["start_time"].startswith("2026-08-17T23:00:00")
+        assert calls[0]["end_time"].startswith("2026-08-18T03:00:00")
+        assert out["rows"]  # a real, non-empty range now returns items
+
 
 class TestStaff:
     def test_staff_ranked_with_honest_totals(self):
