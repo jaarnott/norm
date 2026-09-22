@@ -65,11 +65,34 @@ async def list_playbooks(
 @router.get("/tools/{agent_slug}")
 async def list_agent_tools(
     agent_slug: str,
+    db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """List all available tool actions for an agent."""
+    """Tool actions available for a task's tool_filter.
+
+    ``agent_slug='all'`` returns the full entitled union — the same set an
+    interactive agent sees — so a task's filter can span domains (e.g. read a
+    report AND order stock). It reuses the runtime assembly, so it is
+    entitlement-filtered, deduped, and excludes retired tools like
+    ``delegate_to_agent``. A real slug returns that agent's own bound tools.
+    """
     from app.db.config_models import AgentConnectionBinding, ConnectionSpec
+
+    if agent_slug == "all":
+        from app.agents.prompt_builder import _collect_tools
+
+        return {
+            "tools": [
+                {
+                    "action": t["action"],
+                    "connector": t["connector"],
+                    "method": t.get("method", "?"),
+                    "description": t.get("description", ""),
+                }
+                for t in _collect_tools(db, user_id=user.id, config_db=config_db)
+            ]
+        }
 
     bindings = (
         config_db.query(AgentConnectionBinding)

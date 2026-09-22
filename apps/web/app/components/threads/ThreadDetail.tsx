@@ -689,7 +689,7 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                 setEditing(true);
                 if (at.agent_slug && agentTools.length === 0) {
                   import('../../lib/api').then(({ apiFetch }) =>
-                    apiFetch(`/api/playbooks/tools/${at.agent_slug}`)
+                    apiFetch('/api/playbooks/tools/all')
                       .then(r => r.ok ? r.json() : null)
                       .then(d => { if (d?.tools) setAgentTools(d.tools); })
                       .catch(() => {})
@@ -757,7 +757,7 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                           setToolDropdownOpen(true);
                           if (agentTools.length === 0 && at.agent_slug) {
                             import('../../lib/api').then(({ apiFetch }) =>
-                              apiFetch(`/api/playbooks/tools/${at.agent_slug}`)
+                              apiFetch('/api/playbooks/tools/all')
                                 .then(r => r.ok ? r.json() : null)
                                 .then(d => { if (d?.tools) setAgentTools(d.tools); })
                                 .catch(() => {})
@@ -789,7 +789,7 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                                 onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#fff')}
                               >
                                 <span style={{ fontWeight: 500 }}>{t.action}</span>
-                                <span style={{ color: '#aaa', fontSize: '0.68rem', marginLeft: 6 }}>[{t.method}]</span>
+                                <span style={{ color: '#aaa', fontSize: '0.68rem', marginLeft: 6 }}>[{t.connector} · {t.method}]</span>
                                 {t.description && <div style={{ fontSize: '0.68rem', color: '#888', marginTop: 1 }}>{t.description}</div>}
                               </div>
                             ))}
