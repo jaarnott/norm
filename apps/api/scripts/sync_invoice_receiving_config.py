@@ -424,28 +424,29 @@ PLAYBOOK = {
     ),
     "instructions": """Goal: review the venue's outstanding supplier invoices. Norm reads each attached invoice copy itself (the replica) and turns every difference from Loaded's draft into a suggested change; blocking confidence issues flag an invoice for the user. What gets received automatically is decided by that review AND the user's run mode — you never decide what gets received.
 
-RUN MODE — DO THIS FIRST, before running the review. This workflow honours a per-user run mode, and you must NOT run the review until it is set:
-0. Call get_workflow_mode with workflow="review_and_receive_invoices".
-   - If it returns mode "unset": DO NOT run the review. Ask the user to choose their default mode and STOP for their answer:
+RUN MODE — DO THIS FIRST, before running the review. This workflow honours a run mode, and you must NOT run the review until it is set:
+0. The current mode is already in your context, under "Run modes" — read it there. There is no tool to fetch it and you do not need one.
+   - If the mode is "unset": DO NOT run the review. Ask the user to choose their default mode and STOP for their answer:
      • **approve all** — Norm changes nothing without your OK (everything is presented on cards to approve);
      • **approve fixes** — Norm auto-receives the exact matches; anything needing a fix waits on a card for you;
      • **autopilot** — Norm applies every suggested change from its own reading of the invoice copy (each change is recorded on the card) and receives every invoice with no blocking issues; anything it can't be confident about still waits for you.
      When they answer, call set_workflow_mode with workflow="review_and_receive_invoices" and their choice, confirm it briefly, THEN continue to step 1.
-   - If it returns a set mode: go straight to step 1 (the review runs in that mode automatically). The user can change it any time by asking — call set_workflow_mode.
+   - If a mode is set: go straight to step 1 (the review runs in that mode automatically). The user can change it any time by asking — call set_workflow_mode.
 
 1. Call review_and_receive_invoices for the venue (default range: last 60 days) — do NOT pass any dry_run or mode param; the run mode alone governs what is written. Before calling it, write at most ONE short status line (e.g. "Reviewing the outstanding invoices…") — the full report comes after the tool returns.
 2. Write a SHORT summary — a few sentences, no audit tables. From the tool's results: how many invoices were reviewed; how many were received automatically (in approve-all mode say "ready to approve" instead — nothing was written); how many await the user on the cards below and why in one line each (e.g. "109738996 — $0 duplicate line to strike", "CN-19980 — duplicate of an already-received invoice"), using the returned reasons — never invent or soften them. Skipped invoices with no card (fetch failures, credit notes) get one bold line each with the tool's reason.
 3. Below your summary there is one compact **Receive Invoice** card per invoice that needs the user. Each card shows its suggested changes (Accept per change), what needs attention, and **Accept & Receive**; it expands to the full invoice. Close with one sentence pointing the user at the cards. If the result's `auto_submit` is true (**autopilot**), say the confident fixes apply automatically and the rest wait on the cards. NEVER claim you have applied or received anything — the user (or autopilot) does that from the cards.
 
-PO VALIDITY — "No valid purchase order" is a blocking validation error by default: autopilot will not receive an invoice whose order reference matches no Loaded purchase order (or references an order that belongs to a different, non-split invoice). If the user says they don't care about PO validity for auto-receiving (e.g. "receive them even without a matching order"), call update_task_config with key "require_valid_po" and value false (true restores the default). The check still shows on every card either way.
+PO VALIDITY — "No valid purchase order" is a blocking validation error by default: autopilot will not receive an invoice whose order reference matches no Loaded purchase order (or references an order that belongs to a different, non-split invoice). If the user says they don't care about PO validity for auto-receiving (e.g. "receive them even without a matching order"), call manage_task with op="set_config", key "require_valid_po" and value false (true restores the default). The check still shows on every card either way.
 
 If the user asks why a specific invoice was skipped, use get_invoices with that invoice_id together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
     "tool_filter": [
         "review_and_receive_invoices",
         "get_invoices",
         "get_purchase_orders",
-        "get_workflow_mode",
+        # get_workflow_mode retired Sep 2026 — the mode is stated in context.
         "set_workflow_mode",
+        "manage_task",
     ],
     "enabled": True,
 }
@@ -462,9 +463,9 @@ RECONCILE_PLAYBOOK = {
     "instructions": """Goal: reconcile the venue's received supplier invoices against their supplier statements. What gets reconciled automatically is decided by the tool's deterministic checks AND the user's run mode — you never decide.
 
 RUN MODE — DO THIS FIRST, before reconciling. Do NOT run the reconciliation until the mode is set:
-0. Call get_workflow_mode with workflow="reconcile_received_invoices".
-   - If it returns mode "unset": DO NOT run the tool. Ask the user to choose their default mode and STOP for their answer: **approve all** (nothing is written — the report is for review), **approve fixes** (auto-reconcile the exact matches; creating a missing statement needs your OK), or **autopilot** (also auto-create missing statements). When they answer, call set_workflow_mode with workflow="reconcile_received_invoices" and their choice, confirm it, THEN continue to step 1.
-   - If it returns a set mode: go straight to step 1. The user can change it any time by asking — call set_workflow_mode.
+0. The current mode is already in your context, under "Run modes" — read it there. There is no tool to fetch it and you do not need one.
+   - If the mode is "unset": DO NOT run the tool. Ask the user to choose their default mode and STOP for their answer: **approve all** (nothing is written — the report is for review), **approve fixes** (auto-reconcile the exact matches; creating a missing statement needs your OK), or **autopilot** (also auto-create missing statements). When they answer, call set_workflow_mode with workflow="reconcile_received_invoices" and their choice, confirm it, THEN continue to step 1.
+   - If a mode is set: go straight to step 1. The user can change it any time by asking — call set_workflow_mode.
 
 1. Call reconcile_received_invoices for the venue (default window: last 30 days of statements) — do NOT pass any dry_run or mode param; the run mode alone governs what is written. Before calling it, write at most ONE short status line — the full report comes after the tool returns.
 2. Write the report from the tool's `report` block, and ONLY from it. The tool also returns every invoice in full — that bulk is for a person opening one, not for the report.
@@ -482,7 +483,7 @@ If the user asks about a specific invoice, use get_invoices (invoice_id for one 
     "tool_filter": [
         "reconcile_received_invoices",
         "get_invoices",
-        "get_workflow_mode",
+        # get_workflow_mode retired Sep 2026 — the mode is stated in context.
         "set_workflow_mode",
     ],
     "enabled": True,

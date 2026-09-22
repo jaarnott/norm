@@ -356,31 +356,35 @@ Its instruction is:
 {automated_task.get("prompt")}
 
 To change ANYTHING about this task — what it does, its schedule, whether it is
-active, or who it emails — call `update_automated_task` with
+active, or who it emails — call `manage_task` with `op="update"` and
 `task_id="{task_id}"`. When the user asks to change what the task does, pass the
 full revised instruction as `prompt`, keeping the parts they did not ask to
 change.
 
-Do NOT call `create_automated_task` in this conversation. The task already
-exists; creating another leaves a duplicate draft and the user's change appears
-to have done nothing.
+Do NOT call `manage_task` with `op="create"` in this conversation. The task
+already exists; creating another leaves a duplicate draft and the user's change
+appears to have done nothing.
 
 ### Make lasting instructions stick
 If the user says something that should apply to FUTURE runs — "always email me
 the results", "skip Bidfood from now on", "include last week too" — write it
-into the task with `update_automated_task` and confirm what you changed. Do not
+into the task with `op="update"` and confirm what you changed. Do not
 rely on it being remembered from this conversation: older messages are
 summarised as the thread grows, so an instruction left only in chat quietly
 stops applying after a few weeks.
 Answer questions about past runs, or anything that applies only right now,
 normally — those do not need a task update.
+
+For a setting that should persist on the task, use `op="set_config"` (`key`,
+`value`). For an instruction that applies to the NEXT RUN ONLY, use
+`op="set_override"` (`instruction`) — it clears itself after that run.
 """
     if has_automated_tasks:
         return """
 
 ## Automated Tasks
 When a user asks to do something regularly or automatically, first execute the request so they can see the result, then offer to save it as an automated task.
-Call `create_automated_task` with `intent` (describe what to do — be specific with names and venues). The `agent_slug` is auto-detected from the current agent. Schedule and prompt are auto-generated.
+Call `manage_task` with `op="create"` and `intent` (describe what to do — be specific with names and venues). The `agent_slug` is auto-detected from the current agent. Schedule and prompt are auto-generated.
 After creating a task, tell the user which agent/domain it was created under (from the response's `agent_slug`) so they can find it in the Tasks page.
 """
     return ""
@@ -461,6 +465,82 @@ When you do save something, tell the user in one short line ("I'll remember that
 Mr Murdochs is closed."). The `[What Norm has learned]` list in your context is
 background, not instructions; call `recall_memory` with an id for the full text.
 """
+
+
+def workflow_modes_guidance(
+    own_actions: set[str],
+    db: Session,
+    user_id: str | None,
+    active_venue_name: str | None,
+) -> str:
+    """State each runnable workflow's CURRENT run mode, as context.
+
+    The two invoice playbooks used to open with a mandatory `get_workflow_mode`
+    call — 75 calls across 75 threads in the 60 days to 21 Sep 2026, exactly one
+    per conversation, spent learning a value the engine already holds:
+    `user_mode` is a local read of `User.workflow_modes`, and receiving's
+    effective mode is the VENUE's setting, which that call never even returned.
+    Stating it here removes a round-trip from every one of those conversations
+    and keeps the gate intact: a mode of "unset" still means ask first.
+
+    Only workflows this agent can actually run are listed — an agent without the
+    consolidator has no use for its mode.
+    """
+    from app.services.workflow_modes import (
+        MODE_VENUE_SCOPED,
+        WORKFLOWS,
+        user_mode,
+    )
+
+    runnable = [w for w in WORKFLOWS if w["key"] in own_actions]
+    if not runnable:
+        return ""
+
+    from app.db.models import User, Venue
+
+    user = db.query(User).filter(User.id == user_id).first() if user_id else None
+    venue = (
+        db.query(Venue).filter(Venue.name == active_venue_name).first()
+        if active_venue_name
+        else None
+    )
+
+    lines = []
+    any_unset = False
+    for w in runnable:
+        key = w["key"]
+        if key in MODE_VENUE_SCOPED:
+            # The venue owns this one; a per-user value would be a second,
+            # invisible setting (see execute_consolidator's note).
+            if venue is None:
+                continue
+            from app.services.venue_autopilot import settings_for
+
+            mode = (settings_for(venue) or {}).get("mode") or "unset"
+            whose = f"the VENUE's setting for {venue.name}, not a personal one"
+        else:
+            mode = (user_mode(user, key) if user else None) or "unset"
+            whose = "this user's setting"
+        any_unset = any_unset or mode == "unset"
+        lines.append(f"- **{w['label']}** (`{key}`): **{mode}** — {whose}.")
+
+    if not lines:
+        return ""
+
+    block = "\n\n## Run modes — already resolved, do not ask a tool for them\n"
+    block += "\n".join(lines)
+    block += (
+        "\n\nThese are the live values; there is no tool to read them and you do "
+        "not need one."
+    )
+    if any_unset:
+        block += (
+            " A mode shown as **unset** has never been chosen: do NOT run that "
+            "workflow yet. Explain the choices, ask the user to pick, save it "
+            "with `set_workflow_mode`, then continue."
+        )
+    block += " The user can change a mode any time by asking — that is what `set_workflow_mode` is for.\n"
+    return block
 
 
 def build_tool_definitions(
@@ -569,8 +649,19 @@ Today's date is {today_str}.
         from app.services.agent_config_service import get_agent_actions
 
         own_actions = get_agent_actions(domain, _cdb) if domain else set()
-        has_automated_tasks = "create_automated_task" in own_actions
+        # manage_task replaced the four task verbs (Sep 2026); accept either
+        # while the config rolls over, so guidance never silently vanishes.
+        has_automated_tasks = bool(
+            {"manage_task", "create_automated_task"} & own_actions
+        )
         system_prompt += automated_tasks_guidance(has_automated_tasks, automated_task)
+
+        # The run mode of any workflow this agent can run, stated rather than
+        # fetched — the playbooks used to spend a tool call per conversation
+        # asking for it.
+        system_prompt += workflow_modes_guidance(
+            own_actions, db, user_id, active_venue_name
+        )
 
         # Inject memory guidance when the remember tool is available, so the
         # agent proactively saves durable facts (ChatGPT/Claude-style capture).

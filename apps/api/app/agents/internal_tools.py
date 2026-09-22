@@ -2638,6 +2638,47 @@ def _set_override(params: dict, db: Session, thread_id: str | None) -> dict:
     return {"success": True, "data": {"overrides_next_run": at.overrides_next_run}}
 
 
+#: manage_task op → the handler that already does the work. Each of these
+#: shipped as its own agent-facing tool; they are the same object ("this
+#: scheduled task") in four verbs, which is exactly the shape the domain-tool
+#: work collapsed elsewhere. Behaviour is unchanged — this only changes how
+#: many schemas an agent carries to reach it.
+_TASK_OPS = {
+    "create": _create_automated_task,
+    "update": _update_automated_task,
+    "set_config": _update_task_config,
+    "set_override": _set_override,
+}
+
+
+@register("norm", "manage_task")
+def _manage_task(params: dict, db: Session, thread_id: str | None) -> dict:
+    """One verb for an automated task: create, update, configure, override.
+
+    Replaces create_automated_task / update_automated_task /
+    update_task_config / set_override on the agent menu (Sep 2026). Those four
+    carried ~780 tokens of schema on four agents between them and were called
+    13 times in 60 days — while being the most confusable set in the norm
+    surface: "change how this task behaves" legitimately described three of
+    them. The capability is rare-but-essential, so it merges rather than goes.
+    """
+    op = str(params.get("op") or "").strip().lower()
+    handler = _TASK_OPS.get(op)
+    if handler is None:
+        return {
+            "success": False,
+            "data": {},
+            "error": (
+                "op must be one of: " + ", ".join(sorted(_TASK_OPS)) + ". "
+                "Use 'create' to schedule new work, 'update' to change what an "
+                "existing task does or when it runs, 'set_config' for a "
+                "persistent setting on it, 'set_override' for a one-off "
+                "instruction that applies to the next run only."
+            ),
+        }
+    return handler({k: v for k, v in params.items() if k != "op"}, db, thread_id)
+
+
 @register("norm", "update_thread_summary")
 def _update_thread_summary(params: dict, db: Session, thread_id: str | None) -> dict:
     """Update the rolling summary of key decisions and instructions."""

@@ -60,6 +60,10 @@ MCP_DENYLIST: frozenset[tuple[str, str]] = frozenset(
         ("norm", "show_orders"),  # display-only
         ("norm", "update_thread_summary"),  # conversation bookkeeping
         ("norm", "set_override"),  # conversation bookkeeping
+        # manage_task absorbed set_override and update_task_config, which
+        # resolve the task from the conversation — there is no conversation
+        # here, so two of its four ops could only fail.
+        ("norm", "manage_task"),  # conversation bookkeeping
     }
 )
 
