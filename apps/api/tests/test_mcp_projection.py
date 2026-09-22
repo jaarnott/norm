@@ -267,3 +267,106 @@ class TestToMcpToolDict:
 
     def test_never_destructive_in_v1(self):
         assert to_mcp_tool_dict(self._mk())["annotations"]["destructiveHint"] is False
+
+
+class TestAlwaysExposeIgnoresBindings:
+    """ALWAYS_EXPOSE must not depend on an in-app agent binding.
+
+    Step 1 of project_tools gates on `_collect_tools`, which walks agent
+    bindings. So an action no agent binds vanished from MCP however
+    ALWAYS_EXPOSE was set — a documented promise made quietly conditional on
+    an unrelated config row. It went live the day resolve_dates left the
+    agents' menus (Sep 2026): their own tools take `period` in plain English
+    now, while an MCP client has no Norm prompt telling it today's date, and
+    the MCP instructions tell every client to call exactly this tool.
+    """
+
+    def _seed(self, db, *, bind_resolve_dates: bool):
+        from app.db.models import AgentConnectionBinding, ConnectionSpec, McpCapability
+
+        db.add(
+            ConnectionSpec(
+                connector_name="norm",
+                display_name="Norm",
+                auth_type="none",
+                execution_mode="internal",
+                enabled=True,
+                tools=[
+                    {
+                        "action": "resolve_dates",
+                        "method": "GET",
+                        "description": "Resolve a phrase to a window",
+                    },
+                    {
+                        "action": "get_working_document",
+                        "method": "GET",
+                        "description": "Read a working document",
+                    },
+                    {
+                        "action": "get_attachment",
+                        "method": "GET",
+                        "description": "Read an attachment",
+                    },
+                ],
+            )
+        )
+        caps = [{"action": "get_working_document", "enabled": True}]
+        if bind_resolve_dates:
+            caps.append({"action": "resolve_dates", "enabled": True})
+        db.add(
+            AgentConnectionBinding(
+                agent_slug="procurement",
+                connector_name="norm",
+                capabilities=caps,
+                enabled=True,
+            )
+        )
+        # get_attachment is curated but bound to NO agent: the control.
+        for action in ("resolve_dates", "get_working_document", "get_attachment"):
+            db.add(
+                McpCapability(
+                    kind="connector",
+                    target="norm",
+                    action=action,
+                    scopes=["mcp:reports:read"],
+                    enabled=True,
+                )
+            )
+        db.flush()
+
+    def _actions(self, db, scopes=("mcp:reports:read",)):
+        from app.mcp.projection import project_tools
+
+        return {
+            t.action
+            for t in project_tools(
+                db,
+                db,
+                user_id=None,
+                granted_scopes=frozenset(scopes),
+                venue_names=["V"],
+            )
+        }
+
+    def test_survives_having_no_binding_at_all(self, db_session):
+        self._seed(db_session, bind_resolve_dates=False)
+        assert "resolve_dates" in self._actions(db_session)
+
+    def test_a_normal_tool_still_needs_its_binding(self, db_session):
+        """The negative control: get_attachment is curated and its scope is
+        granted, but no agent binds it. This lifts the binding requirement
+        for ALWAYS_EXPOSE alone, not for everything."""
+        self._seed(db_session, bind_resolve_dates=False)
+        actions = self._actions(db_session)
+        assert "get_attachment" not in actions
+        assert "get_working_document" in actions, "a bound tool is unaffected"
+
+    def test_bound_case_is_unchanged(self, db_session):
+        self._seed(db_session, bind_resolve_dates=True)
+        assert {"resolve_dates", "get_working_document"} <= self._actions(db_session)
+
+    def test_scope_bypass_still_holds_too(self, db_session):
+        """The older promise: exposed regardless of granted scopes. Both
+        bypasses have to hold at once, or an unscoped client loses it."""
+        self._seed(db_session, bind_resolve_dates=False)
+        assert self._actions(db_session, scopes=()) == {"resolve_dates"}

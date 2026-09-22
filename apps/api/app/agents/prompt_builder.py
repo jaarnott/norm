@@ -564,7 +564,20 @@ def build_tool_definitions(
     # playbooks) always carry an explicit tool_filter (guaranteed at setup +
     # backfill), so they get exactly that set. `own_actions` is the agent's ACTUAL
     # resulting toolset, so prompt guidance is offered for the tools it will hold.
-    _ALWAYS_INCLUDE = {"resolve_dates", "show_connect"}
+    # show_connect is genuinely cross-cutting: "reconnect LoadedHub" can be
+    # asked in any domain, for a connector never bound to this agent.
+    #
+    # resolve_dates LEFT this set (Sep 2026) and is now bound to no agent. It
+    # was here because any conversation might need a date worked out — true
+    # when every read tool took raw ISO timestamps. The domain tools ended
+    # that: get_sales, get_labour, get_invoices, get_budgets and the rest take
+    # `period` in plain English and resolve it against the venue's trading day
+    # themselves, and production stopped calling it on 27 Aug 2026, the day
+    # after get_sales shipped. The nine consolidators that resolve windows
+    # still call it through call_api, which reads the spec row and never the
+    # bindings. app/mcp/projection.ALWAYS_EXPOSE keeps it for MCP clients,
+    # which have no Norm prompt to tell them today's date.
+    _ALWAYS_INCLUDE = {"show_connect"}
     active_filter = tool_filter or (
         playbook.tool_filter
         if playbook and getattr(playbook, "tool_filter", None)

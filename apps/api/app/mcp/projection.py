@@ -67,9 +67,13 @@ MCP_DENYLIST: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-# Exposed to every principal regardless of scope. Norm owns business date
-# logic, so the client must always be able to ask — mirrors
-# prompt_builder._ALWAYS_INCLUDE, which does the same for the in-app agents.
+# Exposed to every principal regardless of scope OR binding. Norm owns business
+# date logic and an MCP client has no Norm prompt behind it, so it must always
+# be able to ask what "last week" means here — the MCP instructions tell every
+# client to call exactly this. It no longer mirrors
+# prompt_builder._ALWAYS_INCLUDE: the in-app agents dropped resolve_dates in
+# Sep 2026 because their own tools take `period` in plain English, while this
+# surface still needs it. Two audiences, two answers.
 ALWAYS_EXPOSE: frozenset[tuple[str, str]] = frozenset({("norm", "resolve_dates")})
 
 READ_METHODS = frozenset({"GET", "HEAD"})
@@ -341,7 +345,21 @@ def project_tools(
         for t in _collect_tools(db, user_id=user_id, config_db=config_db)
     }
     # Full-fidelity rows, for signals and schema.
-    available = {k: v for k, v in raw_tool_defs(config_db).items() if k in gated}
+    _raw_defs = raw_tool_defs(config_db)
+    available = {k: v for k, v in _raw_defs.items() if k in gated}
+
+    # ALWAYS_EXPOSE has to mean what it says. Step 1 gates on the in-app
+    # agents' bindings, so an action no agent binds vanished from MCP however
+    # the flag was set — a documented promise made quietly conditional on an
+    # unrelated config row. resolve_dates is exactly that case: the MCP
+    # instructions tell every client to call it, while Norm's own agents
+    # stopped needing it once the domain tools began taking `period` in plain
+    # English (Sep 2026), so it is bound to no agent. Engine-only backends
+    # stay hidden — this lifts the binding requirement, not the curation.
+    for _key in ALWAYS_EXPOSE:
+        _def = _raw_defs.get(_key)
+        if _key not in available and _def and not _def.get("engine_only"):
+            available[_key] = _def
 
     # 2. Curation.
     caps = (
