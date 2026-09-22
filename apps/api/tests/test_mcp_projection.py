@@ -370,3 +370,55 @@ class TestAlwaysExposeIgnoresBindings:
         bypasses have to hold at once, or an unscoped client loses it."""
         self._seed(db_session, bind_resolve_dates=False)
         assert self._actions(db_session, scopes=()) == {"resolve_dates"}
+
+    def test_a_wildcard_binding_cannot_put_it_back_on_an_agent_menu(self, db_session):
+        """Unbinding is not enough on its own.
+
+        A binding with an EMPTY capabilities list exposes every action on its
+        connector — executive_chef/norm is exactly that — so removing the
+        capability from the other five bindings left resolve_dates on the
+        agent menu anyway. _ENGINE_AND_MCP_ONLY is what actually takes it off,
+        and MCP has to survive that removal too.
+        """
+        from app.agents.prompt_builder import _collect_tools
+        from app.db.models import AgentConnectionBinding, ConnectionSpec, McpCapability
+
+        db_session.add(
+            ConnectionSpec(
+                connector_name="norm",
+                display_name="Norm",
+                auth_type="none",
+                execution_mode="internal",
+                enabled=True,
+                tools=[
+                    {"action": "resolve_dates", "method": "GET", "description": "d"},
+                    {"action": "get_attachment", "method": "GET", "description": "a"},
+                ],
+            )
+        )
+        db_session.add(
+            AgentConnectionBinding(
+                agent_slug="executive_chef",
+                connector_name="norm",
+                capabilities=[],  # the wildcard: every action on this connector
+                enabled=True,
+            )
+        )
+        db_session.add(
+            McpCapability(
+                kind="connector",
+                target="norm",
+                action="resolve_dates",
+                scopes=["mcp:reports:read"],
+                enabled=True,
+            )
+        )
+        db_session.flush()
+
+        collected = {
+            t["action"]
+            for t in _collect_tools(db_session, user_id=None, config_db=db_session)
+        }
+        assert "get_attachment" in collected, "the wildcard binding still works"
+        assert "resolve_dates" not in collected, "but it cannot re-expose this one"
+        assert "resolve_dates" in self._actions(db_session), "MCP keeps it"

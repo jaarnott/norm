@@ -87,6 +87,20 @@ def _effective_method(spec, tool: dict) -> str:
 # lingering config row can't offer a tool that would fail on call.
 _RETIRED_ACTIONS = {"delegate_to_agent"}
 
+# Actions that work perfectly well but do not belong on an AGENT's menu.
+# resolve_dates is the engine's and the MCP surface's, not the agent's: nine
+# consolidators call it through call_api (which reads the spec row, never this
+# list), and an MCP client has no Norm prompt telling it today's date — while
+# an agent's own tools take `period` in plain English and apply the venue's
+# trading day themselves.
+#
+# Unbinding it from every agent is NOT enough on its own: a binding with an
+# empty capabilities list exposes every action on its connector, and
+# executive_chef/norm is exactly that. So the removal has to live here.
+# projection.ALWAYS_EXPOSE re-adds it for MCP after this filter, which is why
+# that had to stop depending on a binding first.
+_ENGINE_AND_MCP_ONLY = {"resolve_dates"}
+
 
 def _collect_tools(
     db: Session,
@@ -211,7 +225,7 @@ def _collect_tools(
             # DB spec may still list them until the next sync — never offer a
             # tool that can't run. `delegate_to_agent` went when the multi-agent
             # router/handoff was folded into one capable agent.
-            if action in _RETIRED_ACTIONS:
+            if action in _RETIRED_ACTIONS or action in _ENGINE_AND_MCP_ONLY:
                 continue
 
             tools.append(
