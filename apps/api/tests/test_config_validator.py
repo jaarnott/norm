@@ -21,6 +21,7 @@ from app.services.config_validator import (
     check_binding_capabilities,
     check_component_api_row,
     check_connector_tools,
+    check_consolidator_write_actions,
     check_display_components,
     check_model_selection,
     check_playbook_tool_filter,
@@ -82,6 +83,27 @@ class TestPathTemplate:
     def test_template_tool_with_path_template_is_fine(self):
         tools = [{"action": "get_thing", "path_template": "//api.example.com/things"}]
         assert check_connector_tools("loadedhub", "template", tools) == []
+
+    def test_internal_handler_tool_needs_no_path_template(self):
+        # loadedhub.edit_recipe executes in-process (@register) — no URL is
+        # ever built, so demanding a path_template was a false alarm.
+        issues = check_connector_tools(
+            "loadedhub",
+            "template",
+            [{"action": "edit_recipe", "method": "GET"}],
+            internal_actions={("loadedhub", "edit_recipe")},
+        )
+        assert issues == []
+
+    def test_a_handler_on_another_connector_does_not_excuse_this_one(self):
+        issues = check_connector_tools(
+            "loadedhub",
+            "template",
+            [{"action": "edit_recipe", "method": "GET"}],
+            internal_actions={("norm", "edit_recipe")},
+        )
+        assert len(issues) == 1
+        assert "path_template" in issues[0].problem
 
     def test_agent_mode_tool_needs_no_path_template(self):
         """In agent mode the LLM generates the request from API docs."""
@@ -153,7 +175,7 @@ class TestModelSelection:
 
 class TestConsolidatorSafety:
     """Checks added with the invoice-receiving workflow: function_code must
-    compile, and declared write actions must exist on the connector."""
+    compile, and declared write actions must exist somewhere callable."""
 
     def test_syntax_error_in_function_code_is_flagged(self):
         tools = [
@@ -166,36 +188,69 @@ class TestConsolidatorSafety:
         assert len(issues) == 1
         assert "syntax error" in issues[0].problem
 
-    def test_unknown_allowed_write_action_is_flagged(self):
-        tools = [
+
+class TestConsolidatorWriteActions:
+    """The sandbox's call_api is cross-connector, so allowed_write_actions is
+    validated against EVERY spec's actions — the original per-spec check
+    wrongly flagged loadedhub consolidators declaring writes that live on the
+    norm internal connector (review_invoices, record_split_order)."""
+
+    ACTIONS = {
+        "loadedhub": {"receive_invoice"},
+        "norm": {"review_invoices", "record_split_order"},
+    }
+
+    def _consolidator(self, writes):
+        return [
             {
                 "action": "review",
                 "consolidator_config": {
                     "function_code": "def run(params, call_api, log):\n    return {}\n",
-                    "allowed_write_actions": ["recieve_invoice"],  # typo
+                    "allowed_write_actions": writes,
                 },
             }
         ]
-        issues = check_connector_tools("loadedhub", "template", tools)
+
+    def test_write_on_the_same_connector_passes(self):
+        issues = check_consolidator_write_actions(
+            "loadedhub", self._consolidator(["receive_invoice"]), self.ACTIONS
+        )
+        assert issues == []
+
+    def test_write_on_another_connector_passes(self):
+        # The false-positive class: a loadedhub consolidator writing through
+        # the norm internal connector is exactly how invoice review works.
+        issues = check_consolidator_write_actions(
+            "loadedhub",
+            self._consolidator(["review_invoices", "record_split_order"]),
+            self.ACTIONS,
+        )
+        assert issues == []
+
+    def test_action_no_connector_defines_is_flagged(self):
+        issues = check_consolidator_write_actions(
+            "loadedhub", self._consolidator(["recieve_invoice"]), self.ACTIONS
+        )
         assert len(issues) == 1
         assert "recieve_invoice" in issues[0].problem
 
-    def test_declared_write_action_that_exists_passes(self):
-        tools = [
-            {
-                "action": "receive_invoice",
-                "method": "PUT",
-                "path_template": "//api.example.com/i/{{ id }}",
-            },
-            {
-                "action": "review",
-                "consolidator_config": {
-                    "function_code": "def run(params, call_api, log):\n    return {}\n",
-                    "allowed_write_actions": ["receive_invoice"],
-                },
-            },
-        ]
-        assert check_connector_tools("loadedhub", "template", tools) == []
+    def test_qualified_name_checks_the_named_connector(self):
+        issues = check_consolidator_write_actions(
+            "loadedhub", self._consolidator(["norm.review_invoices"]), self.ACTIONS
+        )
+        assert issues == []
+        issues = check_consolidator_write_actions(
+            "loadedhub", self._consolidator(["norm.receive_invoice"]), self.ACTIONS
+        )
+        assert len(issues) == 1
+        assert "'norm' has no such tool" in issues[0].problem
+
+    def test_qualified_name_with_unknown_connector_is_flagged(self):
+        issues = check_consolidator_write_actions(
+            "loadedhub", self._consolidator(["nrom.review_invoices"]), self.ACTIONS
+        )
+        assert len(issues) == 1
+        assert "no connector 'nrom'" in issues[0].problem
 
 
 class TestResponseFormat:
@@ -591,3 +646,39 @@ class TestStaleAggregates:
             )
             == []
         )
+
+
+class TestValidateConfigSkipsInertRows:
+    """validate_config only alarms on config that can bite: a disabled
+    playbook's stale tool_filter is parked (the Orbit marketing playbooks wait
+    for tools that don't exist yet), not broken."""
+
+    def _playbook(self, db, slug, enabled):
+        from app.db.config_models import Playbook
+
+        db.add(
+            Playbook(
+                slug=slug,
+                agent_slug="marketing",
+                display_name=slug,
+                description="d",
+                instructions="i",
+                tool_filter=["get_social_posts"],  # exists on no connector
+                enabled=enabled,
+            )
+        )
+        db.flush()
+
+    def test_a_disabled_playbooks_stale_filter_is_parked_not_broken(self, db_session):
+        from app.services.config_validator import validate_config
+
+        self._playbook(db_session, "orbit-parked", enabled=False)
+        result = validate_config(db=db_session, config_db=db_session)
+        assert not any("orbit-parked" in i["where"] for i in result["issues"])
+
+    def test_an_enabled_playbooks_stale_filter_still_alarms(self, db_session):
+        from app.services.config_validator import validate_config
+
+        self._playbook(db_session, "orbit-live", enabled=True)
+        result = validate_config(db=db_session, config_db=db_session)
+        assert any("orbit-live" in i["where"] for i in result["issues"])

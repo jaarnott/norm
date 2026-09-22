@@ -36,6 +36,16 @@ def get_handler(connector_name: str, action: str) -> InternalHandler | None:
     return _REGISTRY.get((connector_name, action))
 
 
+def registered_actions() -> set[tuple[str, str]]:
+    """Every (connector, action) with an in-process handler.
+
+    These tools execute here, never over HTTP, so spec-level requirements
+    that only matter for building a request (path_template) don't apply —
+    the config validator consults this to avoid false alarms.
+    """
+    return set(_REGISTRY)
+
+
 # ---------------------------------------------------------------------------
 # HR Criteria Handlers
 # ---------------------------------------------------------------------------

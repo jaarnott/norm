@@ -637,17 +637,22 @@ export default function ComponentsPanel() {
   const [addingNew, setAddingNew] = useState<Partial<ComponentApiConfig> | null>(null);
   const [saving, setSaving] = useState(false);
   // component key -> owning marketplace App name (the app lens)
-  const [owningApp, setOwningApp] = useState<Record<string, string>>({});
+  // The marketplace catalog is the authority for app-owned components (owning
+  // app + description); COMPONENT_META covers platform chrome and the fields
+  // contract, which only the web implementation knows.
+  const [catalogInfo, setCatalogInfo] = useState<Record<string, { app: string; description?: string }>>({});
 
   useEffect(() => {
     apiFetch('/api/marketplace')
       .then(r => (r.ok ? r.json() : { apps: [] }))
-      .then((d: { apps?: { name: string; composition?: { components?: { key: string }[] } }[] }) => {
-        const map: Record<string, string> = {};
+      .then((d: { apps?: { name: string; composition?: { components?: { key: string; description?: string }[] } }[] }) => {
+        const map: Record<string, { app: string; description?: string }> = {};
         for (const a of d.apps ?? []) {
-          for (const c of a.composition?.components ?? []) map[c.key] = a.name;
+          for (const c of a.composition?.components ?? []) {
+            map[c.key] = { app: a.name, description: c.description || undefined };
+          }
         }
-        setOwningApp(map);
+        setCatalogInfo(map);
       })
       .catch(() => {});
   }, []);
@@ -756,10 +761,10 @@ export default function ComponentsPanel() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.25rem' }}>
             <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333' }}>{selectedComponentDef.label}</span>
-            {owningApp[selectedComponentDef.key] && (
+            {catalogInfo[selectedComponentDef.key] && (
               <span title="the marketplace App this component belongs to"
                 style={{ fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 3, backgroundColor: '#eef4ee', color: '#2e7d4f' }}>
-                App: {owningApp[selectedComponentDef.key]}
+                App: {catalogInfo[selectedComponentDef.key].app}
               </span>
             )}
             <span style={{
@@ -769,7 +774,9 @@ export default function ComponentsPanel() {
             }}>{selectedComponentDef.internal ? 'Internal' : 'External'}</span>
             <span style={{ fontSize: '0.62rem', fontFamily: 'monospace', color: '#aaa' }}>{selectedComponentDef.key}</span>
           </div>
-          <p style={{ fontSize: '0.72rem', color: '#888', margin: 0, lineHeight: 1.5 }}>{selectedComponentDef.description}</p>
+          <p style={{ fontSize: '0.72rem', color: '#888', margin: 0, lineHeight: 1.5 }}>
+            {catalogInfo[selectedComponentDef.key]?.description ?? selectedComponentDef.description}
+          </p>
         </div>
       )}
 

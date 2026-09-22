@@ -45,11 +45,17 @@ class ConfigIssue:
 
 
 def check_connector_tools(
-    connector_name: str, execution_mode: str, tools: list | None
+    connector_name: str,
+    execution_mode: str,
+    tools: list | None,
+    internal_actions: set[tuple[str, str]] | None = None,
 ) -> list[ConfigIssue]:
     """Validate the tools array of a single connector spec.
 
     ``tools`` is the raw JSON list from ConnectionSpec.tools.
+    ``internal_actions`` is the in-process handler registry
+    (internal_tools.registered_actions()) — those tools never build an HTTP
+    request, so request-shape requirements don't apply to them.
     """
     issues: list[ConfigIssue] = []
 
@@ -139,25 +145,9 @@ def check_connector_tools(
                             fix="Fix the consolidator code in Settings → Connectors.",
                         )
                     )
-                # Write actions the consolidator declares must exist on this
-                # spec — a typo here means the write is denied at runtime.
-                spec_actions = {
-                    t.get("action") for t in tools or [] if isinstance(t, dict)
-                }
-                for declared in consolidator.get("allowed_write_actions") or []:
-                    bare = str(declared).split(".", 1)[-1]
-                    if bare not in spec_actions:
-                        issues.append(
-                            ConfigIssue(
-                                severity="error",
-                                where=where,
-                                problem=(
-                                    f"allowed_write_actions names '{declared}' "
-                                    "which is not a tool on this connector"
-                                ),
-                                fix="Fix the action name in consolidator_config.",
-                            )
-                        )
+            # allowed_write_actions is validated by
+            # check_consolidator_write_actions — the sandbox's call_api is
+            # cross-connector, so it needs every spec's actions, not this one's.
             # A consolidator legitimately has no URL of its own.
             continue
 
@@ -172,7 +162,13 @@ def check_connector_tools(
                 )
             )
 
-        if execution_mode == "template" and not tool.get("path_template"):
+        if (
+            execution_mode == "template"
+            and not tool.get("path_template")
+            # An in-process handler executes locally — no URL is ever built,
+            # so a missing path_template is fine (e.g. loadedhub.edit_recipe).
+            and (connector_name, action) not in (internal_actions or set())
+        ):
             issues.append(
                 ConfigIssue(
                     severity="error",
@@ -266,6 +262,78 @@ def _check_stale_aggregates(where: str, tool: dict) -> list[ConfigIssue]:
             ),
         )
     ]
+
+
+def check_consolidator_write_actions(
+    connector_name: str,
+    tools: list | None,
+    actions_by_connector: dict[str, set[str]],
+) -> list[ConfigIssue]:
+    """Every action a consolidator's ``allowed_write_actions`` declares must
+    exist SOMEWHERE the sandbox can call it.
+
+    The sandbox's ``call_api(connector, action)`` is cross-connector, and the
+    runtime allowlist accepts bare names or ``connector.action`` — so a
+    consolidator hosted on loadedhub legitimately declares writes that live
+    on the ``norm`` internal connector (review_invoices, record_split_order).
+    A bare name is wrong only when NO connector defines it; a qualified name
+    is checked against the connector it names. A typo here means the write is
+    denied at runtime with a PermissionError mid-run.
+    """
+    issues: list[ConfigIssue] = []
+    all_actions: set[str] = set()
+    for action_set in actions_by_connector.values():
+        all_actions |= action_set
+
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        consolidator = tool.get("consolidator_config")
+        if not isinstance(consolidator, dict):
+            continue
+        where = f"{connector_name}.{tool.get('action') or '<no action>'}"
+        for declared in consolidator.get("allowed_write_actions") or []:
+            declared = str(declared)
+            if "." in declared:
+                target_conn, target_action = declared.split(".", 1)
+                target_actions = actions_by_connector.get(target_conn)
+                if target_actions is None:
+                    issues.append(
+                        ConfigIssue(
+                            severity="error",
+                            where=where,
+                            problem=(
+                                f"allowed_write_actions names '{declared}' but "
+                                f"no connector '{target_conn}' exists"
+                            ),
+                            fix="Fix the connector name in consolidator_config.",
+                        )
+                    )
+                elif target_action not in target_actions:
+                    issues.append(
+                        ConfigIssue(
+                            severity="error",
+                            where=where,
+                            problem=(
+                                f"allowed_write_actions names '{declared}' but "
+                                f"'{target_conn}' has no such tool"
+                            ),
+                            fix="Fix the action name in consolidator_config.",
+                        )
+                    )
+            elif declared not in all_actions:
+                issues.append(
+                    ConfigIssue(
+                        severity="error",
+                        where=where,
+                        problem=(
+                            f"allowed_write_actions names '{declared}' which "
+                            "no connector defines"
+                        ),
+                        fix="Fix the action name in consolidator_config.",
+                    )
+                )
+    return issues
 
 
 # Display components that belong to the platform itself rather than to any
@@ -687,13 +755,19 @@ def validate_config(db=None, config_db=None) -> dict:
     try:
         known_actions: set[str] = set()
         engine_only_actions: set[str] = set()
+        from app.agents.internal_tools import registered_actions
+
+        internal_actions = registered_actions()
         actions_by_connector: dict[str, set[str]] = {}
         engine_only_by_connector: dict[str, set[str]] = {}
         specs = config_db.query(ConnectionSpec).all()
         for spec in specs:
             issues.extend(
                 check_connector_tools(
-                    spec.connector_name, spec.execution_mode, spec.tools
+                    spec.connector_name,
+                    spec.execution_mode,
+                    spec.tools,
+                    internal_actions,
                 )
             )
             actions_by_connector.setdefault(spec.connector_name, set())
@@ -708,7 +782,19 @@ def validate_config(db=None, config_db=None) -> dict:
                             tool["action"]
                         )
 
+        # Cross-connector: needs every spec's actions collected first.
+        for spec in specs:
+            issues.extend(
+                check_consolidator_write_actions(
+                    spec.connector_name, spec.tools, actions_by_connector
+                )
+            )
+
         for playbook in config_db.query(Playbook).all():
+            # A disabled playbook is inert — its filter strips nothing from
+            # any agent, so stale entries there are parked, not broken.
+            if not playbook.enabled:
+                continue
             issues.extend(
                 check_playbook_tool_filter(
                     playbook.slug,

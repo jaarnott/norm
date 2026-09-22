@@ -35,7 +35,14 @@ export interface DisplayBlockProps {
   threadId?: string;
 }
 
-/** Components that render full-width above the conversation instead of inline in chat bubbles */
+/**
+ * Components that render full-width above the conversation instead of inline
+ * in chat bubbles. Deliberately web-owned (NOT read from the marketplace
+ * catalog): layout is decided synchronously during chat render, and an async
+ * catalog fetch there would flicker. The catalog compositions carry a
+ * `full_width` copy for documentation only — nothing reads it; this Set is
+ * the authority.
+ */
 export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'recipe_editor', 'menu_engineering', 'supplier_tenders', 'dashboard_view', 'apps_dashboard', 'app_runner']);
 
 // The single source of truth for which display components EXIST. The admin

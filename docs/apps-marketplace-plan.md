@@ -6,6 +6,27 @@ connectors become marketplace apps, full rename, owner-gated marketplace).
 Keep this document updated as phases land.*
 
 *Progress:*
+- *Validator triage + deferred refactors — landed 30 Aug (uncommitted). All 24
+  standing findings resolved to ZERO: 5 were validator over-strictness, fixed
+  with correct semantics + tests (`allowed_write_actions` is cross-connector —
+  new `check_consolidator_write_actions` validates bare names against every
+  spec and `connector.action` against the named one; in-process handlers
+  (`internal_tools.registered_actions()`) are exempt from path_template —
+  loadedhub.edit_recipe was a false alarm; disabled playbooks are inert and
+  skipped). 19 were dead config, disabled reversibly in the shared config DB:
+  the four marketing playbooks (calendar/social/content/orbit-metrics — every
+  tool they filter on exists nowhere; Orbit-port work re-enables them with
+  real tools) and the mcp loadedhub.get_stock_item capability (tool renamed
+  in the domain consolidation; the plural cap remains). Refactors:
+  the planned unification of prompt_builder's agent-default tool filter onto
+  `get_agent_actions` was written but NOT shipped — the one-agent-scoping work
+  (22 Sep) deletes that agent-default branch outright, so the refactor died
+  with the code it cleaned up; dropped rather than revived.
+  ComponentsPanel reads app-owned component descriptions from the catalog
+  (COMPONENT_META keeps platform chrome + the fields contract);
+  FULL_WIDTH_COMPONENTS is DOCUMENTED as deliberately web-owned (chat render
+  never waits on a catalog fetch; the catalog's full_width copy is
+  documentation only) — both sites now say so.*
 - *Phases 0–4 SHIPPED to production 29 Aug (commit `529e930`, pipeline green
   testing→E2E→staging→prod; migration `p1q2r3s4t5u6` applied; entitlement
   resolver verified against the prod org — full catalog entitled, nothing

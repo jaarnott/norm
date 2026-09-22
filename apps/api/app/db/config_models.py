@@ -178,6 +178,11 @@ class MarketplaceApp(ConfigBase):
         agents      [agent slug, ...]           agents this app powers/joins
         components  [{key, agent, page: {id, label, icon}|null,
                       full_width, description}, ...]
+                    (description feeds the settings Components panel and page
+                    labels feed the agent's page context; full_width is
+                    documentation only — the web's FULL_WIDTH_COMPONENTS Set
+                    is the layout authority, chosen so chat render never
+                    waits on a catalog fetch)
         playbooks   [playbook slug, ...]
         mcp_domain  <domain tag>|null           claude.ai surface filter
 
