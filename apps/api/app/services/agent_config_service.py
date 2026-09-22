@@ -99,6 +99,24 @@ def get_agent_actions(agent_slug: str, db: Session) -> set[str]:
     return actions
 
 
+def default_tool_filter(agent_slug: str, config_db: Session) -> list[str] | None:
+    """The toolset an UNATTENDED run falls back to when its task carries no
+    explicit tool_filter: the agent's own bound actions (the pre-one-agent
+    domain scope).
+
+    Interactive chat gets the full entitled union (a human is present to approve
+    any write). An unattended run (a scheduled task, a "Run Now") must NOT —
+    several state-changing tools are registered as GET and execute without an
+    approval card, so handing an unfiltered scheduled run the whole union would
+    let a report task auto-fire a purchase order. Materialising the agent's own
+    scope here keeps an unfiltered run exactly as capable as it was before the
+    one-agent change. Returns None when the agent has no curated bindings, which
+    leaves the union in place — matching the old no-narrowing behaviour.
+    """
+    actions = get_agent_actions(agent_slug, config_db)
+    return sorted(actions) if actions else None
+
+
 def describe_domains(slugs: list[str], db: Session | None) -> str:
     """The routing menu: one line per agent, saying what it actually does.
 

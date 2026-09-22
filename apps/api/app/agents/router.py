@@ -87,25 +87,6 @@ def classify_followup(
 
     domain_list = describe_domains(registered_domains(), _cdb)
 
-    # Only offer "consult instead of switching" to an agent that can actually
-    # do it — telling an agent without the tool to consult is how you get a
-    # confident "I'll ask the reports agent" followed by nothing.
-    from app.services.delegation import DELEGATE_ACTION
-
-    can_consult = False
-    if _cdb and thread_domain:
-        from app.services.agent_config_service import get_agent_actions
-
-        can_consult = DELEGATE_ACTION in get_agent_actions(thread_domain, _cdb)
-    consult_rule = (
-        "\n- This agent can get the ANSWER TO A QUESTION by consulting another "
-        "agent, so a read question does not need to hand the conversation over. "
-        "Consulting is read-only: if the user wants something created or changed "
-        "in the other domain, this rule does not apply."
-        if can_consult
-        else ""
-    )
-
     system = f"""You are a message router for Norm, a hospitality operations platform.
 The user is sending a follow-up message in an existing thread.
 
@@ -122,16 +103,13 @@ b) "new_thread" — the user has plainly started a different job that this agent
 
 "continue" is the default and the bar for leaving it is high. Choose "continue" whenever ANY of these holds:
 - The message is not a request at all. Statements of fact, context, corrections and asides ("the kitchen flooded", "Murdoch's is closed until the 11th", "that number looks wrong") are things the user is TELLING this agent, not a job for a different one.
-- It refers back to the work in progress — "as well", "also", "add", "same period", "what about", a bare number or a bare venue name.{consult_rule}
+- It refers back to the work in progress — "as well", "also", "add", "same period", "what about", a bare number or a bare venue name.
 - The topic is merely adjacent to another agent's area. Adjacency is not a switch.
 
 Return ONLY valid JSON:
-{{"action": "continue" | "new_thread", "domain": "<domain>", "playbook": "<slug or null>", "is_request": true | false, "target_writes": true | false, "reason": "<brief reason>"}}
+{{"action": "continue" | "new_thread", "domain": "<domain>", "playbook": "<slug or null>", "is_request": true | false, "reason": "<brief reason>"}}
 
 "is_request" is true when the user is asking for something to be fetched or done, and false when they are stating information, giving context or reacting.
-"target_writes" is true when fulfilling this message would require CREATING or
-CHANGING data (writing — e.g. create/update a recipe, change a stock item, place
-an order, edit a roster), and false when reading and answering is enough.
 
 If a playbook listed above matches this message, include its slug in "playbook".
 If no playbook matches, set playbook to null (agent gets full tool access).
@@ -197,9 +175,6 @@ Default to "continue" — only use "new_thread" for genuine domain switches (e.g
             # preserves today's behaviour, so an older/terser verdict routes
             # exactly as it always did.
             "is_request": parsed.get("is_request", True),
-            # Absent means "reading is enough" — keeps the consult-stay
-            # behaviour for older/terser verdicts.
-            "target_writes": parsed.get("target_writes", False),
             "reason": parsed.get("reason", ""),
         }
 

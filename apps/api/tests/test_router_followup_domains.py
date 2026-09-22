@@ -87,29 +87,6 @@ class TestTheClassifierIsToldWhatEachDomainDoes:
     def test_the_classifier_is_asked_whether_this_is_even_a_request(self):
         assert "is_request" in _followup_system_prompt()
 
-    def test_the_classifier_is_asked_whether_the_ask_needs_writes(self):
-        """Consulting is read-only, so the stay-put-and-consult shortcut needs
-        to know when the user wants data changed rather than read (the verdict
-        field the supervisor gates the consult-stay on)."""
-        assert "target_writes" in _followup_system_prompt()
-
-    def test_consulting_is_offered_only_to_an_agent_that_can_do_it(self, db_session):
-        from app.db.config_models import AgentConnectionBinding
-
-        assert "consulting" not in _followup_system_prompt(config_db=db_session).lower()
-
-        db_session.add(
-            AgentConnectionBinding(
-                agent_slug="time_attendance",
-                connector_name="norm",
-                capabilities=[{"action": "delegate_to_agent", "enabled": True}],
-                enabled=True,
-            )
-        )
-        db_session.flush()
-        prompt = _followup_system_prompt(config_db=db_session)
-        assert "consulting another agent" in prompt
-
 
 class TestTheVerdictCarriesWhetherItWasARequest:
     def test_a_verdict_without_the_field_is_read_as_a_request(self):
@@ -145,9 +122,6 @@ class TestTheVerdictCarriesWhetherItWasARequest:
             anthropic.Anthropic = original
 
         assert out["is_request"] is True
-        # Absent target_writes reads as "reading is enough" — the consult-stay
-        # behaviour every verdict had before the field existed.
-        assert out["target_writes"] is False
 
 
 class TestTheClassifierIsToldWhichDomainsExist:

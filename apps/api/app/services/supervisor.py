@@ -96,13 +96,20 @@ def handle_message(
                     )
                     agent = get_agent(thread.domain)
                     if agent:
+                        # Unattended "Run Now": scope an unfiltered task to its
+                        # own agent, never the full union (default_tool_filter).
+                        from app.services.agent_config_service import (
+                            default_tool_filter,
+                        )
+
                         system_prompt, anthropic_tools = agent.get_tool_definitions(
                             db,
                             user_id=user_id,
                             active_venue_name=venue_name,
                             venue_timezone=venue_timezone,
                             config_db=_cdb,
-                            tool_filter=at.tool_filter,
+                            tool_filter=at.tool_filter
+                            or default_tool_filter(at.agent_slug, _cdb),
                         )
                         from app.agents.tool_loop import run_tool_loop
 
@@ -253,23 +260,13 @@ def handle_message(
                 action, followup["domain"] = "new_thread", handoff
 
             if action == "new_thread" and not handoff:
-                # Two reasons to stay that the classifier can't act on alone.
+                # A statement of context is not a new job — don't rebind on it.
                 stay = None
                 if not followup.get("is_request", True):
                     # "Murdoch's is closed due to a fire" — context for the job
                     # in hand, not a new one. Moving on it stranded the whole
                     # conversation on the recipes agent.
                     stay = "the message states context rather than asking for something"
-                elif not followup.get("target_writes", False) and _can_consult(
-                    thread, followup.get("domain"), db, _cdb
-                ):
-                    # Consulting is read-only, so it can only substitute for a
-                    # hand-over when the ask is a read. Write work for another
-                    # domain must rebind: staying put stranded a recipe/stock
-                    # workflow on the procurement agent, which then had no write
-                    # tools and told the user its earlier (real) writes never
-                    # happened (thread bb7010c3, 20 Aug 2026).
-                    stay = f"{thread.domain} can consult {followup.get('domain')}"
                 if stay:
                     logger.info(
                         "Follow-up wanted %s, but %s — staying put (reason: %s)",
@@ -610,47 +607,6 @@ def _stored_playbook(thread: Thread, config_db: Session):
         .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
         .first()
     )
-
-
-def _can_consult(
-    thread: Thread, target_domain: str | None, db: Session, config_db: Session
-) -> bool:
-    """True when this agent can ASK the other one instead of being replaced.
-
-    Consulting is strictly better than rebinding when it is available: the
-    thread keeps its own tools and playbook and gains the other agent's answer,
-    where a rebind swaps the toolset underneath a conversation that carries on
-    looking capable. On 15 Aug 2026 a sales thread was rebound to the recipes
-    agent and then to recruitment; it went on quoting the sales table it had
-    already built while holding nothing that could fetch a wage cost.
-
-    Every condition here mirrors a refusal `delegate()` would raise anyway —
-    checking first means a delegation that cannot happen falls through to the
-    rebind rather than pinning the user on an agent that will only apologise.
-    """
-    from app.agents.registry import get_agent
-    from app.services import delegation
-    from app.services.agent_config_service import get_agent_actions
-
-    if not target_domain or target_domain == thread.domain or not thread.domain:
-        return False
-    if delegation.DELEGATE_ACTION not in get_agent_actions(thread.domain, config_db):
-        return False
-    if get_agent(target_domain) is None:
-        return False
-    # A target with nothing readable is refused at delegate() time ("has no
-    # read-only tools available"), so it is no reason to stay put.
-    if not (
-        get_agent_actions(target_domain, config_db)
-        & delegation.read_only_actions(config_db)
-    ):
-        return False
-    try:
-        delegation.check_guards(thread, target_domain, db)
-    except Exception:
-        # Depth, loop or budget exhausted — the hand-off is the only way on.
-        return False
-    return True
 
 
 def _rebind_thread_agent(

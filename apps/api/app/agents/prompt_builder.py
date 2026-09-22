@@ -82,6 +82,12 @@ def _effective_method(spec, tool: dict) -> str:
     return "GET" if _name_is_read(tool.get("action", "")) else declared
 
 
+# Internal tool actions that may still be listed in the config-DB spec but whose
+# code handler has been removed — filtered out of every agent's menu so a
+# lingering config row can't offer a tool that would fail on call.
+_RETIRED_ACTIONS = {"delegate_to_agent"}
+
+
 def _collect_tools(
     db: Session,
     user_id: str | None = None,
@@ -200,6 +206,12 @@ def _collect_tools(
             # convention, and holds even for a binding with an empty
             # capabilities list (which otherwise exposes everything).
             if tool.get("engine_only"):
+                continue
+            # Retired internal tools whose handler no longer exists. The config
+            # DB spec may still list them until the next sync — never offer a
+            # tool that can't run. `delegate_to_agent` went when the multi-agent
+            # router/handoff was folded into one capable agent.
+            if action in _RETIRED_ACTIONS:
                 continue
 
             tools.append(
@@ -390,35 +402,6 @@ After creating a task, tell the user which agent/domain it was created under (fr
     return ""
 
 
-def delegation_guidance(has_delegate: bool) -> str:
-    """Guidance for `delegate_to_agent` — consulting instead of apologising.
-
-    Norm routes a turn to ONE agent, so a question can easily arrive at an
-    agent whose tools don't cover it. Without this the honest answer is "I
-    don't have access to that", which is true about the toolbox and useless to
-    the user: on 15 Aug 2026 a wage-cost question reached the recruitment agent
-    and stopped dead, while another agent held the timeclock tools the whole
-    time and the user had to do the routing by hand.
-    """
-    if not has_delegate:
-        return ""
-    return """
-
-## Reaching outside your own tools
-When a question needs data you have no tool for, stay in this conversation and
-`delegate_to_agent` — ask the agent that owns it and fold the answer into your
-own. You keep the thread, your tools and the context you have already built up.
-
-- Never answer "I can't do that" for something a colleague agent can simply
-  read, and never tell the user to go and ask another agent themselves. Which
-  agent holds which tool is a routing detail; it is not theirs to solve.
-- The agent you ask cannot see this conversation and cannot change anything, so
-  put everything it needs in the question and act on the answer yourself.
-- If the request needs something CHANGED in another domain rather than read,
-  say plainly which agent does it and offer to hand the conversation over.
-"""
-
-
 def memory_guidance(has_memory: bool) -> str:
     """Guidance for the `remember` / `recall_memory` tools.
 
@@ -574,6 +557,27 @@ def build_tool_definitions(
     if not tools:
         return "", []
 
+    # Toolset scope (priority: explicit tool_filter > playbook.tool_filter >
+    # nothing). No explicit filter means the FULL entitled union — the domain is
+    # a label + prompt, not a capability gate. Interactive chat and approval/venue
+    # resume (a human is always present) get every tool; unattended runs (tasks,
+    # playbooks) always carry an explicit tool_filter (guaranteed at setup +
+    # backfill), so they get exactly that set. `own_actions` is the agent's ACTUAL
+    # resulting toolset, so prompt guidance is offered for the tools it will hold.
+    _ALWAYS_INCLUDE = {"resolve_dates", "show_connect"}
+    active_filter = tool_filter or (
+        playbook.tool_filter
+        if playbook and getattr(playbook, "tool_filter", None)
+        else None
+    )
+    _all_actions = {t["action"] for t in tools}
+    if active_filter:
+        own_actions = (set(active_filter) & _all_actions) | {
+            a for a in _ALWAYS_INCLUDE if a in _all_actions
+        }
+    else:
+        own_actions = set(_all_actions)
+
     # System prompt comes directly from the DB — the admin manages the full
     # prompt in the Settings UI. Supports {{today}} placeholder.
     from app.services.agent_config_service import get_system_prompt
@@ -639,16 +643,9 @@ Today's date is {today_str}.
         # Inside an existing task's conversation the advice inverts: the task
         # already exists, so "create one" would silently leave a duplicate
         # draft instead of changing the task the user is looking at.
+        # `own_actions` (computed above) is the agent's ACTUAL toolset, so an
+        # agent is only told about tools it actually holds.
         #
-        # Ask what THIS agent can call. `tools` is every agent's tools —
-        # _collect_tools walks all enabled bindings and the narrowing to
-        # `domain` happens much further down, on anthropic_tools only. Reading
-        # presence off it hands an agent instructions for tools it does not
-        # have: executive_chef has no `remember` and was still being told to
-        # save memories proactively.
-        from app.services.agent_config_service import get_agent_actions
-
-        own_actions = get_agent_actions(domain, _cdb) if domain else set()
         # manage_task replaced the four task verbs (Sep 2026); accept either
         # while the config rolls over, so guidance never silently vanishes.
         has_automated_tasks = bool(
@@ -667,12 +664,6 @@ Today's date is {today_str}.
         # agent proactively saves durable facts (ChatGPT/Claude-style capture).
         has_memory = "remember" in own_actions
         system_prompt += memory_guidance(has_memory)
-
-        # And when it can consult another agent, say that reaching outside its
-        # own tools beats telling the user "I don't have access to that".
-        from app.services.delegation import DELEGATE_ACTION
-
-        system_prompt += delegation_guidance(DELEGATE_ACTION in own_actions)
 
         # Add chart visualization guidance if render_chart tool is available
         has_render_chart = any(t.get("action") == "render_chart" for t in tools)
@@ -974,17 +965,10 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             }
         )
 
-    # Unified tool filtering — priority: explicit tool_filter > playbook > agent default
-    # Always available, regardless of agent bindings/playbook filter. These are
-    # cross-cutting: any conversation may need to resolve a date, or connect /
-    # reconnect a system (which can be asked in any domain, and for a connector
-    # that has never been bound to this agent).
-    _ALWAYS_INCLUDE = {"resolve_dates", "show_connect"}
-    active_filter = tool_filter or (
-        playbook.tool_filter
-        if playbook and getattr(playbook, "tool_filter", None)
-        else None
-    )
+    # Apply the toolset scope computed at the top. An explicit filter
+    # (task/playbook) narrows to that set; no filter leaves the full entitled
+    # union in place (interactive). `_ALWAYS_INCLUDE` is cross-cutting — any
+    # conversation may need to resolve a date or connect/reconnect a system.
     if active_filter:
         allowed = set(active_filter) | _ALWAYS_INCLUDE
         anthropic_tools = [
@@ -992,31 +976,6 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             for t in anthropic_tools
             if t["name"].split("__", 1)[-1] in allowed or t["name"] in allowed
         ]
-    else:
-        # Agent default: derive allowed actions from this agent's connector bindings
-        from app.db.models import AgentConnectionBinding
-
-        agent_bindings = (
-            _cdb.query(AgentConnectionBinding)
-            .filter(
-                AgentConnectionBinding.agent_slug == domain,
-                AgentConnectionBinding.enabled == True,  # noqa: E712
-            )
-            .all()
-        )
-        if agent_bindings:
-            agent_actions: set[str] = set()
-            for ab in agent_bindings:
-                for cap in ab.capabilities or []:
-                    if cap.get("enabled", True):
-                        agent_actions.add(cap["action"])
-            if agent_actions:
-                allowed = agent_actions | _ALWAYS_INCLUDE
-                anthropic_tools = [
-                    t
-                    for t in anthropic_tools
-                    if t["name"].split("__", 1)[-1] in allowed or t["name"] in allowed
-                ]
 
     logger.info(
         "Built %d Anthropic tool definitions for domain=%s (playbook=%s)",

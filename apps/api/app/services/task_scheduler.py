@@ -384,11 +384,19 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                     f" at {int(sched_cfg['hour']):02d}:"
                     f"{int(sched_cfg.get('minute') or 0):02d}"
                 )
+            # Unattended run: an unfiltered task falls back to its agent's own
+            # scope, never the full union (see default_tool_filter — auto-firing
+            # GET writes must stay out of reach of a scheduled run).
+            from app.services.agent_config_service import default_tool_filter
+
+            _task_tools = task.tool_filter or default_tool_filter(
+                task.agent_slug, config_db
+            )
             system_prompt, anthropic_tools = agent.get_tool_definitions(
                 db,
                 user_id=task.created_by,
                 config_db=config_db,
-                tool_filter=task.tool_filter,
+                tool_filter=_task_tools,
                 automated_task={
                     "id": task.id,
                     "title": task.title,
