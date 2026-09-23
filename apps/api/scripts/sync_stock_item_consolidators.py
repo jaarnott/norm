@@ -69,7 +69,13 @@ READ_TOOL = {
     "read_only": True,
     "consolidator_config": {
         "function_code": (_DIR / "get_stock_items.py").read_text(),
-        "max_api_calls": 3,
+        # 5, as the file's header has always said: a name query makes 4 calls
+        # (raw list, then units + suppliers to name the variants, then the
+        # matched item's full record). This row shipped at 3 and failed 100 of
+        # 194 production calls with "Too many API calls (max 3)" — one thread
+        # retried 73 times on 27 Aug 2026. tests/test_consolidator_budgets.py
+        # now pins every installer to its file's stated requirement.
+        "max_api_calls": 5,
     },
 }
 
