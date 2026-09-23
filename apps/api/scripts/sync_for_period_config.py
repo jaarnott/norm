@@ -90,13 +90,10 @@ WRAPPED = [
         "end",
         "Cost of goods detail",
     ),
-    (
-        "get_completed_stocktakes_for_period",
-        "get_completed_stocktakes",
-        "start_date",
-        "end_date",
-        "Completed stocktakes",
-    ),
+    # get_completed_stocktakes_for_period retired 23 Sep 2026 with the raw it
+    # wrapped: Loaded's /wapi/ host rejects OAuth, so every call 403'd, and
+    # Loaded has no modern endpoint. Stocktakes move to Orbit — see
+    # scripts/sync_retire_loaded_stocktakes.py. Do not re-add.
     # get_received_invoices_for_period was retired when the invoice surface
     # consolidated — get_invoices(kind='received', period=…) replaced it
     # (sync_invoice_receiving_config.py prunes the row). Do not re-add it.

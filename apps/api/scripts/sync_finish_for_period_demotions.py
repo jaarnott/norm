@@ -60,7 +60,6 @@ PREVIOUSLY_DEMOTED = [
     "get_pos_discounts",
     "get_roster_vs_actual",
     "get_cogs_detail",
-    "get_completed_stocktakes",
 ]
 
 #: Sentence-level prompt needles (never token swaps: "get_roster" is a

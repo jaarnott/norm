@@ -31,7 +31,6 @@ DEMOTIONS: dict[str, dict[str, str]] = {
     "loadedhub": {
         "get_sales_data": "get_sales",
         "get_cogs_detail": "get_cogs_detail_for_period",
-        "get_completed_stocktakes": "get_completed_stocktakes_for_period",
         "get_pos_discounts": "get_sales",
         "get_pos_orders": "get_pos_orders_for_period",
         "get_roster_vs_actual": "get_labour",
