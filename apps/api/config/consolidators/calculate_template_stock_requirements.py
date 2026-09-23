@@ -133,9 +133,25 @@ def run(params, call_api, log, call_api_parallel):
                 "get_stock_item_minimums",
                 {"venue": venue},
             ),
+            # Unit TYPES (Weight / Volume / Count), so a received quantity is
+            # converted into counting units only when the two units share a
+            # base — see the received block below.
+            (
+                "loadedhub",
+                "get_stock_units",
+                {"venue": venue},
+            ),
         ]
     )
-    stock_now_raw, stock_4w_raw, received, sales, budgets, item_mins_raw = results
+    (
+        stock_now_raw,
+        stock_4w_raw,
+        received,
+        sales,
+        budgets,
+        item_mins_raw,
+        units_raw,
+    ) = results
 
     # Retry the slow calls one at a time — the parallel batch is part of why they
     # time out, so a serial retry has a real chance of succeeding.
@@ -218,14 +234,100 @@ def run(params, call_api, log, call_api_parallel):
             )
         }
 
-    # Build received quantity lookup by stock item ID
+    # Received quantity per stock item, IN COUNTING UNITS — the unit
+    # quantityOnHand is reported in, so opening + received - closing is one
+    # unit throughout.
+    #
+    # This read `lines[].quantity`, a field the get_received_invoices
+    # transform never emits (it keeps `quantityReceived`). Every delivery
+    # counted as zero, so usage was understated by exactly what arrived, any
+    # item restocked in the window fell out of the usage forecast altogether
+    # (usage <= 0), and the tool recommended ordering too little. Found 23 Sep
+    # 2026 by reading the live transform; no test had ever fed a received line.
+    #
+    # Fixing only the field name would have traded that for a unit error:
+    # quantityReceived * unitRatio is in BASE units (L / kg / each) while
+    # stock on hand is in COUNTING units (a bottle, a 24-pack). Convert with the
+    # item's countingUnitRatio, which the stock-on-hand transform keeps — the
+    # same two-ratio conversion the par-level code below already does.
+    #
+    # Credits: the feed marks them either with creditRequest or with negative
+    # quantities (received_items_for_period checks both). A credit request is
+    # goods claimed back, so it subtracts; abs() keeps a credit already stored
+    # negative from being negated twice.
+    def _norm(text):
+        return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+
+    # A unit is identified by its (name, ratio) pair — the feeds drop unitId,
+    # and one venue can hold two units both named '6.5 KG' (ratios 6.5, 1.0).
+    unit_type = {}
+    if isinstance(units_raw, list):
+        for u in units_raw:
+            if not isinstance(u, dict):
+                continue
+            r = float(u.get("ratio", 0) or 0)
+            unit_type.setdefault(
+                (_norm(u.get("name")), round(r, 6)), u.get("stockUnitType")
+            )
+
+    counting = {}  # item id -> (counting unit key, ratio, type)
+    for item in stock_now:
+        cr = float(item.get("countingUnitRatio", 0) or 0)
+        if cr > 0:
+            key = (_norm(item.get("countingUnitName")), round(cr, 6))
+            counting[item.get("stockItemID", "")] = (key, cr, unit_type.get(key))
     received_qty = {}
+    unconverted = 0
+    incompatible = 0
     for invoice in received:
+        is_credit = bool(invoice.get("creditRequest"))
         for line in invoice.get("lines", []):
             item_id = line.get("StockItemId", "")
-            qty = float(line.get("quantity", 0) or 0)
-            ratio = float(line.get("unitRatio", 1) or 1)
-            received_qty[item_id] = received_qty.get(item_id, 0) + (qty * ratio)
+            raw_qty = line.get("quantityReceived")
+            if raw_qty is None:
+                raw_qty = line.get("quantity", 0)
+            qty = float(raw_qty or 0)
+            if not qty:
+                continue
+            if is_credit:
+                qty = -abs(qty)
+            unit_ratio = float(line.get("unitRatio", 0) or 0)
+            target = counting.get(item_id)
+            if unit_ratio <= 0 or not target:
+                # No way to make it comparable with on-hand. Leave it out and
+                # say so, rather than guessing a ratio of 1 and ordering from
+                # a number in the wrong unit.
+                unconverted += 1
+                continue
+            count_key, count_ratio, count_type = target
+            line_key = (_norm(line.get("unitName")), round(unit_ratio, 6))
+            line_type = unit_type.get(line_key)
+            # The two ratios share a base only within one unit TYPE. Real
+            # production data (23 Sep 2026): a cos lettuce received in
+            # '300 Grams' (Weight, 0.3 kg) and counted in 'Each' (Count, 1) —
+            # dividing the ratios turned 3 heads into 0.9. Convert when the
+            # unit is the same one, or the types are known and equal;
+            # otherwise the quantity cannot be made comparable, so leave it
+            # out and say so.
+            if line_key != count_key and (
+                not line_type or not count_type or line_type != count_type
+            ):
+                incompatible += 1
+                continue
+            received_qty[item_id] = received_qty.get(item_id, 0) + (
+                qty * unit_ratio / count_ratio
+            )
+    if incompatible:
+        log(
+            f"WARNING: {incompatible} received line(s) were in a unit of a "
+            "different type from the item's counting unit (e.g. grams vs each) "
+            "and were left out of usage"
+        )
+    if unconverted:
+        log(
+            f"WARNING: {unconverted} received line(s) had no usable unit ratio "
+            "and were left out of usage"
+        )
 
     # Build 4-week-ago stock lookup
     stock_4w_lookup = {}

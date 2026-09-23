@@ -57,6 +57,14 @@ BUDGETS = {"days": [], "total": 200000.0}
 # per item with the par level and the ratios needed to convert it to counting
 # units. Default: no minimums configured.
 MINIMUMS = []
+# get_stock_units, post-transform: the (name, ratio) pair identifies a unit and
+# stockUnitType says which base its ratio is in.
+UNITS = [
+    {"name": "bottle", "ratio": 0.7, "stockUnitType": "Volume"},
+    {"name": "12 x 700ml", "ratio": 8.4, "stockUnitType": "Volume"},
+    {"name": "300 Grams", "ratio": 0.3, "stockUnitType": "Weight"},
+    {"name": "Each", "ratio": 1.0, "stockUnitType": "Count"},
+]
 
 API_ERROR = {
     "error": 'API error 500: {"code":500,"description":"Something went wrong"}'
@@ -75,6 +83,7 @@ class Api:
         budgets=BUDGETS,
         minimums=MINIMUMS,
         retry_stock=None,
+        units=UNITS,
     ):
         self.stock_now = stock_now
         self.stock_4w = stock_4w
@@ -82,6 +91,7 @@ class Api:
         self.sales = sales
         self.budgets = budgets
         self.minimums = minimums
+        self.units = units
         self.retry_stock = retry_stock  # what a serial retry returns, if set
         self.retries = 0
         self.window = None
@@ -106,6 +116,8 @@ class Api:
             return self.budgets
         if action == "get_stock_item_minimums":
             return self.minimums
+        if action == "get_stock_units":
+            return self.units
         if action == "resolve_dates":
             # Default: resolver unavailable — the consolidator must fall
             # back to the executor-injected history window. Tests that
@@ -255,6 +267,122 @@ class TestMinimumEnforcement:
         assert isinstance(out, list)
         assert out[0]["orderQty"] == 8.0  # usage forecast still works
         assert any("par levels will not be enforced" in m for m in api.logs)
+
+
+def _now(qty=4.0, ratio=0.7):
+    """Stock now, as the live transform shapes it — WITH countingUnitRatio
+    (a 700 ml bottle is 0.7 L of the base unit)."""
+    return {
+        "lines": [
+            {
+                "stockItemID": "i1",
+                "itemName": "Jim Beam 700ml",
+                "quantityOnHand": qty,
+                "countingUnitName": "bottle",
+                "countingUnitRatio": ratio,
+                "Category": "Spirits",
+            }
+        ]
+    }
+
+
+def _invoice(*lines, credit=False):
+    return {"creditRequest": credit, "lines": list(lines)}
+
+
+def _line(qty, unit_ratio=0.7, unit_name="bottle"):
+    """A received line as the live get_received_invoices transform emits it:
+    `quantityReceived`, NOT `quantity`."""
+    return {
+        "StockItemId": "i1",
+        "quantityReceived": qty,
+        "unitRatio": unit_ratio,
+        "unitName": unit_name,
+    }
+
+
+class TestReceivedDeliveries:
+    """Deliveries must count toward usage (opening + received - closing).
+
+    The consolidator read `lines[].quantity`; the live transform only emits
+    `quantityReceived`. Every delivery counted as zero, so usage was
+    understated by exactly what arrived and the tool recommended ordering too
+    little (23 Sep 2026). No test had ever fed it a received line — every case
+    here fails on the old code.
+    """
+
+    def test_a_delivery_counts_toward_usage(self):
+        # 10 opening + 6 received - 4 closing = 12 used; x2 budget/sales = 24.
+        api = Api(stock_now=_now(), received=[_invoice(_line(6))])
+        row = run_fn(api)[0]
+        assert row["usageLast4Weeks"] == 12.0
+        assert row["orderQty"] == 20.0  # 24 forecast - 4 on hand (was 8)
+
+    def test_a_case_is_converted_to_counting_units(self):
+        """1 case of 12 x 700 ml is 8.4 L = 12 bottles. Adding the base-unit
+        8.4 straight onto a bottle count is the trap a field-name-only fix
+        walks into."""
+        case = _line(1, unit_ratio=8.4, unit_name="12 x 700ml")
+        row = run_fn(Api(stock_now=_now(), received=[_invoice(case)]))[0]
+        assert row["usageLast4Weeks"] == 18.0  # 10 + 12 - 4, not 10 + 8.4 - 4
+
+    def test_a_restocked_item_is_no_longer_dropped(self):
+        """Closing above opening meant negative usage, so the item vanished
+        from the forecast entirely whenever it had been restocked."""
+        api = Api(
+            stock_now=_now(qty=8.0),
+            stock_4w={"lines": [{"stockItemID": "i1", "quantityOnHand": 2.0}]},
+            received=[_invoice(_line(12))],
+        )
+        row = run_fn(api)[0]
+        assert row["usageLast4Weeks"] == 6.0  # 2 + 12 - 8
+
+    def test_a_credit_request_subtracts(self):
+        received = [_invoice(_line(12)), _invoice(_line(2), credit=True)]
+        row = run_fn(Api(stock_now=_now(), received=received))[0]
+        assert row["usageLast4Weeks"] == 16.0  # 10 + (12 - 2) - 4
+
+    def test_a_credit_already_negative_is_not_negated_twice(self):
+        received = [_invoice(_line(12)), _invoice(_line(-2), credit=True)]
+        row = run_fn(Api(stock_now=_now(), received=received))[0]
+        assert row["usageLast4Weeks"] == 16.0
+
+    def test_a_different_unit_type_is_left_out_not_mis_converted(self):
+        """Real production data, 23 Sep 2026: a cos lettuce received in
+        '300 Grams' (Weight, ratio 0.3 kg) and counted in 'Each' (Count,
+        ratio 1). Dividing the ratios turns 3 heads into 0.9 — the bases
+        differ, so the line is left out and flagged instead."""
+        api = Api(
+            stock_now={
+                "lines": [
+                    {
+                        "stockItemID": "i1",
+                        "itemName": "COS HEAD LARGE",
+                        "quantityOnHand": 4.0,
+                        "countingUnitName": "Each",
+                        "countingUnitRatio": 1.0,
+                        "Category": "Produce",
+                    }
+                ]
+            },
+            received=[_invoice(_line(3, unit_ratio=0.3, unit_name="300 Grams"))],
+        )
+        row = run_fn(api)[0]
+        assert row["usageLast4Weeks"] == 6.0  # 10 - 4; not 10 + 0.9 - 4
+        assert any("different type" in m for m in api.logs)
+
+    def test_the_same_unit_needs_no_type_to_convert(self):
+        """Received and counted in the very same unit is trivially
+        comparable, even if the unit list is unavailable."""
+        api = Api(stock_now=_now(), received=[_invoice(_line(6))], units=[])
+        assert run_fn(api)[0]["usageLast4Weeks"] == 12.0
+
+    def test_a_line_without_ratios_is_left_out_and_said_so(self):
+        """Guessing a ratio of 1 would order from a number in the wrong unit."""
+        api = Api(stock_now=_now(ratio=0), received=[_invoice(_line(6))])
+        row = run_fn(api)[0]
+        assert row["usageLast4Weeks"] == 6.0  # delivery excluded, not guessed
+        assert any("no usable unit ratio" in m for m in api.logs)
 
 
 class TestStockOnHandFailure:

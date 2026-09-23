@@ -59,10 +59,13 @@ def main() -> None:
                 return
 
             cfg["function_code"] = code
-            # Room for the two optional resolve_dates calls on top of the
-            # 6-call parallel batch, two serial retries, and the nested
-            # get_budgets child.
-            cfg["max_api_calls"] = 12
+            # Worst case: two optional resolve_dates calls + the 7-call
+            # parallel batch (get_stock_units joined it in Sep 2026, so
+            # received lines convert into counting units only within one unit
+            # type) + two serial stock-on-hand retries = 11. 14 keeps real
+            # headroom: get_stock_items ran at 3 against a 4-call path and
+            # failed half its production calls.
+            cfg["max_api_calls"] = 14
             tool = dict(tool)
             tool["consolidator_config"] = cfg
             # `order_until` (plain English, resolved by the venue calendar)
