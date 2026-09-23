@@ -294,9 +294,19 @@ def execute_function(
             return spec
 
     def _do_api_call(
-        connector: str, action: str, api_params: dict, use_db: Session
+        connector: str,
+        action: str,
+        api_params: dict,
+        use_db: Session,
+        disposable_db: bool = False,
     ) -> tuple[Any, int]:
-        """Core API call logic. Returns (payload, duration_ms)."""
+        """Core API call logic. Returns (payload, duration_ms).
+
+        ``disposable_db`` is True when ``use_db`` is a fresh per-call session (a
+        parallel fan-out worker's), so its connection can be returned to the pool
+        during the slow HTTP round-trip. The sequential path shares the run
+        session and must not.
+        """
         spec = _get_spec(connector)
         if not spec:
             raise ValueError(f"Connector not found: {connector}")
@@ -427,6 +437,7 @@ def execute_function(
             use_db,
             thread_id,
             venue_id=venue_id,
+            release_db_after_render=disposable_db,
         )
         call_ms = int((time.time() - call_t0) * 1000)
 
@@ -503,7 +514,7 @@ def execute_function(
             worker_db = SessionLocal()
             try:
                 payload, call_ms = _do_api_call(
-                    connector, action, api_params, worker_db
+                    connector, action, api_params, worker_db, disposable_db=True
                 )
                 return payload, call_ms, None
             except Exception as exc:

@@ -119,7 +119,14 @@ def _wire_fake_connector(monkeypatch, payloads, tools=None):
     calls = []
 
     def fake_execute_spec(
-        spec, tool_def, params, credentials, db, thread_id, venue_id=None
+        spec,
+        tool_def,
+        params,
+        credentials,
+        db,
+        thread_id,
+        venue_id=None,
+        release_db_after_render=False,
     ):
         calls.append(tool_def["action"])
         payload = payloads.get(tool_def["action"], {"ok": True})

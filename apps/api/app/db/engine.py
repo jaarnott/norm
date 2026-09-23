@@ -1,4 +1,5 @@
 import logging
+import threading
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -6,6 +7,21 @@ from sqlalchemy.orm import sessionmaker
 from app.config import settings
 
 log = logging.getLogger(__name__)
+
+# ── Connector-call DB budget (per instance) ──────────────────────
+# A fan-out query opens one DB session per parallel call. Left unbounded, a
+# single large multi-venue query checked out the whole pool and held it across
+# the slow Loaded HTTP calls, pinning the database (a 6-venue COGS query filled
+# norm-prod-db's ~50 slots and starved every other request until a restart).
+#
+# This bounds how many connector calls may hold a DB connection AT ONCE on this
+# instance, below the pool ceiling (10+12=22) so request-scoped work — chat,
+# /units — always has headroom. It guards only the brief render phase (token
+# resolution) inside spec_executor.execute_spec, which does no nested/fan-out
+# work, so it cannot deadlock; the slow HTTP round-trip runs outside it, and the
+# fan-out worker's fresh session is returned to the pool before that call.
+DB_CALL_LIMIT = 12
+db_call_semaphore = threading.BoundedSemaphore(DB_CALL_LIMIT)
 
 # ── Primary (read-write) engine ──────────────────────────────────
 # A POOL IS PER INSTANCE, AND THE DATABASE IS NOT.

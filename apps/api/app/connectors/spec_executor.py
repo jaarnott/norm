@@ -513,8 +513,15 @@ def execute_spec(
     db: Session,
     thread_id: str | None = None,
     venue_id: str | None = None,
+    release_db_after_render: bool = False,
 ) -> tuple[ConnectorResult, RenderedRequest]:
-    """Execute a connector spec operation. Returns (result, rendered_request)."""
+    """Execute a connector spec operation. Returns (result, rendered_request).
+
+    ``release_db_after_render`` returns ``db``'s connection to the pool (via
+    commit) after the render/token phase and before the slow HTTP call — pass it
+    ONLY for a fresh, disposable per-call session (a parallel fan-out worker's),
+    never a shared request session, which must not be committed mid-turn.
+    """
     # Normalize field values to fix common LLM formatting mistakes
     extracted_fields = _normalize_fields(extracted_fields, operation)
 
@@ -599,15 +606,31 @@ def execute_spec(
 
     empty_request = RenderedRequest(method="", url="", headers={}, body=None)
 
+    from app.db.engine import db_call_semaphore
+
     try:
         if spec.execution_mode == "agent":
             rendered = execute_via_agent(
                 spec, operation, extracted_fields, credentials, db, thread_id
             )
         else:
-            rendered = render_request(
-                spec, operation, extracted_fields, credentials, db=db, venue_id=venue_id
-            )
+            # Hold a DB connection only for the brief render (token resolution),
+            # under the per-instance connector-call budget. A disposable per-call
+            # session then returns its connection to the pool before the slow
+            # HTTP round-trip below (execute_http needs no DB), so a wide fan-out
+            # holds only a couple of connections at any instant instead of one
+            # per parallel call for the whole call.
+            with db_call_semaphore:
+                rendered = render_request(
+                    spec,
+                    operation,
+                    extracted_fields,
+                    credentials,
+                    db=db,
+                    venue_id=venue_id,
+                )
+                if release_db_after_render:
+                    db.commit()
     except ConnectorAuthError as exc:
         return ConnectorResult(
             success=False,

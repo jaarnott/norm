@@ -594,6 +594,7 @@ def _execute_loop(
                         # Best-effort — a failure leaves the bare doc.
                         _enrich_lh = None
                         if items and tc.venue_id:
+                            _enrich_cfg_db = None
                             try:
                                 from app.services.received_invoice import (
                                     LoadedInvoiceClient,
@@ -606,6 +607,16 @@ def _execute_loop(
                                 )
                             except Exception as exc:  # noqa: BLE001
                                 logger.info("fan-out enrichment unavailable: %s", exc)
+                            finally:
+                                # LoadedInvoiceClient reads the spec/creds in its
+                                # __init__ and then works over the shared HTTP
+                                # pool — it never touches this session again, so
+                                # close it now. Leaving it open leaked one
+                                # config-DB connection per read-only tool call on
+                                # a fan-out turn (idle-in-transaction, released
+                                # only by a process restart).
+                                if _enrich_cfg_db is not None:
+                                    _enrich_cfg_db.close()
                         for item in items:
                             if not isinstance(item, dict):
                                 continue

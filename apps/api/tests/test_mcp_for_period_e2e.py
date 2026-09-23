@@ -202,7 +202,16 @@ def _stub_upstream(monkeypatch, sink):
 
     real = se.execute_spec
 
-    def wrapper(spec, tool_def, params, credentials, db, thread_id, venue_id=None):
+    def wrapper(
+        spec,
+        tool_def,
+        params,
+        credentials,
+        db,
+        thread_id,
+        venue_id=None,
+        release_db_after_render=False,
+    ):
         if tool_def.get("action") == "get_sales_data":
             sink.append(dict(params))
         return real(
