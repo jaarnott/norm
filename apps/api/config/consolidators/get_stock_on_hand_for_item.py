@@ -15,6 +15,7 @@ def run(params, call_api, log, call_api_parallel):
         stocktake_templates -> get_stocktake_templates      (parallel)
         group_lookup        -> stock_groups   where id    contains item.groupId
         template_lookup     -> templates      where title contains group.superGroupName
+                               (now: id == group.categoryId — see template_lookup)
         stock_on_hand       -> get_stock_on_hand(template_id=template_lookup.id)
         search              -> filter stock_on_hand rows by item_id
     """
@@ -69,39 +70,70 @@ def run(params, call_api, log, call_api_parallel):
             "error": f"No stock group found for '{item_name}' (groupId {group_id})."
         }
 
-    super_group = group.get("superGroupName")
-    if not super_group:
-        return {
-            "error": f"Stock group for '{item_name}' has no superGroupName, so no template matches it."
-        }
-
-    # template_lookup: the template whose title contains the super group name
+    # template_lookup. This read `superGroupName`, a field the groups
+    # transform has never emitted (it keeps categoryId / categoryName), so the
+    # tool failed on EVERY call and never once succeeded in production — found
+    # 23 Sep 2026 by reading the live transform.
+    #
+    # The category IS the super group, and Loaded's three categories (Beverage
+    # / Food / Other Stock) share their ids with the whole-category stocktake
+    # templates of the same name — confirmed on production payloads from three
+    # venues. So the template is found by id, exactly. The old substring match
+    # on the title was also dangerous in its own right: venues keep area
+    # templates like "BEVERAGE - CELLAR" and "BEVERAGE - BESSIE BAR", and
+    # "contains Beverage" took whichever came first — a partial area the item
+    # may not even be counted on.
+    category_id = group.get("categoryId")
+    category = group.get("categoryName") or group.get("superGroupName")
+    template_list = [t for t in as_list(templates, "templates") if isinstance(t, dict)]
     template = None
-    for t in as_list(templates, "templates"):
-        if (
-            isinstance(t, dict)
-            and super_group.lower() in str(t.get("title", "")).lower()
-        ):
-            template = t
-            break
+    if category_id:
+        for t in template_list:
+            if str(t.get("id")) == str(category_id):
+                template = t
+                break
+    if not template and category:
+        # Fallback: a template titled exactly as the category. Never a
+        # substring — see above.
+        for t in template_list:
+            if str(t.get("title", "")).strip().lower() == category.strip().lower():
+                template = t
+                break
     if not template:
         return {
-            "error": f"No stocktake template matches super group '{super_group}' for '{item_name}'."
+            "error": (
+                f"No whole-category stocktake template for '{item_name}' "
+                f"(category {category or 'unknown'}), so its stock on hand can't "
+                "be read."
+            )
         }
 
     log(
-        f"Item '{item_name}' -> group '{super_group}' -> template '{template.get('title')}'"
+        f"Item '{item_name}' -> category '{category}' -> template '{template.get('title')}'"
     )
 
-    rows = call_api(
-        "loadedhub",
-        "get_stock_on_hand",
-        {
-            "venue": venue,
-            "template_id": template.get("id"),
-            "report_datetime": params["today_iso"],
-        },
-    )
+    # Stock on hand is slow (~13 s in Loaded's own UI) and 500s past Loaded's
+    # ~30 s limit under load. One serial retry, then say plainly that Loaded
+    # failed — never report a failure as "not counted" (the stock-requirements
+    # doctrine: an upstream outage must not read as a data problem).
+    soh_args = {
+        "venue": venue,
+        "template_id": template.get("id"),
+        "report_datetime": params["today_iso"],
+    }
+    rows = call_api("loadedhub", "get_stock_on_hand", soh_args)
+    if isinstance(rows, dict) and rows.get("error") and "lines" not in rows:
+        log(f"stock on hand failed ({rows.get('error')}); retrying once")
+        rows = call_api("loadedhub", "get_stock_on_hand", soh_args)
+    if isinstance(rows, dict) and rows.get("error") and "lines" not in rows:
+        return {
+            "error": (
+                "LoadedHub could not return stock on hand for template "
+                f"'{template.get('title')}' — its stock-on-hand report is slow and "
+                "times out under load. This is a LoadedHub failure, not a missing "
+                f"item; try again shortly. LoadedHub said: {rows.get('error')}"
+            )
+        }
 
     # search: keep only the row for this item
     match = None
