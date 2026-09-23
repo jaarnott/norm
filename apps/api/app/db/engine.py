@@ -8,52 +8,50 @@ from app.config import settings
 
 log = logging.getLogger(__name__)
 
-# ── Connector-call DB budget (per instance) ──────────────────────
+# ── Connector-call DB budget (per process) ───────────────────────
 # A fan-out query opens one DB session per parallel call. Left unbounded, a
 # single large multi-venue query checked out the whole pool and held it across
 # the slow Loaded HTTP calls, pinning the database (a 6-venue COGS query filled
 # norm-prod-db's ~50 slots and starved every other request until a restart).
 #
-# This bounds how many connector calls may hold a DB connection AT ONCE on this
-# instance, below the pool ceiling (10+12=22) so request-scoped work — chat,
-# /units — always has headroom. It guards only the brief render phase (token
-# resolution) inside spec_executor.execute_spec, which does no nested/fan-out
-# work, so it cannot deadlock; the slow HTTP round-trip runs outside it, and the
-# fan-out worker's fresh session is returned to the pool before that call.
+# This bounds how many connector calls may hold a DB connection AT ONCE in this
+# PROCESS, below its pool ceiling (22) so request-scoped work — chat, /units —
+# always has headroom. It guards only the brief render phase (token resolution)
+# inside spec_executor.execute_spec, which does no nested/fan-out work, so it
+# cannot deadlock; the slow HTTP round-trip runs outside it, and the fan-out
+# worker's fresh session is returned to the pool before that call.
 DB_CALL_LIMIT = 12
 db_call_semaphore = threading.BoundedSemaphore(DB_CALL_LIMIT)
 
 # ── Primary (read-write) engine ──────────────────────────────────
-# A POOL IS PER INSTANCE, AND THE DATABASE IS NOT.
+# A POOL IS PER PROCESS — AND EACH INSTANCE RUNS FOUR.
 #
-# pool_size + max_overflow is the ceiling ONE Cloud Run instance may hold, so
-# the number that has to fit is (max instances x that ceiling). At 10+20 with
-# maxScale=3 that was 90 against a db-g1-small serving ~50 — the app was
-# provisioned for nearly twice what the database can give it.
+# gunicorn starts 4 workers per Cloud Run instance (Dockerfile `-w 4`), and each
+# worker is a process with its own pool. So the sum that has to fit the database
+# is  pool x 4 workers x maxScale instances,  not pool x instances. This file
+# used to count instances only, and was out by four.
 #
-# It only bit during a deploy, when the old revision still holds its pool while
-# the new one starts: on 27 Aug 2026 the production migrate job could not get a
-# connection at all ("remaining connection slots are reserved…") and the deploy
-# failed with 47 of ~50 in use.
+# THE FLOOR IS ONE PROCESS'S PEAK. A consolidator's parallel fan-out opens a
+# session PER CALL, up to 20 at once (function_executor `_worker`,
+# ThreadPoolExecutor(min(len(calls), 20))), and the tool loop runs up to 8
+# read-only calls concurrently, each with its own session — all inside the one
+# worker handling that turn. A pool below that fails the work outright rather
+# than queueing it: 5+7 died on 27 Aug 2026 with "QueuePool limit of size 5
+# overflow 7 reached, connection timed out". So the ceiling stays 22.
 #
-# THE FLOOR IS ONE INSTANCE'S PEAK, NOT THE DATABASE'S TOTAL.
+# THE IDLE FOOTPRINT IS pool_size, AND IT NEVER SHRINKS. QueuePool keeps up to
+# pool_size returned connections open forever and closes only the overflow. At
+# pool_size=10, every burst left its worker holding ten idle connections: on
+# 23 Sep 2026 two big fan-out turns ratcheted norm-prod-db from 10 to 48 IDLE
+# connections (8 processes x up to 10 each) with request volume flat, until
+# nothing could connect. At 2 the idle footprint is 2 x 8 = 16, and bursts use
+# overflow connections that close as soon as they are returned.
 #
-# A consolidator's parallel fan-out opens a session PER CALL, up to 20 at once
-# (function_executor `_worker`, ThreadPoolExecutor(min(len(calls), 20))), and
-# the tool loop runs up to 8 read-only calls concurrently, each with its own
-# session. So one instance can genuinely want ~20 at a peak, and a pool below
-# that fails the work outright rather than merely queueing it: 5+7 was chosen
-# on 27 Aug 2026 from the database total alone and get_pos_item_sales died on
-# it with "QueuePool limit of size 5 overflow 7 reached, connection timed out".
-#
-# 10+12 = 22 per instance, which covers that 20-way fan-out with a little room.
-# The other half of the sum is maxScale, set on the Cloud Run service and NOT
-# in this repo: 22 x 3 is 66 against a db-g1-small serving ~50 (it refused new
-# connections at 49). Keep maxScale at 2 on this tier, or raise the tier first.
+# Keep maxScale at 2 on a db-g1-small (~50 slots), or raise the tier first.
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_size=10,
-    max_overflow=12,
+    pool_size=2,
+    max_overflow=20,
     pool_timeout=30,
     pool_recycle=1800,
     pool_pre_ping=True,
@@ -70,8 +68,8 @@ if settings.DATABASE_READ_URL:
     # footprint, which is exactly the sum that overran above.
     _read_engine = create_engine(
         settings.DATABASE_READ_URL,
-        pool_size=10,
-        max_overflow=12,
+        pool_size=2,
+        max_overflow=20,
         pool_timeout=30,
         pool_recycle=1800,
         pool_pre_ping=True,

@@ -83,7 +83,29 @@ class TestBudgetSemaphore:
     def test_a_per_instance_budget_exists_and_is_bounded(self):
         from app.db.engine import DB_CALL_LIMIT, db_call_semaphore
 
-        assert DB_CALL_LIMIT < 22  # below the pool ceiling (10 + 12)
+        assert DB_CALL_LIMIT < 22  # below the per-process pool ceiling (2 + 20)
         # It is a real bounded semaphore, acquirable and releasable.
         assert db_call_semaphore.acquire(timeout=1)
         db_call_semaphore.release()
+
+
+class TestIdleFootprint:
+    """The pool is per PROCESS and gunicorn runs four per instance.
+
+    pool_size is what each process keeps open forever once a burst has grown
+    its pool. At 10 it ratcheted norm-prod-db to 48 idle connections on
+    23 Sep 2026 (4 workers x 2 instances x up to 10) with traffic flat.
+    """
+
+    def test_each_process_keeps_only_a_small_idle_pool(self):
+        from app.db.engine import engine
+
+        workers, instances = 4, 2  # Dockerfile `-w 4`; Cloud Run maxScale
+        idle_ceiling = engine.pool.size() * workers * instances
+        assert idle_ceiling <= 20, idle_ceiling  # of norm-prod-db's ~50 slots
+
+    def test_a_process_can_still_burst_to_a_full_fan_out(self):
+        from app.db.engine import engine
+
+        # A 20-way consolidator fan-out plus a little room, inside one worker.
+        assert engine.pool.size() + engine.pool._max_overflow >= 22
