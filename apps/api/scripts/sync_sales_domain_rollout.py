@@ -229,22 +229,8 @@ def main(dry_run: bool = False) -> None:
                     f"{len(caps)} -> {len(new_caps)} caps"
                 )
 
-        # ── 2. Playbooks: tool_filter swaps + prose needles ──────────────
+        # ── 2. Playbooks: prose needles ──────────────────────────────────
         for p in db.query(Playbook).all():
-            filt = list(p.tool_filter or [])
-            new_filt: list[str] = []
-            touched = False
-            for name in filt:
-                if name in RETIRED:
-                    if "get_sales" not in new_filt:
-                        new_filt.append("get_sales")
-                    touched = True
-                else:
-                    new_filt.append(name)
-            if touched:
-                p.tool_filter = new_filt
-                flag_modified(p, "tool_filter")
-                changes.append(f"playbook {p.slug}: filter -> {new_filt}")
             text = p.instructions or ""
             for old, new in PLAYBOOK_PATCHES.get(p.slug, []):
                 if old in text:

@@ -325,38 +325,42 @@ Reports are user-created collections of charts built during conversations. The R
 
 ## 10. Playbooks
 
-Playbooks are focused instruction sets for specific workflows. Instead of one monolithic system prompt per agent, the router auto-matches the user's message to the most relevant playbook, giving the agent targeted guidance and optionally filtering its available tools.
+Playbooks are step-by-step guides for specific jobs, modelled on Claude's
+Skills. The agent sees every enabled playbook's name and "when to use it" line
+in its system prompt, and opens the full instructions with the
+`norm__read_playbook` tool when a request matches. A playbook adds know-how; it
+never limits which tools the agent can use.
 
 **What a playbook contains:**
 - `slug` — unique identifier (e.g. `weekly_sales_report`)
-- `agent_slug` — which agent this playbook belongs to
-- `description` — short description used by the router for matching
-- `instructions` — the focused prompt text (workflow steps, tool patterns, formatting rules)
-- `tool_filter` — optional list of tool actions. If set, only these tools are available.
+- `agent_slug` — the agent it is grouped under (Settings UI, MCP workflow runs)
+- `description` — one sentence on when to use it; this is what the agent reads
+  to decide whether to open the playbook
+- `instructions` — the steps, tool patterns and formatting rules
 
 **How it works:**
-1. User sends a message
-2. The router classifies the domain AND selects a playbook (if one clearly matches)
-3. If a playbook matches → its instructions are injected into the system prompt between the base agent prompt and the dynamic context sections, and tools are filtered
-4. If no playbook matches → agent uses its default prompt with all tools (existing behaviour)
-5. The `playbook_id` is stored on the thread so follow-up messages reuse the same playbook
+1. The agent's prompt ends with a `## Playbooks` menu: `slug: when to use it`
+2. If the request matches one, the agent calls `norm__read_playbook(slug)` first
+   and follows it; if none fits, it just answers with whatever tools it needs
+3. The agent holds every tool the user is entitled to either way
 
-**Prompt composition with playbook:**
-```
-[Agent base prompt from AgentConfig.system_prompt]
-## Active Playbook: {display_name}
-{instructions}
-[Venue context, email context, chart guidance — same as without playbook]
-[Tool definitions — filtered to playbook.tool_filter if set]
-```
+This replaced router-selected playbooks (Sep 2026). The router used to pick a
+playbook before the agent saw the question, and the pick swapped out the
+agent's prompt and narrowed its tools to the playbook's `tool_filter`. A
+"fruit and veg used" question became a COGS question with the one tool that
+could answer it withheld (thread 8de7df19).
 
-**Example:** A "Weekly Sales Report" playbook for the reports agent might instruct: "1. Call resolve_dates for the last 7 days. 2. Call get_sales_data for each venue. 3. Render a comparison chart. 4. Summarise the trends." — giving the agent a clear recipe instead of figuring it out from 30 tools.
+**MCP workflow tools.** A playbook published through an `McpCapability` row
+becomes a `norm_playbook__<slug>` tool in Claude. A run of one loads that
+playbook's instructions up front and holds every tool except the ones that act
+immediately with no draft or approval card (`mcp.workflows.safe_for_claude`).
 
 **Key files:**
 - `app/db/config_models.py` — Playbook model (config DB)
 - `app/routers/playbooks.py` — CRUD endpoints
-- `app/agents/router.py` — playbook matching in classification
-- `app/agents/prompt_builder.py` — instruction injection + tool filtering
+- `app/agents/prompt_builder.py` — `playbook_guidance` (the menu + read tool)
+- `app/agents/internal_tools.py` — the `read_playbook` handler
+- `app/mcp/workflows.py` — MCP workflow runs
 - `apps/web/app/components/settings/PlaybooksPanel.tsx` — Settings UI
 
 ---
@@ -624,7 +628,7 @@ Display blocks are the mechanism for rendering rich UI from tool results. They b
 User message
   → Supervisor (routing)
     → Page context provided? → Skip router, use page's agent directly
-    → Otherwise → Router LLM (classify domain + match playbook)
+    → Otherwise → Router LLM (classify domain)
     → Load playbook if matched (instructions + tool filter)
     → Agent (reports/procurement/hr)
       → Tool Loop (up to 10 iterations)
@@ -669,7 +673,7 @@ Dashboard loads → cached data shown immediately
 | **Consolidators** | `app/agents/internal_tools.py` (execute_consolidator), `app/connectors/function_executor.py` |
 | **Transforms** | `app/connectors/response_transform.py` |
 | **Prompt Builder** | `app/agents/prompt_builder.py` |
-| **Playbooks** | `app/db/config_models.py` (Playbook), `app/routers/playbooks.py`, `app/agents/router.py` (matching), `PlaybooksPanel.tsx` |
+| **Playbooks** | `app/db/config_models.py` (Playbook), `app/routers/playbooks.py`, `app/agents/prompt_builder.py` (menu), `app/mcp/workflows.py`, `PlaybooksPanel.tsx` |
 | **Dashboards** | `app/routers/reports_crud.py`, `app/routers/templates.py`, `DashboardView.tsx`, `ChartConfigPanel.tsx`, `DashboardPicker.tsx`, `Chart.tsx`, `KpiCard.tsx` |
 | **Components** | `apps/web/app/components/display/DisplayBlockRenderer.tsx`, `apps/web/app/components/pages/` |
 | **Working Documents** | `app/routers/working_documents.py`, `app/services/document_sync.py` |

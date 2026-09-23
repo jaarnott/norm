@@ -280,29 +280,8 @@ def main(dry_run: bool = False) -> None:
                     f"{len(caps)} -> {len(new_caps)} caps"
                 )
 
-        # ── 4. Playbook tool_filters ─────────────────────────────────────
-        # Eight playbooks list create_automated_task. A filter naming a tool
-        # that no longer exists does not error at runtime — the entry is
-        # silently dropped and the playbook's instructions reference a
-        # capability the agent no longer has. That is the b9bda2c1 incident
-        # class, and it is a hard validator error now.
+        # ── 4. Playbook prose ─────────────────────────────────────────────
         from app.db.config_models import Playbook
-
-        for p in db.query(Playbook).all():
-            filt = list(p.tool_filter or [])
-            if not any(n in RETIRED for n in filt):
-                continue
-            new_filt: list[str] = []
-            for name in filt:
-                if name not in RETIRED:
-                    new_filt.append(name)
-                    continue
-                replacement = RETIRED[name]
-                if replacement and replacement not in new_filt:
-                    new_filt.append(replacement)
-            p.tool_filter = new_filt
-            flag_modified(p, "tool_filter")
-            changes.append(f"playbook {p.slug}: filter -> {new_filt}")
 
         for p in db.query(Playbook).all():
             patches = PLAYBOOK_PATCHES.get(p.slug)
@@ -315,15 +294,6 @@ def main(dry_run: bool = False) -> None:
                     changes.append(f"playbook {p.slug}: prose swapped")
             if text != (p.instructions or ""):
                 p.instructions = text
-            # A playbook that NAMES a tool must also admit it: tool_filter
-            # narrows the menu, so instructions referencing a tool outside the
-            # filter describe a capability the agent cannot reach.
-            if "manage_task" in text:
-                filt = list(p.tool_filter or [])
-                if filt and "manage_task" not in filt:
-                    p.tool_filter = filt + ["manage_task"]
-                    flag_modified(p, "tool_filter")
-                    changes.append(f"playbook {p.slug}: filter += manage_task")
 
         # ── 5. MCP rows: manage_task is denylisted, the old ones go ──────
         for m in db.query(McpCapability).all():

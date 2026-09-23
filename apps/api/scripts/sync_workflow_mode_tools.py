@@ -64,8 +64,7 @@ def main(dry_run: bool = False) -> None:
             tools.append(tool)
             changed.append(f"added tool {action}")
 
-    # Bind the tool to the procurement agent's norm connector so the invoice
-    # playbooks can call it (tool_filter narrows from bound tools).
+    # Bind the tool to the procurement agent's norm connector.
     binding = (
         db.query(AgentConnectionBinding)
         .filter(

@@ -89,7 +89,7 @@ def roster(db_session):
 
 
 def _followup(monkeypatch, **verdict):
-    base = {"action": "new_thread", "domain": "executive_chef", "playbook": None}
+    base = {"action": "new_thread", "domain": "executive_chef"}
     base.update(verdict)
     monkeypatch.setattr("app.agents.router.classify_followup", lambda *a, **kw: base)
 
@@ -134,32 +134,6 @@ class TestAStatementOfContextDoesNotMoveTheThread:
         )
 
         assert thread.domain == "reports"
-
-    def test_a_playbook_chosen_for_the_other_agent_is_dropped(
-        self, db_session, admin_user, monkeypatch, no_quota_check, stub_loop
-    ):
-        """The playbook lookup matches on slug alone, not on agent — a slug
-        picked while the classifier was thinking about another agent would
-        otherwise load straight into this one."""
-        thread = _reports_thread(db_session, admin_user)
-        seen = {}
-        _followup(monkeypatch, is_request=False, playbook="menu_costing")
-
-        class _Recorder(_StubAgent):
-            def get_tool_definitions(self, db, **kw):
-                seen["playbook"] = kw.get("playbook")
-                return ("sys", [{"name": "x"}])
-
-        _run(
-            db_session,
-            admin_user,
-            monkeypatch,
-            "the kitchen flooded last night",
-            thread=thread,
-            agent=_Recorder(),
-        )
-
-        assert seen.get("playbook") is None
 
     def test_a_verdict_without_the_field_still_switches(
         self, db_session, admin_user, monkeypatch, no_quota_check, stub_loop

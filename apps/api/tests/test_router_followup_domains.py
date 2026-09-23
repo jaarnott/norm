@@ -39,7 +39,6 @@ def _followup_system_prompt(**kw):
         router.classify_followup(
             kw.get("message", "what beer stock do we have"),
             kw.get("thread_domain", "time_attendance"),
-            None,
             kw.get("recent_summary", "User: hours last week"),
             config_db=kw.get("config_db"),
         )
@@ -117,7 +116,7 @@ class TestTheVerdictCarriesWhetherItWasARequest:
         original = anthropic.Anthropic
         anthropic.Anthropic = _Client
         try:
-            out = router.classify_followup("anything", "reports", None, "")
+            out = router.classify_followup("anything", "reports", "")
         finally:
             anthropic.Anthropic = original
 
@@ -164,7 +163,7 @@ class TestTheClassifierIsToldWhichDomainsExist:
         original = anthropic.Anthropic
         anthropic.Anthropic = _FailingClient
         try:
-            result = router.classify_followup("msg", "reports", None, "summary")
+            result = router.classify_followup("msg", "reports", "summary")
         finally:
             anthropic.Anthropic = original
 

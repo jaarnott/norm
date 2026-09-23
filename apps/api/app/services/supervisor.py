@@ -158,7 +158,6 @@ def handle_message(
                         active_venue_name=venue_name,
                         venue_timezone=venue_timezone,
                         config_db=_cdb,
-                        playbook=_stored_playbook(thread, _cdb),
                     )
                     # Same id as the thread the user is already looking at —
                     # the frontend needs it to stay put, not swap threads.
@@ -175,7 +174,6 @@ def handle_message(
 
             # Classify the follow-up to decide how to handle it
             from app.agents.router import classify_followup
-            from app.db.config_models import Playbook
 
             # Build a brief summary of recent conversation
             recent_msgs = (
@@ -194,20 +192,17 @@ def handle_message(
             followup = classify_followup(
                 message,
                 thread.domain,
-                None,  # no "current" playbook — each message gets its own
                 recent_summary,
                 thread_id=thread_id,
-                playbook_tools=None,
                 db=db,
                 config_db=_cdb,
             )
 
             action = followup.get("action", "continue")
             logger.info(
-                "Follow-up routing: action=%s domain=%s playbook=%s reason=%s",
+                "Follow-up routing: action=%s domain=%s reason=%s",
                 action,
                 followup.get("domain"),
-                followup.get("playbook"),
                 followup.get("reason", ""),
             )
 
@@ -275,10 +270,6 @@ def handle_message(
                         followup.get("reason", ""),
                     )
                     action = "continue"
-                    # The slug was chosen for the OTHER agent, and the lookup
-                    # below matches on slug alone — it would happily load into
-                    # this one.
-                    followup["playbook"] = None
 
             if action == "new_thread":
                 rebound = _rebind_thread_agent(
@@ -302,34 +293,6 @@ def handle_message(
                     original_user_text = message
                     message = f"[Prior conversation]\n{recent_summary}\n\n[New request]\n{message}"
             else:
-                # Load playbook for THIS message if the classifier matched one
-                message_playbook = None
-                playbook_slug = followup.get("playbook")
-                logger.info(
-                    "Follow-up playbook slug from classifier: %s", playbook_slug
-                )
-                if playbook_slug:
-                    bare_slug = (
-                        playbook_slug.split("/")[-1]
-                        if "/" in playbook_slug
-                        else playbook_slug
-                    )
-                    message_playbook = (
-                        _cdb.query(Playbook)
-                        .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
-                        .first()
-                    )
-                    logger.info(
-                        "Playbook lookup: slug=%s found=%s name=%s",
-                        bare_slug,
-                        message_playbook is not None,
-                        message_playbook.display_name if message_playbook else "N/A",
-                    )
-
-                logger.info(
-                    "Calling agent.handle_message with playbook=%s",
-                    message_playbook.display_name if message_playbook else "None",
-                )
                 agent = get_agent(thread.domain)
                 if agent:
                     return agent.handle_message(
@@ -341,7 +304,6 @@ def handle_message(
                         venue_name=venue_name,
                         venue_timezone=venue_timezone,
                         config_db=_cdb,
-                        playbook=message_playbook,
                         automated_task=automated_task_ctx,
                     )
             # For meta/unknown threads: remember the old thread so we can
@@ -481,23 +443,6 @@ def handle_message(
                 result["llm_calls"] = [_llm_call_to_dict(llm_call)]
         return result
 
-    # Load playbook if the router matched one
-    playbook = None
-    playbook_slug = routing.get("playbook")
-    if playbook_slug:
-        from app.db.config_models import Playbook
-
-        # Router may return "agent/slug" format — strip the prefix
-        bare_slug = (
-            playbook_slug.split("/")[-1] if "/" in playbook_slug else playbook_slug
-        )
-
-        playbook = (
-            _cdb.query(Playbook)
-            .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
-            .first()
-        )
-
     # 3. Delegate to the domain agent
     agent = get_agent(domain)
     if agent:
@@ -510,7 +455,6 @@ def handle_message(
             venue_timezone=venue_timezone,
             config_db=_cdb,
             page_context=page_context,
-            playbook=playbook,
         )
 
         # Set the LLM-generated title on the thread + backfill routing LlmCall thread_id
@@ -588,25 +532,6 @@ def _llm_call_to_dict(llm_call: LlmCall) -> dict:
         "tools_provided": llm_call.tools_provided,
         "created_at": llm_call.created_at.isoformat() if llm_call.created_at else None,
     }
-
-
-def _stored_playbook(thread: Thread, config_db: Session):
-    """The playbook the router picked before it stopped to ask for a venue.
-
-    `_create_venue_clarification` stashes the whole routing result on the
-    thread so the original request can be resumed without re-classifying it.
-    """
-    from app.db.config_models import Playbook
-
-    slug = ((thread.extracted_fields or {}).get("routing") or {}).get("playbook")
-    if not slug:
-        return None
-    bare_slug = slug.split("/")[-1] if "/" in slug else slug
-    return (
-        config_db.query(Playbook)
-        .filter(Playbook.slug == bare_slug, Playbook.enabled == True)  # noqa: E712
-        .first()
-    )
 
 
 def _rebind_thread_agent(

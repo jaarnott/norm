@@ -1,4 +1,4 @@
-"""Playbooks CRUD — focused instruction sets for agent workflows."""
+"""Playbooks CRUD — step-by-step guides the agent reads when a request matches."""
 
 import json
 import logging
@@ -24,7 +24,6 @@ class PlaybookCreate(BaseModel):
     display_name: str
     description: str
     instructions: str
-    tool_filter: list[str] | None = None
     enabled: bool = True
 
 
@@ -32,7 +31,6 @@ class PlaybookUpdate(BaseModel):
     display_name: str | None = None
     description: str | None = None
     instructions: str | None = None
-    tool_filter: list[str] | None = None
     enabled: bool | None = None
 
 
@@ -44,7 +42,6 @@ def _to_dict(p: Playbook) -> dict:
         "display_name": p.display_name,
         "description": p.description,
         "instructions": p.instructions,
-        "tool_filter": p.tool_filter,
         "enabled": p.enabled,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
@@ -62,67 +59,34 @@ async def list_playbooks(
     return {"playbooks": [_to_dict(p) for p in playbooks]}
 
 
-@router.get("/tools/{agent_slug}")
-async def list_agent_tools(
-    agent_slug: str,
+@router.get("/tools/all")
+async def list_entitled_tools(
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Tool actions available for a task's tool_filter.
 
-    ``agent_slug='all'`` returns the full entitled union — the same set an
-    interactive agent sees — so a task's filter can span domains (e.g. read a
-    report AND order stock). It reuses the runtime assembly, so it is
-    entitlement-filtered, deduped, and excludes retired tools like
-    ``delegate_to_agent``. A real slug returns that agent's own bound tools.
+    The full entitled union — the same set an interactive agent sees — so a
+    task's filter can span domains (e.g. read a report AND order stock). It
+    reuses the runtime assembly, so it is entitlement-filtered, deduped, and
+    excludes retired tools.
     """
-    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
+    return {"tools": _tool_rows(db, user.id, config_db)}
 
-    if agent_slug == "all":
-        from app.agents.prompt_builder import _collect_tools
 
-        return {
-            "tools": [
-                {
-                    "action": t["action"],
-                    "connector": t["connector"],
-                    "method": t.get("method", "?"),
-                    "description": t.get("description", ""),
-                }
-                for t in _collect_tools(db, user_id=user.id, config_db=config_db)
-            ]
+def _tool_rows(db: Session, user_id: str, config_db: Session) -> list[dict]:
+    from app.agents.prompt_builder import _collect_tools
+
+    return [
+        {
+            "action": t["action"],
+            "connector": t["connector"],
+            "method": t.get("method", "?"),
+            "description": t.get("description", ""),
         }
-
-    bindings = (
-        config_db.query(AgentConnectionBinding)
-        .filter(
-            AgentConnectionBinding.agent_slug == agent_slug,
-            AgentConnectionBinding.enabled == True,  # noqa: E712
-        )
-        .all()
-    )
-    tools = []
-    for binding in bindings:
-        spec = (
-            config_db.query(ConnectionSpec)
-            .filter(ConnectionSpec.connector_name == binding.connector_name)
-            .first()
-        )
-        if not spec:
-            continue
-        for tool in spec.tools or []:
-            action = tool.get("action", "")
-            if action:
-                tools.append(
-                    {
-                        "action": action,
-                        "connector": spec.connector_name,
-                        "method": tool.get("method", "?"),
-                        "description": tool.get("description", ""),
-                    }
-                )
-    return {"tools": tools}
+        for t in _collect_tools(db, user_id=user_id, config_db=config_db)
+    ]
 
 
 @router.get("/{slug}")
@@ -153,7 +117,6 @@ async def create_playbook(
         display_name=body.display_name,
         description=body.description,
         instructions=body.instructions,
-        tool_filter=body.tool_filter,
         enabled=body.enabled,
     )
     config_db.add(playbook)
@@ -199,7 +162,6 @@ async def delete_playbook(
 
 class GeneratePlaybookBody(BaseModel):
     description: str
-    agent_slug: str
     current_instructions: str | None = None
 
 
@@ -218,38 +180,17 @@ async def generate_playbook(
     if not api_key:
         raise HTTPException(400, "Anthropic API key required")
 
-    # Build tool context for the agent
-    from app.db.config_models import AgentConnectionBinding, ConnectionSpec
-
-    bindings = (
-        config_db.query(AgentConnectionBinding)
-        .filter(
-            AgentConnectionBinding.agent_slug == body.agent_slug,
-            AgentConnectionBinding.enabled == True,  # noqa: E712
-        )
-        .all()
-    )
-    tool_lines = []
-    for binding in bindings:
-        spec = (
-            config_db.query(ConnectionSpec)
-            .filter(ConnectionSpec.connector_name == binding.connector_name)
-            .first()
-        )
-        if not spec:
-            continue
-        for tool in spec.tools or []:
-            action = tool.get("action", "")
-            method = tool.get("method", "?")
-            desc = tool.get("description", "")
-            tool_lines.append(f"- {spec.connector_name}__{action} [{method}]: {desc}")
-
+    # Tool context: every tool the agent can use (it holds the full union)
+    tool_lines = [
+        f"- {t['connector']}__{t['action']} [{t['method']}]: {t['description']}"
+        for t in _tool_rows(db, user.id, config_db)
+    ]
     tools_text = "\n".join(tool_lines) if tool_lines else "(no tools bound)"
 
     if body.current_instructions:
         prompt = f"""You are a playbook editor for a hospitality AI platform. Refine the existing playbook instructions based on the user's request.
 
-Available tools for the {body.agent_slug} agent:
+Available tools:
 {tools_text}
 
 Current instructions:
@@ -260,15 +201,14 @@ User request: {body.description}
 Return a JSON object with:
 - "instructions": the updated playbook instructions (string, can use markdown)
 - "display_name": a concise name for this playbook (if the current one should change, otherwise keep it)
-- "description": a one-sentence description for router matching
-- "tool_filter": array of tool action names to include (e.g. ["get_sales_data", "render_chart"]), or null for all tools
+- "description": one sentence saying when to use this playbook (the agent reads it to decide whether to open the playbook)
 - "slug": a snake_case slug for this playbook
 
 Return ONLY valid JSON, no markdown fences."""
     else:
         prompt = f"""You are a playbook generator for a hospitality AI platform. Create focused workflow instructions for an agent.
 
-Available tools for the {body.agent_slug} agent:
+Available tools:
 {tools_text}
 
 User description: {body.description}
@@ -276,8 +216,7 @@ User description: {body.description}
 Generate a JSON object with:
 - "instructions": detailed step-by-step workflow instructions telling the agent exactly what tools to call and in what order, how to format results, and what to watch out for (string, can use markdown)
 - "display_name": a concise name for this playbook
-- "description": a one-sentence description for router matching
-- "tool_filter": array of tool action names to include (e.g. ["get_sales_data", "render_chart"]), or null for all tools
+- "description": one sentence saying when to use this playbook (the agent reads it to decide whether to open the playbook)
 - "slug": a snake_case slug for this playbook
 
 Return ONLY valid JSON, no markdown fences."""

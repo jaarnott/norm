@@ -36,7 +36,6 @@ class AppBuilderAgent(BaseDomainAgent):
         venue_timezone: str | None = None,
         config_db: Session | None = None,
         page_context: dict | None = None,
-        playbook=None,
         automated_task: dict | None = None,
     ) -> dict:
         return self.handle_message_with_tools(
@@ -49,7 +48,6 @@ class AppBuilderAgent(BaseDomainAgent):
             venue_timezone=venue_timezone,
             config_db=config_db,
             page_context=page_context,
-            playbook=playbook,
             automated_task=automated_task,
         )
 

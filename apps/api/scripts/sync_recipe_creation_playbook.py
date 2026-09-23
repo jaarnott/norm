@@ -56,14 +56,6 @@ PLAYBOOK = {
 5. **Open the saved recipe.** The create's response may return null ids — call get_all_recipes (or search the result) to find the new recipe by name and get its id. Then call edit_recipe with that recipe_id, the venue_id and changes {} — this brings the recipe up in the recipe editor card. Tell the user it's open below for review, and that any further tweaks can be made on the card or by asking you.
 
 Never claim the recipe is saved before the approved write has returned success, and never skip the confirmation step for unclear matches.""",
-    "tool_filter": [
-        "get_stock_items",
-        "get_stock_units",
-        "get_all_recipes",
-        "get_recipe_details",
-        "kitchen_loadedhub_update_recipe",
-        "edit_recipe",
-    ],
     "enabled": True,
 }
 

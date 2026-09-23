@@ -24,7 +24,6 @@ from app.services.config_validator import (
     check_consolidator_write_actions,
     check_display_components,
     check_model_selection,
-    check_playbook_tool_filter,
 )
 
 CURRENT_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
@@ -277,54 +276,6 @@ class TestResponseFormat:
         issues = check_connector_tools("loadedhub", "template", tools)
         assert len(issues) == 1
         assert "unknown response_format 'csv'" in issues[0].problem
-
-
-class TestPlaybookToolFilter:
-    KNOWN = {"review_and_receive_invoices", "get_invoice_detail"}
-
-    def test_known_actions_pass(self):
-        issues = check_playbook_tool_filter(
-            "receive_loadedhub_invoices",
-            ["review_and_receive_invoices", "loadedhub__get_invoice_detail"],
-            self.KNOWN,
-        )
-        assert issues == []
-
-    def test_unknown_action_is_flagged(self):
-        issues = check_playbook_tool_filter(
-            "receive_loadedhub_invoices", ["reconcile_invoices"], self.KNOWN
-        )
-        assert len(issues) == 1
-        assert "reconcile_invoices" in issues[0].problem
-        assert issues[0].where == "playbook.receive_loadedhub_invoices"
-
-    def test_empty_filter_is_fine(self):
-        assert check_playbook_tool_filter("p", None, self.KNOWN) == []
-        assert check_playbook_tool_filter("p", [], self.KNOWN) == []
-
-    def test_engine_only_entry_is_flagged_not_silently_dropped(self):
-        # It exists on the spec, so the exists-somewhere check passes — but
-        # agents can never see it, so the filter entry vanishes. This is how
-        # the sales playbooks lost their data tools when the raws were
-        # demoted (prod thread b9bda2c1, 23 Aug 2026).
-        issues = check_playbook_tool_filter(
-            "sales_comparison",
-            ["get_sales_data"],
-            {"get_sales_data", "get_sales"},
-            engine_only_actions={"get_sales_data"},
-        )
-        assert len(issues) == 1
-        assert "engine-only" in issues[0].problem
-        assert "silently dropped" in issues[0].problem
-
-    def test_visible_action_passes_with_engine_only_set_present(self):
-        issues = check_playbook_tool_filter(
-            "sales_comparison",
-            ["get_sales"],
-            {"get_sales_data", "get_sales"},
-            engine_only_actions={"get_sales_data"},
-        )
-        assert issues == []
 
 
 class TestBindingActions:
@@ -646,39 +597,3 @@ class TestStaleAggregates:
             )
             == []
         )
-
-
-class TestValidateConfigSkipsInertRows:
-    """validate_config only alarms on config that can bite: a disabled
-    playbook's stale tool_filter is parked (the Orbit marketing playbooks wait
-    for tools that don't exist yet), not broken."""
-
-    def _playbook(self, db, slug, enabled):
-        from app.db.config_models import Playbook
-
-        db.add(
-            Playbook(
-                slug=slug,
-                agent_slug="marketing",
-                display_name=slug,
-                description="d",
-                instructions="i",
-                tool_filter=["get_social_posts"],  # exists on no connector
-                enabled=enabled,
-            )
-        )
-        db.flush()
-
-    def test_a_disabled_playbooks_stale_filter_is_parked_not_broken(self, db_session):
-        from app.services.config_validator import validate_config
-
-        self._playbook(db_session, "orbit-parked", enabled=False)
-        result = validate_config(db=db_session, config_db=db_session)
-        assert not any("orbit-parked" in i["where"] for i in result["issues"])
-
-    def test_an_enabled_playbooks_stale_filter_still_alarms(self, db_session):
-        from app.services.config_validator import validate_config
-
-        self._playbook(db_session, "orbit-live", enabled=True)
-        result = validate_config(db=db_session, config_db=db_session)
-        assert any("orbit-live" in i["where"] for i in result["issues"])

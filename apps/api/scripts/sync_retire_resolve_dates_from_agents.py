@@ -133,12 +133,6 @@ def main(dry_run: bool = False) -> None:
                     missed.append(f"playbook {p.slug}: needle not found")
             if text != (p.instructions or ""):
                 p.instructions = text
-            # Only ENABLED playbooks matter for the live surface; a disabled
-            # one is never projected, so leave its filter as found.
-            if p.enabled and ACTION in (p.tool_filter or []):
-                p.tool_filter = [n for n in p.tool_filter if n != ACTION]
-                flag_modified(p, "tool_filter")
-                changes.append(f"playbook {p.slug}: filter -= {ACTION}")
 
         if missed:
             print("NOT APPLIED — these did not match:")

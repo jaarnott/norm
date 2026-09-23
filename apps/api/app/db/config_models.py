@@ -224,7 +224,6 @@ class Playbook(ConfigBase):
     display_name = Column(String, nullable=False)
     description = Column(Text, nullable=False)
     instructions = Column(Text, nullable=False)
-    tool_filter = Column(JSON, nullable=True)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)

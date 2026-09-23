@@ -192,7 +192,6 @@ class Thread(Base):
     thinking_steps = Column(JSON, nullable=True)
     conversation_summary = Column(Text, nullable=True)
     summary_through_count = Column(Integer, nullable=True)
-    playbook_id = Column(String, nullable=True)
     # Delegation: set when this thread is a sub-run created by another agent's
     # delegate_to_agent call. Deliberately NOT a ForeignKey — the parent row is
     # still uncommitted when the child is created inside the parent's turn.

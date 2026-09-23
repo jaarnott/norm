@@ -20,7 +20,7 @@ After:
   swaps surfaces too.
 - Live config rows that named the raws are needle-patched in place — the
   executive_chef prompt, the create_recipe_from_ingredients playbook
-  (tool_filter + instructions), the edit_recipe description, and the CB
+  (instructions), the edit_recipe description, and the CB
   kitchen_loadedhub_update_recipe description/field_descriptions. Those
   rows' canonical sync scripts belong to another session's in-flight work;
   this script patches ROWS only and their files must be reconciled once
@@ -275,17 +275,6 @@ def main(dry_run: bool = False) -> None:
             .first()
         )
         if pb:
-            tf = list(pb.tool_filter or [])
-            new_tf = []
-            for name in tf:
-                swapped = _swap_tokens(name)
-                if swapped not in new_tf:
-                    new_tf.append(swapped)
-            if new_tf != tf:
-                if not dry_run:
-                    pb.tool_filter = new_tf
-                    flag_modified(pb, "tool_filter")
-                changed.append(f"playbook tool_filter: {new_tf}")
             if pb.instructions and (
                 "get_all_recipes" in pb.instructions
                 or "get_recipe_details" in pb.instructions

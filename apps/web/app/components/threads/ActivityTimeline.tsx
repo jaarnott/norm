@@ -410,13 +410,12 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
     ? routingCalls.flatMap((rc, idx) => {
         const isFollowup = idx > 0 || (rc.parsed_response as Record<string, unknown>)?.action != null;
         const action = (rc.parsed_response as Record<string, unknown>)?.action as string | undefined;
-        const playbook = (rc.parsed_response as Record<string, unknown>)?.playbook as string | undefined;
         const reason = (rc.parsed_response as Record<string, unknown>)?.reason as string | undefined;
 
         if (isFollowup && action) {
           return [{
             type: 'routing' as const,
-            label: `Supervisor: ${action}${playbook ? ` → ${playbook}` : ''}${reason ? ` (${reason})` : ''}`,
+            label: `Supervisor: ${action}${reason ? ` (${reason})` : ''}`,
             icon: '🧠',
             time: formatTime(rc.created_at),
             sortKey: rc.created_at,

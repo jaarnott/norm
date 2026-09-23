@@ -10,7 +10,6 @@ interface Playbook {
   display_name: string;
   description: string;
   instructions: string;
-  tool_filter: string[] | null;
   enabled: boolean;
   created_at: string | null;
   updated_at: string | null;
@@ -23,7 +22,7 @@ interface AgentOption {
 
 const EMPTY: Playbook = {
   id: '', slug: '', agent_slug: '', display_name: '', description: '',
-  instructions: '', tool_filter: null, enabled: true, created_at: null, updated_at: null,
+  instructions: '', enabled: true, created_at: null, updated_at: null,
 };
 
 const labelStyle: React.CSSProperties = { fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' as const, marginBottom: 4, display: 'block' };
@@ -39,22 +38,6 @@ export default function PlaybooksPanel() {
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiGenerating, setAiGenerating] = useState(false);
   const instructionsRef = useRef<HTMLTextAreaElement>(null);
-  const [agentTools, setAgentTools] = useState<{ action: string; connector: string; method: string; description: string }[]>([]);
-  const [toolFilterInput, setToolFilterInput] = useState('');
-  const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
-
-  // Fetch tools when editing agent changes
-  useEffect(() => {
-    if (!editing?.agent_slug) { setAgentTools([]); return; }
-    const slug = editing.agent_slug;
-    apiFetch(`/api/playbooks/tools/${slug}`)
-      .then(r => {
-        if (!r.ok) { console.error('Failed to fetch tools:', r.status); return null; }
-        return r.json();
-      })
-      .then(d => { if (d?.tools) setAgentTools(d.tools); })
-      .catch(err => console.error('Tools fetch error:', err));
-  }, [editing?.agent_slug]);
 
   // Auto-resize instructions textarea
   useEffect(() => {
@@ -94,8 +77,8 @@ export default function PlaybooksPanel() {
       const url = isNew ? '/api/playbooks' : `/api/playbooks/${editing.slug}`;
       const method = isNew ? 'POST' : 'PUT';
       const body = isNew
-        ? { slug: editing.slug, agent_slug: editing.agent_slug, display_name: editing.display_name, description: editing.description, instructions: editing.instructions, tool_filter: editing.tool_filter, enabled: editing.enabled }
-        : { display_name: editing.display_name, description: editing.description, instructions: editing.instructions, tool_filter: editing.tool_filter, enabled: editing.enabled };
+        ? { slug: editing.slug, agent_slug: editing.agent_slug, display_name: editing.display_name, description: editing.description, instructions: editing.instructions, enabled: editing.enabled }
+        : { display_name: editing.display_name, description: editing.description, instructions: editing.instructions, enabled: editing.enabled };
       const res = await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) {
         const data = await res.json();
@@ -124,7 +107,7 @@ export default function PlaybooksPanel() {
   };
 
   const handleGenerate = async () => {
-    if (!editing || !aiPrompt.trim() || !editing.agent_slug) return;
+    if (!editing || !aiPrompt.trim()) return;
     setAiGenerating(true);
     setError(null);
     try {
@@ -133,7 +116,6 @@ export default function PlaybooksPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           description: aiPrompt,
-          agent_slug: editing.agent_slug,
           current_instructions: editing.instructions || null,
         }),
       });
@@ -148,7 +130,6 @@ export default function PlaybooksPanel() {
         instructions: result.instructions || prev.instructions,
         display_name: result.display_name || prev.display_name,
         description: result.description || prev.description,
-        tool_filter: result.tool_filter ?? prev.tool_filter,
         slug: (isNew && result.slug) ? result.slug : prev.slug,
       } : prev);
       setAiPrompt('');
@@ -181,21 +162,17 @@ export default function PlaybooksPanel() {
         }}>
           <label style={{ ...labelStyle, color: '#2563eb' }}>AI Assistant</label>
           <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-            <select value={editing.agent_slug} onChange={e => update('agent_slug', e.target.value)} disabled={!isNew} style={{ ...inputStyle, width: 150, flexShrink: 0, backgroundColor: isNew ? '#fff' : '#f5f5f5' }}>
-              <option value="">Agent...</option>
-              {agents.map((a, i) => <option key={`${a.slug}-${i}`} value={a.slug}>{a.display_name}</option>)}
-            </select>
             <input
               value={aiPrompt}
               onChange={e => setAiPrompt(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleGenerate(); } }}
               placeholder={editing.instructions ? 'Describe what to change...' : 'Describe the workflow you want to create...'}
-              disabled={aiGenerating || !editing.agent_slug}
+              disabled={aiGenerating}
               style={{ ...inputStyle, flex: 1 }}
             />
             <button
               onClick={handleGenerate}
-              disabled={aiGenerating || !aiPrompt.trim() || !editing.agent_slug}
+              disabled={aiGenerating || !aiPrompt.trim()}
               style={{
                 padding: '6px 14px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6,
                 backgroundColor: '#2563eb', color: '#fff', cursor: aiGenerating ? 'not-allowed' : 'pointer',
@@ -206,7 +183,7 @@ export default function PlaybooksPanel() {
             </button>
           </div>
           <p style={{ fontSize: '0.72rem', color: '#888', margin: 0, lineHeight: 1.4 }}>
-            AI will {editing.instructions ? 'update' : 'generate'} the slug, name, description, instructions, and tool filter.
+            AI will {editing.instructions ? 'update' : 'generate'} the slug, name, description and instructions.
           </p>
         </div>
 
@@ -230,96 +207,13 @@ export default function PlaybooksPanel() {
         </div>
 
         <div style={{ marginBottom: '0.75rem' }}>
-          <label style={labelStyle}>Description (used by router for matching)</label>
-          <input value={editing.description} onChange={e => update('description', e.target.value)} style={inputStyle} placeholder="Generate a weekly sales comparison report for one or more venues" />
+          <label style={labelStyle}>When to use (the agent reads this to decide whether to open the playbook)</label>
+          <input value={editing.description} onChange={e => update('description', e.target.value)} style={inputStyle} placeholder="A standard weekly sales summary for one or more venues" />
         </div>
 
         <div style={{ marginBottom: '0.75rem' }}>
-          <label style={labelStyle}>Instructions (focused prompt for the agent)</label>
+          <label style={labelStyle}>Instructions (step-by-step guide the agent follows)</label>
           <textarea ref={instructionsRef} value={editing.instructions} onChange={e => update('instructions', e.target.value)} style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical', minHeight: 200, overflow: 'hidden' }} placeholder="Step-by-step workflow instructions for the agent..." />
-        </div>
-
-        <div style={{ marginBottom: '0.75rem' }}>
-          <label style={labelStyle}>Tool Filter (leave empty for all tools)</label>
-          {/* Selected tools as chips */}
-          {(editing.tool_filter || []).length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
-              {(editing.tool_filter || []).map(action => {
-                const tool = agentTools.find(t => t.action === action);
-                return (
-                  <span key={action} style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 4,
-                    padding: '2px 8px', fontSize: '0.75rem', backgroundColor: '#eff6ff',
-                    border: '1px solid #bfdbfe', borderRadius: 4, color: '#1e40af',
-                  }}>
-                    {action}
-                    {tool && <span style={{ color: '#93c5fd', fontSize: '0.65rem' }}>{tool.method}</span>}
-                    <button onClick={() => {
-                      const next = (editing.tool_filter || []).filter(a => a !== action);
-                      update('tool_filter', next.length > 0 ? next : null);
-                    }} style={{ border: 'none', background: 'none', color: '#93c5fd', cursor: 'pointer', fontSize: '0.85rem', padding: 0, lineHeight: 1 }}>&times;</button>
-                  </span>
-                );
-              })}
-            </div>
-          )}
-          {/* Autocomplete input */}
-          <div style={{ position: 'relative' }}>
-            <input
-              value={toolFilterInput}
-              onChange={e => { setToolFilterInput(e.target.value); setToolDropdownOpen(true); }}
-              onFocus={() => {
-                setToolDropdownOpen(true);
-                // Retry fetch if tools haven't loaded yet
-                if (agentTools.length === 0 && editing?.agent_slug) {
-                  apiFetch(`/api/playbooks/tools/${editing.agent_slug}`)
-                    .then(r => r.ok ? r.json() : null)
-                    .then(d => { if (d?.tools) setAgentTools(d.tools); })
-                    .catch(() => {});
-                }
-              }}
-              onBlur={() => setTimeout(() => setToolDropdownOpen(false), 150)}
-              placeholder={agentTools.length > 0 ? 'Search tools to add...' : (editing?.agent_slug ? 'Loading tools...' : 'Select an agent to see available tools')}
-              disabled={!editing?.agent_slug}
-              style={inputStyle}
-            />
-            {toolDropdownOpen && agentTools.length > 0 && (() => {
-              const selected = new Set(editing.tool_filter || []);
-              const filtered = agentTools
-                .filter(t => !selected.has(t.action))
-                .filter(t => !toolFilterInput || t.action.toLowerCase().includes(toolFilterInput.toLowerCase()) || t.description.toLowerCase().includes(toolFilterInput.toLowerCase()));
-              if (filtered.length === 0) return null;
-              return (
-                <div style={{
-                  position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10,
-                  maxHeight: 200, overflowY: 'auto', backgroundColor: '#fff',
-                  border: '1px solid #ddd', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                  marginTop: 2,
-                }}>
-                  {filtered.map(t => (
-                    <div
-                      key={t.action}
-                      onMouseDown={e => {
-                        e.preventDefault();
-                        update('tool_filter', [...(editing.tool_filter || []), t.action]);
-                        setToolFilterInput('');
-                      }}
-                      style={{
-                        padding: '6px 10px', cursor: 'pointer', fontSize: '0.82rem',
-                        borderBottom: '1px solid #f5f5f5',
-                      }}
-                      onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f0f4ff')}
-                      onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#fff')}
-                    >
-                      <span style={{ fontWeight: 500 }}>{t.action}</span>
-                      <span style={{ color: '#aaa', fontSize: '0.72rem', marginLeft: 6 }}>[{t.method}]</span>
-                      {t.description && <div style={{ fontSize: '0.72rem', color: '#888', marginTop: 1 }}>{t.description}</div>}
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
-          </div>
         </div>
 
         <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -350,7 +244,7 @@ export default function PlaybooksPanel() {
       </div>
 
       <p style={{ color: '#888', fontSize: '0.8rem', margin: '0 0 1rem', lineHeight: 1.5 }}>
-        Playbooks are focused instruction sets for specific workflows. The router auto-matches messages to the best playbook, giving the agent targeted guidance and filtered tools.
+        Playbooks are step-by-step guides for specific jobs. The agent sees each playbook's name and when to use it, and opens the full instructions when a request matches. A playbook guides the agent — it never limits which tools it can use.
       </p>
 
       {playbooks.length === 0 ? (
@@ -372,7 +266,6 @@ export default function PlaybooksPanel() {
                     <span style={{ fontSize: '0.72rem', color: '#aaa', marginLeft: 8 }}>{pb.slug}</span>
                     {!pb.enabled && <span style={{ fontSize: '0.65rem', color: '#e53e3e', marginLeft: 6, fontWeight: 600 }}>DISABLED</span>}
                     <div style={{ fontSize: '0.75rem', color: '#888', marginTop: 2 }}>{pb.description}</div>
-                    {pb.tool_filter && <div style={{ fontSize: '0.68rem', color: '#6366f1', marginTop: 2 }}>Tools: {pb.tool_filter.join(', ')}</div>}
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button onClick={() => { setEditing(pb); setIsNew(false); }} style={{ padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4, backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>Edit</button>

@@ -101,10 +101,18 @@ def execute_playbook_tool(
         venue_timezone=venue.timezone if venue else None,
         user_id=principal.user_id,
         config_db=config_db,
-        playbook=pb,
     )
     if not system_prompt:
         system_prompt = f"You are the {pb.agent_slug} agent for Norm."
+    # The caller already chose this workflow, so its instructions are loaded up
+    # front rather than left for the agent to find on the playbook menu. They
+    # guide the run; they do not limit its tools — every write still becomes a
+    # draft or waits for approval in Norm.
+    system_prompt += (
+        f"\n\n## Workflow requested: {pb.display_name}\n"
+        f"Follow this playbook for the request:\n{pb.instructions}\n"
+    )
+    anthropic_tools = safe_for_claude(anthropic_tools, config_db)
     context = agent.build_context(db, principal.user_id)
 
     # Run the loop on a DEDICATED session in a daemon thread, bounded by the
@@ -161,6 +169,51 @@ def execute_playbook_tool(
         "payload",
         {"error": "The workflow could not be completed.", "code": "INTERNAL_ERROR"},
     )
+
+
+def safe_for_claude(anthropic_tools: list[dict], config_db: Session) -> list[dict]:
+    """The tools a Claude-initiated workflow run may hold.
+
+    In Norm's own chat the agent holds every tool the user is entitled to — the
+    user is there. A workflow run is started by an external client under a
+    consent scope that tops out at *draft*, so a few tools stay behind: the ones
+    that act immediately, with no draft and no approval card (sending an email,
+    saving a memory or an app, changing a workflow mode, writing to Loaded
+    outside a user-set mode). Everything else is kept:
+
+    - reads, by projection's multi-signal read check (never `method` alone);
+    - non-GET writes, which suspend for approval in Norm;
+    - pure drafts (`working_document` with no direct writes), reviewed in Norm;
+    - workflow-mode tools, whose autonomy the user set in Norm themselves.
+
+    One rule, derived from each tool's own definition. It replaced a hand-kept
+    tool list per playbook, which also narrowed Norm's chat and hid the tools a
+    request needed (thread 8de7df19, 23 Sep 2026). In 87 production workflow
+    runs to that date, none had used a tool this rule removes.
+    """
+    from app.agents.tool_loop import _AUTO_APPROVED_WRITES
+    from app.mcp.projection import READ_METHODS, is_read_tool, raw_tool_defs
+    from app.services.workflow_modes import WORKFLOW_KEYS
+
+    defs = raw_tool_defs(config_db)
+
+    def keep(tool: dict) -> bool:
+        connector, _, action = tool["name"].partition("__")
+        tdef = defs.get((connector, action))
+        if tdef is None:  # code-defined helpers, e.g. norm__read_playbook
+            return True
+        if is_read_tool(tdef):
+            return True
+        if (tdef.get("method") or "POST").upper() not in READ_METHODS:
+            return (connector, action) not in _AUTO_APPROVED_WRITES
+        consolidator = tdef.get("consolidator_config") or {}
+        if tdef.get("working_document") and not consolidator.get(
+            "allowed_write_actions"
+        ):
+            return True
+        return action in WORKFLOW_KEYS
+
+    return [t for t in anthropic_tools if keep(t)]
 
 
 def _order_clarification(doc) -> dict | None:

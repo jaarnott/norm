@@ -43,17 +43,14 @@ def classify(
 def classify_followup(
     message: str,
     thread_domain: str,
-    thread_playbook_name: str | None,
     recent_summary: str,
     thread_id: str | None = None,
-    playbook_tools: list[str] | None = None,
     db: Session | None = None,
     config_db: Session | None = None,
 ) -> dict:
     """Classify a follow-up message in an existing thread.
 
-    Returns {"action": "continue"|"continue_no_playbook"|"new_thread",
-             "domain": str, "playbook": str|None, ...}
+    Returns {"action": "continue"|"new_thread", "domain": str, ...}
     """
     import anthropic
     from app.services.secrets import get_api_key
@@ -63,20 +60,6 @@ def classify_followup(
     _cdb = config_db or db
 
     model = router_model(db)
-
-    # Load available playbooks for this domain
-    playbook_section = ""
-    if _cdb:
-        from app.db.config_models import Playbook
-
-        playbooks = (
-            _cdb.query(Playbook)
-            .filter(Playbook.agent_slug == thread_domain, Playbook.enabled == True)  # noqa: E712
-            .all()
-        )
-        if playbooks:
-            pb_lines = [f"- {pb.slug}: {pb.description}" for pb in playbooks]
-            playbook_section = "\n\nAvailable playbooks:\n" + "\n".join(pb_lines)
 
     # The model has to pick from the agents that actually exist, AND know what
     # each one does. The slugs alone stopped it inventing "inventory"; they did
@@ -92,13 +75,13 @@ The user is sending a follow-up message in an existing thread.
 
 Current thread: {thread_domain} agent
 Recent conversation:
-{recent_summary}{playbook_section}
+{recent_summary}
 
 The ONLY domains that exist:
 {domain_list}
 
 Decide how to handle this follow-up:
-a) "continue" — the message continues the current conversation. If a playbook matches this specific message, include its slug.
+a) "continue" — the message continues the current conversation.
 b) "new_thread" — the user has plainly started a different job that this agent cannot do, and nothing in the message depends on the conversation above.
 
 "continue" is the default and the bar for leaving it is high. Choose "continue" whenever ANY of these holds:
@@ -107,12 +90,10 @@ b) "new_thread" — the user has plainly started a different job that this agent
 - The topic is merely adjacent to another agent's area. Adjacency is not a switch.
 
 Return ONLY valid JSON:
-{{"action": "continue" | "new_thread", "domain": "<domain>", "playbook": "<slug or null>", "is_request": true | false, "reason": "<brief reason>"}}
+{{"action": "continue" | "new_thread", "domain": "<domain>", "is_request": true | false, "reason": "<brief reason>"}}
 
 "is_request" is true when the user is asking for something to be fetched or done, and false when they are stating information, giving context or reacting.
 
-If a playbook listed above matches this message, include its slug in "playbook".
-If no playbook matches, set playbook to null (agent gets full tool access).
 If action is "new_thread", "domain" MUST be copied exactly from the list above —
 never invent a slug. Stock, inventory, suppliers, orders and invoices are all
 procurement.
@@ -170,7 +151,6 @@ Default to "continue" — only use "new_thread" for genuine domain switches (e.g
         return {
             "action": parsed.get("action", "continue"),
             "domain": parsed.get("domain", thread_domain),
-            "playbook": parsed.get("playbook"),
             # Absent means "assume they asked for something" — the reading that
             # preserves today's behaviour, so an older/terser verdict routes
             # exactly as it always did.
@@ -216,26 +196,6 @@ def _llm_classify(
 
     domain_list = describe_domains(domains, _cdb)
     system = prompt_template.replace("{domains}", domain_list)
-
-    # Inject playbook options so the router can match a workflow
-    from app.db.config_models import Playbook
-
-    if _cdb:
-        playbooks = (
-            _cdb.query(Playbook)
-            .filter(Playbook.enabled == True)  # noqa: E712
-            .order_by(Playbook.agent_slug, Playbook.slug)
-            .all()
-        )
-        if playbooks:
-            pb_lines = []
-            for pb in playbooks:
-                pb_lines.append(f"- {pb.agent_slug}/{pb.slug}: {pb.description}")
-            system += (
-                "\n\nPlaybooks (optional — pick one if the message clearly matches a specific workflow):\n"
-                + "\n".join(pb_lines)
-                + '\nInclude "playbook" in your JSON response: the full slug (e.g. "weekly_sales_report") if a playbook clearly matches, or null if none match.'
-            )
 
     # Inject venue context so the router can extract venue from the message
     from app.services.venue_service import get_user_venues
@@ -327,7 +287,6 @@ def _llm_classify(
             "confidence": parsed.get("confidence", 0.5),
             "title": parsed.get("title"),
             "venue": parsed.get("venue"),
-            "playbook": parsed.get("playbook"),
             "llm_call_id": llm_call_id,
         }
 

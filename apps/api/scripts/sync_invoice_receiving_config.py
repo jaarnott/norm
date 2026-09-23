@@ -406,10 +406,6 @@ RECEIVE_ONE_PLAYBOOK = {
 3. Tell the user the card is ready below and that they review it, adjust anything that needs it, then click **Accept & Receive** to receive the invoice into Loaded. NEVER say you have received it — only the user's click on the card does that.
 
 Do not link POs, edit lines, or receive invoices yourself in prose — everything happens on the card. If the user wants to review ALL outstanding invoices at once instead, that is the separate review-and-receive workflow.""",
-    "tool_filter": [
-        "receive_loadedhub_invoice",
-        "get_invoices",
-    ],
     "enabled": True,
 }
 
@@ -440,14 +436,6 @@ RUN MODE — DO THIS FIRST, before running the review. This workflow honours a r
 PO VALIDITY — "No valid purchase order" is a blocking validation error by default: autopilot will not receive an invoice whose order reference matches no Loaded purchase order (or references an order that belongs to a different, non-split invoice). If the user says they don't care about PO validity for auto-receiving (e.g. "receive them even without a matching order"), call manage_task with op="set_config", key "require_valid_po" and value false (true restores the default). The check still shows on every card either way.
 
 If the user asks why a specific invoice was skipped, use get_invoices with that invoice_id together with the returned reasons — do not guess. Never suggest you can link POs, edit lines, or force-receive an invoice; that is done in Loaded by a person.""",
-    "tool_filter": [
-        "review_and_receive_invoices",
-        "get_invoices",
-        "get_purchase_orders",
-        # get_workflow_mode retired Sep 2026 — the mode is stated in context.
-        "set_workflow_mode",
-        "manage_task",
-    ],
     "enabled": True,
 }
 
@@ -480,12 +468,6 @@ RUN MODE — DO THIS FIRST, before reconciling. Do NOT run the reconciliation un
 4. If needs_statement is non-empty, ASK THE USER whether Norm should create those statements. Only after the user explicitly says yes, call the tool again with create_missing_statements=true and suppliers set to the confirmed supplier names. Never create statements unprompted. Remind the user that an auto-created statement's number and amount must be updated from the paper statement.
 
 If the user asks about a specific invoice, use get_invoices (invoice_id for one invoice; kind 'statements' or 'received' for the lists) plus the returned reasons — do not guess. Never claim you can edit statement amounts or fix mismatches; that is done in Loaded by a person.""",
-    "tool_filter": [
-        "reconcile_received_invoices",
-        "get_invoices",
-        # get_workflow_mode retired Sep 2026 — the mode is stated in context.
-        "set_workflow_mode",
-    ],
     "enabled": True,
 }
 

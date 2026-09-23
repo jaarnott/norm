@@ -12,7 +12,7 @@ binding cap — the chef lost recipe writes and the editor's Save broke until
 
 This script enforces the end state: the chef's cook_brothers_app binding
 carries ``kitchen_record_recipe`` (and no dead caps), and the recipe-creation
-playbook's tool_filter + instructions match the new tool.
+playbook's instructions match the new tool.
 
 Idempotent — safe to re-run. The config DB is shared across every environment,
 so committing reaches production. Dry-run first.
@@ -35,13 +35,6 @@ DEAD_ACTIONS = {"kitchen_loadedhub_update_recipe"}
 CAP_LABEL = "Create or edit a recipe and save it to LoadedHub (approve-gated)."
 
 PLAYBOOK_SLUG = "create_recipe_from_ingredients"
-PLAYBOOK_TOOL_FILTER = [
-    "get_stock_items",
-    "get_stock_units",
-    "get_recipes",
-    "kitchen_record_recipe",
-    "edit_recipe",
-]
 PLAYBOOK_INSTRUCTIONS = """Goal: turn the recipe the user just gave you (ingredients + instructions) into a saved LoadedHub recipe, then open it for review.
 
 1. **Parse what they gave you.** Extract: recipe name, yield (how much it makes), each ingredient with quantity and unit, and the method. If the name is missing, look at get_recipes for the venue's naming convention (e.g. "COMPONENT - X", "ENTREE - X") and propose one — ask, don't invent silently. If the yield is missing, ask for it.
@@ -109,13 +102,9 @@ def main() -> None:
                 binding.capabilities = caps
                 flag_modified(binding, "capabilities")
 
-        # --- playbook: tool filter + instructions ---------------------------
+        # --- playbook: instructions ------------------------------------------
         pb = db.query(Playbook).filter(Playbook.slug == PLAYBOOK_SLUG).first()
         if pb:
-            if pb.tool_filter != PLAYBOOK_TOOL_FILTER:
-                changes.append("playbook: tool_filter -> kitchen_record_recipe set")
-                if not args.dry_run:
-                    pb.tool_filter = PLAYBOOK_TOOL_FILTER
             if pb.instructions != PLAYBOOK_INSTRUCTIONS:
                 changes.append("playbook: instructions rewritten for the new tool")
                 if not args.dry_run:

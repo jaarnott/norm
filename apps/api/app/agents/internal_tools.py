@@ -1344,6 +1344,30 @@ def _show_connect(params: dict, db: Session, thread_id: str | None) -> dict:
     return {"success": True, "data": {"connector_name": connector}}
 
 
+@register("norm", "read_playbook")
+def _read_playbook(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Open one playbook's full instructions (see prompt_builder.playbook_guidance)."""
+    from app.db.config_models import Playbook
+    from app.db.engine import _ConfigSessionLocal
+
+    slug = (params.get("slug") or "").strip()
+    config_db = _ConfigSessionLocal()
+    try:
+        pb = (
+            config_db.query(Playbook)
+            .filter(Playbook.slug == slug, Playbook.enabled == True)  # noqa: E712
+            .first()
+        )
+        if pb is None:
+            return {"success": False, "data": {}, "error": f"No playbook '{slug}'"}
+        return {
+            "success": True,
+            "data": {"playbook": pb.display_name, "instructions": pb.instructions},
+        }
+    finally:
+        config_db.close()
+
+
 # ---------------------------------------------------------------------------
 # Automated Tasks
 # ---------------------------------------------------------------------------
@@ -1376,7 +1400,7 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
     import json as _json
 
     from app.config import settings
-    from app.db.models import AutomatedTask, LlmCall, Thread, ToolCall, User
+    from app.db.models import AutomatedTask, Thread, ToolCall, User
     from app.interpreter.llm_interpreter import call_llm
 
     intent = params.get("intent", "").strip()
@@ -1407,20 +1431,17 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
             "error": "intent and agent_slug are required",
         }
 
-    # Gather playbooks used in the conversation
+    # Gather the playbooks the agent read in this conversation
     playbook_section = ""
     if thread_id:
-        routing_calls = (
-            db.query(LlmCall)
-            .filter(LlmCall.thread_id == thread_id, LlmCall.call_type == "routing")
-            .all()
-        )
-        playbook_slugs = set()
-        for lc in routing_calls:
-            slug = (lc.parsed_response or {}).get("playbook")
-            if slug:
-                bare = slug.split("/")[-1] if "/" in slug else slug
-                playbook_slugs.add(bare)
+        playbook_slugs = {
+            (params_ or {}).get("slug")
+            for (params_,) in db.query(ToolCall.input_params).filter(
+                ToolCall.thread_id == thread_id,
+                ToolCall.action == "read_playbook",
+                ToolCall.status == "executed",
+            )
+        } - {None}
 
         if playbook_slugs:
             from app.db.config_models import Playbook
@@ -1468,6 +1489,7 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
             "set_override",
             "update_thread_summary",
             "create_automated_task",
+            "read_playbook",  # every run is offered it; no need to list it
             "show_roster",
             "show_orders",
         }
