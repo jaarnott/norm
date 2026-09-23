@@ -370,8 +370,13 @@ def call_llm_with_tools(
     call_type: str = "tool_use",
     # 4096 truncated table-heavy reports mid-table (~1.7 chars/token for
     # markdown tables): an 11-invoice audit report needs well over 4k output
-    # tokens. Cap, not cost — streaming only pays for tokens actually emitted.
-    max_tokens: int = 16384,
+    # tokens. 16384 then did the same once adaptive thinking shared the budget:
+    # a group-wide "top 50 items" turn spent it all reasoning over 30 results
+    # and was cut off mid-table (prod thread fa1cfd1c, 23 Sep 2026). Cap, not
+    # cost — streaming only pays for tokens actually emitted. 64000 is
+    # Anthropic's recommendation for streamed requests (Opus 4.8 allows 128K);
+    # a reply that still hits it carries tool_loop.TRUNCATION_NOTE.
+    max_tokens: int = 64000,
 ):
     """Make an Anthropic API call with native tool use.
 

@@ -1044,8 +1044,16 @@ def _execute_loop(
             continue
 
         else:
-            # Unexpected stop reason — treat as end_turn
+            # Any other stop reason ends the turn with what was written. The one
+            # that matters is max_tokens: the answer was cut off, and saving it
+            # as though it were complete left the user staring at half a table
+            # with no sign anything went wrong (prod thread fa1cfd1c).
             text = _join_answer(answer_parts, _extract_text(response))
+            if response.stop_reason == "max_tokens":
+                logger.warning(
+                    "answer_truncated_at_max_tokens", extra={"thread_id": task.id}
+                )
+                text += TRUNCATION_NOTE
             db.add(
                 Message(
                     thread_id=task.id,
@@ -1961,6 +1969,14 @@ def _is_read_only(method: str) -> bool:
 # narrow allow-list, NOT a general escape hatch — money/roster/order writes and
 # every connector write still pause for approval.
 _AUTO_APPROVED_WRITES = {("norm", "remember")}
+
+#: Appended when the model hits its output ceiling mid-answer, so a cut-off
+#: reply says so instead of passing for a finished one.
+TRUNCATION_NOTE = (
+    "\n\n---\n*This answer was cut off because it ran too long. Ask me to "
+    "continue, or narrow the request (fewer venues, a shorter period, or a "
+    "smaller top-N).*"
+)
 
 
 def _join_answer(parts: list[str], final: str) -> str:
