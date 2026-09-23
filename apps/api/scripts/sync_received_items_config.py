@@ -80,8 +80,11 @@ TOOL = {
         "ids and the supplier's own line text. Takes a period in plain English. "
         "group_by 'group'/'super_group' rolls spend up to stock groups or "
         "Loaded's three categories; item_id/query/group narrow to one item or "
-        "family. THE tool for 'how much of X did we buy over N months' — never "
-        "page invoices and sum lines yourself."
+        "family. For a group-wide question pass venues='all' (or a list): ONE "
+        "call returns one merged ranking across venues, with each row's "
+        "per-venue split and per-venue totals — never fetch venue by venue and "
+        "merge yourself. THE tool for 'how much of X did we buy over N months' "
+        "— never page invoices and sum lines yourself."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -95,6 +98,7 @@ TOOL = {
         "query",
         "group",
         "limit",
+        "venues",
     ],
     "field_descriptions": {
         "period": (
@@ -122,6 +126,12 @@ TOOL = {
             "Max rows returned (default 25, top rows by spend; the rest roll "
             "into an '(others)' row — totals stay exact in the summary)"
         ),
+        "venues": (
+            "'all', or a list of venue names, for ONE merged answer across "
+            "venues: items are matched by catalogue name and base unit, each row "
+            "carries its per-venue split, and per-venue totals come back too. "
+            "Omit for the single venue."
+        ),
     },
     "field_schema": {
         "group_by": {
@@ -133,6 +143,10 @@ TOOL = {
             "type": "array",
             "items": {"type": "string"},
             "description": "Restrict to these supplier names",
+        },
+        # Same shape as get_sales' `venues`: "all" or a list of names.
+        "venues": {
+            "description": "'all', or a list of venue names — one merged answer"
         },
         "confirmed_by_user": {
             "type": "boolean",
@@ -148,7 +162,8 @@ TOOL = {
     "max_result_chars": 100_000,
     "consolidator_config": {
         # function_code injected from FUNCTION_CODE_PATH at sync time
-        "max_api_calls": 6,
+        # 6 venues x (invoices, catalogue, units[, groups]) + dates + venue list.
+        "max_api_calls": 30,
         # Reads only — the sandbox refuses any non-GET action with this empty.
         "allowed_write_actions": [],
     },

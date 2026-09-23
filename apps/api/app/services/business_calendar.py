@@ -62,7 +62,7 @@ class Window:
 
     start: dt.datetime
     end: dt.datetime
-    kind: str  # "trading_day" | "trading_week" | "month" | "custom"
+    kind: str  # "trading_day" | "trading_week" | "month" | "trading_range" | "custom"
     label: str
     timezone: str
     day_start: str  # HH:MM actually applied
@@ -335,6 +335,219 @@ def week_beginning(venue, date_text: str) -> Window | None:
     )
 
 
+# ── Calendar dates, months, quarters and ranges ──────────────────────────
+#
+# "April 2026", "1 April 2026 to 30 June 2026", "April to June", "Q2 2026".
+# These used to fall through to the LLM resolver, whose prompt told it a month
+# runs "1st 00:00:00 to last day 23:59:59" — midnight. Every such window then
+# failed the trading-day check, the tool asked "did the user ask for these
+# exact clock times?", and the agent re-ran each call with confirmed_by_user —
+# doubling the calls on every multi-month question (threads fa1cfd1c and
+# 01688f94, 23 Sep 2026; "April to June 2026" did not resolve at all for five
+# of six venues). A date names a trading DAY here: 1 April starts at the
+# venue's day start, 30 June ends one second before the next day starts.
+
+_MONTHS: dict[str, int] = {}
+for _i, _name in enumerate(
+    (
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ),
+    start=1,
+):
+    _MONTHS[_name] = _i
+    _MONTHS[_name[:3]] = _i
+_MONTHS["sept"] = 9
+
+_MONTH_RE = "|".join(sorted(_MONTHS, key=len, reverse=True))
+_ORDINAL = r"(\d{1,2})(?:st|nd|rd|th)?"
+# One side of a range: a day, or a whole month. Year optional throughout.
+_POINT_PATTERNS = (
+    ("iso", re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")),
+    ("dmy_num", re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")),  # NZ: day first
+    (
+        "d_month",
+        re.compile(rf"^{_ORDINAL}\s+(?:of\s+)?({_MONTH_RE})(?:\s+(\d{{4}}))?$"),
+    ),
+    ("month_d", re.compile(rf"^({_MONTH_RE})\s+{_ORDINAL}(?:\s+(\d{{4}}))?$")),
+    ("month", re.compile(rf"^({_MONTH_RE})(?:\s+(\d{{4}}))?$")),
+)
+_RANGE_SPLIT = re.compile(
+    r"\s+(?:to|through|thru|until|till)\s+|\s+[-–—]\s+|\s*[–—]\s*"
+)
+_QUARTER = re.compile(r"^(?:q|quarter\s+)([1-4])(?:\s+(\d{4}))?$")
+_LEAD = re.compile(r"^(?:from|between|for|over|during|the\s+period(?:\s+of)?)\s+")
+
+
+@dataclass(frozen=True)
+class _Point:
+    year: int | None
+    month: int
+    day: int | None  # None → the whole month
+
+
+def _parse_point(text: str) -> _Point | None:
+    text = text.strip().strip(",.")
+    for kind, pattern in _POINT_PATTERNS:
+        m = pattern.match(text)
+        if not m:
+            continue
+        g = m.groups()
+        if kind == "iso":
+            return _Point(int(g[0]), int(g[1]), int(g[2]))
+        if kind == "dmy_num":
+            return _Point(int(g[2]), int(g[1]), int(g[0]))
+        if kind == "d_month":
+            return _Point(int(g[2]) if g[2] else None, _MONTHS[g[1]], int(g[0]))
+        if kind == "month_d":
+            return _Point(int(g[2]) if g[2] else None, _MONTHS[g[0]], int(g[1]))
+        return _Point(int(g[1]) if g[1] else None, _MONTHS[g[0]], None)
+    return None
+
+
+def _month_list(text: str) -> tuple[_Point, _Point] | None:
+    """ "April, May and June 2026" → (April, June), if the months are contiguous."""
+    m = re.match(
+        rf"^((?:(?:{_MONTH_RE})(?:\s*,\s*|\s+and\s+|\s*&\s*))+(?:{_MONTH_RE}))(?:\s+(\d{{4}}))?$",
+        text,
+    )
+    if not m:
+        return None
+    months = [_MONTHS[w] for w in re.findall(_MONTH_RE, m.group(1))]
+    if any(b - a != 1 for a, b in zip(months, months[1:])):
+        return None  # "April and June" is not a range
+    year = int(m.group(2)) if m.group(2) else None
+    return _Point(year, months[0], None), _Point(year, months[-1], None)
+
+
+def _fill_years(start: _Point, end: _Point, today: dt.date) -> tuple[_Point, _Point]:
+    """Share a year stated on one side; otherwise take the most recent start."""
+    sy, ey = start.year, end.year
+    before = (start.month, start.day or 1) > (end.month, end.day or 31)
+    if sy is None and ey is not None:
+        sy = ey - 1 if before else ey
+    elif ey is None and sy is not None:
+        ey = sy + 1 if before else sy
+    elif sy is None and ey is None:
+        sy = today.year
+        if (start.month, start.day or 1) > (today.month, today.day):
+            sy -= 1  # "April" said in February means last April
+        ey = sy + 1 if before else sy
+    return _Point(sy, start.month, start.day), _Point(ey, end.month, end.day)
+
+
+def _trading_bounds(
+    venue, start: _Point, end: _Point
+) -> tuple[dt.datetime, dt.datetime]:
+    tz = timezone_for(venue)
+    hh, mm = _parse_hhmm(day_start_for(venue))
+    first = dt.date(start.year, start.month, start.day or 1)
+    if end.day is None:
+        last_excl = (
+            dt.date(end.year + 1, 1, 1)
+            if end.month == 12
+            else dt.date(end.year, end.month + 1, 1)
+        )
+    else:
+        last_excl = dt.date(end.year, end.month, end.day) + dt.timedelta(days=1)
+    # Wall-clock construction: ZoneInfo derives each side's offset from its own
+    # date, so a range spanning a daylight-saving change is right at both ends.
+    s = dt.datetime(first.year, first.month, first.day, hh, mm, tzinfo=tz)
+    e = dt.datetime(
+        last_excl.year, last_excl.month, last_excl.day, hh, mm, tzinfo=tz
+    ) - dt.timedelta(seconds=1)
+    return s, e
+
+
+def _range_label(start: _Point, end: _Point) -> str:
+    def month(p):
+        return dt.date(2000, p.month, 1).strftime("%B")
+
+    if start.day is None and end.day is None:
+        if (start.year, start.month) == (end.year, end.month):
+            return f"{month(start)} {start.year}"
+        if start.year == end.year:
+            return f"{month(start)} – {month(end)} {end.year}"
+        return f"{month(start)} {start.year} – {month(end)} {end.year}"
+    s_day = start.day or 1
+    e = dt.date(end.year, end.month, end.day) if end.day else None
+    left = dt.date(start.year, start.month, s_day).strftime("%d %b")
+    right = e.strftime("%d %b %Y") if e else f"{month(end)} {end.year}"
+    if start.year != end.year:
+        left += f" {start.year}"
+    return f"{left} – {right}"
+
+
+def calendar_range(
+    venue, phrase: str, moment: dt.datetime | None = None
+) -> Window | None:
+    """A date, month, month list, quarter or "X to Y" range on the trading day.
+
+    None when the phrase is none of those — the caller falls back to the LLM.
+    """
+    text = _LEAD.sub("", (phrase or "").strip().lower().rstrip(".,"))
+    text = re.sub(r"\s+", " ", text)
+    tz = timezone_for(venue)
+    today = (moment.astimezone(tz) if moment else dt.datetime.now(tz)).date()
+
+    pair: tuple[_Point, _Point] | None = None
+    label: str | None = None
+    q = _QUARTER.match(text)
+    if q:
+        n = int(q.group(1))
+        year = int(q.group(2)) if q.group(2) else None
+        pair = (_Point(year, 3 * n - 2, None), _Point(year, 3 * n, None))
+        label = f"Q{n}"
+    if pair is None:
+        pair = _month_list(text)
+    if pair is None:
+        if (phrase or "").strip().lower().startswith("between "):
+            text = text.replace(" and ", " to ", 1)  # "between X and Y"
+        parts = [p for p in _RANGE_SPLIT.split(text) if p.strip()]
+        if len(parts) == 1:
+            point = _parse_point(parts[0])
+            if point:
+                pair = (point, point)
+        elif len(parts) == 2:
+            a, b = _parse_point(parts[0]), _parse_point(parts[1])
+            if a and b:
+                pair = (a, b)
+    if pair is None:
+        return None
+
+    start, end = _fill_years(pair[0], pair[1], today)
+    try:
+        s, e = _trading_bounds(venue, start, end)
+    except ValueError:  # 31 April, month 13 …
+        return None
+    if e <= s:
+        return None
+
+    if label:
+        label = f"{label} {start.year} ({_range_label(start, end)})"
+    elif start == end and start.day is not None:
+        label = s.strftime("%A %d %b %Y")
+    else:
+        label = _range_label(start, end)
+    if start.day is None and (start.year, start.month) == (end.year, end.month):
+        kind = "month"
+    elif start == end:
+        kind = "trading_day"
+    else:
+        kind = "trading_range"
+    return Window(s, e, kind, label, str(tz), day_start_for(venue))
+
+
 def resolve_phrase(
     venue, phrase: str, moment: dt.datetime | None = None
 ) -> Window | None:
@@ -372,12 +585,13 @@ def resolve_phrase(
     match = _WEEK_OF.match(key)
     if match:
         return week_beginning(venue, match.group(1))
-    return None
+    return calendar_range(venue, key, moment)
 
 
 __all__ = [
     "DETERMINISTIC_PHRASES",
     "Window",
+    "calendar_range",
     "custom_window",
     "day_start_for",
     "resolve_phrase",

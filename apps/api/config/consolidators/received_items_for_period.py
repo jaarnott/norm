@@ -6,7 +6,8 @@
 # scripts/sync_received_items_config.py.
 #
 # Requires consolidator_config:
-#   {"max_api_calls": 6, "allowed_write_actions": []}   # reads only, always
+#   {"max_api_calls": 30, "allowed_write_actions": []}   # reads only, always
+#   (30: venues="all" reads invoices + catalogue + units per venue)
 #
 # WHAT THIS IS FOR
 #
@@ -58,7 +59,199 @@ _CONSUMED = (
     "query",
     "group",
     "limit",
+    "venues",
+    "venue",
 )
+
+
+def _call_all(call_api, call_api_parallel, calls):
+    if call_api_parallel and len(calls) > 1:
+        return call_api_parallel(calls)
+    return [call_api(c, a, p) for (c, a, p) in calls]
+
+
+def _resolve_venues(params, call_api):
+    """(venue_names | None, error_result | None). None names = this call's venue.
+
+    Mirrors get_sales: `venues` is "all", or a list of names.
+    """
+    venues_param = params.get("venues")
+    if isinstance(venues_param, str) and venues_param.strip():
+        v = venues_param.strip()
+        if v.lower() not in ("all", "all venues", "*", "group"):
+            return [v], None
+        listed = call_api("norm", "list_venues", {"connector": "loadedhub"})
+        # call_api hands internal norm.* results back UNWRAPPED
+        # ({connector, venues}); tolerate an enveloped copy too.
+        data = (
+            listed.get("data")
+            if isinstance(listed, dict) and "data" in listed
+            else listed
+        )
+        rows = data.get("venues") if isinstance(data, dict) else None
+        names = [
+            r["name"]
+            for r in rows or []
+            if isinstance(r, dict) and r.get("connected") and r.get("name")
+        ]
+        if not names:
+            return None, {"error": "could not list connected venues for the fan-out"}
+        return names, None
+    if isinstance(venues_param, list):
+        names = [str(v).strip() for v in venues_param if str(v).strip()]
+        if names:
+            return names, None
+    return None, None
+
+
+def _venue_split(by_venue, with_quantity=False):
+    """[{venue, spend[, quantity_base]}], largest spend first."""
+    out = []
+    for v, value in by_venue.items():
+        if with_quantity:
+            out.append(
+                {
+                    "venue": v,
+                    "spend": round(value[0], 2),
+                    "quantity_base": round(value[1], 4),
+                }
+            )
+        else:
+            out.append({"venue": v, "spend": round(value, 2)})
+    return sorted(out, key=lambda r: r["spend"], reverse=True)
+
+
+def _flatten(invoices, catalogue, units, subcats, group_by, supplier_filter, norm, num):
+    """One venue's received lines, flattened and converted. Returns (rows, notes).
+
+    Names and unit types are ENHANCEMENTS: if either lookup fails the numbers
+    are still correct, so degrade with a visible note rather than failing the
+    whole read. Both are one bulk call — a per-item fetch would be ~267 calls
+    for a fortnight and blow max_api_calls.
+    """
+    notes = []
+    names = {}
+    item_groups = {}
+    if isinstance(catalogue, dict) and catalogue.get("error"):
+        notes.append("Item names unavailable: " + str(catalogue["error"]))
+    elif isinstance(catalogue, list):
+        for item in catalogue:
+            if isinstance(item, dict) and item.get("id"):
+                names[item["id"]] = item.get("name") or item.get("itemName")
+                if item.get("groupName"):
+                    item_groups[item["id"]] = (item.get("groupId"), item["groupName"])
+
+    # Group → category (super-group) mapping: Loaded's subcategories list ties
+    # each stock group to one of the three categories (Beverage/Food/Other
+    # Stock). A miss degrades to each line's own category field.
+    group_category = {}
+    if group_by == "super_group":
+        for g in subcats if isinstance(subcats, list) else []:
+            if isinstance(g, dict) and g.get("id"):
+                group_category[g["id"]] = g.get("categoryName")
+        if not group_category:
+            notes.append(
+                "Group-to-category mapping unavailable; rows fall back to each "
+                "line's own category field"
+            )
+
+    # The feed's transform drops unitId, so a unit is identified by its (name,
+    # ratio) pair. That is what distinguishes the two units both named '6.5 KG'
+    # in one venue — same name, ratios 6.5 and 1.0.
+    unit_types = {}
+    if isinstance(units, dict) and units.get("error"):
+        notes.append("Unit types unavailable: " + str(units["error"]))
+    elif isinstance(units, list):
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            ratio = num(unit.get("ratio"))
+            key = (norm(unit.get("name")), round(ratio, 6) if ratio else None)
+            unit_types.setdefault(key, unit.get("stockUnitType"))
+
+    flat = []
+    unnamed = set()
+    unratioed = 0
+    for inv in invoices:
+        if not isinstance(inv, dict):
+            continue
+        if supplier_filter and norm(inv.get("supplierName")) not in supplier_filter:
+            continue
+        is_credit = bool(inv.get("creditRequest"))
+        when = str(inv.get("invoicedAt") or inv.get("receivedAt") or "")[:10]
+        for line in inv.get("lines") or []:
+            if not isinstance(line, dict):
+                continue
+            item_id = line.get("StockItemId") or line.get("itemId")
+            qty = num(line.get("quantityReceived"))
+            cost = num(line.get("unitCost"))
+            ratio = num(line.get("unitRatio"))
+            if qty is None:
+                continue
+            if not ratio or ratio <= 0:
+                # Without a ratio the quantity cannot be made comparable. Count
+                # it rather than pretending 1.0 and reporting a wrong total.
+                unratioed += 1
+                ratio = None
+            name = names.get(item_id)
+            if item_id and not name:
+                unnamed.add(item_id)
+            unit_name = line.get("unitName")
+            utype = unit_types.get(
+                (norm(unit_name), round(ratio, 6) if ratio else None)
+            )
+            group_id, group_name = item_groups.get(item_id) or (None, None)
+            category = line.get("Category") or (line.get("itemCategory") or {}).get(
+                "name"
+            )
+            flat.append(
+                {
+                    "item_id": item_id,
+                    "item_code": line.get("StockVariantCode") or line.get("itemCode"),
+                    # Fall back to the printed unit rather than blanking the row:
+                    # a nameless row is unusable, and the unit text is at least
+                    # a human clue about what arrived.
+                    "item_name": name or ("(unknown item " + str(item_id)[:8] + ")"),
+                    "named": bool(name),
+                    "category": category,
+                    "group_id": group_id,
+                    "group": group_name,
+                    "super_group": group_category.get(group_id) or category,
+                    "supplier_id": inv.get("supplierId"),
+                    "supplier_name": inv.get("supplierName"),
+                    "invoice_id": inv.get("id"),
+                    "invoice_number": inv.get("invoiceNumber"),
+                    "date": when,
+                    "is_credit": is_credit,
+                    "unit_name": unit_name,
+                    "unit_ratio": ratio,
+                    "base_unit": _BASE_UNIT.get(utype),
+                    "quantity": qty,
+                    # The two SUMMED fields are kept at full precision and
+                    # rounded only where they are emitted. Rounding each line
+                    # first and adding the results drifts: over 552 lines it put
+                    # the fortnight's spend 4c above the same figure computed by
+                    # hand from the feed.
+                    "quantity_base": qty * ratio if ratio else None,
+                    "unit_cost": round(cost, 4) if cost is not None else None,
+                    "cost_per_base_unit": (
+                        round(cost / ratio, 4) if cost is not None and ratio else None
+                    ),
+                    "spend": qty * cost if cost is not None else 0.0,
+                }
+            )
+
+    if unnamed:
+        notes.append(
+            str(len(unnamed)) + " item id(s) were not in the stock catalogue "
+            "(deleted items?) and are shown as '(unknown item …)'"
+        )
+    if unratioed:
+        notes.append(
+            str(unratioed) + " line(s) had no unit ratio, so their quantity could "
+            "not be converted to a base unit and is excluded from quantity_base"
+        )
+    return flat, notes
 
 
 def run(params, call_api, log, call_api_parallel=None):
@@ -143,145 +336,63 @@ def run(params, call_api, log, call_api_parallel=None):
     forwarded["from"] = window["start"]
     forwarded["to"] = window["end"]
 
-    invoices = call_api("loadedhub", "get_received_invoices", forwarded)
-    # A failed call is a failure, not an empty period — reaching straight for
-    # the rows would report an outage as "nothing was received".
-    if isinstance(invoices, dict) and invoices.get("error"):
-        return {"error": str(invoices["error"]), "window": window}
-    if not isinstance(invoices, list):
-        invoices = []
+    # One venue (the call's own) or several. Several is ONE merged answer —
+    # the question "top 50 fruit & veg across the group" used to be twelve
+    # per-venue results the model ranked by eye, 11-14k chars each (prod
+    # thread 01688f94, 23 Sep 2026). The engine resolves credentials one venue
+    # per call, so every Loaded read names its venue and runs in parallel.
+    venues, venue_error = _resolve_venues(params, call_api)
+    if venue_error:
+        return venue_error
+    multi = venues is not None and len(venues) > 1
+    targets = venues or [None]  # None = the venue this call was made for
+
+    calls = []
+    for v in targets:
+        at = {"venue": v} if v else {}
+        calls.append(("loadedhub", "get_received_invoices", {**forwarded, **at}))
+        # The raw {id, name, group…} list (get_stock_items is a consolidator
+        # now; this engine-side call wants the bare list, not the lookup).
+        calls.append(("loadedhub", "get_stock_items_raw", dict(at)))
+        calls.append(("loadedhub", "get_stock_units", dict(at)))
+        if group_by == "super_group":
+            calls.append(("loadedhub", "get_stock_item_groups", dict(at)))
+    per = 4 if group_by == "super_group" else 3
+    results = _call_all(call_api, call_api_parallel, calls)
 
     warnings = []
-
-    # Names and unit types are ENHANCEMENTS: if either lookup fails the numbers
-    # are still correct, so degrade with a visible warning rather than failing
-    # the whole read. Both are one bulk call — a per-item fetch would be ~267
-    # calls for a fortnight and blow max_api_calls.
-    names = {}
-    item_groups = {}
-    # The raw {id, name, group…} list (get_stock_items is a consolidator now;
-    # this engine-side call wants the bare list, not the lookup surface).
-    catalogue = call_api("loadedhub", "get_stock_items_raw", {})
-    if isinstance(catalogue, dict) and catalogue.get("error"):
-        warnings.append("Item names unavailable: " + str(catalogue["error"]))
-    elif isinstance(catalogue, list):
-        for item in catalogue:
-            if isinstance(item, dict) and item.get("id"):
-                names[item["id"]] = item.get("name") or item.get("itemName")
-                if item.get("groupName"):
-                    item_groups[item["id"]] = (item.get("groupId"), item["groupName"])
-
-    # Group → category (super-group) mapping: Loaded's subcategories list ties
-    # each stock group to one of the three categories (Beverage/Food/Other
-    # Stock). Fetched only when the rollup needs it; a miss degrades to each
-    # line's own category field with a visible warning.
-    group_category = {}
-    if group_by == "super_group":
-        subcats = call_api("loadedhub", "get_stock_item_groups", {})
-        for g in subcats if isinstance(subcats, list) else []:
-            if isinstance(g, dict) and g.get("id"):
-                group_category[g["id"]] = g.get("categoryName")
-        if not group_category:
-            warnings.append(
-                "Group-to-category mapping unavailable; rows fall back to each "
-                "line's own category field"
-            )
-
-    # The feed's transform drops unitId, so a unit is identified by its (name,
-    # ratio) pair. That is what distinguishes the two units both named '6.5 KG'
-    # in one venue — same name, ratios 6.5 and 1.0.
-    unit_types = {}
-    units = call_api("loadedhub", "get_stock_units", {})
-    if isinstance(units, dict) and units.get("error"):
-        warnings.append("Unit types unavailable: " + str(units["error"]))
-    elif isinstance(units, list):
-        for unit in units:
-            if not isinstance(unit, dict):
-                continue
-            ratio = num(unit.get("ratio"))
-            key = (norm(unit.get("name")), round(ratio, 6) if ratio else None)
-            unit_types.setdefault(key, unit.get("stockUnitType"))
-
+    venue_errors = {}
     supplier_filter = {norm(s) for s in (params.get("suppliers") or []) if s}
-
     flat = []
-    unnamed = set()
-    unratioed = 0
-    for inv in invoices:
-        if not isinstance(inv, dict):
+    per_venue = {}
+    for i, v in enumerate(targets):
+        invoices, catalogue, units = results[i * per : i * per + 3]
+        subcats = results[i * per + 3] if per == 4 else None
+        # A failed call is a failure, not an empty period — reaching straight
+        # for the rows would report an outage as "nothing was received".
+        if isinstance(invoices, dict) and invoices.get("error"):
+            if not multi:
+                return {"error": str(invoices["error"]), "window": window}
+            venue_errors[v] = str(invoices["error"])
             continue
-        if supplier_filter and norm(inv.get("supplierName")) not in supplier_filter:
-            continue
-        is_credit = bool(inv.get("creditRequest"))
-        when = str(inv.get("invoicedAt") or inv.get("receivedAt") or "")[:10]
-        for line in inv.get("lines") or []:
-            if not isinstance(line, dict):
-                continue
-            item_id = line.get("StockItemId") or line.get("itemId")
-            qty = num(line.get("quantityReceived"))
-            cost = num(line.get("unitCost"))
-            ratio = num(line.get("unitRatio"))
-            if qty is None:
-                continue
-            if not ratio or ratio <= 0:
-                # Without a ratio the quantity cannot be made comparable. Count
-                # it rather than pretending 1.0 and reporting a wrong total.
-                unratioed += 1
-                ratio = None
-            name = names.get(item_id)
-            if item_id and not name:
-                unnamed.add(item_id)
-            unit_name = line.get("unitName")
-            utype = unit_types.get(
-                (norm(unit_name), round(ratio, 6) if ratio else None)
-            )
-            flat.append(
-                {
-                    "item_id": item_id,
-                    "item_code": line.get("StockVariantCode") or line.get("itemCode"),
-                    # Fall back to the printed unit rather than blanking the row:
-                    # a nameless row is unusable, and the unit text is at least
-                    # a human clue about what arrived.
-                    "item_name": name or ("(unknown item " + str(item_id)[:8] + ")"),
-                    "named": bool(name),
-                    "category": line.get("Category")
-                    or (line.get("itemCategory") or {}).get("name"),
-                    "group_id": (item_groups.get(item_id) or (None, None))[0],
-                    "group": (item_groups.get(item_id) or (None, None))[1],
-                    "supplier_id": inv.get("supplierId"),
-                    "supplier_name": inv.get("supplierName"),
-                    "invoice_id": inv.get("id"),
-                    "invoice_number": inv.get("invoiceNumber"),
-                    "date": when,
-                    "is_credit": is_credit,
-                    "unit_name": unit_name,
-                    "unit_ratio": ratio,
-                    "base_unit": _BASE_UNIT.get(utype),
-                    "quantity": qty,
-                    # The two SUMMED fields are kept at full precision and
-                    # rounded only where they are emitted. Rounding each line
-                    # first and adding the results drifts: over 552 lines it put
-                    # the fortnight's spend 4c above the same figure computed by
-                    # hand from the feed.
-                    "quantity_base": qty * ratio if ratio else None,
-                    "unit_cost": round(cost, 4) if cost is not None else None,
-                    "cost_per_base_unit": (
-                        round(cost / ratio, 4) if cost is not None and ratio else None
-                    ),
-                    "spend": qty * cost if cost is not None else 0.0,
-                }
-            )
-
-    if unnamed:
-        warnings.append(
-            str(len(unnamed)) + " item id(s) were not in the stock catalogue "
-            "(deleted items?) and are shown as '(unknown item …)'"
+        rows, notes = _flatten(
+            invoices if isinstance(invoices, list) else [],
+            catalogue,
+            units,
+            subcats,
+            group_by,
+            supplier_filter,
+            norm,
+            num,
         )
-    if unratioed:
-        warnings.append(
-            str(unratioed) + " line(s) had no unit ratio, so their quantity could "
-            "not be converted to a base unit and is excluded from quantity_base"
-        )
+        prefix = (v + ": ") if multi else ""
+        warnings.extend(prefix + n for n in notes)
+        for r in rows:
+            r["venue"] = v
+        per_venue[v] = rows
+        flat.extend(rows)
+    if multi and not flat and venue_errors:
+        return {"error": "every venue failed: " + json.dumps(venue_errors)}
 
     # Narrowing filters — "how much OIL CANOLA did we buy" is one filtered
     # row, not the whole catalogue. Applied to the flattened lines so every
@@ -327,6 +438,31 @@ def run(params, call_api, log, call_api_parallel=None):
         "group_by": group_by,
         "warnings": warnings,
     }
+    if multi:
+        # The group answer carries its own per-venue totals, so "and by
+        # venue?" is answered without another fetch.
+        result["venues"] = sorted(
+            (
+                {
+                    "venue": v,
+                    "net_spend": round(sum(r["spend"] for r in rows), 2),
+                    "lines": len(rows),
+                }
+                for v, rows in per_venue.items()
+            ),
+            key=lambda r: r["net_spend"],
+            reverse=True,
+        )
+        result["note_venues"] = (
+            "rows are merged across these venues; an item is matched across "
+            "venues by catalogue name and base unit"
+        )
+        if venue_errors:
+            result["venue_errors"] = venue_errors
+            warnings.append(
+                "Some venues failed and are excluded from every total: "
+                + ", ".join(sorted(venue_errors))
+            )
 
     if group_by in ("group", "super_group"):
         label_key = "group" if group_by == "group" else "super_group"
@@ -335,11 +471,7 @@ def run(params, call_api, log, call_api_parallel=None):
             if group_by == "group":
                 key = row.get("group") or row.get("category") or "(no group)"
             else:
-                key = (
-                    group_category.get(row.get("group_id"))
-                    or row.get("category")
-                    or "(no category)"
-                )
+                key = row.get("super_group") or "(no category)"
             bucket = buckets.get(key)
             if bucket is None:
                 bucket = buckets[key] = {
@@ -348,8 +480,12 @@ def run(params, call_api, log, call_api_parallel=None):
                     "credit_amount": 0.0,
                     "_items": {},
                     "_invoices": set(),
+                    "_venues": {},
                 }
             bucket["spend"] += row["spend"]
+            bucket["_venues"][row["venue"]] = (
+                bucket["_venues"].get(row["venue"], 0.0) + row["spend"]
+            )
             if row["is_credit"] or row["quantity"] < 0:
                 bucket["credit_amount"] += row["spend"]
             bucket["_invoices"].add(row["invoice_id"])
@@ -359,6 +495,9 @@ def run(params, call_api, log, call_api_parallel=None):
         rows = []
         for bucket in buckets.values():
             items = bucket.pop("_items")
+            by_venue = bucket.pop("_venues")
+            if multi:
+                bucket["venues"] = _venue_split(by_venue)
             bucket["invoice_count"] = len(bucket.pop("_invoices"))
             bucket["distinct_items"] = len(items)
             # Quantities are NOT summed at group level — kilograms of flour
@@ -428,10 +567,14 @@ def run(params, call_api, log, call_api_parallel=None):
 
     buckets = {}
     for row in flat:
+        # Item ids are per venue — each venue's Loaded has its own catalogue —
+        # so across venues the same product is matched on its catalogue name
+        # and base unit, never on the id.
+        ident = (norm(row["item_name"]), row["base_unit"]) if multi else row["item_id"]
         key = (
-            (row["item_id"], row["supplier_id"])
+            (ident, norm(row["supplier_name"]))
             if group_by == "item_supplier"
-            else (row["item_id"],)
+            else (ident,)
         )
         bucket = buckets.get(key)
         if bucket is None:
@@ -448,6 +591,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 "_suppliers": set(),
                 "_units": set(),
                 "_prices": [],
+                "_venues": {},
             }
             if group_by == "item_supplier":
                 bucket["supplier_id"] = row["supplier_id"]
@@ -455,6 +599,9 @@ def run(params, call_api, log, call_api_parallel=None):
         if row["quantity_base"] is not None:
             bucket["quantity_base"] += row["quantity_base"]
         bucket["spend"] += row["spend"]
+        split = bucket["_venues"].setdefault(row["venue"], [0.0, 0.0])
+        split[0] += row["spend"]
+        split[1] += row["quantity_base"] or 0.0
         if row["is_credit"] or row["quantity"] < 0:
             bucket["credit_amount"] += row["spend"]
         bucket["_invoices"].add(row["invoice_id"])
@@ -480,9 +627,14 @@ def run(params, call_api, log, call_api_parallel=None):
         invoices_seen = bucket.pop("_invoices")
         suppliers_seen = bucket.pop("_suppliers")
         units_seen = bucket.pop("_units")
+        by_venue = bucket.pop("_venues")
+        if multi:
+            bucket["venues"] = _venue_split(by_venue, with_quantity=True)
         bucket["quantity_base"] = round(bucket["quantity_base"], 4)
         bucket["spend"] = round(bucket["spend"], 2)
         bucket["credit_amount"] = round(bucket["credit_amount"], 2)
+        if multi:
+            bucket.pop("item_id")  # an id belongs to ONE venue's catalogue
         bucket["invoice_count"] = len(invoices_seen)
         bucket["supplier_count"] = len(suppliers_seen)
         bucket["suppliers"] = sorted(suppliers_seen)

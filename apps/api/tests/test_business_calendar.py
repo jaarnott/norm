@@ -435,3 +435,78 @@ class TestIncompleteWindows:
         d = w.as_dict()
         assert "incomplete" not in d
         assert "in progress" not in d["description"]
+
+
+class TestCalendarRanges:
+    """Dates, months, quarters and "X to Y" ranges land on the trading day.
+
+    They used to fall through to the LLM resolver, whose prompt said a month
+    runs from midnight. Every window then failed the trading-day check, the
+    tool asked whether the user meant those exact clock times, and the agent
+    re-ran every call with confirmed_by_user — doubling the calls on each
+    multi-month question (threads fa1cfd1c, 01688f94, 23 Sep 2026).
+    """
+
+    NOW = dt.datetime(2026, 9, 24, 10, 0, tzinfo=ZoneInfo("Pacific/Auckland"))
+    Q2 = ("2026-04-01T07:00:00+13:00", "2026-07-01T06:59:59+12:00")
+
+    def _w(self, phrase):
+        return bc.resolve_phrase(venue(), phrase, self.NOW)
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "1 April 2026 to 30 June 2026",  # the exact phrase from 01688f94
+            "April 1 - June 30 2026",
+            "April to June 2026",  # did not resolve at all for 5 of 6 venues
+            "April, May and June 2026",
+            "Q2 2026",
+            "between 1 April and 30 June 2026",
+            "from 1 april to 30 june",
+            "2026-04-01 to 2026-06-30",
+            "1/4/2026 - 30/6/2026",  # NZ: day first
+        ],
+    )
+    def test_the_same_quarter_however_it_is_said(self, phrase):
+        w = self._w(phrase)
+        assert w is not None, phrase
+        assert (w.start.isoformat(), w.end.isoformat()) == self.Q2
+        assert w.is_trading_aligned
+        # Aligned means no "did the user ask for these exact times?" round.
+
+    def test_a_named_month_is_a_trading_month(self):
+        w = self._w("April 2026")
+        assert w.kind == "month"
+        assert w.start.isoformat() == "2026-04-01T07:00:00+13:00"
+        assert w.end.isoformat() == "2026-05-01T06:59:59+12:00"
+
+    def test_each_end_takes_its_own_daylight_saving_offset(self):
+        w = self._w("September 2026")  # NZDT starts 27 Sep
+        assert w.start.utcoffset() == dt.timedelta(hours=12)
+        assert w.end.utcoffset() == dt.timedelta(hours=13)
+
+    def test_a_bare_month_means_the_most_recent_one(self):
+        assert self._w("December").start.year == 2025
+        assert self._w("May").start.year == 2026
+
+    def test_a_single_date_is_that_trading_day(self):
+        w = self._w("12 September")
+        assert w.kind == "trading_day"
+        assert w.start.isoformat() == "2026-09-12T07:00:00+12:00"
+        assert w.end.isoformat() == "2026-09-13T06:59:59+12:00"
+
+    def test_a_range_across_new_year(self):
+        w = self._w("November 2025 to February 2026")
+        assert w.start.date() == dt.date(2025, 11, 1)
+        assert w.end.date() == dt.date(2026, 3, 1)
+
+    def test_a_venues_own_day_start_is_used(self):
+        w = bc.resolve_phrase(venue(day_start="05:00"), "April 2026", self.NOW)
+        assert (w.start.hour, w.end.hour, w.end.minute) == (5, 4, 59)
+
+    @pytest.mark.parametrize(
+        "phrase",
+        ["April and June 2026", "31 April 2026", "the week before the long weekend"],
+    )
+    def test_anything_else_still_goes_to_the_llm(self, phrase):
+        assert self._w(phrase) is None

@@ -825,7 +825,8 @@ Rules:
   Norm attaches the correct offset itself, because the right offset depends on
   the date being resolved (daylight saving), not on today's date.
 - For "last week": one period, last Monday 7am to this Monday 6:59am
-- For "last month": one period, 1st 00:00:00 to last day 23:59:59
+- For a month or a run of dates: one period, from {day_start} on the first day to
+  one second before {day_start} on the day after the last one (never midnight)
 - For recurring periods (e.g., "every Friday 5pm-9pm for 12 weeks"): one period per occurrence
 - Order periods chronologically, oldest first
 - Use 24-hour time"""
