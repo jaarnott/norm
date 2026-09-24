@@ -7,7 +7,9 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "pydantic>=2.0.0",
-    "sqlalchemy>=2.0.0",
+    # <2.1: SQLAlchemy 2.1 makes psycopg (v3) the default postgresql:// driver;
+    # this codebase uses psycopg2. Lift the bound only with a driver migration.
+    "sqlalchemy>=2.0.0,<2.1",
     "psycopg2-binary>=2.9.0",  # TODO: replace with psycopg2 in Dockerfile (needs libpq-dev)
     "alembic>=1.14.0",
     "anthropic>=0.39.0",

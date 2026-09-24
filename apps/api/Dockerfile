@@ -13,10 +13,15 @@ WORKDIR /build
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock* ./
 
-# Install dependencies into a virtual environment
+# Install dependencies into a virtual environment — FROM THE LOCKFILE.
+# `uv pip install -r pyproject.toml` resolved afresh on every build, so an
+# image could carry versions no test had run against: on 24 Sep 2026 a
+# build picked up SQLAlchemy 2.1.0 (released 30 minutes earlier), whose
+# default PostgreSQL driver is psycopg 3 — not installed — and the migrate
+# job died with "No module named 'psycopg'" while CI, which uses uv.lock,
+# was green. --frozen refuses to build if the lock is missing or stale.
 RUN uv venv /opt/venv && \
-    . /opt/venv/bin/activate && \
-    uv pip install -r pyproject.toml
+    UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-dev --no-install-project
 
 # Copy application code
 COPY . .
