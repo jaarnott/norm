@@ -91,13 +91,13 @@ UPDATE_TOOL = {
         "Loaded's own field names (e.g. {'minimumStockOnHand': 6}); "
         "`variant_changes` edits suppliers[] entries matched by variant_id "
         "or supplier_id + stock_code; `add_suppliers` appends new variant "
-        "entries. Look the item up first with get_stock_items (item_id or a "
-        "name query), never the full list. This is a write — human-approved."
+        "entries. Look the item up first with get_stock (item_id or a name "
+        "query), never the full list. This is a write — human-approved."
     ),
     "required_fields": ["item_id"],
     "optional_fields": ["changes", "variant_changes", "add_suppliers"],
     "field_descriptions": {
-        "item_id": "Loaded stock item id (from get_stock_items)",
+        "item_id": "Loaded stock item id (from get_stock)",
         "changes": "Top-level fields to set, Loaded's field names, deltas only",
         "variant_changes": (
             "List of edits to existing suppliers[] entries: each needs "

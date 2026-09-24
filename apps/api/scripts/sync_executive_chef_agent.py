@@ -72,8 +72,7 @@ get_stock (query or item_id; detail 'full' returns the complete Loaded
 object when you need it). For an update, call update_stock_item with the
 item_id and ONLY the fields to change — the server fetches, merges and writes
 the whole item; never fetch or resend the full object yourself. When you
-change a unit, also set its paired ratio (from get_stock, view 'reference', kind
-'units'). Keep exactly
+change a unit, also set its paired ratio (from get_stock, view 'reference', kind 'units'). Keep exactly
 one defaultForSupplier=true per supplier. For a single variant-unit change,
 prefer update_variant_unit.
 
