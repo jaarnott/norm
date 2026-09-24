@@ -61,6 +61,14 @@ Never claim the recipe is saved before the approved write has returned success, 
 
 
 def main() -> None:
+    # Superseded (Aug 2026) by scripts/sync_cb_recipe_write_binding.py, which
+    # owns the live create_recipe_from_ingredients text. Re-running this would
+    # overwrite it with prose naming three RETIRED tools (get_stock_items,
+    # get_stock_units, get_all_recipes). Kept for the facts in its docstring.
+    raise SystemExit(
+        "sync_recipe_creation_playbook.py is superseded by "
+        "sync_cb_recipe_write_binding.py — run that instead."
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

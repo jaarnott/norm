@@ -12,8 +12,9 @@ The writes here are create_stock_item (POST) and update_variant_unit (PATCH),
 riding Norm's existing describe->approve->execute write flow — no app code.
 Item UPDATES are NOT defined here: ``update_stock_item`` is the server-merge
 consolidator (sync_stock_item_consolidators.py — the model sends deltas, never
-the whole object) and the full-item read is ``get_stock_items`` with
-detail='full' (get_stock_item_full stays an engine-only backend). Bind these to
+the whole object) and the full-item read is ``get_stock`` with detail='full'
+(get_stock_item_full stays an engine-only backend; get_stock_items was demoted
+behind get_stock in Sep 2026). Bind these to
 an agent with ``sync_executive_chef_agent.py``.
 
 Idempotent — safe to re-run. The config DB is shared across every environment, so
@@ -42,10 +43,12 @@ TOOLS = [
         "action": "create_stock_item",
         "description": (
             "Create a NEW stock item. Pass the full `item` object: name, groupId "
-            "(from get_stock_item_groups), unitType (0=Weight, 1=Volume, 2=Count), "
+            "(from get_stock: view 'reference', kind 'groups'), unitType "
+            "(0=Weight, 1=Volume, 2=Count), "
             "countingUnitId+countingUnitRatio (the base unit for the dimension — "
             "kilo/litre/each, ratio usually 1.0), orderingUnitId+orderingUnitRatio "
-            "(the purchase unit + its ratio from get_stock_units), defaultSupplierId, "
+            "(the purchase unit + its ratio from get_stock: view 'reference', "
+            "kind 'units'), defaultSupplierId, "
             "itemType:'Default', and suppliers:[{supplierId, stockCode, unitId, "
             "unitCost, brandId, defaultForSupplier:true, description}]. Units and ids "
             "come from the read tools. This is a write — human-approved."
@@ -69,9 +72,10 @@ TOOLS = [
         "action": "update_variant_unit",
         "description": (
             "Change ONE supplier variant's unit. variant_id is the id of the "
-            "suppliers[] entry (from get_stock_items — the summary lists each "
+            "suppliers[] entry (from get_stock — the summary lists each "
             "variant_id); unit_id is the new unit "
-            "(from get_stock_units). Use this for a single variant-unit change "
+            "(from get_stock: view 'reference', kind 'units'). Use this for a "
+            "single variant-unit change "
             "instead of a whole-item PUT. This is a write — human-approved."
         ),
         "method": "PATCH",

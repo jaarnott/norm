@@ -60,6 +60,7 @@ TOOL = {
         # Drop soft-deleted items.
         "filters": [{"field": "datestampRemoved", "operator": "is_empty", "value": ""}],
     },
+    "read_only": True,
 }
 
 
@@ -84,7 +85,19 @@ def main() -> None:
         tools = list(spec.tools or [])
         idx = next((i for i, t in enumerate(tools) if t.get("action") == ACTION), None)
 
-        if idx is not None and tools[idx] == TOOL:
+        # Demoted behind get_stock (view 'minimums') in Sep 2026 —
+        # sync_stock_domain_rollout.py. A replay keeps it engine-only, or it
+        # would reappear on every agent's menu next to the tool that replaced
+        # it. The prefix must match the rollout's demoted_prefix().
+        entry = dict(TOOL)
+        if idx is not None and tools[idx].get("engine_only"):
+            entry["engine_only"] = True
+            entry["description"] = (
+                "[consolidator-only] Superseded by get_stock — view 'minimums'. "
+                + TOOL["description"]
+            )
+
+        if idx is not None and tools[idx] == entry:
             print(f"{ACTION}: already up to date")
             return
 
@@ -94,9 +107,9 @@ def main() -> None:
             return
 
         if idx is not None:
-            tools[idx] = TOOL
+            tools[idx] = entry
         else:
-            tools.append(TOOL)
+            tools.append(entry)
         spec.tools = tools
         spec.version = (spec.version or 0) + 1
         db.commit()

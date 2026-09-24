@@ -573,8 +573,12 @@ def build_tool_definitions(
     # Toolset scope. No tool_filter means the FULL entitled union — the domain is
     # a label + prompt, not a capability gate. Chat, approval/venue resume and
     # MCP workflows (a human is always present, and every write still waits for
-    # approval) get every tool; an automated task carries its own explicit
-    # tool_filter (guaranteed at setup + backfill), so it gets exactly that set.
+    # approval) get every tool; an automated task that carries an explicit
+    # tool_filter gets exactly that set. Nothing backfills tool_filter — a task
+    # saved without one (it can be null) also gets the union — and nothing
+    # validates the names in it: a name demoted to engine_only silently drops
+    # out of the intersection below. Every rollout that demotes a tool patches
+    # saved filters (see scripts/sync_stock_domain_rollout.py step 5).
     # A playbook never narrows tools: it is know-how the agent reads on demand
     # (see playbook_guidance). `own_actions` is the agent's ACTUAL resulting
     # toolset, so prompt guidance is offered for the tools it will hold.

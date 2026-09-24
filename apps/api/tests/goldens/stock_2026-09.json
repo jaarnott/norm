@@ -1,0 +1,106 @@
+{
+  "_about": [
+    "Stock-family goldens for the get_stock conversion (stock consolidation arc, Phase 1).",
+    "Captured 24 Sep 2026 from PRODUCTION through the Norm MCP server's loadedhub__* tools,",
+    "AFTER the Phase 0 fixes (537b31b budget, d37223b on-hand-for-item) were live — a golden",
+    "of a failing tool is worthless. Local capture (scripts/capture_domain_goldens.py) was not",
+    "possible: every local LoadedHub token chain is dead and local re-auth is forbidden (the",
+    "grant is a single chain; re-authing locally steals production's tokens).",
+    "MCP caps large lists at a size gate, so units/suppliers carry COUNTS and a sample row only.",
+    "Stable facts (reference lists, item lookups) must match exactly when get_stock's views are",
+    "verified. Stock on hand DRIFTS: the values under on_hand_observed are informational only;",
+    "verify on_hand by the same-moment protocol (old tool and new view back to back, identical",
+    "report_datetime, diffed line by line)."
+  ],
+  "captured_at": "2026-09-24",
+  "venues": {
+    "La Zeppa": {"norm_venue_id": "f0ee0643-e4e5-406f-a7e3-a8515acc168a"},
+    "The Glass Goose": {"norm_venue_id": "d5e28a6f-46bc-4b8c-9f8f-6a57d7835c2a"}
+  },
+  "reference": {
+    "La Zeppa": {
+      "units_count": 456,
+      "units_fields": ["id", "stockUnitType", "ratio", "name", "masterId"],
+      "units_sample": {"id": "aa05c47b-6d49-42e8-93bd-004a9ec80a1d", "stockUnitType": "Weight", "ratio": 7.5, "name": "7.5 KG"},
+      "suppliers_count": 98,
+      "suppliers_sample": {"id": "738122c6-8025-4ac7-8001-7fc6a933e04a", "name": "Air Liquide", "contactName": "Kirsten Cordell", "primary_email": "alnzgasorder@airliquide.com"},
+      "categories": {
+        "Beverage": "a134765a-241f-4cbc-a319-0a6c28a4b387",
+        "Food": "665a5818-b76e-48e4-a121-494af4c8edf3",
+        "Other Stock": "bd216723-355c-4382-9bc6-170a4dbd3305"
+      },
+      "groups_count": 31,
+      "templates": [
+        {"id": "a134765a-241f-4cbc-a319-0a6c28a4b387", "title": "Beverage"},
+        {"id": "5ca78a1f-a8ce-4e0a-a218-a02c691cc36b", "title": "DAILY STOCKTAKE - KITCHEN"},
+        {"id": "665a5818-b76e-48e4-a121-494af4c8edf3", "title": "Food"},
+        {"id": "2e0ae627-f579-4130-a164-49616cee28df", "title": "Front Bar Fridge"},
+        {"id": "b1a8bd00-ce68-4268-a81a-e40bfbab7cc0", "title": "Glassy Bay Shelves"},
+        {"id": "ce56527f-ea03-482e-a3f0-9e93e2458fbe", "title": "House Spirits"},
+        {"id": "3c693291-c880-4999-befe-34471791534f", "title": "Main Back Bar"},
+        {"id": "bd216723-355c-4382-9bc6-170a4dbd3305", "title": "Other Stock"},
+        {"id": "e5d9c59c-84e3-415f-8cb9-7dc79fe32833", "title": "Outside bar fridge"},
+        {"id": "82ccc26e-f6e5-4e1f-9611-02ec3b73e591", "title": "Side Back Bar"},
+        {"id": "13878ac0-9f94-4831-9de6-17024469a935", "title": "Side Bar Fridge"},
+        {"id": "16ee9fe4-7ff4-47fd-8bfb-9f8ea9c041b2", "title": "Walk-In Chiller"}
+      ]
+    },
+    "The Glass Goose": {
+      "units_count": 440,
+      "units_sample": {"id": "77a13271-9499-4aff-9e68-0133f8bc66ef", "stockUnitType": "Weight", "ratio": 0.185, "name": "185 Grams"},
+      "suppliers_count": 84,
+      "suppliers_sample": {"id": "267b6c9a-fd88-4108-b2f8-d2ebc9493500", "name": "AIR LIQUIDE", "contactName": "Kirsten Cordell", "customerNumber": "CON024"},
+      "categories": {
+        "Beverage": "f2d69809-2235-4d99-825d-de5728c902a5",
+        "Food": "8ea03d41-73d6-48f8-acee-1ededb22d3f7",
+        "Other Stock": "78a35510-7d6c-4a48-b44c-1b0db7ed4eca"
+      },
+      "groups_count": 31,
+      "templates_count": 29,
+      "templates_whole_category": [
+        {"id": "f2d69809-2235-4d99-825d-de5728c902a5", "title": "Beverage"},
+        {"id": "8ea03d41-73d6-48f8-acee-1ededb22d3f7", "title": "Food"},
+        {"id": "78a35510-7d6c-4a48-b44c-1b0db7ed4eca", "title": "Other Stock"}
+      ],
+      "templates_duplicate_titles": {"New User Template - Food": 3, "New User Template - Other Stock": 3}
+    },
+    "_groups_note": "Both venues carry Loaded's standard 31 groups (Asian … White); each group's categoryId equals its whole-category template id — the 0c fact — Beverage 14, Food 12, Other Stock 5."
+  },
+  "item_queries": [
+    {"venue": "La Zeppa", "query": "maple", "total_matches": 0},
+    {"venue": "The Glass Goose", "query": "maple", "total_matches": 0},
+    {"venue": "La Zeppa", "query": "cumin", "total_matches": 2, "names": ["CUMIN GROUND", "CUMIN SEED WHOLE"]},
+    {"venue": "The Glass Goose", "query": "cumin", "total_matches": 2, "names": ["CUMIN", "CUMIN SEED WHOLE"]},
+    {"venue": "La Zeppa", "query": "jim beam", "total_matches": 2, "names": ["JIM BEAM BLACK", "JIM BEAM WHITE 37%"]},
+    {"venue": "The Glass Goose", "query": "jim beam", "total_matches": 4, "names": ["JIM BEAM BLACK", "JIM BEAM HONEY", "JIM BEAM SMALL BATCH BOURBON", "JIM BEAM WHITE 37%"]},
+    {"venue": "La Zeppa", "query": "napkin", "total_matches": 2, "names": ["Cocktail Napkins", "NAPKINS DINNER 2PLY 1/8F WHT 100s/PKT"]},
+    {"venue": "The Glass Goose", "query": "napkin", "total_matches": 2, "names": ["Cocktail Napkins", "DINNER NAPKINS ELEGANCE"]},
+    {"venue": "The Glass Goose", "query": "asahi", "total_matches": 0},
+    {"venue": "La Zeppa", "query": "asahi", "total_matches": 1, "names": ["ASAHI SUPER DRY"],
+     "unambiguous_hit_carries_summary": {"id": "7c8f62be-0432-448c-b907-9635401060db", "group": "Bottled", "counting_unit": "Each", "ordering_unit": "12 Pack", "ordering_unit_ratio": 12, "minimum_stock_on_hand": 27, "minimum_stock_unit_name": "Each", "variants": [{"variant_id": "311cfba6-a2b7-4ec6-a627-08deb120aa8e", "supplier": "Asahi", "stock_code": "DPASAHI12AUN", "unit": "12 Pack", "unit_cost": 0, "default": true}]}}
+  ],
+  "item_lookups": [
+    {"venue": "La Zeppa", "item_id": "055e9634-59c0-4c13-8e16-7276554d9e8c", "name": "JIM BEAM BLACK", "group": "Spirits",
+     "counting_unit": "Litre", "counting_unit_ratio": 1, "ordering_unit": "Litre", "ordering_unit_ratio": 1,
+     "minimum_stock_on_hand": 1.2, "minimum_stock_unit_name": "Litre", "variants": [],
+     "full": {"groupId": "6785fd46-aa2b-4830-94dd-db8e91bc02bb", "defaultSupplierId": "7709c0fb-f5c6-46ef-95fc-72a227650610", "minimumStockOnHandUnitId": "74ddd70d-e3c7-4b98-8058-9c0cb5d77509", "unitType": 0, "itemType": "Default"},
+     "_leak": "summary's minimum_stock_unit was the WHOLE unit object {id, stockUnitType, ratio, name, datestampDeleted, masterId} — get_stock renders the name"},
+    {"venue": "La Zeppa", "item_id": "0709ceaf-0cdf-4707-9d1b-31a38770010a", "name": "Cocktail Napkins", "group": "Packaging and Consumables",
+     "counting_unit": "CARTON", "counting_unit_ratio": 1, "ordering_unit": "CARTON", "ordering_unit_ratio": 1,
+     "minimum_stock_on_hand": null, "minimum_stock_unit_name": null,
+     "variants": [{"variant_id": "e0cd3028-8eb2-4d46-bf42-08de1bf2947c", "supplier": "SERVICE FOODS AUCKLAND", "stock_code": "NF4939", "unit": "CARTON", "unit_cost": 0, "default": true}]},
+    {"venue": "The Glass Goose", "item_id": "dc5aaa32-406e-49e6-a655-4dab52c6ee4c", "name": "CUMIN", "group": "Herbs and Spices",
+     "counting_unit": "KG", "counting_unit_ratio": 1, "ordering_unit": "KG", "ordering_unit_ratio": 1,
+     "minimum_stock_on_hand": null, "minimum_stock_unit_name": null, "variants": [],
+     "full": {"groupId": "5ccaa485-b5ef-4be5-8548-d75732463402", "defaultSupplierId": "67054b1f-0f91-481f-9715-68aaafb0788d", "globalPrice": 24.99, "itemType": "Default"}}
+  ],
+  "on_hand_observed": {
+    "_drifting": "informational — verify by same-moment diff, never against these numbers",
+    "observed_at": "2026-09-24T00:30Z approx",
+    "rows": [
+      {"venue": "La Zeppa", "item_id": "055e9634-59c0-4c13-8e16-7276554d9e8c", "template": "Beverage", "quantityOnHand": 2.8, "countingUnitName": "Litre", "valueOnHand": 117.712},
+      {"venue": "The Glass Goose", "item_id": "dc5aaa32-406e-49e6-a655-4dab52c6ee4c", "template": "Food", "quantityOnHand": 0.42088636363663634, "countingUnitName": "KG", "valueOnHand": 10.517950227279544, "_note": "first attempt hit the MCP client timeout; the whole-category Food report is near the limit"},
+      {"venue": "La Zeppa", "item_id": "0709ceaf-0cdf-4707-9d1b-31a38770010a", "template": "Other Stock", "quantityOnHand": 0, "countingUnitName": "CARTON", "valueOnHand": 0}
+    ]
+  }
+}

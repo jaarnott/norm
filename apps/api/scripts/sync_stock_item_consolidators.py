@@ -193,13 +193,24 @@ def main(dry_run: bool = False) -> None:
             if idx is None:
                 tools.append(dict(tool))
                 changed.append(f"added {tool['action']}")
-            elif tools[idx] != tool:
-                keep = tools[idx].get("added_at")
+            else:
                 entry = dict(tool)
+                keep = tools[idx].get("added_at")
                 if keep:
                     entry["added_at"] = keep
-                tools[idx] = entry
-                changed.append(f"updated {tool['action']}")
+                # get_stock_items was demoted behind get_stock (the stock
+                # consolidation arc, Sep 2026 — sync_stock_domain_rollout.py).
+                # A replay keeps it engine-only, or it would reappear on every
+                # agent's menu next to the tool that replaced it.
+                if tools[idx].get("engine_only"):
+                    entry["engine_only"] = True
+                    entry["description"] = (
+                        "[consolidator-only] Superseded by get_stock — view "
+                        "'items' (the default). " + entry["description"]
+                    )
+                if tools[idx] != entry:
+                    tools[idx] = entry
+                    changed.append(f"updated {tool['action']}")
 
         # 3a2. get_received_items_for_period calls the all-items list for
         # name resolution; once get_stock_items is a consolidator that call
