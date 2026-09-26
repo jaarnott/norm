@@ -245,7 +245,10 @@ def main(dry_run: bool = False, expose_only: bool = False) -> None:
             )
         missing = [a for a in RETIRING if a not in by_action]
         if missing:
-            raise SystemExit(f"retiring rows missing from the spec: {missing}")
+            # Phase 4 (scripts/sync_stock_phase4_delete.py) deletes the two
+            # retiring consolidators once the soak is clean; a replay after
+            # that must not refuse — the prose needles below still apply.
+            print(f"NOTE: no longer in the spec (deleted): {missing}")
 
         # ── 1. Spec rows: demote the eight; rewrite prose naming them ─────
         tools_changed = False

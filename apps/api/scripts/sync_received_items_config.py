@@ -281,7 +281,7 @@ def main(dry_run: bool = False) -> None:
         # runtime with "Tool not found" and the tool degrades silently.
         missing = [
             a
-            for a in ("get_received_invoices", "get_stock_items", "get_stock_units")
+            for a in ("get_received_invoices", "get_stock_items_raw", "get_stock_units")
             if a not in by_action
         ]
         if missing:

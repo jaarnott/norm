@@ -1,4 +1,7 @@
-"""The stock-item consolidators: one lookup surface, delta-only updates.
+"""update_stock_item: delta-only updates, merged server-side.
+
+The lookup surface is get_stock (tests/test_stock_consolidator.py) since the
+stock consolidation arc; the get_stock_items consolidator is gone.
 
 Exec'd under the REAL sandbox namespace. The facts pinned: the LLM chooses
 its data depth (query → slim matches; item_id → summary or full); an update
@@ -12,7 +15,6 @@ import pathlib
 from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
 
 _DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-READ_CODE = (_DIR / "get_stock_items.py").read_text()
 UPDATE_CODE = (_DIR / "update_stock_item.py").read_text()
 
 # Field names as the live endpoint returns them (OIL CANOLA probe,
@@ -91,54 +93,6 @@ def run(code, api, **params):
     return ns["run"](
         {"venue": "The Glass Goose", **params}, api.call_api, lambda m: None
     )
-
-
-class TestLookup:
-    def test_query_returns_slim_matches_only(self):
-        api = Api()
-        out = run(READ_CODE, api, query="jim beam")
-        assert out["total_matches"] == 2 and out["shown"] == 2
-        assert out["matches"][0] == {"id": "item-1", "name": "Jim Beam 700ml"}
-        assert "item" not in out  # ambiguous → no auto-detail fetch
-
-    def test_unambiguous_query_includes_the_item_summary(self):
-        api = Api()
-        out = run(READ_CODE, api, query="stella")
-        # one match → the consolidator fetches its detail to save a round trip
-        assert out["total_matches"] == 1
-        assert out["item"]["variants"][0]["stock_code"] == "JB700"
-        assert "obscureLoadedField" not in out["item"]  # summary, not full
-
-    def test_item_id_summary_slims_and_full_returns_everything(self):
-        api = Api()
-        out = run(READ_CODE, api, item_id="item-1")
-        assert out["detail"] == "summary"
-        assert out["item"]["minimum_stock_on_hand"] == 4
-        assert out["item"]["minimum_stock_unit"] == "Bottle"
-        assert "obscureLoadedField" not in out["item"]
-        out = run(READ_CODE, Api(), item_id="item-1", detail="full")
-        assert out["detail"] == "full"
-        assert out["item"]["obscureLoadedField"]
-
-    def test_summaries_carry_names_never_uuids(self):
-        # Token doctrine: a unit id is ~10 tokens the model can't reason
-        # about; "Bottle" is one it can. The only ids kept are the handles
-        # later calls need — the item id and each variant_id.
-        out = run(READ_CODE, Api(), item_id="item-1")
-        item = out["item"]
-        assert item["group"] == "Spirits"
-        assert item["counting_unit"] == "Bottle"
-        v = item["variants"][0]
-        assert v["supplier"] == "Trents"
-        assert v["unit"] == "Bottle"
-        assert v["default"] is True
-        assert v["variant_id"] == "var-1"  # the update handle survives
-        assert "supplier_id" not in v and "unit_id" not in v
-        assert "group_id" not in item and "counting_unit_id" not in item
-
-    def test_bare_list_carries_the_steering_note(self):
-        out = run(READ_CODE, Api())
-        assert "query" in out["note"] and out["shown"] == 3
 
 
 class TestUpdate:

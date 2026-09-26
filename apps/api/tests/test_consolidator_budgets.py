@@ -122,7 +122,7 @@ DECLARED = _declared()
 def test_the_header_parser_still_finds_the_requirements():
     """An empty set would pass every assertion below vacuously."""
     assert len(REQUIRED) >= 8
-    assert REQUIRED.get("get_stock_items") == 5
+    assert REQUIRED.get("get_stock") == 8
     assert REQUIRED.get("reconcile_received_invoices") == 120  # multi-line header
 
 

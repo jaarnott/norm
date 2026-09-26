@@ -7,10 +7,9 @@ every field back around one edit (expensive, and one hallucinated field from
 corrupting the item).
 
 After:
-- ``get_stock_items`` (consolidator, read-only): name query → slim matches;
-  item_id → one item at detail "summary" or "full". The agent chooses what
-  data it wants; the description steers it to fetch ONE item, never the list,
-  before an update.
+- the read side is ``get_stock`` (scripts/sync_stock_config.py) since Sep
+  2026; the ``get_stock_items`` consolidator this script used to install was
+  deleted in Phase 4 of the stock consolidation arc.
 - ``update_stock_item`` (consolidator, method PUT so the human-approval gate
   holds): the model sends item_id + deltas; the read-merge-write happens
   server-side via get_stock_item_full + update_stock_item_raw.
@@ -39,45 +38,6 @@ import sys
 sys.path.insert(0, ".")
 
 _DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-
-READ_TOOL = {
-    "action": "get_stock_items",
-    "method": "GET",  # read-only consolidator: auto-executes, nestable
-    "description": (
-        "THE stock item lookup. Pass query (name substring) for slim "
-        "{id, name} matches, or item_id for ONE item — detail 'summary' "
-        "(units, minimum, variants with codes and costs) or 'full' (the "
-        "complete Loaded object). Always look up the ONE item you need "
-        "(query or item_id) rather than reading the whole list; before an "
-        "update, fetch just that item, then call update_stock_item with "
-        "only the fields to change."
-    ),
-    "required_fields": [],
-    "optional_fields": ["item_id", "query", "detail", "limit"],
-    "field_descriptions": {
-        "item_id": "Loaded stock item id — returns exactly this item",
-        "query": "Case-insensitive name substring to search for",
-        "detail": "'summary' (default) or 'full' (complete Loaded object)",
-        "limit": (
-            "Max rows returned (default 25). Raise it (e.g. 2000) only when "
-            "a task genuinely needs the whole catalogue"
-        ),
-    },
-    # A full-catalogue listing (~1,000 slim {id, name} rows) must survive the
-    # tool-result slimmer when explicitly requested via limit.
-    "max_result_chars": 80_000,
-    "read_only": True,
-    "consolidator_config": {
-        "function_code": (_DIR / "get_stock_items.py").read_text(),
-        # 5, as the file's header has always said: a name query makes 4 calls
-        # (raw list, then units + suppliers to name the variants, then the
-        # matched item's full record). This row shipped at 3 and failed 100 of
-        # 194 production calls with "Too many API calls (max 3)" — one thread
-        # retried 73 times on 27 Aug 2026. tests/test_consolidator_budgets.py
-        # now pins every installer to its file's stated requirement.
-        "max_api_calls": 5,
-    },
-}
 
 UPDATE_TOOL = {
     "action": "update_stock_item",
@@ -185,7 +145,7 @@ def main(dry_run: bool = False) -> None:
             changed.append("added update_stock_item_raw")
 
         # 3. Install/replace the two consolidators under the public names.
-        for tool in (READ_TOOL, UPDATE_TOOL):
+        for tool in (UPDATE_TOOL,):
             idx = next(
                 (i for i, t in enumerate(tools) if t.get("action") == tool["action"]),
                 None,
@@ -198,16 +158,6 @@ def main(dry_run: bool = False) -> None:
                 keep = tools[idx].get("added_at")
                 if keep:
                     entry["added_at"] = keep
-                # get_stock_items was demoted behind get_stock (the stock
-                # consolidation arc, Sep 2026 — sync_stock_domain_rollout.py).
-                # A replay keeps it engine-only, or it would reappear on every
-                # agent's menu next to the tool that replaced it.
-                if tools[idx].get("engine_only"):
-                    entry["engine_only"] = True
-                    entry["description"] = (
-                        "[consolidator-only] Superseded by get_stock — view "
-                        "'items' (the default). " + entry["description"]
-                    )
                 if tools[idx] != entry:
                     tools[idx] = entry
                     changed.append(f"updated {tool['action']}")
@@ -232,18 +182,6 @@ def main(dry_run: bool = False) -> None:
                     changed.append(
                         "repointed received_items_for_period to get_stock_items_raw"
                     )
-
-        # 3b. get_stock_on_hand_for_item: install the canonical file (it
-        # previously lived ONLY in the config DB) with its item read
-        # repointed to get_stock_item_full.
-        soh_code = (_DIR / "get_stock_on_hand_for_item.py").read_text()
-        for t in tools:
-            if t.get("action") == "get_stock_on_hand_for_item":
-                cc = dict(t.get("consolidator_config") or {})
-                if cc.get("function_code") != soh_code:
-                    cc["function_code"] = soh_code
-                    t["consolidator_config"] = cc
-                    changed.append("updated get_stock_on_hand_for_item code")
 
         # 3c. Delete the duplicate single-item tool outright.
         before_n = len(tools)
@@ -299,7 +237,7 @@ def main(dry_run: bool = False) -> None:
                     "When creating orders, always get the default variant from "
                     "get_stock_item before submitting.",
                     "When creating orders, always get the default variant first: "
-                    "call get_stock_items with the item_id (detail 'summary' "
+                    "call get_stock with the item_id (detail 'summary' "
                     "includes each variant's stock code and default flag).",
                 ),
                 (
@@ -307,7 +245,7 @@ def main(dry_run: bool = False) -> None:
                     "get_stock_items first then use the item ID for detailed "
                     "queries.",
                     "When looking up a specific stock item, call "
-                    "get_stock_items with query (name substring) first, then "
+                    "get_stock with query (name substring) first, then "
                     "again with the item_id for detail — never scan the full "
                     "list.",
                 ),
@@ -339,7 +277,7 @@ def main(dry_run: bool = False) -> None:
                 "call update_stock_item with the item_id and ONLY the fields "
                 "to change — the server fetches, merges and writes the whole "
                 "item (never fetch or resend the full object). Look the item "
-                "up first with get_stock_items; do not change the",
+                "up first with get_stock; do not change the",
             )
             if new_sp == chef.system_prompt:
                 print(

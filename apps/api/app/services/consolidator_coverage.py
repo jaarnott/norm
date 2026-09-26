@@ -51,8 +51,6 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
         "get_all_recipes": "get_recipes",
         "get_recipe_details": "get_recipes",
         "get_stock_item_full": "get_stock",
-        "get_stock_items": "get_stock",
-        "get_stock_on_hand_for_item": "get_stock",
         "get_stock_on_hand": "get_stock",
         "get_stock_units": "get_stock",
         "get_suppliers": "get_stock",
