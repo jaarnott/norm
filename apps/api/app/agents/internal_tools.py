@@ -1786,8 +1786,10 @@ def _resolve_stock_items(
 
         query_lower = query.lower()
 
-        # Path 2: stock_code match
-        if item.get("stock_code"):
+        # Path 2: stock_code match — only when the list carries suppliers[]
+        # (get_stock_items_with_codes). The slim list has none; failing on it
+        # made every code "not found", so without codes the name paths decide.
+        if item.get("stock_code") and any("suppliers" in s for s in stock_items):
             code = item["stock_code"].strip().lower()
             for s in stock_items:
                 # Check stock code across all supplier variants
@@ -1905,14 +1907,32 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
         try:
             from app.connectors.function_executor import execute_function
 
+            # The stock-code path needs each item's suppliers[]. The slim list
+            # (get_stock_items_raw) strips them, so a code could never match
+            # and every code-only request failed as "not found" (fixed Sep
+            # 2026). get_stock_items_with_codes is the engine-only twin that
+            # keeps them; the slim list is the fallback if it is not installed.
+            wants_codes = any(
+                isinstance(i, dict) and i.get("stock_code") and not i.get("itemId")
+                for i in items
+            )
+            actions = ["get_stock_items_raw"]
+            if wants_codes:
+                actions.insert(0, "get_stock_items_with_codes")
             fetch_code = (
                 "def run(params, call_api, log):\n"
-                "    items = call_api('loadedhub', 'get_stock_items_raw', {'venue': params['venue']})\n"
-                "    if isinstance(items, list):\n"
-                "        return items\n"
+                "    for action in params['actions']:\n"
+                "        try:\n"
+                "            items = call_api('loadedhub', action, {'venue': params['venue']})\n"
+                "        except Exception:\n"
+                "            continue\n"
+                "        if isinstance(items, list) and items:\n"
+                "            return items\n"
                 "    return []\n"
             )
-            result = execute_function(fetch_code, {"venue": venue}, db, thread_id)
+            result = execute_function(
+                fetch_code, {"venue": venue, "actions": actions}, db, thread_id
+            )
             raw = result.get("data", [])
             if isinstance(raw, list):
                 stock_items = raw

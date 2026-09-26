@@ -158,6 +158,17 @@ def main(dry_run: bool = False) -> None:
                 keep = tools[idx].get("added_at")
                 if keep:
                     entry["added_at"] = keep
+                # update_stock_item was demoted behind manage_stock_item (Sep
+                # 2026 — sync_manage_stock_item_config.py). A replay keeps it
+                # engine-only, or it would reappear on the chef's menu next to
+                # the tool that replaced it. Prefix = that script's
+                # demoted_prefix("update_stock_item").
+                if tools[idx].get("engine_only"):
+                    entry["engine_only"] = True
+                    entry["description"] = (
+                        "[consolidator-only] Superseded by manage_stock_item — "
+                        "op 'update'. " + entry["description"]
+                    )
                 if tools[idx] != entry:
                     tools[idx] = entry
                     changed.append(f"updated {tool['action']}")

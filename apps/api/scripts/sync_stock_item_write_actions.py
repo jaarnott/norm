@@ -100,6 +100,15 @@ TOOLS = [
 
 
 def main() -> None:
+    # Superseded (Sep 2026) by scripts/sync_manage_stock_item_config.py, which
+    # cloned these two rows into engine-only backends (create_stock_item_raw,
+    # update_variant_unit_raw) and demoted the originals behind
+    # manage_stock_item. Re-running this would put the agent-facing rows back
+    # on every menu. Kept for the verified facts in its docstring.
+    raise SystemExit(
+        "sync_stock_item_write_actions.py is superseded by "
+        "sync_manage_stock_item_config.py — run that instead."
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

@@ -69,12 +69,12 @@ either a recipe or a stock item.
 create a new stock item, or update an existing one's counting/ordering unit, a
 variant's unit, or which variant is a supplier's default. Look an item up with
 get_stock (query or item_id; detail 'full' returns the complete Loaded
-object when you need it). For an update, call update_stock_item with the
+object when you need it). For any write call manage_stock_item — op 'create' with the full item, or op 'update' with the
 item_id and ONLY the fields to change — the server fetches, merges and writes
 the whole item; never fetch or resend the full object yourself. When you
 change a unit, also set its paired ratio (from get_stock, view 'reference', kind 'units'). Keep exactly
 one defaultForSupplier=true per supplier. For a single variant-unit change,
-prefer update_variant_unit.
+use op 'set_variant_unit'.
 
 When a tool returns an interactive editor card, hand it to the user and tell them
 what is waiting — the user's click in the card is the approval. For direct write
@@ -96,12 +96,11 @@ LOADEDHUB_ACTIONS = [
     # get_stock_items, get_stock_item_groups, get_stock_units and get_suppliers
     # here in Sep 2026 (sync_stock_domain_rollout.py); those are engine-only.
     "get_stock",
-    # Stock-item writes (see sync_stock_item_write_actions.py). The full-item
-    # read is get_stock detail='full'; update_stock_item merges deltas
-    # server-side — no whole-object round trip through the model.
-    "create_stock_item",
-    "update_stock_item",
-    "update_variant_unit",
+    # Stock-item writes: one tool since Sep 2026 (sync_manage_stock_item_config.py),
+    # op create | update | set_variant_unit. The full-item read is get_stock
+    # detail='full'; the merge is server-side. The three rows it replaced are
+    # engine-only backends.
+    "manage_stock_item",
 ]
 
 
