@@ -550,6 +550,75 @@ def check_binding_actions(
     return issues
 
 
+def check_task_tool_filters(
+    task_id: str,
+    title: str,
+    status: str,
+    tool_filter: object,
+    known_actions: set[str],
+    hidden_actions: set[str] | None = None,
+) -> list[ConfigIssue]:
+    """Every name in a saved task's tool_filter must be an agent-visible tool.
+
+    prompt_builder intersects the filter with the entitled union, so a name
+    that matches nothing — a tool renamed, deleted, demoted to engine_only or
+    hidden from agents — simply contributes nothing. The task keeps running
+    with one tool fewer and nobody is told. This is the one surface every
+    consolidation rollout has had to patch by hand (see
+    scripts/sync_stock_domain_rollout.py step 5); the production task
+    "Invoice Reconciliation (All Venues)" carried get_workflow_mode and
+    resolve_dates for weeks after both left the agent surface.
+    """
+    issues: list[ConfigIssue] = []
+    where = f"task.{title or task_id}"
+    if tool_filter is None:
+        return issues
+    if not isinstance(tool_filter, list) or not all(
+        isinstance(n, str) for n in tool_filter
+    ):
+        issues.append(
+            ConfigIssue(
+                severity="error",
+                where=where,
+                problem="tool_filter is not a list of tool names",
+                fix="Reset the filter on the task, or clear it (null = every entitled tool).",
+            )
+        )
+        return issues
+    for name in tool_filter:
+        if name not in known_actions:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=(
+                        f"tool_filter names '{name}', which no connector defines "
+                        "(renamed or removed) — the task silently loses it"
+                    ),
+                    fix=(
+                        "Replace it with the current tool name, or remove it "
+                        "(scripts/sync_prune_task_filters.py)."
+                    ),
+                )
+            )
+        elif hidden_actions and name in hidden_actions:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=where,
+                    problem=(
+                        f"tool_filter names '{name}', an engine-only or hidden "
+                        "tool agents never see — it is silently dropped"
+                    ),
+                    fix=(
+                        "Replace it with the consolidator that superseded it, "
+                        "or remove it (scripts/sync_prune_task_filters.py)."
+                    ),
+                )
+            )
+    return issues
+
+
 def check_model_selection(
     connector_name: str, config: dict | None, allowed_models: list[str]
 ) -> list[ConfigIssue]:
@@ -763,6 +832,23 @@ def validate_config(db=None, config_db=None) -> dict:
         for row in db.query(Connection).all():
             issues.extend(
                 check_model_selection(row.connector_name, row.config, allowed)
+            )
+
+        # Saved task filters live in the APP database, one per environment.
+        from app.agents.prompt_builder import _ENGINE_AND_MCP_ONLY, _RETIRED_ACTIONS
+        from app.db.models import AutomatedTask
+
+        hidden = engine_only_actions | set(_ENGINE_AND_MCP_ONLY) | set(_RETIRED_ACTIONS)
+        for task in db.query(AutomatedTask).all():
+            issues.extend(
+                check_task_tool_filters(
+                    task.id,
+                    task.title,
+                    task.status,
+                    task.tool_filter,
+                    known_actions,
+                    hidden,
+                )
             )
 
         # Component drift rides the marketplace catalog (the server-side

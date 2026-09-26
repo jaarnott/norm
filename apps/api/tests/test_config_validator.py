@@ -24,6 +24,7 @@ from app.services.config_validator import (
     check_consolidator_write_actions,
     check_display_components,
     check_model_selection,
+    check_task_tool_filters,
 )
 
 CURRENT_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
@@ -597,3 +598,56 @@ class TestStaleAggregates:
             )
             == []
         )
+
+
+class TestTaskToolFilters:
+    """A saved task's tool_filter is intersected with the agent's tools, so a
+    stale name is dropped without a word. The production task "Invoice
+    Reconciliation (All Venues)" carried get_workflow_mode (deleted 22 Sep
+    2026) and resolve_dates (hidden from agents the same day) until this
+    check existed."""
+
+    KNOWN = {
+        "get_invoices",
+        "reconcile_received_invoices",
+        "send_email",
+        "resolve_dates",
+        "get_stock_units",
+    }
+    HIDDEN = {"resolve_dates", "get_stock_units"}
+
+    def _check(self, names):
+        return check_task_tool_filters(
+            "t1", "Invoice Reconciliation", "active", names, self.KNOWN, self.HIDDEN
+        )
+
+    def test_a_deleted_tool_name_is_an_error(self):
+        issues = self._check(["get_invoices", "get_workflow_mode"])
+        assert len(issues) == 1
+        assert (
+            "get_workflow_mode" in issues[0].problem
+            and "no connector defines" in issues[0].problem
+        )
+        assert issues[0].where == "task.Invoice Reconciliation"
+
+    def test_a_hidden_or_engine_only_name_is_an_error(self):
+        issues = self._check(["resolve_dates", "get_stock_units", "send_email"])
+        assert sorted(
+            "resolve_dates" in i.problem or "get_stock_units" in i.problem
+            for i in issues
+        ) == [True, True]
+        assert all("silently dropped" in i.problem for i in issues)
+
+    def test_current_names_pass(self):
+        assert (
+            self._check(["get_invoices", "reconcile_received_invoices", "send_email"])
+            == []
+        )
+
+    def test_no_filter_means_the_union_and_is_fine(self):
+        assert self._check(None) == []
+        assert self._check([]) == []
+
+    def test_a_malformed_filter_is_one_error(self):
+        issues = self._check({"get_invoices": True})
+        assert len(issues) == 1 and "not a list" in issues[0].problem
