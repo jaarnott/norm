@@ -539,7 +539,13 @@ def execute_spec(
         ), RenderedRequest(method="", url="", headers={}, body=None)
 
     if spec.execution_mode == "mcp":
-        from app.connectors.mcp_executor import mcp_call_tool
+        from app.connectors.mcp_executor import (
+            coerce_arguments_to_schema,
+            mcp_call_tool,
+        )
+
+        # Strict servers validate argument types; see the helper.
+        extracted_fields = coerce_arguments_to_schema(extracted_fields, operation)
 
         # OAuth 2.1 MCP connectors authenticate with a per-venue access token, not
         # a static credential. Resolve (and lazily refresh) it here and hand it to

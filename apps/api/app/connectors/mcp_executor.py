@@ -231,12 +231,60 @@ def mcp_call_tool(
     )
 
 
+#: The parts of a property's JSON Schema that travel with the spec row.
+_SCHEMA_KEYS = ("type", "enum", "items", "properties", "required", "minimum", "maximum")
+
+
+def coerce_arguments_to_schema(fields: dict, operation: dict) -> dict:
+    """Cast string arguments to the JSON type the row's field_schema declares.
+
+    MCP servers validate argument TYPES: Orbit's zod schemas reject "true" for
+    a boolean and "100" for a number (stock_find_stocktakes, 26 Sep 2026 —
+    three failed calls before the agent gave up passing them). The model is
+    shown `type: string` for any field without a field_schema, and older
+    threads keep sending strings, so the cast happens here, on the way out.
+    A value that cannot be cast is sent as-is; the server's own validation
+    error says what is wrong.
+    """
+    schema = operation.get("field_schema") or {}
+    out = dict(fields)
+    for key, value in fields.items():
+        prop = schema.get(key)
+        if not isinstance(prop, dict) or not isinstance(value, str):
+            continue
+        typ = prop.get("type")
+        text = value.strip()
+        try:
+            if typ == "boolean":
+                if text.lower() in ("true", "1", "yes"):
+                    out[key] = True
+                elif text.lower() in ("false", "0", "no"):
+                    out[key] = False
+            elif typ == "integer":
+                out[key] = int(float(text))
+            elif typ == "number":
+                number = float(text)
+                out[key] = int(number) if number.is_integer() else number
+            elif typ in ("array", "object"):
+                if text.startswith(("[", "{")):
+                    out[key] = json.loads(text)
+                elif typ == "array":
+                    out[key] = [s.strip() for s in text.split(",") if s.strip()]
+        except (ValueError, json.JSONDecodeError):
+            pass
+    return out
+
+
 def convert_mcp_tools_to_spec(mcp_tools: list[dict]) -> list[dict]:
     """Convert MCP tool definitions to ConnectionSpec.tools format.
 
     MCP tools have: name, description, inputSchema (JSON Schema object).
     ConnectionSpec tools need: action, method, description, required_fields,
-    optional_fields, field_descriptions.
+    optional_fields, field_descriptions — and field_schema for any field that
+    is not a plain string, so the agent is shown the real type (prompt_builder
+    passes field_schema through verbatim) and coerce_arguments_to_schema can
+    cast stragglers. Without it every field reads `type: string` and strict
+    servers reject the call.
     """
     spec_tools: list[dict] = []
 
@@ -262,15 +310,24 @@ def convert_mcp_tools_to_spec(mcp_tools: list[dict]) -> list[dict]:
                 desc_parts.append(f"Options: {', '.join(str(e) for e in prop['enum'])}")
             field_descriptions[field_name] = " ".join(desc_parts) if desc_parts else ""
 
-        spec_tools.append(
-            {
-                "action": name,
-                "method": method,
-                "description": description,
-                "required_fields": required_fields,
-                "optional_fields": optional_fields,
-                "field_descriptions": field_descriptions,
-            }
-        )
+        field_schema: dict[str, dict] = {}
+        for field_name, prop in properties.items():
+            if not isinstance(prop, dict):
+                continue
+            typed = {k: prop[k] for k in _SCHEMA_KEYS if k in prop}
+            if typed.get("type", "string") != "string" or "enum" in typed:
+                field_schema[field_name] = typed
+
+        row = {
+            "action": name,
+            "method": method,
+            "description": description,
+            "required_fields": required_fields,
+            "optional_fields": optional_fields,
+            "field_descriptions": field_descriptions,
+        }
+        if field_schema:
+            row["field_schema"] = field_schema
+        spec_tools.append(row)
 
     return spec_tools
