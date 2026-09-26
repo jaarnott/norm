@@ -52,8 +52,14 @@ EOF
   # ── Node 24 + pnpm ────────────────────────────────────────────
   curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
   apt-get install -y nodejs
-  corepack enable
-  corepack prepare pnpm@latest --activate
+  # pnpm PINNED, not @latest. `corepack prepare pnpm@latest` installed 11.x
+  # here against the Codespace's 10.x, and pnpm 11 refuses to run dependency
+  # build scripts (esbuild, sharp) without an approval list this repo does not
+  # carry — so `pnpm install` failed on a box that was supposed to match.
+  # corepack's --activate is also per-user, so setting it as root does nothing
+  # for the human who logs in; install it globally instead.
+  corepack disable pnpm 2>/dev/null || true
+  npm install -g pnpm@10.32.1
 
   # ── uv (system-wide, so every OS Login user gets it) ───────────
   curl -LsSf https://astral.sh/uv/install.sh \

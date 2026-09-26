@@ -65,6 +65,10 @@ fi
 # API tests config-DB connectivity at import time and exits if it can't.
 PROXY_PID=""
 if [[ "${CONFIG_DATABASE_URL:-}" == *"127.0.0.1:5433"* ]]; then
+  # The key file is optional. On the GCE dev box there is deliberately no key
+  # on disk — the VM's attached service account supplies credentials from the
+  # metadata server — and passing --credentials-file pointing at a file that
+  # does not exist is a hard error, not a fallback.
   CONFIG_SA_KEY="${CONFIG_SA_KEY:-$ROOT/norm-config-sa.json}"
   CONFIG_INSTANCE="${CONFIG_INSTANCE:-norm-production-491101:australia-southeast1:norm-config}"
   PROXY_BIN="$(command -v cloud-sql-proxy || echo "$HOME/.local/bin/cloud-sql-proxy")"
@@ -76,13 +80,15 @@ if [[ "${CONFIG_DATABASE_URL:-}" == *"127.0.0.1:5433"* ]]; then
     echo "  WARNING: cloud-sql-proxy not found (looked at '$PROXY_BIN')."
     echo "           Install it from https://cloud.google.com/sql/docs/postgres/sql-proxy"
     echo "           or the API will fail to reach the central config DB."
-  elif [ ! -f "$CONFIG_SA_KEY" ]; then
+  elif [ ! -f "$CONFIG_SA_KEY" ] && ! gcloud auth application-default print-access-token >/dev/null 2>&1 \
+       && ! curl -s -m 2 -H "Metadata-Flavor: Google" http://metadata.google.internal/ >/dev/null 2>&1; then
     echo "  WARNING: service-account key not found at $CONFIG_SA_KEY."
     echo "           The API will fail to reach the central config DB."
   else
     echo "Starting Cloud SQL Auth Proxy for $CONFIG_INSTANCE …"
     "$PROXY_BIN" --address 127.0.0.1 --port 5433 \
-      --credentials-file "$CONFIG_SA_KEY" "$CONFIG_INSTANCE" &
+      ${CONFIG_SA_KEY:+$([ -f "$CONFIG_SA_KEY" ] && echo --credentials-file "$CONFIG_SA_KEY")} \
+      "$CONFIG_INSTANCE" &
     PROXY_PID=$!
     for _ in $(seq 1 30); do
       if (exec 3<>/dev/tcp/127.0.0.1/5433) 2>/dev/null; then exec 3>&- 3<&-; break; fi
@@ -112,10 +118,11 @@ if [[ "${PROD_DATABASE_URL:-}" == *"127.0.0.1:5434"* ]]; then
   if (exec 3<>/dev/tcp/127.0.0.1/5434) 2>/dev/null; then
     exec 3>&- 3<&-
     echo "Prod DB proxy already running on 127.0.0.1:5434 — reusing."
-  elif [ -x "$PROXY_BIN" ] && [ -f "$PROD_SA_KEY" ]; then
+  elif [ -x "$PROXY_BIN" ]; then
     echo "Starting Cloud SQL Auth Proxy (IAM auth) for $PROD_INSTANCE …"
     "$PROXY_BIN" --address 127.0.0.1 --port 5434 --auto-iam-authn \
-      --credentials-file "$PROD_SA_KEY" "$PROD_INSTANCE" &
+      ${PROD_SA_KEY:+$([ -f "$PROD_SA_KEY" ] && echo --credentials-file "$PROD_SA_KEY")} \
+      "$PROD_INSTANCE" &
     PROD_PROXY_PID=$!
     for _ in $(seq 1 30); do
       if (exec 3<>/dev/tcp/127.0.0.1/5434) 2>/dev/null; then exec 3>&- 3<&-; break; fi

@@ -110,6 +110,36 @@ One `git worktree` per concurrent agent. Several sessions sharing one checkout
 is what let another session's push carry an unreviewed commit to production on
 31 Aug 2026.
 
+## Reaching the dev app from a phone
+
+The box has no public address, so a phone cannot reach `:3000` the way a laptop
+can (VS Code Remote-SSH forwards ports for you; a phone has no such tunnel).
+
+A Microsoft dev tunnel bridges it, and is set up ON THE BOX so it does not
+depend on a laptop being awake:
+
+```bash
+curl -sL https://aka.ms/DevTunnelCliInstall | bash
+devtunnel user login -d -g            # device code, GitHub
+devtunnel create norm-dev-web
+devtunnel port create norm-dev-web -p 3000 --protocol http
+```
+
+Then a systemd unit runs `devtunnel host norm-dev-web.aue` with
+`Restart=always`. **`-p` is a PORT number** — `devtunnel host -p <tunnel-id>`
+parses the id as a port and exits 1 immediately.
+
+The URL survives a stop/start unchanged, so it can be bookmarked. Verify it is
+private by requesting it with no credentials: it must redirect to
+`github.com/login` and answer `www-authenticate: tunnel`. Do NOT pass
+`--allow-anonymous` — the dev app is wired to a real database with live
+connector credentials.
+
+**`dev.sh` is deliberately NOT auto-started on boot.** It would be the obvious
+way to make the tunnel URL always work, but the idle-shutdown counts a running
+`next dev`/`uvicorn` as "busy", so the box would never sleep — roughly $139/mo
+instead of $41. Start `dev.sh` when you sit down instead.
+
 ## Database access
 
 No key file. The VM's service account holds `cloudsql.client` and

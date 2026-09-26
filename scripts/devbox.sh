@@ -54,13 +54,50 @@ case "${1:-status}" in
     ;;
 
   code)
-    # Writes ~/.ssh/config entries with an IAP ProxyCommand, which is what lets
-    # VS Code Remote-SSH connect to a box that has no external IP.
-    up
-    "$GCLOUD" compute config-ssh --project="$PROJECT" --quiet
+    up   # writing the config is pointless if port 22 is not there to reach
+    # `gcloud compute config-ssh` CANNOT do this: it has no IAP option at all
+    # and writes an entry pointing at an external IP, which this box does not
+    # have. So derive the real invocation from `gcloud compute ssh --dry-run`
+    # — gcloud's own computed values — and turn it into a Host block that VS
+    # Code Remote-SSH can use.
+    DRY=$("$GCLOUD" compute ssh "$NAME" --project="$PROJECT" --zone="$ZONE" \
+            --tunnel-through-iap --dry-run 2>/dev/null) || {
+      echo "could not compute the ssh invocation — is the instance created?" >&2; exit 1; }
+
+    IDENT=$(sed -n 's/.* -i \([^ ]*\).*/\1/p'                       <<<"$DRY")
+    ALIAS=$(sed -n 's/.*HostKeyAlias=\([^ ]*\).*/\1/p'              <<<"$DRY")
+    KNOWN=$(sed -n 's/.*UserKnownHostsFile=\([^ ]*\).*/\1/p'        <<<"$DRY")
+    PROXY=$(sed -n 's/.*-o "ProxyCommand \(.*\)" -o ProxyUseFdpass.*/\1/p' <<<"$DRY")
+    SSHUSER=$(awk '{print $NF}' <<<"$DRY"); SSHUSER=${SSHUSER%@*}
+
+    [ -n "$ALIAS" ] && [ -n "$PROXY" ] || { echo "could not parse ssh dry-run" >&2; exit 1; }
+
+    CONF="$HOME/.ssh/config"; mkdir -p "$HOME/.ssh"; touch "$CONF"
+    BEGIN="# >>> devbox $NAME >>>"; END="# <<< devbox $NAME <<<"
+    # Rewrite in place so re-running never stacks duplicate blocks.
+    if grep -qF "$BEGIN" "$CONF"; then
+      sed -i "/$(sed 's/[][\.*^$\/]/\\&/g' <<<"$BEGIN")/,/$(sed 's/[][\.*^$\/]/\\&/g' <<<"$END")/d" "$CONF"
+    fi
+    {
+      echo "$BEGIN"
+      echo "Host $NAME"
+      echo "  HostName $ALIAS"
+      echo "  User $SSHUSER"
+      [ -n "$IDENT" ] && echo "  IdentityFile $IDENT"
+      echo "  IdentitiesOnly yes"
+      echo "  CheckHostIP no"
+      echo "  HashKnownHosts no"
+      echo "  HostKeyAlias $ALIAS"
+      [ -n "$KNOWN" ] && echo "  UserKnownHostsFile $KNOWN"
+      echo "  ProxyCommand $PROXY"
+      echo "$END"
+    } >> "$CONF"
+    chmod 600 "$CONF"
+
+    echo "Wrote Host \"$NAME\" to $CONF"
     echo
-    echo "In VS Code: Remote-SSH → Connect to Host → $NAME.$ZONE.$PROJECT"
-    echo "Then open a folder under ~/projects/."
+    echo "VS Code: Remote-SSH: Connect to Host…  ->  $NAME"
+    echo "Then File > Open Folder > /home/$SSHUSER/projects/norm"
     ;;
 
   status)
