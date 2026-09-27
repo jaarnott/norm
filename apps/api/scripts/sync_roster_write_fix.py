@@ -251,6 +251,11 @@ def main() -> None:
                 alias["description"] = tools[idx].get(
                     "description", alias["description"]
                 )
+            # read_only is set by sync_read_only_flags.py after this seed ran;
+            # a replay must not clear it.
+            if idx is not None and "read_only" in tools[idx]:
+                alias = dict(alias)
+                alias["read_only"] = tools[idx]["read_only"]
             if idx is not None and tools[idx] == alias:
                 continue
             if idx is not None:
