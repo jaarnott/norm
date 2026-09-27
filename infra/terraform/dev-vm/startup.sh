@@ -118,6 +118,17 @@ systemctl daemon-reload
 systemctl enable --now cloudsql-config.service 2>/dev/null || true
 echo "config-DB proxy service armed"
 
+# ── Always: keep user processes alive with nobody logged in ─────
+# WITHOUT THIS, EVERYTHING BELOW IS POINTLESS. systemd stops the per-user
+# manager (user@<uid>.service) when the last login session ends, taking its
+# whole app.slice with it — every tmux session, the dev servers, and the
+# resumed Claude threads. Observed 27 Sep 2026: VS Code disconnected, and 14
+# minutes later "Stopped user@515669174.service" killed the lot. It looks fine
+# while you are connected, which is exactly when you would test it.
+loginctl enable-linger jaarnott_gmail_com 2>/dev/null \
+  && echo "linger enabled for jaarnott_gmail_com" \
+  || echo "WARN: could not enable linger — tmux sessions will die on logout"
+
 # ── Always: resume Claude threads with Remote Control ───────────
 # So the box can be woken from a phone and the conversations are already live
 # at claude.ai/code. Works WITH the CPU-delta idle check below: an idle session

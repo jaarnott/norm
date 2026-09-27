@@ -86,6 +86,28 @@ what lets VS Code reach a machine with no external IP. After that it is
 **Remote-SSH → Connect to Host → `norm-dev...`**, then open a folder under
 `~/projects/` — one VS Code window per project, all on the one box.
 
+### Lingering — the thing everything else depends on
+
+```bash
+sudo loginctl enable-linger jaarnott_gmail_com
+```
+
+systemd stops the per-user manager (`user@<uid>.service`) when your last login
+session ends, and that takes its entire `app.slice` with it: every tmux
+session, the dev servers, the resumed Claude threads. Nothing is logged as an
+error — you simply come back to an empty box.
+
+Observed 27 Sep 2026: VS Code disconnected at ~19:33, and at 19:47:18 the
+journal reads `Stopped user@515669174.service`, followed by every
+`tmux-spawn-*.scope` being torn down. The dev server's own log ends mid-normal
+-request; nothing was wrong with it.
+
+Note a VS Code terminal does NOT die with it: that lives in the login-session
+scope (`user.slice/.../session-N.scope`), owned by PID 1, which is why a Claude
+session running there can survive while everything under tmux disappears.
+Different scope, different lifetime — and the reason this is easy to miss when
+testing while connected.
+
 ### Threads on boot, driven from a phone
 
 `devbox-threads.service` resumes the conversations listed in
