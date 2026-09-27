@@ -86,6 +86,36 @@ what lets VS Code reach a machine with no external IP. After that it is
 **Remote-SSH → Connect to Host → `norm-dev...`**, then open a folder under
 `~/projects/` — one VS Code window per project, all on the one box.
 
+### Threads on boot, driven from a phone
+
+`devbox-threads.service` resumes the conversations listed in
+`/etc/devbox-threads.conf` (one `<session-id>  <label>` per line) as tmux
+sessions with Remote Control, so waking the box from the Google Cloud phone app
+leaves them live at **claude.ai/code**. Session ids are the `*.jsonl` filenames
+under `~/.claude/projects/<project>/`.
+
+Two things learned the hard way:
+
+- **`--remote-control` together with `--resume` fails the first time**, with
+  "Couldn't reconnect to your Remote Control session" — it tries to re-attach
+  the thread's previous session. Issuing `/remote-control` afterwards opens a
+  fresh one, which works; the start script drives that automatically, and
+  occasionally needs a second attempt. If a session comes up without it, run
+  `/remote-control` in that session.
+- **Pick threads by SIZE, not recency.** Any test session you start becomes the
+  newest transcript, so a most-recent-N rule quietly resumes your own scratch
+  sessions instead of real conversations.
+
+Keep a thread commented out while VS Code has it open — two processes writing
+one transcript is not worth finding out about.
+
+**This is why the idle check measures CPU rather than presence.** A bare
+`pgrep -x claude` would match these always-on sessions, the box would never
+sleep, and ~$41/mo would silently become ~$139. An idle session waiting for
+input burns ~0 CPU; a working one burns plenty. So work keeps the box awake and
+waiting does not — and a phone session that goes quiet for 45 minutes will let
+the box shut down, which is the intended trade.
+
 ### Long unattended runs
 
 The box shuts down after 45 minutes idle. "Idle" already accounts for logged-in
