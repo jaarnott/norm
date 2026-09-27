@@ -94,6 +94,46 @@ def handle_message(
                         "Automated task Run Now detected (task=%s), bypassing router",
                         at.id[:12],
                     )
+                    from app.services.entitlements import (
+                        agent_entitled as _member_hired,
+                        org_id_for_user as _org_for,
+                    )
+
+                    if not _member_hired(
+                        at.agent_slug, _org_for(user_id, db), db, _cdb
+                    ):
+                        # Hierarchy v2: a retired team member's task must not
+                        # run — its tools are gone from the union, so it would
+                        # execute near-toolless and half-do the job.
+                        logger.info(
+                            "Run Now skipped: member %s not hired (task=%s)",
+                            at.agent_slug,
+                            at.id[:12],
+                        )
+                        _skip_msg = (
+                            "This task belongs to a team member that isn't "
+                            "hired right now. Re-hire them on the team page "
+                            "to run it."
+                        )
+                        db.add(
+                            Message(
+                                thread_id=thread.id,
+                                role="assistant",
+                                content=_skip_msg,
+                            )
+                        )
+                        db.commit()
+                        db.refresh(thread)
+                        return {
+                            "id": thread.id,
+                            "domain": thread.domain,
+                            "intent": thread.intent,
+                            "title": thread.title,
+                            "message": _skip_msg,
+                            "status": "skipped_unhired",
+                            "created_at": thread.created_at.isoformat(),
+                            "updated_at": thread.updated_at.isoformat(),
+                        }
                     agent = get_agent(thread.domain)
                     if agent:
                         # Unattended "Run Now": scope an unfiltered task to its
@@ -316,9 +356,24 @@ def handle_message(
 
     caps = get_all_capabilities_summary(_cdb)
 
-    # Skip LLM routing when page_context tells us which agent to use
+    # Skip LLM routing when page_context tells us which agent to use — but a
+    # page can only direct the turn to a HIRED team member. A stale tab open
+    # on a retired member's page (or a crafted page_context) falls through to
+    # normal routing, which applies the same gate.
+    _page_domain: str | None = None
     if page_context and not thread_id:
-        domain = page_context["agent"]
+        from app.services.entitlements import agent_entitled, org_id_for_user
+
+        _pd = page_context["agent"]
+        if agent_entitled(_pd, org_id_for_user(user_id, db), db, _cdb):
+            _page_domain = _pd
+        else:
+            logger.info(
+                "page_context directed to unhired member %s — falling through to routing",
+                _pd,
+            )
+    if _page_domain is not None:
+        domain = _page_domain
         routing = {"domain": domain, "title": None, "venue": None, "llm_call_id": None}
         logger.info("Skipped LLM routing — page_context directed to %s", domain)
     else:

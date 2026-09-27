@@ -134,6 +134,16 @@ def _setup_tables():
             "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS analysis JSON",
             "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS expected_replica JSON",
             "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS draft BOOLEAN",
+            # component_api_configs gained the field-mapping columns after the
+            # table first shipped; a persistent local test DB needs them added.
+            "ALTER TABLE component_api_configs "
+            "ADD COLUMN IF NOT EXISTS field_mapping JSON",
+            "ALTER TABLE component_api_configs "
+            "ADD COLUMN IF NOT EXISTS ref_fields JSON",
+            "ALTER TABLE component_api_configs "
+            "ADD COLUMN IF NOT EXISTS id_field VARCHAR",
+            "ALTER TABLE component_api_configs "
+            "ADD COLUMN IF NOT EXISTS response_field_mapping JSON",
         ):
             conn.execute(_sqltext(ddl))
     yield

@@ -138,35 +138,34 @@ async def update_plan(
 # ---------------------------------------------------------------------------
 
 
-class AgentBody(BaseModel):
-    hr: bool | None = None
-    procurement: bool | None = None
-
-
 @router.put("/{org_id}/agents")
 async def update_agents(
     org_id: str,
-    body: AgentBody,
+    body: dict[str, bool],
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("billing:manage")),
 ):
-    """Enable/disable paid agent bundles.
-
-    Legacy surface kept for the BillingTab: the body's ``hr``/``procurement``
-    keys map to the catalog apps carrying those stripe_price_keys, and the
-    switch is an org_app_entitlement row — the same one the marketplace
-    enable/disable writes, so billing and access can never disagree.
+    """DEPRECATED — hire/retire team members from the team page instead
+    (POST /api/marketplace/{slug}/enable|disable). Kept for one release for
+    the old BillingTab: body keys are stripe_price_keys mapped to catalog
+    slugs; unknown keys are ignored (dark-launch friendly). The switch is the
+    same org_app_entitlement row the marketplace writes, so billing and
+    access can never disagree.
     """
     from app.db.models import Organization, OrgAppEntitlement
     from app.services.billing_service import get_agent_apps, get_billing_info
 
+    # The org in the path must be the caller's own — billing:manage authorizes
+    # managing YOUR org's team, not any org whose id you can guess. (The older
+    # billing endpoints predate this check; auditing them is tracked work.)
+    _require_org_access(user, org_id, db)
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
 
     slug_by_key = {a["key"]: a["slug"] for a in get_agent_apps(db, org_id, config_db)}
-    for key, wanted in (("hr", body.hr), ("procurement", body.procurement)):
+    for key, wanted in body.items():
         if wanted is None or key not in slug_by_key:
             continue
         row = (

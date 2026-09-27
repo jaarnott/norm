@@ -368,6 +368,35 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
         t0 = time.time()
 
         try:
+            # Hierarchy v2: a retired team member's task never runs — its tools
+            # are gone from the org's union, so the run would half-do the job
+            # with whatever survives. The run record says why, so the task
+            # board shows it instead of a mystery no-op. Fail-open: gating
+            # inactive (or no org) skips nothing.
+            from app.services.entitlements import agent_entitled, org_id_for_user
+
+            _org = org_id_for_user(task.created_by, db)
+            if not agent_entitled(task.agent_slug, _org, db, config_db):
+                run.status = "skipped_unhired"
+                run.error_message = (
+                    f"Team member '{task.agent_slug}' is not hired — "
+                    "re-hire them on the team page to resume this task."
+                )
+                run.completed_at = datetime.now(timezone.utc)
+                run.duration_ms = int((time.time() - t0) * 1000)
+                db.commit()
+                logger.info(
+                    "Scheduled run skipped: member %s not hired (task=%s)",
+                    task.agent_slug,
+                    task.id[:12],
+                )
+                return {
+                    "success": False,
+                    "status": "skipped_unhired",
+                    "error": run.error_message,
+                    "run_id": run.id,
+                }
+
             # Get agent and tools
             agent = get_agent(task.agent_slug)
             if not agent:

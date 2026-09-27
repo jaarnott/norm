@@ -28,10 +28,11 @@ TOPUP_PRICE_CENTS = 1000  # $10 per top-up unit
 def get_agent_apps(db: Session, org_id: str, config_db=None) -> list[dict]:
     """The catalog's agent-bundle apps with this org's entitlement state.
 
-    An app whose composition ``owns_agents`` is the billing unit that replaced
-    the three ``Organization.*_agent_enabled`` booleans — the marketplace
-    entitlement now drives BOTH access (the supervisor's agent gate) and the
-    charge, so they can never disagree. Prices live on the catalog rows.
+    Hierarchy v2: the billable team members are the ``tier='agent'`` catalog
+    rows (with an ``owns_agents``-only fallback for pre-rollout catalogs).
+    The marketplace entitlement drives BOTH access (the hired-member gates)
+    and the charge, so they can never disagree — it replaced the three
+    ``Organization.*_agent_enabled`` booleans. Prices live on the rows.
     """
     from app.db.config_models import MarketplaceApp
     from app.services.entitlements import entitled_slugs
@@ -42,14 +43,17 @@ def get_agent_apps(db: Session, org_id: str, config_db=None) -> list[dict]:
 
         config_db = _ConfigSessionLocal()
     try:
-        rows = [
-            a
-            for a in config_db.query(MarketplaceApp)
+        active = (
+            config_db.query(MarketplaceApp)
             .filter(MarketplaceApp.status == "active")
             .order_by(MarketplaceApp.slug)
             .all()
-            if (a.composition or {}).get("owns_agents")
-        ]
+        )
+        rows = [a for a in active if a.tier == "agent"]
+        if not rows:
+            # Transition fallback: catalogs seeded before the team rollout
+            # mark billable agents by owns_agents alone. Dies in cleanup.
+            rows = [a for a in active if (a.composition or {}).get("owns_agents")]
         entitled = entitled_slugs(org_id, db, config_db)
         return [
             {
@@ -60,6 +64,48 @@ def get_agent_apps(db: Session, org_id: str, config_db=None) -> list[dict]:
                 "enabled": a.slug in entitled,
             }
             for a in rows
+        ]
+    finally:
+        if owns_config_db:
+            config_db.close()
+
+
+def get_priced_apps(db: Session, org_id: str, config_db=None) -> list[dict]:
+    """Priced Apps that are ON for this org — the second billing line.
+
+    Every App has an enabled state; most are bundled with their team member
+    and free, but an App may carry its own price (hierarchy v2). Charged iff
+    it is actually on: used by a hired member AND entitled — the same
+    ``apps_on`` resolver the tool/page gates read, so access and the charge
+    ride one switch here too. Empty while gating is inactive."""
+    from app.db.config_models import MarketplaceApp
+    from app.services.entitlements import apps_on
+
+    owns_config_db = config_db is None
+    if owns_config_db:
+        from app.db.engine import _ConfigSessionLocal
+
+        config_db = _ConfigSessionLocal()
+    try:
+        on = apps_on(org_id, db, config_db)
+        if not on:
+            return []
+        rows = (
+            config_db.query(MarketplaceApp)
+            .filter(MarketplaceApp.status == "active")
+            .order_by(MarketplaceApp.slug)
+            .all()
+        )
+        return [
+            {
+                "slug": a.slug,
+                "name": a.name,
+                "key": a.stripe_price_key or a.slug,
+                "price_cents": a.price_cents or 0,
+                "enabled": True,
+            }
+            for a in rows
+            if a.tier in ("app", "user") and a.slug in on and (a.price_cents or 0) > 0
         ]
     finally:
         if owns_config_db:
@@ -221,10 +267,13 @@ def get_billing_info(db: Session, org_id: str, config_db=None) -> dict:
     venue_count = len(org.venues) if org.venues else 0
     quota_info = check_quota(db, org_id)
 
-    # Calculate monthly cost — agent bundles come from the marketplace catalog
+    # Calculate monthly cost — team members and priced Apps both come from
+    # the marketplace catalog (hierarchy v2: both levels are billable).
     plan_cost = PLAN_QUOTAS.get(sub.token_plan, {}).get("price_cents", 0) if sub else 0
     agent_apps = get_agent_apps(db, org_id, config_db)
     agent_cost = sum(a["price_cents"] for a in agent_apps if a["enabled"])
+    priced_apps = get_priced_apps(db, org_id, config_db)
+    apps_cost = sum(a["price_cents"] for a in priced_apps)
     venue_cost = venue_count * VENUE_PRICE_CENTS
 
     return {
@@ -243,11 +292,13 @@ def get_billing_info(db: Session, org_id: str, config_db=None) -> dict:
         # existing BillingTab keeps working; agent_apps is the general form.
         "agents": {a["key"]: a["enabled"] for a in agent_apps},
         "agent_apps": agent_apps,
+        "priced_apps": priced_apps,
         "venue_count": venue_count,
-        "monthly_cost_cents": plan_cost + agent_cost + venue_cost,
+        "monthly_cost_cents": plan_cost + agent_cost + apps_cost + venue_cost,
         "cost_breakdown": {
             "plan": plan_cost,
             "agents": agent_cost,
+            "apps": apps_cost,
             "venues": venue_cost,
         },
     }
@@ -357,12 +408,18 @@ def create_subscription(
     if price_id:
         items.append({"price": price_id})
 
-    # Agent bundles — entitled catalog apps with a price
+    # Hired team members with a price, then priced Apps that are on — the
+    # same resolvers the access gates read, so the subscription can never
+    # bill what the org can't use.
     for agent_app in get_agent_apps(db, org_id, config_db):
         if agent_app["enabled"] and agent_app["price_cents"]:
             agent_price = settings.get_stripe_price_id(agent_app["key"])
             if agent_price:
                 items.append({"price": agent_price})
+    for priced_app in get_priced_apps(db, org_id, config_db):
+        app_price = settings.get_stripe_price_id(priced_app["key"])
+        if app_price:
+            items.append({"price": app_price})
 
     # Venues
     venue_count = len(org.venues) if org.venues else 0

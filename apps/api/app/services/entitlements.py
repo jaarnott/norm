@@ -18,6 +18,18 @@ docs/lite-apps-architecture.md Part 4, docs/apps-marketplace-plan.md Phase 1):
     2. prompt_builder tools   -> unentitled_connectors()  (skipped bindings)
     3. mcp projection         -> inherits (2): project_tools gates through
                                  _collect_tools, so no third code path exists.
+
+Hierarchy v2 (Sep 2026 — AI Team Members -> Apps -> Components -> Connections):
+the catalog now carries two more tiers. ``tier='agent'`` rows are the hireable
+team members (owns_agents joins them to agent_configs; hiring one is the
+entitlement); ``tier='app'`` rows are the Apps a member uses
+(composition["unlocks"] on the agent row names them). Every App has an enabled
+state: hiring a member enables its bundled Apps by default, individual Apps
+can be switched off (an explicit entitlement row), and a priced App ships
+bundled=false until enabled. ``hired_agent_slugs``/``apps_on`` resolve those
+two levels; both return None while no tier='agent' rows exist, which is the
+dark-launch switch — code deploys everywhere before the shared config DB
+changes shape.
 """
 
 from __future__ import annotations
@@ -139,24 +151,92 @@ def unentitled_tool_actions(
     return claimed - kept
 
 
+# The team members every organisation gets for free, always on: the base
+# assistant, the router (an internal identity, never a product), Reports and
+# App Builder (owner decision 27 Sep 2026: separate free tabs, not hireable).
+ALWAYS_INCLUDED_AGENTS = frozenset({"base", "router", "reports", "app_builder"})
+
+
+def _agent_rows(apps) -> list:
+    return [
+        a
+        for a in apps
+        if a.tier == "agent" and (a.composition or {}).get("owns_agents")
+    ]
+
+
+def hired_agent_slugs(
+    organization_id: str | None, db: Session, config_db: Session
+) -> set[str] | None:
+    """Agent slugs this org has hired, or None when gating is inactive.
+
+    None (fail open — keep everything) when the catalog has no tier='agent'
+    rows yet or there is no org to resolve for; the caller must treat None as
+    "no filtering". Otherwise ALWAYS_INCLUDED_AGENTS plus the owns_agents of
+    every entitled agent-tier row. Explicit entitlement rows win, bundled
+    defaults apply — inherited from entitled_slugs."""
+    apps = _catalog(config_db)
+    agent_rows = _agent_rows(apps)
+    if not agent_rows or not organization_id:
+        return None
+    entitled = entitled_slugs(organization_id, db, config_db)
+    hired = set(ALWAYS_INCLUDED_AGENTS)
+    for a in agent_rows:
+        if a.slug in entitled:
+            hired.update(a.composition["owns_agents"])
+    return hired
+
+
+def apps_on(
+    organization_id: str | None, db: Session, config_db: Session
+) -> set[str] | None:
+    """Slugs of the Apps that are ON for this org, or None when gating is
+    inactive.
+
+    Every App has an enabled state. A tier='app' row is on iff a hired team
+    member uses it (some entitled agent row's composition["unlocks"] names it)
+    AND the App itself is entitled (explicit row wins, else bundled default) —
+    hiring a member enables its bundled Apps, an org can switch one off, a
+    priced App ships bundled=false until enabled. A tier='user' row (published
+    community App) is on iff entitled — its pages fall back to the Norm menu
+    when its member isn't hired, so hire state doesn't gate it."""
+    apps = _catalog(config_db)
+    agent_rows = _agent_rows(apps)
+    if not agent_rows or not organization_id:
+        return None
+    entitled = entitled_slugs(organization_id, db, config_db)
+    unlocked: set[str] = set()
+    for a in agent_rows:
+        if a.slug in entitled:
+            unlocked.update((a.composition or {}).get("unlocks") or [])
+    on: set[str] = set()
+    for a in apps:
+        if a.tier == "app" and a.slug in unlocked and a.slug in entitled:
+            on.add(a.slug)
+        elif a.tier == "user" and a.slug in entitled:
+            on.add(a.slug)
+    return on
+
+
 def agent_entitled(
     domain: str | None, organization_id: str | None, db: Session, config_db: Session
 ) -> bool:
-    """False only when some catalog App OWNS this agent and none of the owning
-    apps is entitled. Ownership is composition["owns_agents"] — the agent-bundle
-    rows (Norm HR etc.). composition["agents"] is informational ("this app's
-    pages appear in these agents' menus") and deliberately NOT consulted here,
-    so disabling an integration app never switches an agent off. An unowned
-    agent is always allowed."""
+    """False only when team-member gating is active, some tier='agent' row
+    owns this domain, and the org hasn't hired it. Always-included members
+    (base, router, reports, app_builder) and unowned domains are always
+    allowed; gating inactive (hired_agent_slugs -> None) allows everything —
+    the fail-open contract every enforcement point shares."""
     if not domain or not organization_id:
         return True
-    apps = _catalog(config_db)
-    owning = [
-        a.slug
-        for a in apps
-        if domain in ((a.composition or {}).get("owns_agents") or [])
-    ]
-    if not owning:
+    hired = hired_agent_slugs(organization_id, db, config_db)
+    if hired is None:
         return True
-    entitled = entitled_slugs(organization_id, db, config_db)
-    return any(slug in entitled for slug in owning)
+    if domain in hired:
+        return True
+    owned = {
+        slug
+        for a in _agent_rows(_catalog(config_db))
+        for slug in a.composition["owns_agents"]
+    }
+    # A domain no agent row owns is unhireable, therefore ungateable.
+    return domain not in owned

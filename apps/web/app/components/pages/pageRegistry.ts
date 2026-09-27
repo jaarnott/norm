@@ -5,6 +5,15 @@ export interface FunctionalPageConfig {
   label: string;
   icon: LucideIcon;
   agent: string;
+  /** The App (marketplace slug) this page ships with — hierarchy v2. A page
+   *  with an `app` shows iff that App is on for the org; a page without one
+   *  is the team member's workspace chrome (dashboard, tasks) and shows iff
+   *  the member is hired. */
+  app?: string;
+  /** Connections this page needs for the active venue. Defaults to the
+   *  loadAction connector; self-loading pages (`_none`) declare theirs
+   *  explicitly so the connection guard can prompt instead of blank-failing. */
+  connections?: string[];
   component: string;
   loadAction: {
     connector: string;
@@ -96,6 +105,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'roster',
+    app: 'loaded-rostering',
+    connections: ['loadedhub'],
     label: 'Roster',
     icon: Calendar,
     agent: 'time_attendance',
@@ -121,6 +132,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   // HR (Hiring & Onboarding)
   {
     id: 'hiring',
+    app: 'bamboohr-app',
+    connections: ['bamboohr'],
     // Disambiguated from the Hiring APP, which now sits in this same menu and
     // supersedes this page. Two entries both reading 'Hiring' is a coin toss.
     label: 'Hiring (BambooHR)',
@@ -148,6 +161,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'orders',
+    app: 'loaded-procurement',
+    connections: ['loadedhub'],
     label: 'Orders',
     icon: ShoppingCart,
     agent: 'procurement',
@@ -160,6 +175,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'invoices',
+    app: 'loaded-procurement',
+    connections: ['loadedhub'],
     label: 'Invoices',
     icon: Receipt,
     agent: 'procurement',
@@ -172,6 +189,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // Self-loading via the supplier_tenders component-api rows. Declared in the
     // Loaded app's marketplace composition (sync_marketplace_catalog.py).
     id: 'supplier-tenders',
+    app: 'loaded-procurement',
+    connections: ['cook_brothers_app'],
     label: 'Supplier Tenders',
     icon: Gavel,
     agent: 'procurement',
@@ -228,6 +247,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // Self-loading: MenuEditor fetches the menu list + recipe options itself via
     // callComponentApi('menu_editor', ...), so no connector loadAction.
     id: 'menus',
+    app: 'loaded-kitchen',
+    connections: ['loadedhub'],
     label: 'Menus',
     icon: BookOpen,
     agent: 'executive_chef',
@@ -238,6 +259,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // Self-loading: RecipeEditor fetches the recipe list + units + stock items
     // itself via callComponentApi('recipe_editor', ...).
     id: 'recipes',
+    app: 'loaded-kitchen',
+    connections: ['loadedhub'],
     label: 'Recipes',
     icon: ChefHat,
     agent: 'executive_chef',
@@ -247,6 +270,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   {
     // Self-loading: MenuEngineering fetches the COGS-products report + menus itself.
     id: 'menu-engineering',
+    app: 'loaded-kitchen',
+    connections: ['loadedhub'],
     label: 'Menu Engineering',
     icon: Grid2x2,
     agent: 'executive_chef',

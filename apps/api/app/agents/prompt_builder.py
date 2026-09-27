@@ -142,12 +142,23 @@ def _collect_tools(
     # honors marketplace toggles with no second code path. Inert until the
     # catalog is seeded (empty sets), and fail-open by design.
     from app.services.entitlements import (
+        hired_agent_slugs,
         org_id_for_user,
         unentitled_connectors,
         unentitled_tool_actions,
     )
 
     _org = org_id_for_user(user_id, db)
+    # Hierarchy v2, filter one: is the team member hired? A binding belongs to
+    # a member (agent_slug); the org's tool surface is the union over HIRED
+    # members' bindings (always-included ones ride along). None = gating
+    # inactive (no tier='agent' catalog rows yet, or no org) = keep everything
+    # — the dark-launch/fail-open contract.
+    _hired = hired_agent_slugs(_org, db, _cdb)
+    if _hired is not None:
+        bindings = [b for b in bindings if b.agent_slug in _hired]
+    # Filter two: is the App on? A disabled App's claimed connections /
+    # tool_actions drop out unless another entitled App claims them.
     _blocked = unentitled_connectors(_org, db, _cdb)
     if _blocked:
         bindings = [b for b in bindings if b.connector_name not in _blocked]

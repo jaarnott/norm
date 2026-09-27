@@ -33,9 +33,14 @@ interface ThreadListProps {
   onNewChat: () => void;
   onCollapsePanel?: () => void;
   onSelectPage?: (pageId: string) => void;
+  /** App slugs that are ON for the org (hierarchy v2). null/undefined = show
+   *  everything (gating inactive — the fail-open contract). A page with an
+   *  `app` shows iff its App is on; switching one App off removes exactly
+   *  its pages. */
+  appsOn?: Set<string> | null;
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages }: ThreadListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn }: ThreadListProps) {
   // Filter by agent
   const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => t.domain === activeAgent);
   // Apply status filter
@@ -147,7 +152,10 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
         >
           <Search size={20} strokeWidth={1.75} /> Search
         </button>
-        {[...FUNCTIONAL_PAGES, ...(extraPages ?? [])].filter(p => p.agent === activeAgent).map((page, idx) => {
+        {[...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
+          .filter(p => p.agent === activeAgent)
+          .filter(p => !p.app || !appsOn || appsOn.has(p.app))
+          .map((page, idx) => {
           const Icon = page.icon;
           return (
             <button

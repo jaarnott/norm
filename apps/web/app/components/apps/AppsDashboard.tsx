@@ -115,7 +115,10 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
       .catch(() => setApps([]));
     apiFetch('/api/marketplace')
       .then((r) => (r.ok ? r.json() : { apps: [] }))
-      .then((d) => setCatalog(d.apps ?? []))
+      // Hierarchy v2: team members (tier 'agent') and their Apps (tier 'app')
+      // are hired/managed on the team page — this hub keeps the community
+      // shelf and the team's own apps only.
+      .then((d) => setCatalog(((d.apps ?? []) as CatalogApp[]).filter((a) => a.tier !== 'agent' && a.tier !== 'app')))
       .catch(() => setCatalog([]));
   }, []);
   useEffect(() => { load(); }, [load]);

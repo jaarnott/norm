@@ -17,10 +17,12 @@ import type { SendOptions } from '../components/chat/AttachmentComposer';
 import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
 import { getPageDocument } from '../lib/pageDocument';
-import { PanelLeft as PanelLeftIcon, ArrowLeft, Menu, Settings, LogOut } from 'lucide-react';
+import { PanelLeft as PanelLeftIcon, ArrowLeft, Menu, Settings, LogOut, UserRoundPlus } from 'lucide-react';
 import { AGENTS } from '../components/layout/Sidebar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useActiveVenue } from '../hooks/useActiveVenue';
+import { useTeam } from '../hooks/useTeam';
+import TeamPage from '../components/team/TeamPage';
 import type { Thread, WidgetAction, VenueDetail } from '../types';
 
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null };
@@ -96,6 +98,30 @@ export default function Home() {
   const [connectConnector, setConnectConnector] = useState<string | null>(null);
   const { isMobile } = useBreakpoint();
   const [mobileView, setMobileView] = useState<'list' | 'detail' | 'home' | 'settings'>('home');
+  // Hierarchy v2: which team members are hired and which Apps are on. null
+  // sets = show everything (gating inactive / fetch failed — fail-open).
+  const team = useTeam(token);
+  // A pinned custom app whose member isn't hired joins the Norm/home menu
+  // instead of vanishing — an app is never invisible, never a reason to hire.
+  const effectiveAppPages = team.hired
+    ? appPages.map(p => (p.agent !== 'home' && !team.hired!.has(p.agent) ? { ...p, agent: 'home' } : p))
+    : appPages;
+  // Snap navigation home when its owner leaves the hired set (retire in
+  // another tab, or a stale restore): state-driven nav makes this the whole
+  // direct-access guard surface.
+  useEffect(() => {
+    if (!team.hired) return;
+    const NON_AGENT = new Set(['home', 'settings', 'team']);
+    if (!NON_AGENT.has(activeAgent) && !team.hired.has(activeAgent)) {
+      setActiveAgent('home');
+      setActivePage(null);
+      return;
+    }
+    if (activePage && team.appsOn) {
+      const cfg = FUNCTIONAL_PAGES.find(pg => pg.id === activePage);
+      if (cfg?.app && !team.appsOn.has(cfg.app)) setActivePage(null);
+    }
+  }, [team.hired, team.appsOn, activeAgent, activePage]);
 
   // Check for existing auth on mount
   useEffect(() => {
@@ -934,7 +960,9 @@ export default function Home() {
           }}>
             <Menu size={22} strokeWidth={1.75} />
           </button>
-          <div style={{ flex: 1, overflow: 'auto', paddingTop: '3rem' }}><SettingsPanel /></div>
+          <div style={{ flex: 1, overflow: 'auto', paddingTop: '3rem' }}>
+            {activeAgent === 'team' ? <TeamPage user={user} /> : <SettingsPanel />}
+          </div>
         </div>
       );
     }
@@ -961,7 +989,7 @@ export default function Home() {
               display: 'flex', alignItems: 'center', gap: '0.25rem',
               padding: '0.4rem 0.75rem',
             }}>
-              {AGENTS.map((agent) => {
+              {AGENTS.filter(a => a.id === 'home' || !team.hired || team.hired.has(a.id)).map((agent) => {
                 const isActive = activeAgent === agent.id;
                 return (
                   <button
@@ -999,7 +1027,8 @@ export default function Home() {
               onFilterChange={setFilter}
               onNewChat={() => { handleNewChat(); setMobileView('home'); }}
               onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
-              extraPages={appPages}
+              extraPages={effectiveAppPages}
+              appsOn={team.appsOn}
             />
           </div>
 
@@ -1018,6 +1047,18 @@ export default function Home() {
                 {user.full_name.charAt(0).toUpperCase()}
               </div>
               <span style={{ fontSize: '0.8rem', color: '#666', flex: 1 }}>{user.full_name}</span>
+              <button
+                data-testid="sidebar-team-mobile"
+                onClick={() => { setActiveAgent('team'); setMobileView('settings'); }}
+                title="Your AI team"
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  minWidth: 36, minHeight: 36, border: 'none', borderRadius: 6,
+                  backgroundColor: 'transparent', cursor: 'pointer', color: '#bbb',
+                }}
+              >
+                <UserRoundPlus size={18} strokeWidth={1.75} />
+              </button>
               {showSettings && (
                 <button
                   data-testid="sidebar-settings"
@@ -1089,15 +1130,16 @@ export default function Home() {
         threadCounts={threadCounts}
         user={user}
         onLogout={handleLogout}
+        hired={team.hired}
       />
 
       {/* Center Panel */}
       <div style={{
         display: 'flex',
         flexDirection: 'column',
-        width: (panelCollapsed || activeAgent === 'settings') ? 0 : 360,
-        minWidth: (panelCollapsed || activeAgent === 'settings') ? 0 : 360,
-        borderRight: (panelCollapsed || activeAgent === 'settings') ? 'none' : '1px solid #e2ddd7',
+        width: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 0 : 360,
+        minWidth: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 0 : 360,
+        borderRight: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 'none' : '1px solid #e2ddd7',
         overflow: 'hidden',
         transition: 'width 0.2s ease, min-width 0.2s ease',
       }}>
@@ -1112,8 +1154,9 @@ export default function Home() {
           onFilterChange={setFilter}
           onNewChat={handleNewChat}
           onCollapsePanel={() => setPanelCollapsed(true)}
-          extraPages={appPages}
+          extraPages={effectiveAppPages}
           onSelectPage={handleSelectPage}
+          appsOn={team.appsOn}
         />
       </div>
 
@@ -1136,6 +1179,8 @@ export default function Home() {
         )}
         {activeAgent === 'settings' ? (
           <SettingsPanel />
+        ) : activeAgent === 'team' ? (
+          <TeamPage user={user} />
         ) : connectPanel ? (
           connectPanel
         ) : activePage ? (() => {

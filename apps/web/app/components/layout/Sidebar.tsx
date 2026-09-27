@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Home, Package, UserRound, Clock, BarChart3, Megaphone, ChefHat, Blocks, Settings, LogOut, Menu, X, type LucideIcon } from 'lucide-react';
+import { Home, Package, UserRound, Clock, BarChart3, Megaphone, ChefHat, Blocks, Settings, LogOut, Menu, X, UserRoundPlus, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 
@@ -42,9 +42,13 @@ interface SidebarProps {
   user?: SidebarUser | null;
   onLogout?: () => void;
   children?: React.ReactNode;
+  /** Hired team-member slugs (hierarchy v2). null/undefined = show every tab
+   *  (gating inactive — fail-open). AGENTS stays the icon/colour registry;
+   *  this only decides which tabs render. */
+  hired?: Set<string> | null;
 }
 
-export default function Sidebar({ selected, onSelect, threadCounts, user, onLogout, children }: SidebarProps) {
+export default function Sidebar({ selected, onSelect, threadCounts, user, onLogout, children, hired }: SidebarProps) {
   const { isMobile } = useBreakpoint();
   const [menuOpen, setMenuOpen] = useState(false);
   const showSettings = hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read');
@@ -76,7 +80,7 @@ export default function Sidebar({ selected, onSelect, threadCounts, user, onLogo
 
       {/* Agent icons */}
       <div style={{ padding: '0.75rem 0', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-        {AGENTS.map((agent) => {
+        {AGENTS.filter((a) => a.id === 'home' || !hired || hired.has(a.id)).map((agent) => {
           const isActive = selected === agent.id;
           return (
             <button
@@ -102,6 +106,27 @@ export default function Sidebar({ selected, onSelect, threadCounts, user, onLogo
             </button>
           );
         })}
+        <button
+          data-testid="sidebar-team"
+          onClick={() => onSelect('team')}
+          title="Your AI team — hire agents"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 42,
+            height: 42,
+            border: '1px dashed #d5cfc7',
+            borderRadius: 8,
+            backgroundColor: selected === 'team' ? '#f0ebe5' : 'transparent',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            color: '#8a8378',
+            marginTop: 6,
+          }}
+        >
+          <UserRoundPlus size={20} strokeWidth={1.75} />
+        </button>
       </div>
 
       {/* Bottom section: Settings + User + Logout */}

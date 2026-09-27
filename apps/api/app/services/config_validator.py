@@ -550,6 +550,150 @@ def check_binding_actions(
     return issues
 
 
+def check_team_catalog(
+    agent_rows: list,
+    app_rows: list,
+    known_agent_slugs: set[str],
+    always_included: set[str],
+    bindings: list[tuple[str, bool, int]],
+) -> list[ConfigIssue]:
+    """Hierarchy-v2 shape checks: team members join agent_configs, every
+    binding belongs to someone hireable, and wildcards stay on the base.
+
+    ``bindings`` entries are (agent_slug, enabled, capability_count).
+    Silent-loss class: once member gating is live, a binding whose slug no
+    agent row owns is dead weight — its tools vanish for every org the day
+    the first tier='agent' rows appear, with no error anywhere.
+    """
+    issues: list[ConfigIssue] = []
+    owned: set[str] = set()
+    for row in agent_rows:
+        owns = (row.composition or {}).get("owns_agents") or []
+        unlocks = (row.composition or {}).get("unlocks") or []
+        owned.update(owns)
+        for slug in owns:
+            if slug not in known_agent_slugs:
+                issues.append(
+                    ConfigIssue(
+                        severity="error",
+                        where=f"catalog.{row.slug}",
+                        problem=(
+                            f"owns_agents names '{slug}', which has no "
+                            "agent_configs row — hiring this member configures "
+                            "nothing"
+                        ),
+                        fix="Fix the slug, or create the agent config.",
+                    )
+                )
+        app_slugs = {a.slug for a in app_rows}
+        for app_slug in unlocks:
+            if app_slug not in app_slugs:
+                issues.append(
+                    ConfigIssue(
+                        severity="error",
+                        where=f"catalog.{row.slug}",
+                        problem=(
+                            f"unlocks names '{app_slug}', which is not a "
+                            "tier='app' catalog row — the member's card "
+                            "advertises an App that doesn't exist"
+                        ),
+                        fix="Create the App row, or remove the entry.",
+                    )
+                )
+    if not agent_rows:
+        return issues  # pre-rollout catalog: nothing else to hold it to
+
+    for agent_slug, enabled, cap_count in bindings:
+        if not enabled:
+            continue
+        if agent_slug not in owned and agent_slug not in always_included:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"binding.{agent_slug}",
+                    problem=(
+                        f"binding belongs to '{agent_slug}', which no "
+                        "tier='agent' row owns and which is not always "
+                        "included — its tools are unreachable for every org"
+                    ),
+                    fix=(
+                        "Add the member to a tier='agent' row's owns_agents, "
+                        "or move/disable the binding."
+                    ),
+                )
+            )
+        if cap_count == 0 and agent_slug not in always_included:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"binding.{agent_slug}",
+                    problem=(
+                        "empty capability list (= every action on the "
+                        "connector) on a hireable member — hire/retire would "
+                        "toggle a whole connector surface for everyone"
+                    ),
+                    fix=(
+                        "Move the wildcard binding to an always-included slug "
+                        "(base), or curate its capabilities."
+                    ),
+                )
+            )
+    return issues
+
+
+def check_app_pages_reachable(agent_rows: list, app_rows: list) -> list[ConfigIssue]:
+    """Every App carrying a page must be used by some team member — an App no
+    member unlocks can never be on, so its pages are unreachable dead config
+    (tier='user' rows are exempt: they gate on entitlement alone and fall
+    back to the Norm menu)."""
+    issues: list[ConfigIssue] = []
+    if not agent_rows:
+        return issues
+    unlocked: set[str] = set()
+    for row in agent_rows:
+        unlocked.update((row.composition or {}).get("unlocks") or [])
+    for app in app_rows:
+        if app.tier != "app" or app.slug in unlocked:
+            continue
+        has_page = any(
+            isinstance(e, dict) and e.get("page")
+            for e in (app.composition or {}).get("components") or []
+        )
+        if has_page:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"catalog.{app.slug}",
+                    problem=(
+                        "App declares pages but no team member unlocks it — "
+                        "the pages are unreachable for every org"
+                    ),
+                    fix="Add it to a member's unlocks, or remove the row.",
+                )
+            )
+    return issues
+
+
+def check_priced_rows_have_stripe_keys(rows: list) -> list[ConfigIssue]:
+    """A priced catalog row without a stripe_price_key bills $0 silently —
+    the org sees the price, the subscription never carries the item."""
+    issues: list[ConfigIssue] = []
+    for row in rows:
+        if (row.price_cents or 0) > 0 and not row.stripe_price_key:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"catalog.{row.slug}",
+                    problem=(
+                        f"priced at {row.price_cents} cents but has no "
+                        "stripe_price_key — shown as paid, never charged"
+                    ),
+                    fix="Set stripe_price_key (and the STRIPE_PRICE_* secret).",
+                )
+            )
+    return issues
+
+
 def check_task_tool_filters(
     task_id: str,
     title: str,
@@ -880,6 +1024,33 @@ def validate_config(db=None, config_db=None) -> dict:
                         set(actions_by_connector),
                     )
                 )
+
+            # Hierarchy v2: team members <-> agent configs <-> bindings <->
+            # Apps must stay a closed graph, and money must be chargeable.
+            from app.db.config_models import AgentConfig
+            from app.services.entitlements import ALWAYS_INCLUDED_AGENTS
+
+            active_rows = [a for a in catalog_rows if a.status == "active"]
+            agent_rows = [a for a in active_rows if a.tier == "agent"]
+            app_rows = [a for a in active_rows if a.tier in ("app", "user")]
+            known_agent_slugs = {
+                r[0] for r in config_db.query(AgentConfig.agent_slug).all()
+            }
+            binding_shapes = [
+                (b.agent_slug, bool(b.enabled), len(b.capabilities or []))
+                for b in config_db.query(AgentConnectionBinding).all()
+            ]
+            issues.extend(
+                check_team_catalog(
+                    agent_rows,
+                    app_rows,
+                    known_agent_slugs,
+                    set(ALWAYS_INCLUDED_AGENTS),
+                    binding_shapes,
+                )
+            )
+            issues.extend(check_app_pages_reachable(agent_rows, app_rows))
+            issues.extend(check_priced_rows_have_stripe_keys(active_rows))
 
         # MCP capability drift: every enabled row must still resolve to a real,
         # read-only connector action or an enabled playbook.

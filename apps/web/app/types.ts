@@ -55,16 +55,17 @@ export interface BillingInfo {
     quota: number;
     remaining: number;
   };
-  agents: {
-    hr: boolean;
-    procurement: boolean;
-    reports: boolean;
-  };
+  agents: Record<string, boolean>;
+  /** Hierarchy v2: the general form — team members with real prices. */
+  agent_apps: { slug: string; name: string; key: string; price_cents: number; enabled: boolean }[];
+  /** Priced Apps that are ON (member hired ∧ app enabled). */
+  priced_apps: { slug: string; name: string; key: string; price_cents: number; enabled: boolean }[];
   venue_count: number;
   monthly_cost_cents: number;
   cost_breakdown: {
     plan: number;
     agents: number;
+    apps?: number;
     venues: number;
   };
 }

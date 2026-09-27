@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_config_db, get_config_db_rw
+from app.db.engine import get_config_db, get_config_db_rw, get_db
 from app.db.models import AgentConfig, AgentConnectionBinding, ConnectionSpec, User
 from app.auth.dependencies import get_current_user, require_permission
 from app.services.agent_config_service import (
@@ -109,6 +109,22 @@ def _agent_to_dict(
     if include_prompt:
         result["system_prompt"] = prompt
     return result
+
+
+@router.get("/team")
+async def get_team(
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """The AI team: members, hire state, the Apps each uses, and what those
+    Apps need connected. One fetch drives the team page, the sidebar's hired
+    tabs, and the page gate — everyone may read it (only `billing:manage` can
+    change entitlements)."""
+    from app.services.agent_catalog import team_payload
+    from app.services.entitlements import org_id_for_user
+
+    return team_payload(org_id_for_user(user.id, db), db, config_db)
 
 
 @router.get("/agents")

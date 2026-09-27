@@ -185,7 +185,7 @@ class TestAgentEntitlementBilling:
             MarketplaceApp(
                 slug=slug,
                 name=slug,
-                tier="platform",
+                tier="agent",
                 status="active",
                 bundled=bundled,
                 price_cents=price,

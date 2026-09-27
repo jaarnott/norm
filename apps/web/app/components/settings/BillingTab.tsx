@@ -190,21 +190,6 @@ export default function BillingTab({ orgId }: { orgId: string }) {
     setActionLoading(null);
   };
 
-  const toggleAgent = async (agent: 'hr' | 'procurement', enabled: boolean) => {
-    setActionLoading(`agent-${agent}`);
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/billing/${orgId}/agents`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [agent]: enabled }),
-      });
-      if (res.ok) setBilling(await res.json());
-      else { const d = await res.json(); setError(d.detail || 'Failed to update agent'); }
-    } catch (e) { setError(String(e)); }
-    setActionLoading(null);
-  };
-
   if (loading) return <div style={{ padding: '1rem', color: '#888' }}>Loading billing...</div>;
   if (fetchError) return <div style={{ padding: '1rem', color: '#c53030' }}>{fetchError} <button onClick={fetchBilling} style={{ color: '#2563eb', border: 'none', background: 'none', cursor: 'pointer', textDecoration: 'underline' }}>Retry</button></div>;
   if (!billing) return <div style={{ padding: '1rem', color: '#888' }}>No billing information available.</div>;
@@ -299,9 +284,15 @@ export default function BillingTab({ orgId }: { orgId: string }) {
             <span>{formatCents(billing.cost_breakdown.plan)}/mo</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #f0f0f0' }}>
-            <span>Agents ({[billing.agents.hr && 'HR', billing.agents.procurement && 'Procurement'].filter(Boolean).join(', ') || 'none'})</span>
+            <span>Team ({(billing.agent_apps ?? []).filter(a => a.enabled).map(a => a.name).join(', ') || 'none'})</span>
             <span>{formatCents(billing.cost_breakdown.agents)}/mo</span>
           </div>
+          {(billing.cost_breakdown.apps ?? 0) > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #f0f0f0' }}>
+              <span>Apps ({(billing.priced_apps ?? []).map(a => a.name).join(', ')})</span>
+              <span>{formatCents(billing.cost_breakdown.apps ?? 0)}/mo</span>
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #f0f0f0' }}>
             <span>Venues ({billing.venue_count})</span>
             <span>{formatCents(billing.cost_breakdown.venues)}/mo</span>
@@ -313,28 +304,28 @@ export default function BillingTab({ orgId }: { orgId: string }) {
         </div>
       </div>
 
-      {/* Agents */}
+      {/* Your AI team — hired and paid state; managed on the team page */}
       <div style={sectionStyle}>
-        <h3 style={headingStyle}>Paid Agents</h3>
+        <h3 style={headingStyle}>Your AI Team</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {([
-            { key: 'hr' as const, label: 'HR Agent', price: '$10/mo' },
-            { key: 'procurement' as const, label: 'Procurement Agent', price: '$5/mo' },
-          ]).map(agent => (
-            <label key={agent.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', color: '#555', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={billing.agents[agent.key]}
-                onChange={e => toggleAgent(agent.key, e.target.checked)}
-                disabled={actionLoading !== null}
-              />
-              {agent.label} <span style={{ color: '#aaa' }}>({agent.price})</span>
-            </label>
+          {(billing.agent_apps ?? []).map(a => (
+            <div key={a.slug} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', color: a.enabled ? '#555' : '#aaa' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: a.enabled ? '#2e7d4f' : '#d8d4cc' }} />
+              {a.name}
+              <span style={{ color: '#aaa' }}>
+                ({a.price_cents > 0 ? `${formatCents(a.price_cents)}/mo` : 'free'}{a.enabled ? '' : ' · not hired'})
+              </span>
+            </div>
           ))}
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', color: '#999' }}>
-            <input type="checkbox" checked={true} disabled />
-            Reports Agent <span style={{ color: '#aaa' }}>(free)</span>
-          </label>
+          {(billing.priced_apps ?? []).map(a => (
+            <div key={a.slug} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', color: '#555' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#2e7d4f' }} />
+              {a.name} <span style={{ color: '#aaa' }}>(App · {formatCents(a.price_cents)}/mo)</span>
+            </div>
+          ))}
+          <div style={{ fontSize: '0.7rem', color: '#8a8a8a', marginTop: 4 }}>
+            Hire and retire team members — and switch their Apps — on the team page (the + button in the sidebar).
+          </div>
         </div>
       </div>
 

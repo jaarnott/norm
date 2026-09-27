@@ -1,34 +1,43 @@
 """Seed the marketplace catalog — the reviewed source of `marketplace_apps`.
 
-One row per **App**, the unified user-facing unit (docs/apps-marketplace-plan.md):
-integration apps (connector-spec-backed: Loaded, BambooHR, …), platform apps
-(App/AppVersion-backed: Hiring, Training, …) and the three per-agent bundles
-that generalize today's agent billing. Each row's ``composition`` declares what
-enabling the app lights up — spec, agents, components with their pages,
-playbooks — replacing the implicit page/component/connector binding seams.
+Hierarchy v2 (plan of 27 Sep 2026):
 
-Invariants this script enforces (it exits non-zero rather than seed a bad
-catalog):
-  * every component is claimed by exactly ONE app;
-  * every integration app's ``spec`` names an existing ConnectionSpec;
-  * every agent slug referenced exists in ``agent_configs``.
+    Organisation -> AI Team Members -> Apps -> Components -> Connections
 
-Day-one neutrality: every seeded row is ``bundled: true`` (and absence of an
-org entitlement row means "bundled default applies"), so seeding this catalog
-changes NOTHING for any org until an owner flips a toggle. The per-agent price
-metadata is carried for the marketplace UI; billing's booleans keep working
-until the billing generalization lands.
+Three row kinds:
+  * ``tier='agent'`` — the hireable team members. ``owns_agents`` joins the
+    row to ``agent_configs``; ``unlocks`` names the Apps the member uses.
+    Hiring one is the entitlement that turns everything downstream on.
+  * ``tier='app'`` — the Apps, the user-facing unit, named after the product
+    they are ("Norm HR", "Loaded", "BambooHR" — never feature words). A
+    composition carries either ``components`` (registry components, each with
+    its page and, for self-loading ones, an explicit ``connections`` list) or
+    ``app_slug`` (an App-platform pointer — Norm-native storage apps). An App
+    inherits the combined Connection requirements of its components; a
+    Norm-native App legitimately requires NOTHING. ``tool_actions`` claims
+    chat capabilities so switching an App off also removes them
+    (kept-while-any-entitled-claimer semantics).
+  * ``tier='user'`` — published community apps; never touched here.
 
-Composition follows the connections/apps split (29 Aug): apps declare
-``connections`` (the pure pipes they consume, one or many) and optionally
-``tool_actions`` ("connector.*" wildcards or exact keys) claiming agent tools;
-a connection stays available while ANY entitled app declares it. ``agents`` on
-a connection-backed app is informational (whose menus its pages join).
-``owns_agents`` appears only on the agent bundles — the entitlement gate reads
-ONLY that key, so disabling e.g. Loaded can never switch an agent off.
+Every App has an enabled state: hiring a member enables its bundled Apps by
+default, an org can switch one off, and a priced App ships bundled=false
+until enabled (same OrgAppEntitlement row = access and the charge).
 
-Idempotent — safe to re-run; ``user``-tier rows (org-published apps) are never
-touched. The config DB is shared across every environment, so committing
+Day-one neutrality: every member row is bundled, so seeding this catalog
+changes NOTHING for any org — the tool union before and after must be
+byte-identical (verify with the snapshot diff in the plan). Prices: HR $10,
+Procurement $5, the rest $0 until the owner reprices (data-only).
+
+This script also performs the one-time rollout moves, all idempotent:
+  * upsert the ``base`` agent_configs row (the always-included assistant's
+    home for shared bindings);
+  * re-home the empty-capabilities (wildcard) ``executive_chef -> norm``
+    binding to ``base -> norm`` — a wildcard on a hireable member would let
+    hire/retire toggle a whole connector surface for everyone;
+  * DELETE the retired rows: the 8 integration rows (connections are plumbing
+    now, not products) and ``reports-agent`` (Reports is always included).
+
+Idempotent; the config DB is shared across every environment, so committing
 reaches production. Dry-run first.
 
 Usage:
@@ -43,299 +52,282 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 
-def _c(key, agent, page=None, full_width=False, description=""):
-    return {
+def _c(key, page=None, full_width=False, description="", connections=None):
+    entry = {
         "key": key,
-        "agent": agent,
         "page": page,
         "full_width": full_width,
         "description": description,
     }
+    if connections:
+        entry["connections"] = connections
+    return entry
 
 
 def _p(id, label, icon):
     return {"id": id, "label": label, "icon": icon}
 
 
+# Rows that stop existing under hierarchy v2. Deleting an integration row
+# un-blocks its connection for orgs that had disabled the old app — intended:
+# connections are plumbing now, gated by hires and App switches instead.
+RETIRED_SLUGS = [
+    "loaded",
+    "cook-brothers-app",
+    "bamboohr",
+    "gmail",
+    "deputy",
+    "bidfood",
+    "brevo",
+    "metricool",
+    "reports-agent",
+]
+
 APPS = [
-    # ── Integration apps (connector-spec-backed) ─────────────────────────
+    # ── AI Team Members (tier='agent') ───────────────────────────────────
     {
-        "slug": "loaded",
-        "name": "Loaded",
-        "icon": "📦",
-        "tier": "integration",
-        "description": (
-            "Stock, purchasing, invoices, rosters, recipes, menus and sales "
-            "from LoadedHub — the venues' system of record."
-        ),
+        "slug": "procurement-agent",
+        "name": "Procurement",
+        "description": "Handles purchasing, suppliers and ordering.",
+        "icon": "🛒",
+        "tier": "agent",
+        "price_cents": 500,
+        "stripe_price_key": "procurement",
         "composition": {
-            # Loaded functionality; recipe/menu saves ride the CB pipe (the
-            # connections/apps split: apps declare EVERY connection they use).
-            "connections": ["loadedhub", "cook_brothers_app"],
-            "tool_actions": ["loadedhub.*"],
-            # informational: whose menus this app's tools/pages serve
-            "agents": [],  # filled live from bindings at seed time
+            "owns_agents": ["procurement"],
+            "tagline": "Purchase orders, invoice receiving and reconciliation, stock and tenders.",
+            "unlocks": ["norm-procurement", "loaded-procurement", "bidfood-app"],
+        },
+    },
+    {
+        "slug": "hr-agent",
+        "name": "HR",
+        "description": "Runs hiring, training and employee records.",
+        "icon": "🧑‍💼",
+        "tier": "agent",
+        "price_cents": 1000,
+        "stripe_price_key": "hr",
+        "composition": {
+            "owns_agents": ["hr"],
+            "tagline": "Job posts, candidates, onboarding and employee records.",
+            "unlocks": ["hiring", "training", "bamboohr-app"],
+        },
+    },
+    {
+        "slug": "executive-chef-agent",
+        "name": "Executive Chef",
+        "description": "Keeps recipes, menus and menu engineering profitable and up to date.",
+        "icon": "👨‍🍳",
+        "tier": "agent",
+        "price_cents": 0,
+        "composition": {
+            "owns_agents": ["executive_chef"],
+            "tagline": "Recipes, menus, costs and menu engineering.",
+            "unlocks": ["loaded-kitchen"],
+        },
+    },
+    {
+        "slug": "time-attendance-agent",
+        "name": "Time & Attendance",
+        "description": "Builds and publishes rosters, watches labour against sales.",
+        "icon": "⏱️",
+        "tier": "agent",
+        "price_cents": 0,
+        "composition": {
+            "owns_agents": ["time_attendance"],
+            "tagline": "Rosters, timeclock and labour cost.",
+            "unlocks": ["loaded-rostering"],
+        },
+    },
+    {
+        "slug": "marketing-agent",
+        "name": "Marketing",
+        "description": "Writes and schedules campaigns and social posts, reports on reach.",
+        "icon": "📣",
+        "tier": "agent",
+        "price_cents": 0,
+        "composition": {
+            "owns_agents": ["marketing"],
+            "tagline": "Campaigns, social posts and reach.",
+            "unlocks": [],
+        },
+    },
+    # ── Apps (tier='app') — named after the product they are ─────────────
+    {
+        "slug": "norm-procurement",
+        "name": "Norm Procurement",
+        "description": "Ordering workflows, drafts and tasks — runs on Norm.",
+        "icon": "🧾",
+        "tier": "app",
+        "composition": {"components": [], "connections": []},
+    },
+    {
+        "slug": "loaded-procurement",
+        "name": "Loaded",
+        "description": "Orders, invoices and receiving inside Loaded — the venues' system of record.",
+        "icon": "📦",
+        "tier": "app",
+        "composition": {
             "components": [
                 _c(
-                    "roster_editor",
-                    "time_attendance",
-                    _p("roster", "Roster", "Calendar"),
-                    True,
-                    "Week/day roster grid with drag editing and Loaded publish.",
-                ),
-                _c(
-                    "roster_table",
-                    "time_attendance",
-                    None,
-                    False,
-                    "Compact roster table for chat answers.",
-                ),
-                _c(
                     "orders_dashboard",
-                    "procurement",
-                    _p("orders", "Orders", "ShoppingCart"),
-                    True,
-                    "Purchase orders: outstanding, recent, and detail.",
+                    page=_p("orders", "Orders", "ShoppingCart"),
+                    full_width=True,
+                    description="Purchase orders: outstanding, recent, and detail.",
                 ),
                 _c(
                     "invoices_dashboard",
-                    "procurement",
-                    _p("invoices", "Invoices", "Receipt"),
-                    True,
-                    "Outstanding supplier invoices with review state.",
+                    page=_p("invoices", "Invoices", "Receipt"),
+                    full_width=True,
+                    description="Outstanding supplier invoices with review state.",
+                    connections=["loadedhub"],
                 ),
                 _c(
                     "purchase_order_editor",
-                    "procurement",
-                    None,
-                    False,
-                    "Editable purchase-order draft card; Place Order submits to Loaded.",
+                    full_width=False,
+                    description="Editable purchase-order draft card; Place Order submits to Loaded.",
                 ),
                 _c(
                     "receive_invoice_editor",
-                    "procurement",
-                    None,
-                    False,
-                    "Receive-invoice card: units, costs, PO link, Accept & Receive.",
+                    full_width=False,
+                    description="Receive-invoice card: units, costs, PO link, Accept & Receive.",
+                    connections=["loadedhub"],
                 ),
                 _c(
                     "stock_picker",
-                    "procurement",
-                    None,
-                    False,
-                    "Stock item picker used by order flows.",
+                    full_width=False,
+                    description="Stock item picker used by order flows.",
+                ),
+                _c(
+                    "supplier_tenders",
+                    page=_p("supplier-tenders", "Supplier Tenders", "Gavel"),
+                    full_width=True,
+                    description="Agreed supplier price lists, with tendered-vs-paid price review.",
+                    connections=["cook_brothers_app"],
+                ),
+            ],
+        },
+    },
+    {
+        "slug": "bidfood-app",
+        "name": "Bidfood",
+        "description": "Ordering through the Bidfood catalogue.",
+        "icon": "🚚",
+        "tier": "app",
+        "bundled": False,  # ships off — its capabilities are disabled today
+        "composition": {
+            "components": [],
+            # NOTE: no top-level `connections` and no `tool_actions` anywhere
+            # in this catalog, deliberately: those keys feed the
+            # unentitled_connectors / unentitled_tool_actions BLOCKING filters,
+            # and with the integration rows gone a single-claimer row would let
+            # one App switch black-hole a whole connector for the org (the
+            # weekly-venue-performance/loadedhub footgun the pre-push review
+            # caught). Until per-App claims are scoped to exact action lists,
+            # an App switch gates its PAGES AND COMPONENTS only; chat tools
+            # gate by team member. Component-level `connections` entries are
+            # safe — they only feed required_connections derivation.
+            "component_connections": ["bidfood"],
+        },
+    },
+    {
+        "slug": "loaded-kitchen",
+        "name": "Loaded",
+        "description": "Recipes, menus and menu engineering inside Loaded.",
+        "icon": "📗",
+        "tier": "app",
+        "composition": {
+            "components": [
+                _c(
+                    "recipe_editor",
+                    page=_p("recipes", "Recipes", "BookOpen"),
+                    full_width=True,
+                    description="Recipe editor with live Loaded costs; Save writes to Loaded.",
+                    connections=["cook_brothers_app"],
                 ),
                 _c(
                     "menu_editor",
-                    "executive_chef",
-                    _p("menus", "Menus", "BookOpen"),
-                    True,
-                    "Menus with sections, dishes and sell prices; saves to Loaded.",
-                ),
-                _c(
-                    "recipe_editor",
-                    "executive_chef",
-                    _p("recipes", "Recipes", "ChefHat"),
-                    True,
-                    "Recipe editor with live Loaded costs; Save writes to Loaded.",
+                    page=_p("menus", "Menus", "LayoutGrid"),
+                    full_width=True,
+                    description="Menus with sections, dishes and sell prices; saves to Loaded.",
                 ),
                 _c(
                     "menu_engineering",
-                    "executive_chef",
-                    _p("menu-engineering", "Menu Engineering", "Grid2x2"),
-                    True,
-                    "Popularity × profitability quadrants from the COGS report.",
+                    page=_p("menu-engineering", "Menu Engineering", "Grid2x2"),
+                    full_width=True,
+                    description="Popularity × profitability quadrants from the COGS report.",
                 ),
             ],
-            "playbooks": [],  # informational; playbooks stay agent-owned
-            "mcp_domain": None,
         },
     },
     {
-        "slug": "bamboohr",
-        "name": "BambooHR",
-        "icon": "🎋",
-        "tier": "integration",
-        "description": "Jobs, applications and candidate files from BambooHR.",
+        "slug": "loaded-rostering",
+        "name": "Loaded",
+        "description": "Rosters built and published in Loaded.",
+        "icon": "🗓️",
+        "tier": "app",
         "composition": {
-            "connections": ["bamboohr"],
-            "tool_actions": ["bamboohr.*"],
-            "agents": [],
+            "components": [
+                _c(
+                    "roster_editor",
+                    page=_p("roster", "Roster", "Calendar"),
+                    full_width=True,
+                    description="Week/day roster grid with drag editing and Loaded publish.",
+                ),
+                _c(
+                    "roster_table",
+                    full_width=False,
+                    description="Compact roster table for chat answers.",
+                ),
+            ],
+        },
+    },
+    {
+        "slug": "bamboohr-app",
+        "name": "BambooHR",
+        "description": "Hiring pipeline over BambooHR jobs and applications.",
+        "icon": "🎋",
+        "tier": "app",
+        "composition": {
             "components": [
                 _c(
                     "hiring_board",
-                    "hr",
-                    _p("hiring", "Hiring (BambooHR)", "Users"),
-                    True,
-                    "Hiring pipeline board over BambooHR jobs and applications.",
+                    page=_p("hiring", "Hiring", "Users"),
+                    full_width=True,
+                    description="Hiring pipeline board over BambooHR jobs and applications.",
+                    connections=["bamboohr"],
                 ),
             ],
         },
     },
-    {
-        "slug": "cook-brothers-app",
-        "name": "Cook Brothers App",
-        "icon": "🍳",
-        "tier": "integration",
-        "description": (
-            "Kitchen, food safety, functions, training and marketing tools "
-            "from the Cook Brothers App (MCP), plus the Loaded surfaces Norm's "
-            "own OAuth can't reach (recipe writes, supplier tenders). Migrating "
-            "into Norm domain by domain — see docs/lite-apps-architecture.md."
-        ),
-        "composition": {
-            "connections": ["cook_brothers_app"],
-            "tool_actions": ["cook_brothers_app.*"],
-            "agents": [],
-            "components": [
-                # Loaded's tenders API is unreachable with Norm's OAuth client,
-                # so this page bridges through the CB App connection — the
-                # component belongs to THIS app: no CB connection, no tenders.
-                _c(
-                    "supplier_tenders",
-                    "procurement",
-                    _p("supplier-tenders", "Supplier Tenders", "Gavel"),
-                    True,
-                    "Agreed supplier price lists, with tendered-vs-paid price review.",
-                ),
-            ],
-        },
-    },
-    {
-        "slug": "gmail",
-        "name": "Gmail",
-        "icon": "✉️",
-        "tier": "integration",
-        "description": "Send email on behalf of a connected Gmail account.",
-        "composition": {
-            "connections": ["gmail"],
-            "tool_actions": ["gmail.*"],
-            "agents": [],
-            "components": [],
-        },
-    },
-    {
-        "slug": "deputy",
-        "name": "Deputy",
-        "icon": "🕐",
-        "tier": "integration",
-        "description": "Deputy workforce data (currently disabled at spec level).",
-        "composition": {
-            "connections": ["deputy"],
-            "tool_actions": ["deputy.*"],
-            "agents": [],
-            "components": [],
-        },
-    },
-    {
-        "slug": "bidfood",
-        "name": "Bidfood",
-        "icon": "🚚",
-        "tier": "integration",
-        "description": "Bidfood supplier ordering.",
-        "composition": {
-            "connections": ["bidfood"],
-            "tool_actions": ["bidfood.*"],
-            "agents": [],
-            "components": [],
-        },
-    },
-    {
-        "slug": "brevo",
-        "name": "Brevo",
-        "icon": "📣",
-        "tier": "integration",
-        "description": "Email campaigns, contact lists and senders via Brevo.",
-        "composition": {
-            "connections": ["brevo"],
-            "tool_actions": ["brevo.*"],
-            "agents": [],
-            "components": [],
-        },
-    },
-    {
-        "slug": "metricool",
-        "name": "Metricool",
-        "icon": "📊",
-        "tier": "integration",
-        "description": "Social analytics, posts and scheduling via Metricool.",
-        "composition": {
-            "connections": ["metricool"],
-            "tool_actions": ["metricool.*"],
-            "agents": [],
-            "components": [],
-        },
-    },
-    # ── Platform apps (App/AppVersion-backed) ────────────────────────────
+    # ── Norm-native storage Apps (App-platform pointers, zero connections) ─
     {
         "slug": "hiring",
-        "name": "Hiring",
-        "icon": "🧑‍🍳",
-        "tier": "platform",
-        "description": "Norm's hiring pipeline: jobs, candidates, stages, hires.",
-        "composition": {"app_slug": "hiring", "agents": ["hr"], "components": []},
+        "name": "Norm HR",
+        "description": "Hiring and onboarding records — runs on Norm.",
+        "icon": "🧑‍💻",
+        "tier": "app",
+        "composition": {"app_slug": "hiring", "agents": ["hr"]},
     },
     {
         "slug": "training",
         "name": "Training",
+        "description": "Training programs and completion records — runs on Norm.",
         "icon": "🎓",
-        "tier": "platform",
-        "description": "Training programs, enrolments, sign-offs and records.",
-        "composition": {"app_slug": "training", "agents": ["hr"], "components": []},
+        "tier": "app",
+        "bundled": False,  # optional under HR — enable when wanted
+        "composition": {"app_slug": "training", "agents": ["hr"]},
     },
     {
         "slug": "weekly-venue-performance",
         "name": "Weekly venue performance",
+        "description": "A weekly sales/performance snapshot per venue.",
         "icon": "📈",
-        "tier": "platform",
-        "description": "Weekly sales snapshot per venue.",
+        "tier": "app",
         "composition": {
             "app_slug": "weekly-venue-performance",
-            "connections": ["loadedhub"],
-            "agents": ["app_builder"],
-            "components": [],
-        },
-    },
-    # ── Agent bundles (generalize the per-agent billing add-ons) ─────────
-    # bundled:true for day-one neutrality — flipping one to paid is a
-    # deliberate later act, not a side effect of seeding. Price metadata
-    # mirrors billing_service.AGENT_PRICES_CENTS.
-    {
-        "slug": "hr-agent",
-        "name": "Norm HR",
-        "icon": "🧑‍💼",
-        "tier": "platform",
-        "price_cents": 1000,
-        "stripe_price_key": "hr",
-        "description": "The HR agent: hiring, onboarding, staff questions.",
-        "composition": {"owns_agents": ["hr"], "agents": ["hr"], "components": []},
-    },
-    {
-        "slug": "procurement-agent",
-        "name": "Norm Procurement",
-        "icon": "🛒",
-        "tier": "platform",
-        "price_cents": 500,
-        "stripe_price_key": "procurement",
-        "description": "The procurement agent: ordering, invoices, stock.",
-        "composition": {
-            "owns_agents": ["procurement"],
-            "agents": ["procurement"],
-            "components": [],
-        },
-    },
-    {
-        "slug": "reports-agent",
-        "name": "Norm Reports",
-        "icon": "📑",
-        "tier": "platform",
-        "price_cents": 0,
-        "stripe_price_key": "reports",
-        "description": "The reports agent: sales, labour and custom reporting.",
-        "composition": {
-            "owns_agents": ["reports"],
             "agents": ["reports"],
-            "components": [],
+            "component_connections": ["loadedhub"],
         },
     },
 ]
@@ -358,29 +350,22 @@ def main() -> None:
     from app.db.engine import _ConfigSessionLocal
 
     db = _ConfigSessionLocal()
-    # First run predates the deployed create_all: add the table if missing
-    # (create_all only ADDS tables — same call main.py makes at startup).
     ConfigBase.metadata.create_all(db.get_bind())
     try:
         # ── validation inputs ────────────────────────────────────────────
         spec_names = {s.connector_name for s in db.query(ConnectionSpec).all()}
         agent_slugs = {a.agent_slug for a in db.query(AgentConfig).all()}
-        live_agents: dict[str, list[str]] = {}
-        for b in (
-            db.query(AgentConnectionBinding)
-            .filter(AgentConnectionBinding.enabled == True)  # noqa: E712
-            .all()
-        ):
-            live_agents.setdefault(b.connector_name, [])
-            if b.agent_slug not in live_agents[b.connector_name]:
-                live_agents[b.connector_name].append(b.agent_slug)
 
         # ── invariants ───────────────────────────────────────────────────
         errors: list[str] = []
         claimed: dict[str, str] = {}
+        app_slugs_here = {a["slug"] for a in APPS}
         for app in APPS:
             comp = app["composition"]
-            for conn in comp.get("connections") or []:
+            declared = (comp.get("connections") or []) + (
+                comp.get("component_connections") or []
+            )
+            for conn in declared:
                 if conn not in spec_names:
                     errors.append(f"{app['slug']}: connection '{conn}' does not exist")
             for c in comp.get("components", []):
@@ -390,31 +375,68 @@ def main() -> None:
                         f"'{claimed[c['key']]}' and '{app['slug']}'"
                     )
                 claimed[c["key"]] = app["slug"]
-                if c["agent"] not in agent_slugs:
-                    errors.append(
-                        f"{app['slug']}/{c['key']}: unknown agent '{c['agent']}'"
-                    )
-            for a in (comp.get("agents") or []) + (comp.get("owns_agents") or []):
-                if a and a not in agent_slugs:
+                for conn in c.get("connections") or []:
+                    if conn not in spec_names:
+                        errors.append(
+                            f"{app['slug']}/{c['key']}: connection '{conn}' missing"
+                        )
+            for a in comp.get("owns_agents") or []:
+                if a not in agent_slugs and a != "base":
                     errors.append(f"{app['slug']}: unknown agent '{a}'")
+            for u in comp.get("unlocks") or []:
+                if u not in app_slugs_here:
+                    errors.append(f"{app['slug']}: unlocks unknown app '{u}'")
         if errors:
             for e in errors:
                 print(f"INVALID: {e}")
             sys.exit(1)
 
-        # ── upsert ───────────────────────────────────────────────────────
-        changes = []
+        changes: list[str] = []
+
+        # ── rollout move 1: the base assistant's agent_configs row ───────
+        if "base" not in agent_slugs:
+            changes.append("create agent_configs row 'base' (Norm Assistant)")
+            if not args.dry_run:
+                db.add(
+                    AgentConfig(
+                        agent_slug="base",
+                        display_name="Norm Assistant",
+                        description=(
+                            "The always-included assistant — home for the "
+                            "shared internal tool bindings."
+                        ),
+                    )
+                )
+
+        # ── rollout move 2: the wildcard binding moves to base ───────────
+        wild = (
+            db.query(AgentConnectionBinding)
+            .filter(
+                AgentConnectionBinding.agent_slug == "executive_chef",
+                AgentConnectionBinding.connector_name == "norm",
+            )
+            .first()
+        )
+        if wild is not None and not (wild.capabilities or []):
+            already = (
+                db.query(AgentConnectionBinding)
+                .filter(
+                    AgentConnectionBinding.agent_slug == "base",
+                    AgentConnectionBinding.connector_name == "norm",
+                )
+                .first()
+            )
+            changes.append(
+                "re-home wildcard binding executive_chef->norm to base->norm"
+            )
+            if not args.dry_run:
+                if already is None:
+                    wild.agent_slug = "base"
+                else:
+                    db.delete(wild)
+
+        # ── upsert the target catalog ────────────────────────────────────
         for app in APPS:
-            comp = dict(app["composition"])
-            conns = comp.get("connections") or []
-            if conns and not comp.get("app_slug"):
-                # informational agent list derives from the LIVE bindings of
-                # every declared connection, so the catalog never drifts from
-                # what actually serves whom.
-                agents: set[str] = set()
-                for conn in conns:
-                    agents.update(live_agents.get(conn, []))
-                comp["agents"] = sorted(agents)
             desired = {
                 "name": app["name"],
                 "description": app["description"],
@@ -424,7 +446,7 @@ def main() -> None:
                 "price_cents": app.get("price_cents", 0),
                 "stripe_price_key": app.get("stripe_price_key"),
                 "status": "active",
-                "composition": comp,
+                "composition": dict(app["composition"]),
             }
             row = (
                 db.query(MarketplaceApp)
@@ -443,6 +465,14 @@ def main() -> None:
                         for k, v in desired.items():
                             setattr(row, k, v)
                         flag_modified(row, "composition")
+
+        # ── delete the retired rows LAST (components already re-homed) ───
+        for slug in RETIRED_SLUGS:
+            row = db.query(MarketplaceApp).filter(MarketplaceApp.slug == slug).first()
+            if row is not None:
+                changes.append(f"delete {slug} ({row.tier})")
+                if not args.dry_run:
+                    db.delete(row)
 
         if not changes:
             print("catalog up to date")
