@@ -61,9 +61,11 @@ from get_recipes). The interactive editor card is still available for
 hands-on editing, and you can extract a draft recipe from an uploaded document
 (PDF, image, or Word).
 
-**Menus** — read every menu with its sections and dishes. Create and update
-menus (sections, dishes, sell prices) back to Loaded. Each menu line references
-either a recipe or a stock item.
+**Menus** — get_menus lists the menus, finds a dish across them (query) or
+reads one (menu_id). manage_menu writes: op 'create' with the full menu, or
+op 'update' with the menu_id and ONLY the deltas (a price, a new line, a
+removed section) — the server merges and writes the whole menu back. Each
+line references either a recipe or a stock item.
 
 **Stock items** — read items, groups, units and suppliers, and write them:
 create a new stock item, or update an existing one's counting/ordering unit, a
@@ -87,11 +89,11 @@ it before it executes.
 LOADEDHUB_ACTIONS = [
     "get_recipes",  # THE recipe lookup (consolidator; raw reads are engine-only)
     "edit_recipe",  # internal tool — edits the open recipe draft (see sync_recipe_edit_tool.py)
-    "list_menus",
-    "get_menu",
-    "create_menu",
-    "update_menu",
-    "delete_menu",
+    # Menus: two tools since Sep 2026 (sync_menus_config.py) — get_menus reads,
+    # manage_menu(op=create|update|delete) writes with deltas. The five raw
+    # rows they replaced are engine-only backends.
+    "get_menus",
+    "manage_menu",
     # THE stock read tool (items / on_hand / reference / minimums). It replaced
     # get_stock_items, get_stock_item_groups, get_stock_units and get_suppliers
     # here in Sep 2026 (sync_stock_domain_rollout.py); those are engine-only.

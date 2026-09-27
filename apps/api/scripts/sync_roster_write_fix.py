@@ -242,6 +242,15 @@ def main() -> None:
         by_action = {t.get("action"): i for i, t in enumerate(tools)}
         for alias in ALIASES:
             idx = by_action.get(alias["action"])
+            # The shift writes are engine-only since Sep 2026
+            # (sync_menus_config.py): the roster editor dispatches them by name,
+            # no agent holds them. A replay must not put them back on the menu.
+            if idx is not None and tools[idx].get("engine_only"):
+                alias = dict(alias)
+                alias["engine_only"] = True
+                alias["description"] = tools[idx].get(
+                    "description", alias["description"]
+                )
             if idx is not None and tools[idx] == alias:
                 continue
             if idx is not None:

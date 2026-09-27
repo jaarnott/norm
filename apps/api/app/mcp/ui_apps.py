@@ -127,10 +127,14 @@ TOOL_COMPONENT: dict[tuple[str, str], str] = {
     # be the enabled one — MCP curation decides which, and a binding that only
     # covered the raw action would silently drop the UI the day it was swapped.
     ("loadedhub", "get_roster_for_period"): "roster_editor",
-    # get_menu hands the raw MenuModel to the menu editor, opened on that one
-    # menu. Interactive here: recipe options and Save route back through
-    # norm__menu_component_api / norm__save_menu (the venue rides in as a prop).
-    ("loadedhub", "get_menu"): "menu_editor",
+    # get_menus with detail='full' hands the raw MenuModel (tagged
+    # detail="full" — TOOL_COMPONENT_VIEW gates on it) to the menu editor,
+    # opened on that one menu. Interactive here: recipe options and Save route
+    # back through norm__menu_component_api / norm__save_menu (the venue rides
+    # in as a prop). Its summary and list shapes render as a generic table.
+    # (get_menu, the old mapping, is engine_only since Sep 2026 — uncallable
+    # from MCP.)
+    ("loadedhub", "get_menus"): "menu_editor",
     # get_recipes (the recipe consolidator) returns a token-slim summary, not
     # the raw payload — so the recipe editor self-loads the full recipe by id
     # through its component API (norm__recipe_component_api / get_recipe) when
@@ -154,6 +158,7 @@ TOOL_COMPONENT: dict[tuple[str, str], str] = {
 # under one action name.
 TOOL_COMPONENT_VIEW: dict[tuple[str, str], tuple[str, str]] = {
     ("loadedhub", "get_labour"): ("view", "roster"),
+    ("loadedhub", "get_menus"): ("detail", "full"),
 }
 
 # Bespoke apps for a connector tool, keyed by (connector, action). Empty: the

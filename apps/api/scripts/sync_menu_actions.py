@@ -125,9 +125,7 @@ TOOLS = [
     },
     {
         "action": "delete_menu",
-        "description": (
-            "Soft-delete a menu by id. This is a write — human-approved."
-        ),
+        "description": ("Soft-delete a menu by id. This is a write — human-approved."),
         "method": "DELETE",
         "path_template": "//loadedhub.com/api/stock/menus/{{ menu_id }}",
         "headers": dict(_HEADERS),
@@ -169,6 +167,19 @@ def main() -> None:
         for tool in TOOLS:
             action = tool["action"]
             idx = by_action.get(action)
+            # Demoted behind get_menus / manage_menu (Sep 2026,
+            # sync_menus_config.py). A replay keeps the row engine-only, or the
+            # raw menus would reappear on the menu next to the tools that
+            # replaced them. Prefix = that script's demoted_prefix(action).
+            if idx is not None and tools[idx].get("engine_only"):
+                tool = dict(tool)
+                tool["engine_only"] = True
+                if not str(tools[idx].get("description", "")).startswith(
+                    "[consolidator-only]"
+                ):
+                    tool["description"] = "[consolidator-only] " + tool["description"]
+                else:
+                    tool["description"] = tools[idx]["description"]
             if idx is not None and tools[idx] == tool:
                 print(f"  = {action}: already up to date")
                 continue
