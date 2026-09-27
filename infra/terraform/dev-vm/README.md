@@ -110,6 +110,29 @@ One `git worktree` per concurrent agent. Several sessions sharing one checkout
 is what let another session's push carry an unreviewed commit to production on
 31 Aug 2026.
 
+## First login on a new box
+
+Terraform cannot do these — each needs an interactive sign-in as the human:
+
+```bash
+# 1. Git identity. Without it `git commit` fails with "empty ident name",
+#    naming the OS Login user (jaarnott_gmail_com@…internal) as the author.
+git config --global user.name  "jaarnott"
+git config --global user.email "jaarnott@cookbrothersbars.co.nz"
+
+# 2. GitHub. Without it `git push` fails with "could not read Username",
+#    and every `gh run watch` fails in a way that reads as a broken pipeline.
+gh auth login --hostname github.com --git-protocol https --web \
+  --scopes "repo,workflow"
+gh auth setup-git
+
+# 3. Claude Code — install the VS Code extension INTO the remote
+#    (Extensions -> "Install in SSH: norm-dev"), then sign in there.
+```
+
+Everything else — toolchain, the config-DB proxy, idle shutdown — is in
+`startup.sh` and comes up on its own.
+
 ## Reaching the dev app from a phone
 
 The box has no public address, so a phone cannot reach `:3000` the way a laptop

@@ -73,6 +73,14 @@ EOF
     > /etc/apt/sources.list.d/github-cli.list
   apt-get update -y && apt-get install -y gh
 
+  # ── terraform ─────────────────────────────────────────────────
+  # Pinned to match what the Codespace ran; infra/terraform/ (including this
+  # module) cannot be planned without it.
+  curl -fsSL -o /tmp/tf.zip \
+    "https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip"
+  unzip -o -q /tmp/tf.zip -d /usr/local/bin && rm -f /tmp/tf.zip
+  chmod +x /usr/local/bin/terraform
+
   # ── cloud-sql-proxy ───────────────────────────────────────────
   curl -fsSL -o /usr/local/bin/cloud-sql-proxy \
     "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.linux.amd64"
@@ -84,6 +92,31 @@ EOF
   echo "$MARK" > "$SENTINEL"
   echo "--- provisioning complete ---"
 fi
+
+# ── Always: Cloud SQL proxy for the shared config DB ────────────
+# Not just a convenience: tests/conftest.py imports app.db.engine, which
+# REFUSES to load when CONFIG_DATABASE_URL is unreachable — so without this
+# `pytest` cannot even collect unless the full dev stack happens to be running.
+# No --credentials-file; the attached service account supplies credentials.
+cat > /etc/systemd/system/cloudsql-config.service <<'UNIT'
+[Unit]
+Description=Cloud SQL proxy for the shared config DB (port 5433)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloud-sql-proxy --address 127.0.0.1 --port 5433 \
+  norm-production-491101:australia-southeast1:norm-config
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now cloudsql-config.service 2>/dev/null || true
+echo "config-DB proxy service armed"
 
 # ── Always: idle shutdown ───────────────────────────────────────
 # The whole cost case rests on this. On-demand at ~217 h/month is roughly a
