@@ -97,11 +97,44 @@ Environment notes: **testing** has no venues, so it cannot exercise connectors.
 **Production** has the data but you don't have its admin credentials. Local is
 the place to test.
 
-## Quick Start (Codespaces)
+## Quick Start
 
 ```bash
 ./scripts/dev.sh   # starts postgres, runs migrations, launches API (8000) + Web (3000)
 ```
+
+### Where you are running
+
+Two environments exist. **`norm-dev`, a GCE VM, is the primary one** (Sep 2026);
+the Codespace still works but is being retired.
+
+| | Codespace | `norm-dev` (GCE) |
+|---|---|---|
+| path | `/workspaces/norm` | `~/projects/norm` |
+| GCP credentials | `norm-config-sa.json` key file | **attached service account, no key on disk** |
+| reached by | browser / VS Code | VS Code Remote-SSH over IAP |
+
+On `norm-dev`:
+
+- **It shuts itself down after 45 minutes idle** — that is the cost model
+  (~$41/mo instead of ~$139). "Idle" counts logged-in sessions, CPU load, and
+  running `claude`/`pytest`/`vitest`/`next dev`/`uvicorn`, so ordinary work
+  keeps it awake. For a long unattended job those checks would miss, run
+  `keepawake on` (and `keepawake off` after).
+- Start it from a laptop with
+  `gcloud compute instances start norm-dev --zone=australia-southeast1-a`,
+  or `scripts/devbox.sh up|ssh|code|down`, or the Google Cloud phone app.
+- **`gh` is NOT authenticated here.** Anything that watches CI or a deploy
+  needs `gh auth login` first — it will otherwise fail in a way that looks
+  like the pipeline is broken.
+- The Cloud SQL proxy for the config DB runs as a systemd service
+  (`cloudsql-config.service`, port 5433). **The test suite needs it**:
+  `tests/conftest.py` imports `app.db.engine`, which refuses to load when
+  `CONFIG_DATABASE_URL` is unreachable, so without it `pytest` cannot even
+  collect. `dev.sh` starts its own proxy too; both are harmless.
+- `dev.sh` is deliberately NOT auto-started on boot — it would make the
+  idle-shutdown think the box is permanently busy.
+- Setup lives in `infra/terraform/dev-vm/` and can be rebuilt from it.
 
 ## Architecture
 
@@ -167,39 +200,43 @@ deploy pipeline executes the `norm-migrate-<env>` Cloud Run job (e.g.
 changes land ahead of the code that needs them. You do not normally need to do
 anything.
 
-The manual Cloud SQL proxy procedure below is a **fallback** — for when the
-migrate job is missing/broken, or you need to inspect or repair schema state by
-hand:
+The manual procedure below is a **fallback** — for when the migrate job is
+missing/broken, or you need to inspect or repair schema state by hand.
+
+**The version that was here until Sep 2026 could not work.** It patched an
+instance named `norm-production`, which was stopped on 9 Aug and **deleted on
+31 Aug 2026** — `gcloud sql instances describe norm-production` now returns
+404. It also read the password from Terraform state, which is not initialised
+to the production prefix in a fresh checkout and silently yields an empty
+string. And it briefly gave the production database a **public IP**, which the
+proxy makes unnecessary.
 
 ```bash
 export PATH="$HOME/google-cloud-sdk/bin:$PATH"
 
-# 1. Get DB password from Terraform state
-cd infra/terraform
-terraform init -reconfigure -backend-config="bucket=norm-tfstate-491101" -backend-config="prefix=production"
-DB_PASSWORD=$(terraform show -json | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for r in data.get('values',{}).get('root_module',{}).get('child_modules',[]):
-  for res in r.get('resources',[]):
-    if res.get('type') == 'random_password':
-      print(res.get('values',{}).get('result',''))
-      break
-")
+# 1. Proxy to the live instance — norm-prod-db, NOT norm-production.
+#    On the GCE dev box no --credentials-file is needed (attached service
+#    account); in the Codespace add --credentials-file norm-config-sa.json.
+cloud-sql-proxy --address 127.0.0.1 --port 5435 \
+  norm-production-491101:australia-southeast1:norm-prod-db &
 
-# 2. Temporarily enable public IP
-gcloud sql instances patch norm-production --project=norm-production-491101 --assign-ip --quiet
-MY_IP=$(curl -s ifconfig.me)
-gcloud sql instances patch norm-production --project=norm-production-491101 --authorized-networks="$MY_IP/32" --quiet
-PUBLIC_IP=$(gcloud sql instances describe norm-production --project=norm-production-491101 --format="value(ipAddresses[0].ipAddress)")
+# 2. Password from Secret Manager, not Terraform state.
+DB_URL=$(gcloud secrets versions access latest --secret=DATABASE_URL_DIRECT \
+  --project=norm-production-491101)          # postgresql://norm:<pw>@10.31.0.38:5432/norm
+DB_PASSWORD=$(python3 -c "
+import sys;from urllib.parse import urlparse, unquote
+print(unquote(urlparse('''$DB_URL''').password))")
 
-# 3. Run migrations
-cd /workspaces/norm/apps/api
-DATABASE_URL="postgresql://norm:${DB_PASSWORD}@${PUBLIC_IP}:5432/norm" .venv/bin/python -m alembic upgrade head
-
-# 4. Disable public IP
-gcloud sql instances patch norm-production --project=norm-production-491101 --clear-authorized-networks --no-assign-ip --quiet
+# 3. Run migrations through the proxy. No public IP is ever enabled.
+cd apps/api
+DATABASE_URL="postgresql://norm:${DB_PASSWORD}@127.0.0.1:5435/norm" \
+  uv run python -m alembic upgrade head
 ```
+
+**After moving or renaming a database, grep every secret for the old host.**
+Repointing Cloud Run was not enough in Aug 2026: the migrate job reads a
+separate secret, `DATABASE_URL_DIRECT`, which still held the old private IP —
+so migrations failed silently for three days while the pipeline stayed green.
 
 ### Setting secrets on production
 
@@ -221,7 +258,7 @@ gcloud run services update norm-api-production \
 | **local** | localhost:3000 | — | Local Postgres (docker) |
 | **testing** | testing.bettercallnorm.com | norm-testing | Cloud SQL (micro) |
 | **staging** | staging.bettercallnorm.com | norm-staging | Cloud SQL (small) |
-| **production** | bettercallnorm.com | norm-production-491101 | Cloud SQL (HA) |
+| **production** | bettercallnorm.com | norm-production-491101 | Cloud SQL `norm-prod-db` (db-g1-small, ZONAL — not HA since the Aug-2026 cost cuts) |
 
 ## Key Configuration
 
@@ -244,7 +281,7 @@ All environments share a single config database for system-level configuration:
 cd apps/api
 uv run ruff check app/           # lint
 uv run ruff format --check app/  # format check
-uv run pytest tests/ -q          # ~1,430 tests, ~4.5 min
+uv run pytest tests/ -q          # ~2,660 tests, ~4 min
 
 cd apps/web
 pnpm lint                        # ESLint (0 errors expected)
@@ -263,6 +300,18 @@ when tests fail and can never block a deploy — and the suite is currently a
 single smoke test. Do not read a green pipeline as "E2E passed". Worth making a
 real gate (drop the flag, add a few deterministic smoke tests) once Norm has
 real users.
+
+**A red CI just after midnight UTC is probably not your change.**
+`test_task_scheduler.py::TestTemporalGrounding::test_history_from_previous_days_is_date_prefixed`
+builds a message `now - 6 minutes` and asserts it counts as "today". It does not
+freeze the clock, so **any CI run in the first ~6 minutes after UTC midnight
+fails it** — the message really did land yesterday. That is mid-evening NZ time,
+a plausible moment to push. It blocked a deploy on 27 Sep 2026.
+
+Before assuming you broke something: check the run's timestamp, and check
+whether your diff touches Python at all. Re-running works, but only once the
+clock is past the window — re-running inside it fails identically and looks
+like a real failure. The fix is to freeze the clock in that test.
 
 **What the tests are for.** Much of this suite exists because of specific
 production incidents, and those tests carry docstrings saying so — an empty
