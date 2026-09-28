@@ -105,10 +105,20 @@ def plan(db, dry_run: bool) -> list[str]:
         raise SystemExit("no norm spec in the config DB")
     tools = [dict(t) for t in spec.tools or []]
     current = next((t for t in tools if t.get("action") == "open_app"), None)
-    if current != OPEN_APP:
+    # The spec save stamps `added_at` on a new tool — not ours to compare, and
+    # kept on an update so the tool's history survives.
+    stamp = (
+        {"added_at": current["added_at"]} if current and "added_at" in current else {}
+    )
+    if (
+        current is None
+        or {k: v for k, v in current.items() if k != "added_at"} != OPEN_APP
+    ):
         changes.append(("update" if current else "add") + " tool norm.open_app")
         if not dry_run:
-            tools = [t for t in tools if t.get("action") != "open_app"] + [OPEN_APP]
+            tools = [t for t in tools if t.get("action") != "open_app"] + [
+                {**OPEN_APP, **stamp}
+            ]
             spec.tools = tools
             flag_modified(spec, "tools")
             spec.version = (spec.version or 0) + 1
