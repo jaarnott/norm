@@ -320,9 +320,10 @@ APPS = [
         tools=[
             "loadedhub.get_stock",
             "loadedhub.calculate_template_stock_requirements",
-            "loadedhub.generate_stocktake_report",
+            # get_stocktakes replaced generate_stocktake_report + Orbit's
+            # stock_find_stocktakes (Sep 2026, sync_last_raw_tools.py).
+            "loadedhub.get_stocktakes",
             "loadedhub.get_received_items_for_period",
-            "cook_brothers_app.stock_find_stocktakes",
             "loadedhub.get_purchase_orders",
             "norm.create_purchase_order",
             "loadedhub.get_invoices",
@@ -466,12 +467,10 @@ APPS = [
         icon="🎋",
         description="Jobs, applications and employees from BambooHR.",
         tools=[
-            "bamboohr.get_jobs",
-            "bamboohr.get_applications",
-            "bamboohr.get_application_details",
-            "bamboohr.get_applicant_statuses",
-            "bamboohr.list_employees",
-            "bamboohr.get_employee",
+            # get_hr replaced six raw reads (Sep 2026, sync_last_raw_tools.py);
+            # get_applicant_resume is an internal handler that hands the model
+            # the CV itself.
+            "bamboohr.get_hr",
             "bamboohr.get_applicant_resume",
         ],
         components=[

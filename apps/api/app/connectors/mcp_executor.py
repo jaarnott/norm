@@ -8,6 +8,7 @@ Handles JSON-RPC 2.0 communication with remote MCP servers:
 """
 
 import json
+import re
 import logging
 import time
 
@@ -275,6 +276,27 @@ def coerce_arguments_to_schema(fields: dict, operation: dict) -> dict:
     return out
 
 
+#: A read verb anywhere in the name — Orbit prefixes every tool with its domain
+#: ("stock_find_stocktakes", "kitchen_get_recipe"), so a starts-with check
+#: missed all of them.
+_READ_VERB = re.compile(r"(^|_)(get|find|list|search|read)(_|$)")
+
+
+def is_read_tool(tool: dict) -> bool:
+    """Is this MCP tool a read? The server's own readOnlyHint wins; else the name.
+
+    Discovery used to call a tool a read only if its name STARTED with "get_",
+    so every Orbit tool — stock_find_stocktakes included — was filed as a POST
+    write. That made plain reads approval-gated for the agent, and refused to
+    consolidators, which may only call writes they declare (get_stocktakes,
+    28 Sep 2026). Anything not recognisably a read stays a write: the safe side.
+    """
+    hint = (tool.get("annotations") or {}).get("readOnlyHint")
+    if isinstance(hint, bool):
+        return hint
+    return bool(_READ_VERB.search(str(tool.get("name") or "")))
+
+
 def convert_mcp_tools_to_spec(mcp_tools: list[dict]) -> list[dict]:
     """Convert MCP tool definitions to ConnectionSpec.tools format.
 
@@ -295,8 +317,8 @@ def convert_mcp_tools_to_spec(mcp_tools: list[dict]) -> list[dict]:
         properties = input_schema.get("properties", {})
         required = input_schema.get("required", [])
 
-        # Classify read vs write by name convention
-        method = "GET" if name.startswith("get_") else "POST"
+        read = is_read_tool(tool)
+        method = "GET" if read else "POST"
 
         required_fields = [f for f in required if f in properties]
         optional_fields = [f for f in properties if f not in required]
@@ -321,6 +343,7 @@ def convert_mcp_tools_to_spec(mcp_tools: list[dict]) -> list[dict]:
         row = {
             "action": name,
             "method": method,
+            "read_only": read,
             "description": description,
             "required_fields": required_fields,
             "optional_fields": optional_fields,

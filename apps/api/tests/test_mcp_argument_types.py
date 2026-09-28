@@ -106,3 +106,42 @@ class TestCallPathCasts:
         assert coerce_arguments_to_schema({"limit": "100"}, {"action": "x"}) == {
             "limit": "100"
         }
+
+
+class TestReadClassification:
+    """Discovery filed a tool as a read only if its name STARTED with get_, so
+    every Orbit tool (domain-prefixed: stock_find_stocktakes) became a POST
+    write — refused to consolidators as an undeclared write (28 Sep 2026)."""
+
+    def _method(self, name, annotations=None):
+        tool = {"name": name, "inputSchema": {"properties": {}}}
+        if annotations is not None:
+            tool["annotations"] = annotations
+        return convert_mcp_tools_to_spec([tool])[0]
+
+    def test_domain_prefixed_reads_are_gets(self):
+        for name in (
+            "stock_find_stocktakes",
+            "kitchen_get_recipe",
+            "list_venues",
+            "functions_read_thread",
+            "get_sales",
+        ):
+            row = self._method(name)
+            assert row["method"] == "GET" and row["read_only"] is True, name
+
+    def test_actions_stay_writes(self):
+        for name in (
+            "stock_record_stocktake",
+            "kitchen_record_recipe",
+            "functions_send_proposal",
+            "stock_loadedhub_tender",
+            "mailbox_handle_thread",
+            "forget_everything",
+        ):
+            row = self._method(name)
+            assert row["method"] == "POST" and row["read_only"] is False, name
+
+    def test_the_servers_read_only_hint_wins(self):
+        assert self._method("stock_record_x", {"readOnlyHint": True})["method"] == "GET"
+        assert self._method("stock_find_x", {"readOnlyHint": False})["method"] == "POST"

@@ -53,6 +53,7 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
         "get_stock_item_full": "get_stock",
         "create_stock_item": "manage_stock_item",
         "list_menus": "get_menus",
+        "generate_stocktake_report": "get_stocktakes",
         "get_menu": "get_menus",
         "create_menu": "manage_menu",
         "update_menu": "manage_menu",
@@ -72,6 +73,14 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
         "get_purchase_orders_summary": "get_purchase_orders",
         "get_purchase_order_detail": "get_purchase_orders",
         "list_purchase_orders": "get_purchase_orders",
+    },
+    "bamboohr": {
+        "get_jobs": "get_hr",
+        "get_applications": "get_hr",
+        "get_application_details": "get_hr",
+        "get_applicant_statuses": "get_hr",
+        "list_employees": "get_hr",
+        "get_employee": "get_hr",
     },
 }
 

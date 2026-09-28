@@ -97,6 +97,13 @@ NEW_STEP3 = (
 
 
 def main(dry_run: bool = False) -> None:
+    # Superseded (Sep 2026) by scripts/sync_last_raw_tools.py: get_stocktakes
+    # pairs same-template counts itself, the stocktake_variance skill calls it,
+    # and stock_find_stocktakes left the agent's menu. Re-running this would
+    # re-bind the Orbit list and look for step text that no longer exists.
+    raise SystemExit(
+        "sync_orbit_stocktake_lookup.py is superseded by sync_last_raw_tools.py."
+    )
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.db.config_models import AgentConnectionBinding, ConnectionSpec, Playbook
