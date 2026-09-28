@@ -1,16 +1,8 @@
-"""Build reports-specific context from the database."""
-
-from sqlalchemy.orm import Session
+"""Serialise a legacy reports thread — one made by the retired reports agent's
+single-shot path (report_plan / report_result in extracted_fields). New threads
+are tool-loop threads and never take this shape; old ones still open."""
 
 from app.db.models import Thread
-from app.services.venue_service import get_user_venues
-
-
-def build_reports_context(db: Session, user_id: str | None = None) -> dict:
-    """Return context dict for the reports agent."""
-    venues = get_user_venues(db, user_id)
-
-    return {"venues": [{"id": v.id, "name": v.name} for v in venues]}
 
 
 def _report_thread_to_dict(task: Thread) -> dict:

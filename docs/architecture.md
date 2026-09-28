@@ -6,43 +6,46 @@ A conceptual overview of how the AI operations platform works, with light implem
 
 ## 1. Supervisor
 
-The supervisor is the entry point for every user message. It routes messages to the correct domain agent.
+The supervisor is the entry point for every user message. There is no routing
+step: every message goes to the one **Norm agent** (Sep 2026 — see section 2).
 
 **How it works:**
 1. User sends a message (e.g. "get me sales for La Zeppa last week")
-2. If continuing an existing thread → route to that thread's domain agent
-3. If new message → call the **Router** (fast Haiku LLM) to classify the domain
-4. Resolve the venue (auto-select if single venue, or ask the user)
-5. Delegate to the domain agent (reports, procurement, hr)
-6. If domain is "meta" → respond with a capabilities summary
-
-**Example:** "Order 10 cases of tomatoes for Bessie" → Router classifies as `procurement` → ProcurementAgent handles it.
+2. If continuing an existing thread → the Norm agent, in that thread, always
+   (an automated task's conversation keeps its task identity)
+3. If a new message asks to connect a system ("connect BambooHR") → the connect card
+4. Otherwise resolve the venue without a model — the request's venue, the
+   user's only venue, or the one venue the message names — and hand the
+   message to the Norm agent. A title is drafted alongside the reply.
 
 **Key file:** `app/services/supervisor.py` — `handle_message()`
 
 ---
 
-## 2. Agents
+## 2. The Norm agent
 
-Agents are domain specialists. Each agent knows how to handle messages for its area (reports, procurement, HR). All agents inherit from `BaseDomainAgent`.
+One agent answers every conversation (`NormAgent`, `app/agents/norm.py`). It
+holds the org's full entitled tool union — every tool of every App that is on —
+and one Norm prompt (the `base` agent_configs row, plus notes for the Apps that
+are on).
 
-**Three agents:**
-- **ReportsAgent** — sales data, charts, analytics
-- **ProcurementAgent** — ordering stock, managing purchase orders
-- **HrAgent** — employee onboarding, roster management, hiring
+Until Sep 2026 a Haiku router picked one of seven domain agents per message.
+Once every agent held the same tools, the pick only changed a label and a tone
+line, so the router went. **Team members remain as packaging**: hiring one
+switches its Apps on, App pages sit in its sidebar section, and a thread is
+filed under every member whose Apps it used (the thread's `apps`, from its tool
+calls). New threads have domain `norm`; older threads keep their agent domain.
 
-**How they work:**
-1. Agent checks if connector tools are bound (via Settings)
-2. If tools exist → runs the **Tool Loop** (multi-turn LLM with tool calling)
-3. If no tools → falls back to single-shot LLM interpretation (legacy)
-
-**Example:** ReportsAgent receives "sales for last week" → tool loop calls `get_sales_data` on LoadedHub → LLM formats the response → optionally renders a chart.
+**Unattended runs** (scheduled tasks, Run Now) don't get the full union — no one
+is there to approve a write. A task uses its `tool_filter` (the tools the
+conversation that created it used); failing that, its member's Apps; and a task
+filed under Norm itself may read (rows marked `read_only`) but not write.
+See `default_tool_filter`.
 
 **Key files:**
-- `app/agents/base.py` — BaseDomainAgent interface
-- `app/agents/reports/agent.py`, `app/agents/procurement/agent.py`, `app/agents/hr/agent.py` — implementations
-- `app/agents/registry.py` — agent discovery (`get_agent("reports")`)
-- `app/agents/router.py` — LLM-based message classification
+- `app/agents/norm.py` — the Norm agent
+- `app/agents/base.py` — the agent interface + the tool-loop entry
+- `app/agents/registry.py` — `get_agent(slug)` (Norm, for `norm` or any member) and the member list
 
 ---
 
@@ -165,8 +168,8 @@ Functional pages are full-width components accessed via sidebar navigation. Each
 **Page context flow:**
 1. User types on a functional page
 2. Frontend sends `page_context: { page_id, agent }` with the message
-3. Supervisor uses `page_context.agent` directly instead of calling the LLM router
-4. Agent's system prompt includes "The user is currently viewing the **Roster** page"
+3. The Norm agent's system prompt includes "The user is currently viewing the **Roster** page"
+   (plus the open document, if the page has one) — on follow-ups too
 
 **How display blocks are created:**
 1. A tool definition in the ConnectorSpec can set `display_component: "chart"`
@@ -408,7 +411,7 @@ The prompt builder dynamically constructs the system prompt for each agent based
 
 **Example:** The ReportsAgent prompt is built from: base prompt (from config DB) + LoadedHub tools (get_sales_data, get_roster, etc.) + norm_reports tools (render_chart) + norm tools (resolve_dates, search_tool_result) + venue context ("La Zeppa, timezone Pacific/Auckland, today is Monday 29 Mar 2026").
 
-**Key file:** `app/agents/prompt_builder.py` — `build_dynamic_prompt()`, `build_tool_definitions()`
+**Key file:** `app/agents/prompt_builder.py` — `build_tool_definitions()`
 
 ---
 
@@ -665,8 +668,7 @@ Dashboard loads → cached data shown immediately
 | Concept | Key Files |
 |---|---|
 | **Supervisor** | `app/services/supervisor.py` |
-| **Agents** | `app/agents/base.py`, `app/agents/{domain}/agent.py`, `app/agents/registry.py` |
-| **Router** | `app/agents/router.py` |
+| **Agent** | `app/agents/norm.py`, `app/agents/base.py`, `app/agents/registry.py` |
 | **Tool Loop** | `app/agents/tool_loop.py` |
 | **Internal Tools** | `app/agents/internal_tools.py` |
 | **Connectors** | `app/db/config_models.py`, `app/connectors/spec_executor.py`, `app/connectors/tool_executor.py`, `app/connectors/registry.py` |

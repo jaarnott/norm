@@ -1,3 +1,5 @@
+import type { ThreadApp } from './lib/threadApps';
+
 // --- Connector Spec types ---
 
 export interface ConnectorSpecSummary {
@@ -266,6 +268,8 @@ export interface BaseThread {
   llm_calls?: LlmCall[];
   tool_calls?: ToolCallRecord[];
   thinking_steps?: string[];
+  /** The Apps whose tools this thread used — its label and sidebar filing. */
+  apps?: ThreadApp[];
   integration_run?: {
     connector: string;
     status: string;

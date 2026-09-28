@@ -1,14 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { Package, UserRound, BarChart3, HelpCircle, Timer, type LucideIcon } from 'lucide-react';
+import { Package, UserRound, BarChart3, HelpCircle, MessageCircle, Timer, type LucideIcon } from 'lucide-react';
 import type { Thread, ProcurementThread, HrThread } from '../../types';
 import { colors } from '../../lib/theme';
+import { threadAccent, threadLabel } from '../../lib/threadApps';
 
 const DOMAIN_ICONS: Record<string, LucideIcon> = {
   procurement: Package,
   hr: UserRound,
   reports: BarChart3,
+  norm: MessageCircle,
 };
 
 const STATUS_STYLES: Record<string, { bg: string; color: string; label: string }> = {
@@ -81,8 +83,10 @@ interface ThreadCardProps {
 
 export default function ThreadCard({ thread, isSelected, onClick, onRemove, compact, 'data-testid': testId }: ThreadCardProps) {
   const [confirming, setConfirming] = useState(false);
-  const dc = getDomainColor(thread.domain);
-  const DomainIcon = DOMAIN_ICONS[thread.domain] || HelpCircle;
+  // Labelled by the Apps it used; coloured by the first of their members.
+  const accent = threadAccent(thread);
+  const dc = getDomainColor(accent);
+  const DomainIcon = DOMAIN_ICONS[accent] || HelpCircle;
   const ss = STATUS_STYLES[thread.status] || { bg: '#e2e3e5', color: '#383d41', label: thread.status.replace(/_/g, ' ') };
   const isWaiting = thread.status === 'awaiting_user_input' || thread.status === 'needs_clarification';
   const isAutomated = !!thread.automated_task;
@@ -215,7 +219,7 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
             textTransform: 'uppercase',
             letterSpacing: '0.03em',
           }}>
-            {thread.domain}
+            {threadLabel(thread)}
           </span>
           {isAutomated && (
             <span style={{

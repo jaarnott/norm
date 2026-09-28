@@ -12,7 +12,6 @@ from app.db.config_models import AgentConfig, MarketplaceApp, Playbook
 from app.db.models import AgentConnectionBinding, ConnectionSpec
 from app.services.agent_config_service import (
     build_unified_prompt,
-    describe_domains,
     unified_prompt_active,
 )
 
@@ -161,25 +160,6 @@ class TestBuildToolDefinitionsUsesIt:
             "procurement", db_session, config_db=db_session, prompt_mode="per_agent"
         )
         assert "OLD PROCUREMENT PROMPT" in legacy
-
-
-class TestRouterMenu:
-    def test_each_member_line_carries_its_apps(self, db_session):
-        _agent(db_session, "executive_chef", description="Recipes and menus")
-        db_session.add(
-            MarketplaceApp(
-                slug="loaded-kitchen",
-                name="Loaded Kitchen",
-                description="Recipes in Loaded.",
-                tier="app",
-                bundled=True,
-                composition={"member": "executive_chef"},
-            )
-        )
-        db_session.flush()
-        menu = describe_domains(["executive_chef"], db_session)
-        assert "executive_chef: Recipes and menus" in menu
-        assert "Loaded Kitchen (Recipes in Loaded)" in menu
 
 
 class TestNoteCaps:

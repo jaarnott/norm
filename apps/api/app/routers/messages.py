@@ -56,7 +56,7 @@ def _persist_failed_turn(
             thread = Thread(
                 user_id=user_id,
                 venue_id=venue_id,
-                domain="unknown",
+                domain="norm",
                 intent="error",
                 status="completed",
                 raw_prompt=message,

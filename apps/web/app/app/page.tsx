@@ -4,7 +4,6 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import Sidebar from '../components/layout/Sidebar';
 import ThreadList from '../components/threads/ThreadList';
 import ThreadDetail from '../components/threads/ThreadDetail';
-import RoutingIndicator from '../components/routing/RoutingIndicator';
 import HomePanel from '../components/home/HomePanel';
 import SettingsPanel from '../components/settings/SettingsPanel';
 import LoginForm from '../components/auth/LoginForm';
@@ -22,6 +21,7 @@ import { AGENTS } from '../components/layout/Sidebar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useActiveVenue } from '../hooks/useActiveVenue';
 import { useTeam } from '../hooks/useTeam';
+import { threadMembers } from '../lib/threadApps';
 import TeamPage from '../components/team/TeamPage';
 import type { Thread, WidgetAction, VenueDetail } from '../types';
 
@@ -50,8 +50,6 @@ export default function Home() {
   const [activeAgent, setActiveAgent] = useState('home');
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'awaiting_approval' | 'awaiting_user_input' | 'completed'>('all');
-  const [routing, setRouting] = useState(false);
-  const [routingDomain, setRoutingDomain] = useState<string | null>(null);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [activePage, setActivePage] = useState<string | null>(null);
   // PINNED apps as dynamic page entries (id `app:<slug>`), refreshed when the
@@ -322,11 +320,12 @@ export default function Home() {
     return () => { cancelled = true; clearInterval(id); };
   }, [selectedThreadId, selectedThread?.status, loading]);
 
-  // Thread counts per agent
+  // Thread counts per team member — a thread counts for every member whose
+  // Apps it used (see lib/threadApps).
   const threadCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     threads.forEach(t => {
-      counts[t.domain] = (counts[t.domain] || 0) + 1;
+      for (const m of threadMembers(t)) counts[m] = (counts[m] || 0) + 1;
     });
     return counts;
   }, [threads]);
@@ -344,7 +343,7 @@ export default function Home() {
     if (!threadIdForRequest) {
       const optimistic: Thread = {
         id: optimisticId,
-        domain: 'unknown',
+        domain: 'norm',
         intent: '',
         title: null,
         message: messageText,
@@ -498,15 +497,6 @@ export default function Home() {
             // Store the real thread ID for recovery — but don't remap the
             // optimistic thread yet to avoid a flash where selectedThread is null.
             realThreadId = event.thread_id as string;
-          } else if (event.type === 'routing') {
-            setThreads(prev => prev.map(t =>
-              t.id === currentId ? {
-                ...t,
-                domain: event.domain || t.domain,
-                title: event.title || t.title,
-                thinking_steps: [`I'll get the ${event.agent_label || event.domain} agent to look at this one…`],
-              } : t
-            ));
           } else if (event.type === 'stream_cancel') {
             // The model is calling a tool. Close the streaming bubble but KEEP
             // what it already wrote — that prose is answer text, and the
@@ -556,6 +546,7 @@ export default function Home() {
                   llm_calls: full.llm_calls ?? t.llm_calls,
                   tool_calls: full.tool_calls ?? t.tool_calls,
                   automated_task: full.automated_task ?? t.automated_task,
+                  apps: full.apps ?? t.apps,
                 } : t));
               }
             }).catch(() => {});
@@ -1037,7 +1028,6 @@ export default function Home() {
 
           {/* Thread list */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
             <ThreadList
               threads={threads}
               selectedId={selectedThreadId}
@@ -1165,7 +1155,6 @@ export default function Home() {
         overflow: 'hidden',
         transition: 'width 0.2s ease, min-width 0.2s ease',
       }}>
-        <RoutingIndicator isVisible={routing} resolvedDomain={routingDomain} />
         <ThreadList
           threads={threads}
           selectedId={selectedThreadId}

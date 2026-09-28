@@ -1,41 +1,41 @@
-"""Agent registry — maps domain slugs to agent instances."""
+"""The one Norm agent, and the team-member slugs it answers for.
+
+Team members are packaging, not agents: hiring one switches its Apps on, App
+pages join its sidebar section, and an automated task created under one keeps
+that member's tool scope. Every one of them — and ``norm``, the domain new
+threads are filed under — is answered by the same NormAgent.
+"""
 
 from app.agents.base import BaseDomainAgent
+from app.agents.norm import NORM_DOMAIN, NormAgent
 
-_agents: dict[str, BaseDomainAgent] = {}
+#: Team members a thread, task, playbook or App page can belong to.
+MEMBERS = (
+    "procurement",
+    "hr",
+    "reports",
+    "time_attendance",
+    "marketing",
+    "executive_chef",
+    "app_builder",
+)
 
-
-def _init():
-    if _agents:
-        return
-
-    from app.agents.procurement.agent import ProcurementAgent
-    from app.agents.hr.agent import HrAgent
-    from app.agents.reports.agent import ReportsAgent
-    from app.agents.time_attendance.agent import TimeAttendanceAgent
-    from app.agents.marketing.agent import MarketingAgent
-    from app.agents.executive_chef.agent import ExecutiveChefAgent
-    from app.agents.app_builder.agent import AppBuilderAgent
-
-    for agent in [
-        ProcurementAgent(),
-        HrAgent(),
-        ReportsAgent(),
-        TimeAttendanceAgent(),
-        MarketingAgent(),
-        ExecutiveChefAgent(),
-        AppBuilderAgent(),
-    ]:
-        _agents[agent.domain] = agent
+_AGENT = NormAgent()
 
 
-def get_agent(domain: str) -> BaseDomainAgent | None:
-    """Return the agent for the given domain slug, or None."""
-    _init()
-    return _agents.get(domain)
+def get_agent(domain: str | None) -> BaseDomainAgent | None:
+    """The Norm agent for ``norm`` or any team member; None for anything else
+    (a retired slug, "meta", "unknown") so callers can refuse it."""
+    if domain == NORM_DOMAIN or domain in MEMBERS:
+        return _AGENT
+    return None
+
+
+def norm_agent() -> BaseDomainAgent:
+    """The Norm agent, for callers that don't start from a slug."""
+    return _AGENT
 
 
 def registered_domains() -> list[str]:
-    """Return all registered domain slugs."""
-    _init()
-    return list(_agents.keys())
+    """Team-member slugs (App pages and tasks belong to one of these)."""
+    return list(MEMBERS)

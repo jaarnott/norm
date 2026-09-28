@@ -19,7 +19,7 @@ from app.services.hr_service import (
     reject_hr_thread,
     submit_hr_thread,
 )
-from app.agents.reports.context import _report_thread_to_dict
+from app.services.report_threads import _report_thread_to_dict
 
 router = APIRouter()
 
@@ -146,6 +146,7 @@ def _tool_use_thread_to_dict(thread: Thread) -> dict:
 @router.get("/threads")
 async def get_all_threads(
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("tasks:read")),
 ):
     """Return lightweight thread summaries for the sidebar list.
@@ -169,11 +170,59 @@ async def get_all_threads(
         .order_by(Thread.created_at.desc())
         .all()
     )
-    return {"threads": [_thread_summary(t, db) for t in threads]}
+    apps = _apps_by_thread([t.id for t in threads], db, config_db)
+    return {"threads": [_thread_summary(t, db, apps.get(t.id)) for t in threads]}
 
 
-def _thread_summary(thread: Thread, db: Session | None = None) -> dict:
-    """Lightweight serialisation — no relationships loaded."""
+def _apps_by_thread(
+    thread_ids: list[str], db: Session, config_db: Session
+) -> dict[str, list[dict]]:
+    """thread id -> the Apps whose tools the thread used, in first-use order.
+
+    This is how a thread is labelled and filed now that there is one agent:
+    by what it actually touched (BambooHR, Loaded Reports), not by which of
+    seven agents a router guessed. Each App carries its team member, so the
+    sidebar can file the thread under every member whose App it used. Norm
+    Core (email, charts, memory) labels nothing — every thread may use it."""
+    if not thread_ids:
+        return {}
+    from app.services.entitlements import (
+        ALL_MEMBERS,
+        _catalog,
+        app_member,
+        tool_owners,
+    )
+
+    owners = tool_owners(config_db)
+    if not owners:
+        return {}
+    catalog = {a.slug: a for a in _catalog(config_db)}
+    agent_rows = [a for a in catalog.values() if a.tier == "agent"]
+    rows = (
+        db.query(ToolCall.thread_id, ToolCall.connector_name, ToolCall.action)
+        .filter(ToolCall.thread_id.in_(thread_ids))
+        .order_by(ToolCall.created_at)
+        .all()
+    )
+    out: dict[str, list[dict]] = {}
+    for thread_id, connector, action in rows:
+        app = catalog.get(owners.get(f"{connector}.{action}") or "")
+        if app is None:
+            continue
+        member = app_member(app, agent_rows)
+        if member == ALL_MEMBERS:
+            continue
+        used = out.setdefault(thread_id, [])
+        if all(u["slug"] != app.slug for u in used):
+            used.append({"slug": app.slug, "name": app.name, "member": member})
+    return out
+
+
+def _thread_summary(
+    thread: Thread, db: Session | None = None, apps: list[dict] | None = None
+) -> dict:
+    """Lightweight serialisation — no relationships loaded. ``apps``: the Apps
+    the thread used (``_apps_by_thread``)."""
     extracted = thread.extracted_fields or {}
     venue = extracted.get("venue")
     product = extracted.get("product")
@@ -190,6 +239,7 @@ def _thread_summary(thread: Thread, db: Session | None = None) -> dict:
         "missing_fields": thread.missing_fields or [],
         "clarification_question": thread.clarification_question,
         "thinking_steps": thread.thinking_steps or [],
+        "apps": apps or [],
     }
 
     # Domain-specific card fields
@@ -244,11 +294,13 @@ async def delete_thread(
 async def get_thread_detail(
     thread_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("tasks:read")),
 ):
     thread, _ = _find(db, thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
+    thread["apps"] = _apps_by_thread([thread_id], db, config_db).get(thread_id, [])
     return thread
 
 

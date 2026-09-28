@@ -322,29 +322,6 @@ def _collect_tools(
     return unique_tools
 
 
-def build_dynamic_prompt(
-    domain: str, db: Session, config_db: Session | None = None
-) -> str | None:
-    """Return the DB-stored system prompt if connector specs are bound.
-
-    Returns None if no connector specs are bound, signalling the caller to
-    use the DB-stored prompt directly via agent_config_service.
-    """
-    _cdb = config_db
-    if _cdb is None:
-        raise RuntimeError(
-            "config_db is required — check that config_db is passed through the call chain"
-        )
-    tools = _collect_tools(db, config_db=_cdb)
-    if not tools:
-        return None
-
-    # Tools are bound — return the DB prompt (the admin manages it in Settings)
-    from app.services.agent_config_service import get_system_prompt
-
-    return get_system_prompt(domain, _cdb) or None
-
-
 def build_venue_property(configured_venues: list[str], allow_all: bool = False) -> dict:
     """The `venue` enum property injected into external-connector tools.
 
@@ -472,8 +449,8 @@ For a setting that should persist on the task, use `op="set_config"` (`key`,
 
 ## Automated Tasks
 When a user asks to do something regularly or automatically, first execute the request so they can see the result, then offer to save it as an automated task.
-Call `manage_task` with `op="create"` and `intent` (describe what to do — be specific with names and venues). The `agent_slug` is auto-detected from the current agent. Schedule and prompt are auto-generated.
-After creating a task, tell the user which agent/domain it was created under (from the response's `agent_slug`) so they can find it in the Tasks page.
+Call `manage_task` with `op="create"` and `intent` (describe what to do — be specific with names and venues). The `agent_slug` is filled in from this conversation. Schedule and prompt are auto-generated.
+After creating a task, tell the user it's waiting as a draft on the Tasks page. A scheduled run can use the tools this conversation used; if it never ran one, it may read but not write.
 """
     return ""
 

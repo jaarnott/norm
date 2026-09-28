@@ -352,13 +352,7 @@ class TestAutomatedConversationKeepsItsIdentity:
         agent = MagicMock()
         agent.handle_message.return_value = {"message": "ok"}
 
-        with (
-            patch("app.services.supervisor.get_agent", return_value=agent),
-            patch(
-                "app.agents.router.classify_followup",
-                return_value={"action": "continue", "domain": "procurement"},
-            ),
-        ):
+        with patch("app.services.supervisor.norm_agent", return_value=agent):
             supervisor.handle_message(
                 "also email the results to me",
                 db_session,
@@ -374,20 +368,16 @@ class TestAutomatedConversationKeepsItsIdentity:
         assert "08:00" in ctx["schedule"]
 
     def test_followup_cannot_orphan_the_conversation(self, db_session, admin_user):
-        # A "new_thread" verdict must not abandon the task's own conversation.
+        # A message that reads like a new job ("add my email address") must not
+        # abandon the task's own conversation — the retired router's
+        # "new_thread" verdict once could. Now nothing can.
         from app.services import supervisor
 
         conv, task = self._thread_and_task(db_session, admin_user)
         agent = MagicMock()
         agent.handle_message.return_value = {"message": "ok"}
 
-        with (
-            patch("app.services.supervisor.get_agent", return_value=agent),
-            patch(
-                "app.agents.router.classify_followup",
-                return_value={"action": "new_thread", "domain": "procurement"},
-            ),
-        ):
+        with patch("app.services.supervisor.norm_agent", return_value=agent):
             supervisor.handle_message(
                 "add my email address",
                 db_session,

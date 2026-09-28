@@ -25,6 +25,7 @@ export const colors = {
   executive_chef: '#b5654d', // Terracotta (kitchen)
   app_builder: '#5a9e8f',    // Teal (builds things)
   home: '#888',              // Neutral gray
+  norm: '#8a7356',           // Warm tan (Norm itself — used no App)
   unknown: '#d4c4a8',        // Warm beige (unassigned)
 
   // Text

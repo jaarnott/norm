@@ -4,6 +4,7 @@ import type { Thread } from '../../types';
 import ThreadCard from './ThreadCard';
 import { SquarePen, Search, PanelLeftClose } from 'lucide-react';
 import { FUNCTIONAL_PAGES, type FunctionalPageConfig } from '../pages/pageRegistry';
+import { threadMembers } from '../../lib/threadApps';
 
 type FilterKey = 'all' | 'awaiting_approval' | 'awaiting_user_input' | 'completed';
 
@@ -45,8 +46,9 @@ interface ThreadListProps {
 }
 
 export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember }: ThreadListProps) {
-  // Filter by agent
-  const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => t.domain === activeAgent);
+  // A member's section shows the threads that used its Apps (or, from before
+  // there was one agent, were handled by it).
+  const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => threadMembers(t).includes(activeAgent));
   // Apply status filter
   const filtered = applyFilter(agentFiltered, filter);
 

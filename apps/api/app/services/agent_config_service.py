@@ -132,11 +132,7 @@ def get_agent_actions(agent_slug: str, db: Session) -> set[str]:
     """The connector actions THIS agent can actually call.
 
     "What can this agent do" was being re-derived inline wherever it was
-    needed, and the router — the one place that decides who handles a
-    message — had no way to ask at all. It was given bare domain slugs, so on
-    15 Aug 2026 it sent a wage-cost question to `hr` (recruitment) while
-    `time_attendance` held `get_timeclock_entries_for_period`. See
-    `describe_domains`.
+    needed; this is the one answer (unattended task scope, the admin pages).
 
     Enabled capabilities on enabled bindings only — a disabled binding is a
     tool the agent cannot reach, and counting it would answer the question
@@ -191,6 +187,9 @@ def default_tool_filter(agent_slug: str, config_db: Session) -> list[str] | None
     scope here keeps an unfiltered run exactly as capable as it was before the
     one-agent change. Returns None when the agent has no curated bindings, which
     leaves the union in place — matching the old no-narrowing behaviour.
+
+    A task filed under no team member — created in a Norm thread, once the
+    router went (Sep 2026) — gets ``_read_only_scope`` instead.
     """
     # Apps v3: once Apps own tools, an unattended run's scope is the tools of
     # its member's own Apps plus Norm Core's — the same ownership the tool
@@ -200,10 +199,13 @@ def default_tool_filter(agent_slug: str, config_db: Session) -> list[str] | None
     # Procurement's Loaded Stock), and a time_attendance or chef task that
     # could read them before must still be able to. Retire the union with the
     # bindings, not before.
+    from app.agents.registry import MEMBERS
     from app.services.entitlements import ALL_MEMBERS, _catalog, app_member
 
     apps = _catalog(config_db)
     if any((a.composition or {}).get("tools") for a in apps):
+        if agent_slug not in MEMBERS:
+            return _read_only_scope(apps, config_db)
         agent_rows = [a for a in apps if a.tier == "agent"]
         scoped: set[str] = set()
         for a in apps:
@@ -220,50 +222,36 @@ def default_tool_filter(agent_slug: str, config_db: Session) -> list[str] | None
     return sorted(actions) if actions else None
 
 
-def describe_domains(slugs: list[str], db: Session | None) -> str:
-    """The routing menu: one line per agent, saying what it actually does.
+def _read_only_scope(apps, config_db: Session) -> list[str]:
+    """An unattended run with no member and no tool_filter may READ anything
+    an App owns, and use Norm Core (email, charts, memory) — nothing that
+    writes. "Reads" means rows marked ``read_only`` explicitly: method alone
+    won't do, since create_purchase_order and the invoice-receiving tools are
+    registered as GET. A task that needs a write carries a tool_filter, which
+    it gets from the conversation that created it. Still intersected with the
+    org's entitled union downstream, so it never exceeds what the org holds."""
+    from app.db.config_models import ConnectionSpec
+    from app.services.entitlements import ALL_MEMBERS, app_member
 
-    The router used to be handed `- procurement\\n- hr\\n- reports…` and asked
-    to pick. From a bare list "wage costs" reads as `hr`, which in Norm is
-    BambooHR recruitment — no hours, no pay, and (then) no way to hand off. The
-    descriptions that make the choice obvious already existed in
-    `agent_configs.description`; nobody was showing them to the router.
-
-    Falls back to the bare slug per-agent, so an agent registered in code with
-    no config row is still routable — and the whole list degrades to the old
-    behaviour when there is no config DB (the prompt-rendering test helper).
-    """
-    if db is None:
-        return "\n".join(f"- {s}" for s in slugs)
-    rows = {r.agent_slug: r for r in db.query(AgentConfig).all()}
-    # Apps v3: each member's Apps say what it owns (Loaded Kitchen under the
-    # chef, Loaded Stock under procurement) — generated from the App Map, so
-    # the routing menu can't drift from what each member actually has.
-    apps_by_member: dict[str, list[str]] = {}
-    try:
-        from app.services.entitlements import _catalog, app_member
-
-        cat = _catalog(db)
-        agent_rows = [a for a in cat if a.tier == "agent"]
-        for a in cat:
-            if a.tier == "app":
-                m = app_member(a, agent_rows)
-                if m and m != "*":
-                    label = a.name
-                    if a.description:
-                        label += f" ({a.description.rstrip('.')})"
-                    apps_by_member.setdefault(m, []).append(label)
-    except Exception:  # pragma: no cover — routing must never fail on this
-        apps_by_member = {}
-    lines = []
-    for slug in slugs:
-        row = rows.get(slug)
-        desc = (row.description or "").strip() if row else ""
-        line = f"- {slug}: {desc}" if desc else f"- {slug}"
-        if apps_by_member.get(slug):
-            line += " Apps: " + "; ".join(apps_by_member[slug])
-        lines.append(line)
-    return "\n".join(lines)
+    agent_rows = [a for a in apps if a.tier == "agent"]
+    owned: dict[str, bool] = {}  # "connector.action" -> is Norm Core's
+    for a in apps:
+        if a.tier not in ("app", "user"):
+            continue
+        core = app_member(a, agent_rows) == ALL_MEMBERS
+        for key in (a.composition or {}).get("tools") or []:
+            owned[key] = owned.get(key, False) or core
+    read_only: set[str] = set()
+    connectors = {k.split(".", 1)[0] for k in owned}
+    for spec in config_db.query(ConnectionSpec).filter(
+        ConnectionSpec.connector_name.in_(connectors)
+    ):
+        for t in spec.tools or []:
+            if t.get("read_only") is True and t.get("action"):
+                read_only.add(f"{spec.connector_name}.{t['action']}")
+    return sorted(
+        {k.split(".", 1)[-1] for k, core in owned.items() if core or k in read_only}
+    )
 
 
 def upsert_connector_binding(

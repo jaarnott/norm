@@ -344,7 +344,7 @@ Use it to visually verify UI changes on `http://localhost:3000`:
 |---|---|
 | Auth | `app/auth/dependencies.py`, `app/auth/permissions.py`, `app/auth/security.py` |
 | Config | `app/config.py`, `app/db/config_models.py` |
-| Agents | `app/agents/base.py`, `app/agents/tool_loop.py`, `app/agents/router.py` |
+| Agent | `app/agents/norm.py` (the one agent — no router), `app/agents/tool_loop.py`, `app/services/supervisor.py` |
 | LLM | `app/interpreter/llm_interpreter.py` |
 | Email | `app/services/email_service.py`, `app/templates/email/` |
 | Invoice units | `docs/unit-resolution.md` (how a product's delivered unit is chosen — self-healing), `app/services/supplier_catalog.py`, `app/services/unit_resolver.py`, `app/services/invoice_replica.py` |

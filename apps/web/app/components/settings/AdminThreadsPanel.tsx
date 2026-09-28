@@ -8,8 +8,11 @@ import type { AdminThread, Thread } from '../../types';
 import ThreadDetail from '../threads/ThreadDetail';
 import { CopyableThreadId } from '../threads/ActivityTimeline';
 
+// Threads since Sep 2026 are all Norm's (no router); the member domains
+// filter the threads from before.
 const DOMAIN_OPTIONS = [
-  { value: '', label: 'All agents' },
+  { value: '', label: 'All threads' },
+  { value: 'norm', label: 'Norm' },
   { value: 'procurement', label: 'Procurement' },
   { value: 'hr', label: 'HR' },
   { value: 'time_attendance', label: 'Time & Attendance' },

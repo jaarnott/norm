@@ -291,67 +291,6 @@ class TestEnsureAlternation:
         assert {b["text"] for b in merged[0]["content"]} == {"a", "b"}
 
 
-class TestAttachmentAwareRouting:
-    """A file only reaches the model on the agent tool-loop path, so routing to
-    the no-tool-loop "meta"/"unknown" help reply silently drops it. When the
-    turn carries an attachment the router is told to pick a specialist instead.
-    """
-
-    def _router_system(self, db_session, monkeypatch, *, has_attachments):
-        import anthropic
-
-        import app.services.agent_config_service as acs
-        from app.agents import router
-
-        monkeypatch.setattr(
-            acs, "get_system_prompt", lambda name, cdb: "ROUTER {domains}\nReturn JSON."
-        )
-
-        captured = {}
-
-        class _Usage:
-            input_tokens = 1
-            output_tokens = 1
-
-        class _Block:
-            text = '{"domain": "executive_chef"}'
-
-        class _Resp:
-            content = [_Block()]
-            usage = _Usage()
-
-        class _Msgs:
-            def create(self, **kw):
-                captured["system"] = kw["system"]
-                return _Resp()
-
-        class _Client:
-            def __init__(self, *a, **k):
-                self.messages = _Msgs()
-
-        monkeypatch.setattr(anthropic, "Anthropic", _Client)
-
-        router.classify(
-            "here is a document",
-            ["procurement", "executive_chef", "reports"],
-            db=db_session,
-            config_db=db_session,
-            has_attachments=has_attachments,
-        )
-        return captured.get("system", "")
-
-    def test_guidance_is_injected_when_a_file_is_attached(
-        self, db_session, monkeypatch
-    ):
-        s = self._router_system(db_session, monkeypatch, has_attachments=True)
-        assert "ATTACHED" in s
-        assert "meta" in s and "unknown" in s
-
-    def test_no_guidance_without_an_attachment(self, db_session, monkeypatch):
-        s = self._router_system(db_session, monkeypatch, has_attachments=False)
-        assert "ATTACHED" not in s
-
-
 class TestGetAttachmentTool:
     def test_returns_document_block_for_pdf(self, db_session, admin_user):
         thread = _make_thread(db_session, admin_user)
