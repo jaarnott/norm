@@ -163,6 +163,125 @@ class TestConnectInfo:
         }  # Unrelated Venue excluded — no access
 
 
+class TestConnectInfoIsTruthfulForEveryCredentialShape:
+    """connect-info used to read per-venue OAuth tokens only, so Norm's own
+    internal pipe and prod's BambooHR (one org-wide basic-auth row, no token)
+    always showed "not connected" — a false "needs connections" on the Team
+    page, and the reason a proactive page guard would have walled working
+    pages. Status now mirrors what tool execution actually finds."""
+
+    def _spec(self, db_session, name, auth_type, fields=None):
+        db_session.add(
+            ConnectionSpec(
+                id=str(uuid.uuid4()),
+                connector_name=name,
+                display_name=name.title(),
+                category="x",
+                auth_type=auth_type,
+                credential_fields=fields or [],
+                enabled=True,
+            )
+        )
+        db_session.flush()
+
+    def test_platform_pipe_is_always_connected(self, client, db_session):
+        venue = _make_venue(db_session, name="Any Venue")
+        self._spec(db_session, "norm_x", "none")
+        headers = _manager_with_connectors_perm(db_session, venue=venue)
+        data = client.get("/api/connectors/norm_x/connect-info", headers=headers).json()
+        assert data["configured"] is True and data["platform"] is True
+        assert [v["status"] for v in data["venues"]] == ["connected"]
+        assert data["venues"][0]["scope"] == "platform"
+
+    def test_org_wide_basic_auth_row_serves_every_venue(self, client, db_session):
+        # prod BambooHR's exact shape: venue_id NULL, credentials in config
+        venue = _make_venue(db_session, name="Venue A")
+        self._spec(
+            db_session,
+            "bamboo_x",
+            "basic",
+            [{"key": "subdomain"}, {"key": "api_key", "secret": True}],
+        )
+        db_session.add(
+            Connection(
+                connector_name="bamboo_x",
+                venue_id=None,
+                config={"subdomain": "acme", "api_key": "k"},
+                enabled="true",
+            )
+        )
+        db_session.flush()
+        headers = _manager_with_connectors_perm(db_session, venue=venue)
+        data = client.get(
+            "/api/connectors/bamboo_x/connect-info", headers=headers
+        ).json()
+        assert data["configured"] is True
+        assert data["venues"][0]["status"] == "connected"
+        assert data["venues"][0]["scope"] == "organisation"
+
+    def test_missing_credential_field_is_not_connected(self, client, db_session):
+        venue = _make_venue(db_session, name="Venue B")
+        self._spec(
+            db_session, "bamboo_y", "basic", [{"key": "subdomain"}, {"key": "api_key"}]
+        )
+        db_session.add(
+            Connection(
+                connector_name="bamboo_y",
+                venue_id=None,
+                config={"subdomain": "acme", "api_key": ""},
+                enabled="true",
+            )
+        )
+        db_session.flush()
+        headers = _manager_with_connectors_perm(db_session, venue=venue)
+        data = client.get(
+            "/api/connectors/bamboo_y/connect-info", headers=headers
+        ).json()
+        assert data["configured"] is False
+        assert data["venues"][0]["status"] == "not_connected"
+
+    def test_venue_row_beats_the_org_wide_row(self, client, db_session):
+        venue = _make_venue(db_session, name="Venue C")
+        _oauth_spec_row(db_session, connector="lh_x")
+        db_session.add(
+            Connection(
+                connector_name="lh_x",
+                venue_id=None,
+                config={},
+                enabled="true",
+                access_token="org",
+            )
+        )
+        db_session.add(
+            Connection(
+                connector_name="lh_x", venue_id=venue.id, config={}, enabled="true"
+            )
+        )  # venue row exists but has no token
+        db_session.flush()
+        headers = _manager_with_connectors_perm(db_session, venue=venue)
+        data = client.get("/api/connectors/lh_x/connect-info", headers=headers).json()
+        assert data["venues"][0]["scope"] == "venue"
+        assert data["venues"][0]["status"] == "not_connected"
+
+    def test_disabled_row_is_not_connected(self, client, db_session):
+        venue = _make_venue(db_session, name="Venue D")
+        self._spec(db_session, "brevo_x", "api_key", [{"key": "api_key"}])
+        db_session.add(
+            Connection(
+                connector_name="brevo_x",
+                venue_id=venue.id,
+                config={"api_key": "k"},
+                enabled="false",
+            )
+        )
+        db_session.flush()
+        headers = _manager_with_connectors_perm(db_session, venue=venue)
+        data = client.get(
+            "/api/connectors/brevo_x/connect-info", headers=headers
+        ).json()
+        assert data["venues"][0]["status"] == "not_connected"
+
+
 def _user_id_from(headers, db_session):
     from app.auth.security import decode_access_token
 

@@ -642,18 +642,16 @@ def check_team_catalog(
 
 
 def check_app_pages_reachable(agent_rows: list, app_rows: list) -> list[ConfigIssue]:
-    """Every App carrying a page must be used by some team member — an App no
-    member unlocks can never be on, so its pages are unreachable dead config
-    (tier='user' rows are exempt: they gate on entitlement alone and fall
-    back to the Norm menu)."""
+    """Every App carrying a page must be bound to a team member — an App with
+    no member can never be on, so its pages are unreachable dead config
+    (tier='user' rows are exempt: they gate on entitlement alone)."""
+    from app.services.entitlements import app_member
+
     issues: list[ConfigIssue] = []
     if not agent_rows:
         return issues
-    unlocked: set[str] = set()
-    for row in agent_rows:
-        unlocked.update((row.composition or {}).get("unlocks") or [])
     for app in app_rows:
-        if app.tier != "app" or app.slug in unlocked:
+        if app.tier != "app" or app_member(app, agent_rows):
             continue
         has_page = any(
             isinstance(e, dict) and e.get("page")
@@ -665,12 +663,99 @@ def check_app_pages_reachable(agent_rows: list, app_rows: list) -> list[ConfigIs
                     severity="error",
                     where=f"catalog.{app.slug}",
                     problem=(
-                        "App declares pages but no team member unlocks it — "
+                        "App declares pages but is bound to no team member — "
                         "the pages are unreachable for every org"
                     ),
-                    fix="Add it to a member's unlocks, or remove the row.",
+                    fix="Set composition.member, or remove the row.",
                 )
             )
+    return issues
+
+
+def check_app_notes(app_rows: list) -> list[ConfigIssue]:
+    """App notes ride in every conversation while their App is on, so they
+    must stay short: each under APP_NOTE_MAX_CHARS, all together under
+    APP_NOTES_TOTAL_MAX_CHARS. Longer know-how belongs on a tool description
+    (sent only with its tool) or in a skill (loaded on demand)."""
+    from app.services.agent_config_service import (
+        APP_NOTE_MAX_CHARS,
+        APP_NOTES_TOTAL_MAX_CHARS,
+    )
+
+    issues: list[ConfigIssue] = []
+    total = 0
+    for a in app_rows:
+        note = ((a.composition or {}).get("note") or "").strip()
+        total += len(note)
+        if len(note) > APP_NOTE_MAX_CHARS:
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"catalog.{a.slug}.note",
+                    problem=f"App note is {len(note)} characters (max {APP_NOTE_MAX_CHARS}) — it is truncated in every conversation",
+                    fix="Move tool know-how to the tool's description, or a workflow into a skill.",
+                )
+            )
+    if total > APP_NOTES_TOTAL_MAX_CHARS:
+        issues.append(
+            ConfigIssue(
+                severity="error",
+                where="catalog.notes",
+                problem=f"App notes total {total} characters (max {APP_NOTES_TOTAL_MAX_CHARS}) — some are dropped from conversations",
+                fix="Shorten the notes; move know-how to tool descriptions or skills.",
+            )
+        )
+    return issues
+
+
+def check_app_ownership(findings: dict) -> list[ConfigIssue]:
+    """Apps v3 ownership (agent_catalog.ownership_findings): every agent-
+    visible tool, library component and enabled skill belongs to exactly one
+    App, and every App to one existing member. Same findings the admin App
+    Map shows, so the page and the validator can't disagree."""
+    issues: list[ConfigIssue] = []
+
+    def add(where: str, problem: str, fix: str) -> None:
+        issues.append(
+            ConfigIssue(severity="error", where=where, problem=problem, fix=fix)
+        )
+
+    for key in findings.get("unowned_tools") or []:
+        add(
+            f"app_map.tool.{key}",
+            "agent-visible tool belongs to no App (it can't be switched off)",
+            "Add it to one App's composition.tools, or make it engine_only.",
+        )
+    for key in findings.get("unowned_components") or []:
+        add(
+            f"app_map.component.{key}",
+            "library component belongs to no App",
+            "Add it to one App's composition.components.",
+        )
+    for key in findings.get("unowned_skills") or []:
+        add(
+            f"app_map.skill.{key}",
+            "enabled skill (playbook) belongs to no App",
+            "Add it to one App's composition.skills, or disable it.",
+        )
+    for d in findings.get("double_claims") or []:
+        add(
+            f"app_map.{d['kind']}.{d['key']}",
+            f"{d['kind']} claimed by several Apps: {', '.join(d['apps'])}",
+            "Each tool, component and skill belongs to exactly one App.",
+        )
+    for key in findings.get("unknown_components") or []:
+        add(
+            f"app_map.component.{key}",
+            "App claims a component the web registry doesn't have",
+            "Fix the component key.",
+        )
+    for b in findings.get("bad_members") or []:
+        add(
+            f"catalog.{b['app']}",
+            f"member '{b['member']}': {b['problem']}",
+            "Fix composition.member.",
+        )
     return issues
 
 
@@ -1050,6 +1135,10 @@ def validate_config(db=None, config_db=None) -> dict:
                 )
             )
             issues.extend(check_app_pages_reachable(agent_rows, app_rows))
+            from app.services.agent_catalog import ownership_findings
+
+            issues.extend(check_app_ownership(ownership_findings(config_db)))
+            issues.extend(check_app_notes(app_rows))
             issues.extend(check_priced_rows_have_stripe_keys(active_rows))
 
         # MCP capability drift: every enabled row must still resolve to a real,

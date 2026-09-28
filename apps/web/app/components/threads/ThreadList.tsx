@@ -38,9 +38,13 @@ interface ThreadListProps {
    *  `app` shows iff its App is on; switching one App off removes exactly
    *  its pages. */
   appsOn?: Set<string> | null;
+  /** page id -> the member whose menu it belongs in (catalog placement). An
+   *  App's pages show only in its member's menu; Norm Core pages (shared)
+   *  keep their own per-member placement. */
+  pageMember?: Record<string, string>;
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn }: ThreadListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember }: ThreadListProps) {
   // Filter by agent
   const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => t.domain === activeAgent);
   // Apply status filter
@@ -153,7 +157,7 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
           <Search size={20} strokeWidth={1.75} /> Search
         </button>
         {[...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
-          .filter(p => p.agent === activeAgent)
+          .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
           .filter(p => !p.app || !appsOn || appsOn.has(p.app))
           .map((page, idx) => {
           const Icon = page.icon;

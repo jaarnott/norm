@@ -46,6 +46,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   // Dashboards (one per agent)
   {
     id: 'dashboard-hr',
+    app: 'norm-core',
     label: 'Dashboard',
     icon: LayoutDashboard,
     agent: 'hr',
@@ -55,6 +56,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'dashboard-procurement',
+    app: 'norm-core',
     label: 'Dashboard',
     icon: LayoutDashboard,
     agent: 'procurement',
@@ -64,6 +66,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'dashboard-reports',
+    app: 'norm-core',
     label: 'Dashboard',
     icon: LayoutDashboard,
     agent: 'reports',
@@ -74,6 +77,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   // Marketing
   {
     id: 'dashboard-marketing',
+    app: 'norm-core',
     label: 'Dashboard',
     icon: LayoutDashboard,
     agent: 'marketing',
@@ -83,6 +87,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'tasks-marketing',
+    app: 'norm-core',
     label: 'Tasks',
     icon: Timer,
     agent: 'marketing',
@@ -96,6 +101,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   // Time & Attendance
   {
     id: 'dashboard-time_attendance',
+    app: 'norm-core',
     label: 'Dashboard',
     icon: LayoutDashboard,
     agent: 'time_attendance',
@@ -105,7 +111,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'roster',
-    app: 'loaded-rostering',
+    app: 'loaded-time',
     connections: ['loadedhub'],
     label: 'Roster',
     icon: Calendar,
@@ -119,6 +125,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'tasks-time_attendance',
+    app: 'norm-core',
     label: 'Tasks',
     icon: Timer,
     agent: 'time_attendance',
@@ -149,6 +156,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'tasks-hr',
+    app: 'norm-core',
     label: 'Tasks',
     icon: Timer,
     agent: 'hr',
@@ -161,7 +169,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'orders',
-    app: 'loaded-procurement',
+    app: 'loaded-stock',
     connections: ['loadedhub'],
     label: 'Orders',
     icon: ShoppingCart,
@@ -175,7 +183,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'invoices',
-    app: 'loaded-procurement',
+    app: 'loaded-stock',
     connections: ['loadedhub'],
     label: 'Invoices',
     icon: Receipt,
@@ -189,7 +197,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // Self-loading via the supplier_tenders component-api rows. Declared in the
     // Loaded app's marketplace composition (sync_marketplace_catalog.py).
     id: 'supplier-tenders',
-    app: 'loaded-procurement',
+    app: 'loaded-stock',
     connections: ['cook_brothers_app'],
     label: 'Supplier Tenders',
     icon: Gavel,
@@ -199,6 +207,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'tasks-procurement',
+    app: 'norm-core',
     label: 'Tasks',
     icon: Timer,
     agent: 'procurement',
@@ -211,6 +220,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'saved-reports',
+    app: 'saved-reports',
     label: 'Reports',
     icon: BarChart3,
     agent: 'reports',
@@ -223,6 +233,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'tasks-reports',
+    app: 'norm-core',
     label: 'Tasks',
     icon: Timer,
     agent: 'reports',
@@ -236,6 +247,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   // Executive Chef
   {
     id: 'dashboard-executive_chef',
+    app: 'norm-core',
     label: 'Dashboard',
     icon: LayoutDashboard,
     agent: 'executive_chef',
@@ -280,6 +292,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'tasks-executive_chef',
+    app: 'norm-core',
     label: 'Tasks',
     icon: Timer,
     agent: 'executive_chef',
@@ -293,6 +306,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   // App Builder
   {
     id: 'apps-hub',
+    app: 'app-builder',
     label: 'Apps',
     icon: LayoutGrid,
     agent: 'app_builder',
@@ -317,6 +331,8 @@ export function appPageConfig(app: { slug: string; name: string; icon?: string |
     // Hiring and Tasks, not off in a separate destination. Falling back to the
     // App Builder keeps every app that predates the choice exactly where it was.
     agent: app.agent || 'app_builder',
+    // hierarchy v2: the org-level App switch gates this page too
+    app: `custom:${app.slug}`,
     component: 'app_runner',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
     componentProps: { slug: app.slug },

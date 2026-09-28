@@ -7,6 +7,7 @@ import ConnectorSpecsPanel from './ConnectorSpecsPanel';
 import ConsolidatorCoveragePanel from './ConsolidatorCoveragePanel';
 import BillingTab from './BillingTab';
 import ConnectionsMatrix from './ConnectionsMatrix';
+import AppMapPanel from './AppMapPanel';
 import EmailTab from './EmailTab';
 import DeploymentsPanel from './DeploymentsPanel';
 import TestsPanel from './TestsPanel';
@@ -1066,7 +1067,7 @@ function UsersTab() {
   );
 }
 
-type SettingsTab = 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
+type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -1397,6 +1398,7 @@ export default function SettingsPanel() {
         {(showAgents || showConnectors || showComponents) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
         {showAgents && <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>}
         {showConnections && <button data-testid="settings-tab-connections" onClick={() => setActiveTab('connections')} style={tabStyle('connections')}>Connections</button>}
+        {isAdmin && <button data-testid="settings-tab-app-map" onClick={() => setActiveTab('app-map')} style={tabStyle('app-map')}>App Map</button>}
         {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connector Specs</button>}
         {showComponents && <button data-testid="settings-tab-components" onClick={() => setActiveTab('components')} style={tabStyle('components')}>Components</button>}
         {showPlaybooks && <button data-testid="settings-tab-playbooks" onClick={() => setActiveTab('playbooks')} style={tabStyle('playbooks')}>Playbooks</button>}
@@ -1436,8 +1438,9 @@ export default function SettingsPanel() {
         {activeTab === 'members' && <UsersTab />}
 
         {/* ============ CONNECTORS TAB ============ */}
+        {activeTab === 'app-map' && isAdmin && <AppMapPanel />}
         {activeTab === 'connections' && (
-          <div style={{ maxWidth: 860 }}>
+          <div style={{ width: '100%' }}>
             <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem' }}>Connections</h3>
             <ConnectionsMatrix />
           </div>

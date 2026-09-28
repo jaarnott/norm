@@ -25,6 +25,8 @@ import { useTeam } from '../hooks/useTeam';
 import TeamPage from '../components/team/TeamPage';
 import type { Thread, WidgetAction, VenueDetail } from '../types';
 
+type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null };
+
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null };
 
 // True once a re-fetched thread's turn has settled with a final answer — the
@@ -55,15 +57,14 @@ export default function Home() {
   // PINNED apps as dynamic page entries (id `app:<slug>`), refreshed when the
   // Apps page toggles a pin. Sits beside FUNCTIONAL_PAGES, never inside it.
   const [appPages, setAppPages] = useState<FunctionalPageConfig[]>([]);
+  // Every App-platform app the viewer can open; which ones get a menu item is
+  // decided below once the team payload is known (pinned, or its App is on).
+  const [appRows, setAppRows] = useState<AppRow[]>([]);
   useEffect(() => {
     const loadAppPages = () => {
       apiFetch('/api/apps')
         .then((r) => (r.ok ? r.json() : { apps: [] }))
-        .then((d) => setAppPages(
-          ((d.apps ?? []) as { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null }[])
-            .filter((a) => a.pinned)
-            .map(appPageConfig),
-        ))
+        .then((d) => setAppRows((d.apps ?? []) as AppRow[]))
         .catch(() => {});
     };
     loadAppPages();
@@ -101,6 +102,26 @@ export default function Home() {
   // Hierarchy v2: which team members are hired and which Apps are on. null
   // sets = show everything (gating inactive / fetch failed — fail-open).
   const team = useTeam(token);
+  // Apps v3: an App-platform app gets a menu item under its member while its
+  // App is on (Norm Hiring under HR, a custom app under its member) — no pin
+  // needed. Pinned apps keep their item too. Placement follows the catalog.
+  useEffect(() => {
+    const auto = new Map<string, { member: string | null; appTag: string }>();
+    for (const a of team.apps) {
+      if (!a.app_slug || !a.app_platform) continue;
+      if (team.gatingActive && !a.enabled) continue;
+      auto.set(a.app_slug, { member: a.member && a.member !== '*' ? a.member : null, appTag: a.slug });
+    }
+    setAppPages(
+      appRows
+        .filter((r) => r.pinned || auto.has(r.slug))
+        .map((r) => {
+          const cfg = appPageConfig(r);
+          const hit = auto.get(r.slug);
+          return hit ? { ...cfg, agent: hit.member ?? cfg.agent, app: hit.appTag } : cfg;
+        }),
+    );
+  }, [appRows, team.apps, team.gatingActive]);
   // A pinned custom app whose member isn't hired joins the Norm/home menu
   // instead of vanishing — an app is never invisible, never a reason to hire.
   const effectiveAppPages = team.hired
@@ -1029,6 +1050,7 @@ export default function Home() {
               onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
               extraPages={effectiveAppPages}
               appsOn={team.appsOn}
+              pageMember={team.pageMember}
             />
           </div>
 
@@ -1157,6 +1179,7 @@ export default function Home() {
           extraPages={effectiveAppPages}
           onSelectPage={handleSelectPage}
           appsOn={team.appsOn}
+              pageMember={team.pageMember}
         />
       </div>
 

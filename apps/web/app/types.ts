@@ -353,6 +353,8 @@ export interface AvailableConnector {
 }
 
 export interface AgentConfig {
+  /** unified-prompt mode: the member's light personality line (tone only) */
+  persona?: string | null;
   slug: string;
   display_name: string;
   description: string;

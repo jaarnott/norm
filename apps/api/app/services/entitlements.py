@@ -187,35 +187,149 @@ def hired_agent_slugs(
     return hired
 
 
+CUSTOM_PREFIX = "custom:"
+
+
+def custom_app_owner(app) -> str:
+    """The team member a custom (App-platform) app is bound to. NULL agent =
+    App Builder, where apps have always lived by default."""
+    return app.agent or "app_builder"
+
+
+# Norm Core's member: bound to every team member (the only App allowed to be).
+ALL_MEMBERS = "*"
+
+
+def app_member(app_row, agent_rows=None) -> str | None:
+    """The ONE team member an App is bound to (Apps v3, 28 Sep 2026).
+
+    Reads composition["member"]; "*" means every member (Norm Core only).
+    Transitional fallback for catalogs seeded before v3: the first member
+    whose agent row `unlocks` the App, else the first always-included slug
+    in its `agents` list."""
+    comp = app_row.composition or {}
+    if comp.get("member"):
+        return comp["member"]
+    for a in agent_rows or []:
+        if app_row.slug in ((a.composition or {}).get("unlocks") or []):
+            owns = (a.composition or {}).get("owns_agents") or []
+            if owns:
+                return owns[0]
+    for slug in comp.get("agents") or []:
+        return slug
+    return None
+
+
+def _catalog_app_members(app_row, agent_rows) -> set[str]:
+    """Member slugs an App counts as bound to, for hire checks. Norm Core
+    ("*") is bound to the always-hired base assistant, so it's always on."""
+    m = app_member(app_row, agent_rows)
+    if m == ALL_MEMBERS:
+        return {"base"}
+    return {m} if m else set()
+
+
+def is_switchable(app_row) -> bool:
+    """False for Apps that are always on while their member is hired
+    (Norm Core, Saved Reports, App Builder)."""
+    return (app_row.composition or {}).get("switchable", True) is not False
+
+
+def tool_owners(config_db: Session) -> dict[str, str]:
+    """``connector.action`` -> the ONE App slug that owns the tool. Empty
+    until some App declares ``tools`` — that emptiness is the dark-launch
+    switch for the tool-ownership filter."""
+    owners: dict[str, str] = {}
+    for a in _catalog(config_db):
+        if a.tier in ("app", "user"):
+            for key in (a.composition or {}).get("tools") or []:
+                owners.setdefault(key, a.slug)
+    return owners
+
+
+def skill_owners(config_db: Session) -> dict[str, str]:
+    """Playbook slug -> the ONE App slug that owns the skill."""
+    owners: dict[str, str] = {}
+    for a in _catalog(config_db):
+        if a.tier in ("app", "user"):
+            for slug in (a.composition or {}).get("skills") or []:
+                owners.setdefault(slug, a.slug)
+    return owners
+
+
 def apps_on(
     organization_id: str | None, db: Session, config_db: Session
 ) -> set[str] | None:
     """Slugs of the Apps that are ON for this org, or None when gating is
     inactive.
 
-    Every App has an enabled state. A tier='app' row is on iff a hired team
-    member uses it (some entitled agent row's composition["unlocks"] names it)
-    AND the App itself is entitled (explicit row wins, else bundled default) —
-    hiring a member enables its bundled Apps, an org can switch one off, a
-    priced App ships bundled=false until enabled. A tier='user' row (published
-    community App) is on iff entitled — its pages fall back to the Norm menu
-    when its member isn't hired, so hire state doesn't gate it."""
+    Every App has an enabled state. A catalog App (tier='app') is on iff some
+    team member that uses it is hired (always-included members count) AND the
+    App itself is entitled — explicit row wins, else bundled default; a priced
+    App ships bundled=false until enabled. A published community App
+    (tier='user') is on iff entitled. A custom App — the org's own
+    App-platform apps, reported as ``custom:<slug>`` — is on iff the member
+    it's bound to is hired and the org hasn't switched it off (custom apps
+    default ON: the team built them)."""
     apps = _catalog(config_db)
     agent_rows = _agent_rows(apps)
     if not agent_rows or not organization_id:
         return None
+    hired = hired_agent_slugs(organization_id, db, config_db) or set()
     entitled = entitled_slugs(organization_id, db, config_db)
-    unlocked: set[str] = set()
-    for a in agent_rows:
-        if a.slug in entitled:
-            unlocked.update((a.composition or {}).get("unlocks") or [])
     on: set[str] = set()
+    pointers: dict[str, str] = {}  # App-platform slug -> catalog row fronting it
     for a in apps:
-        if a.tier == "app" and a.slug in unlocked and a.slug in entitled:
-            on.add(a.slug)
+        # Only first-party rows front a custom app. A community row's app_slug
+        # is a bare slug from its publisher's org; honouring it here would
+        # take over every org's custom app that happens to share the slug.
+        ptr = (a.composition or {}).get("app_slug")
+        if ptr and a.tier == "app":
+            pointers[ptr] = a.slug
+        if a.tier == "app":
+            entitled_or_fixed = (not is_switchable(a)) or a.slug in entitled
+            if entitled_or_fixed and _catalog_app_members(a, agent_rows) & hired:
+                on.add(a.slug)
         elif a.tier == "user" and a.slug in entitled:
             on.add(a.slug)
-    return on
+    # A custom app fronted by a catalog row (Norm HR -> `hiring`) is ONE App:
+    # the catalog row's switch governs it, so its pinned page follows too.
+    custom_on = _custom_apps_on(organization_id, db, hired)
+    for ptr, catalog_slug in pointers.items():
+        key = f"{CUSTOM_PREFIX}{ptr}"
+        custom_on.discard(key)
+        if catalog_slug in on:
+            custom_on.add(key)
+    return on | custom_on
+
+
+def _custom_apps_on(organization_id: str, db: Session, hired: set[str]) -> set[str]:
+    from app.db.models import App, OrgAppEntitlement
+
+    try:
+        off = {
+            e.app_slug
+            for e in db.query(OrgAppEntitlement)
+            .filter(
+                OrgAppEntitlement.organization_id == organization_id,
+                OrgAppEntitlement.app_slug.like(f"{CUSTOM_PREFIX}%"),
+                OrgAppEntitlement.enabled == False,  # noqa: E712
+            )
+            .all()
+        }
+        rows = (
+            db.query(App)
+            .filter(App.organization_id == organization_id, App.archived_at.is_(None))
+            .all()
+        )
+    except Exception:  # pragma: no cover — fail open like everything here
+        logger.warning("custom apps unavailable — failing open")
+        return set()
+    return {
+        f"{CUSTOM_PREFIX}{a.slug}"
+        for a in rows
+        if custom_app_owner(a) in hired and f"{CUSTOM_PREFIX}{a.slug}" not in off
+    }
 
 
 def agent_entitled(

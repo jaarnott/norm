@@ -13,12 +13,71 @@ def get_system_prompt(agent_slug: str, db: Session) -> str:
     return ""
 
 
+# App notes are standing rules for one App, added to every conversation while
+# that App is on — so they must stay short (validator enforces both caps).
+APP_NOTE_MAX_CHARS = 300
+APP_NOTES_TOTAL_MAX_CHARS = 1500
+
+
+def unified_prompt_active(db: Session) -> bool:
+    """One Norm prompt instead of per-agent prompts — on once the Norm (base)
+    row carries a system prompt. That emptiness is the switch, so the change
+    flips in the shared config DB without a deploy, and back by clearing it."""
+    row = db.query(AgentConfig).filter(AgentConfig.agent_slug == "base").first()
+    return bool(row and (row.system_prompt or "").strip())
+
+
+def build_unified_prompt(
+    domain: str,
+    db: Session,
+    apps_on: set[str] | None = None,
+) -> str:
+    """The unified system prompt (Apps v3 prompt consolidation, 28 Sep 2026):
+
+        Norm prompt (the base row: identity, shared rules, calendar, formatting)
+      + the member's light personality (tone only)
+      + a short note for each App that's ON (standing rules for that App)
+
+    Tool know-how rides on tool descriptions and workflows on skills, so
+    neither is repeated here. ``apps_on`` None = every App counts as on
+    (gating inactive / no org)."""
+    from app.services.entitlements import _catalog
+
+    rows = {r.agent_slug: r for r in db.query(AgentConfig).all()}
+    base = rows.get("base")
+    parts = [(base.system_prompt or "").strip() if base else ""]
+
+    member = rows.get(domain)
+    persona = (getattr(member, "persona", None) or "").strip() if member else ""
+    if persona:
+        parts.append(f"## This conversation\n{persona}")
+
+    notes = []
+    for a in _catalog(db):
+        if a.tier not in ("app", "user"):
+            continue
+        note = ((a.composition or {}).get("note") or "").strip()
+        if not note or (apps_on is not None and a.slug not in apps_on):
+            continue
+        notes.append(f"- **{a.name}**: {note[:APP_NOTE_MAX_CHARS]}")
+    if notes:
+        block, used = [], 0
+        for n in notes:
+            if used + len(n) > APP_NOTES_TOTAL_MAX_CHARS:
+                break
+            block.append(n)
+            used += len(n)
+        parts.append("## Your Apps\n" + "\n".join(block))
+    return "\n\n".join(p for p in parts if p)
+
+
 def update_agent_config(
     agent_slug: str,
     db: Session,
     system_prompt: str | None = None,
     description: str | None = None,
     display_name: str | None = None,
+    persona: str | None = None,
 ) -> AgentConfig:
     """Upsert an AgentConfig row."""
     row = db.query(AgentConfig).filter(AgentConfig.agent_slug == agent_slug).first()
@@ -29,6 +88,8 @@ def update_agent_config(
             row.description = description
         if display_name is not None:
             row.display_name = display_name
+        if persona is not None:
+            row.persona = persona
     else:
         row = AgentConfig(
             agent_slug=agent_slug,
@@ -81,6 +142,24 @@ def get_agent_actions(agent_slug: str, db: Session) -> set[str]:
     tool the agent cannot reach, and counting it would answer the question
     wrongly in the direction that hurts (claiming reach it hasn't got).
     """
+    # Apps v3: a member's reach is the tools of the Apps bound to it (the
+    # App Map), not its legacy binding rows.
+    from app.services.entitlements import _catalog, app_member
+
+    apps = _catalog(db)
+    if any((a.composition or {}).get("tools") for a in apps):
+        agent_rows = [a for a in apps if a.tier == "agent"]
+        return {
+            key.split(".", 1)[-1]
+            for a in apps
+            if a.tier in ("app", "user") and app_member(a, agent_rows) == agent_slug
+            for key in (a.composition or {}).get("tools") or []
+        }
+    return _binding_actions(agent_slug, db)
+
+
+def _binding_actions(agent_slug: str, db: Session) -> set[str]:
+    """Enabled capabilities on the agent's enabled legacy binding rows."""
     actions: set[str] = set()
     rows = (
         db.query(AgentConnectionBinding)
@@ -113,6 +192,30 @@ def default_tool_filter(agent_slug: str, config_db: Session) -> list[str] | None
     one-agent change. Returns None when the agent has no curated bindings, which
     leaves the union in place — matching the old no-narrowing behaviour.
     """
+    # Apps v3: once Apps own tools, an unattended run's scope is the tools of
+    # its member's own Apps plus Norm Core's — the same ownership the tool
+    # filter uses, so a report task still can't reach create_purchase_order —
+    # UNIONED with the member's legacy bindings. Shared reads moved to other
+    # members' Apps (get_labour to Reports' Loaded Reports, get_stock to
+    # Procurement's Loaded Stock), and a time_attendance or chef task that
+    # could read them before must still be able to. Retire the union with the
+    # bindings, not before.
+    from app.services.entitlements import ALL_MEMBERS, _catalog, app_member
+
+    apps = _catalog(config_db)
+    if any((a.composition or {}).get("tools") for a in apps):
+        agent_rows = [a for a in apps if a.tier == "agent"]
+        scoped: set[str] = set()
+        for a in apps:
+            if a.tier not in ("app", "user"):
+                continue
+            if app_member(a, agent_rows) in (agent_slug, ALL_MEMBERS):
+                scoped.update(
+                    key.split(".", 1)[-1]
+                    for key in (a.composition or {}).get("tools") or []
+                )
+        scoped |= _binding_actions(agent_slug, config_db)
+        return sorted(scoped) if scoped else None
     actions = get_agent_actions(agent_slug, config_db)
     return sorted(actions) if actions else None
 
@@ -133,11 +236,33 @@ def describe_domains(slugs: list[str], db: Session | None) -> str:
     if db is None:
         return "\n".join(f"- {s}" for s in slugs)
     rows = {r.agent_slug: r for r in db.query(AgentConfig).all()}
+    # Apps v3: each member's Apps say what it owns (Loaded Kitchen under the
+    # chef, Loaded Stock under procurement) — generated from the App Map, so
+    # the routing menu can't drift from what each member actually has.
+    apps_by_member: dict[str, list[str]] = {}
+    try:
+        from app.services.entitlements import _catalog, app_member
+
+        cat = _catalog(db)
+        agent_rows = [a for a in cat if a.tier == "agent"]
+        for a in cat:
+            if a.tier == "app":
+                m = app_member(a, agent_rows)
+                if m and m != "*":
+                    label = a.name
+                    if a.description:
+                        label += f" ({a.description.rstrip('.')})"
+                    apps_by_member.setdefault(m, []).append(label)
+    except Exception:  # pragma: no cover — routing must never fail on this
+        apps_by_member = {}
     lines = []
     for slug in slugs:
         row = rows.get(slug)
         desc = (row.description or "").strip() if row else ""
-        lines.append(f"- {slug}: {desc}" if desc else f"- {slug}")
+        line = f"- {slug}: {desc}" if desc else f"- {slug}"
+        if apps_by_member.get(slug):
+            line += " Apps: " + "; ".join(apps_by_member[slug])
+        lines.append(line)
     return "\n".join(lines)
 
 

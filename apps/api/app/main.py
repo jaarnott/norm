@@ -185,24 +185,43 @@ def _ensure_config_tables() -> None:
 
         ConfigBase.metadata.create_all(_config_engine)
         # create_all only ADDS TABLES — columns added to an existing config
-        # table need explicit (idempotent) ALTERs. Postgres supports
-        # IF NOT EXISTS, so these are safe on every startup.
+        # table need explicit ALTERs. Only the MISSING ones run: Postgres takes
+        # ACCESS EXCLUSIVE before it checks IF NOT EXISTS, and every worker of
+        # every environment starts against this one shared DB. agent_configs is
+        # read by every chat turn, and a turn holds its config session for the
+        # whole turn — an unconditional ALTER would queue behind in-flight turns
+        # and stall every new one behind itself. lock_timeout bounds the rare
+        # real migration the same way.
+        wanted = [
+            ("supplier_spec_samples", "source_venue_id", "VARCHAR"),
+            ("supplier_spec_samples", "source_company_id", "VARCHAR"),
+            ("supplier_spec_samples", "source_invoice_id", "VARCHAR"),
+            ("supplier_spec_samples", "analysis", "JSON"),
+            ("supplier_spec_samples", "expected_replica", "JSON"),
+            ("supplier_spec_samples", "draft", "BOOLEAN"),
+            # Apps v3 prompt consolidation: a team member's one-line
+            # personality (tone only), used in the unified Norm prompt.
+            ("agent_configs", "persona", "TEXT"),
+        ]
         with _config_engine.begin() as conn:
-            for ddl in (
-                "ALTER TABLE supplier_spec_samples "
-                "ADD COLUMN IF NOT EXISTS source_venue_id VARCHAR",
-                "ALTER TABLE supplier_spec_samples "
-                "ADD COLUMN IF NOT EXISTS source_company_id VARCHAR",
-                "ALTER TABLE supplier_spec_samples "
-                "ADD COLUMN IF NOT EXISTS source_invoice_id VARCHAR",
-                "ALTER TABLE supplier_spec_samples "
-                "ADD COLUMN IF NOT EXISTS analysis JSON",
-                "ALTER TABLE supplier_spec_samples "
-                "ADD COLUMN IF NOT EXISTS expected_replica JSON",
-                "ALTER TABLE supplier_spec_samples "
-                "ADD COLUMN IF NOT EXISTS draft BOOLEAN",
-            ):
-                conn.execute(_sqltext(ddl))
+            have = {
+                (r[0], r[1])
+                for r in conn.execute(
+                    _sqltext(
+                        "SELECT table_name, column_name FROM information_schema.columns "
+                        "WHERE table_name IN ('supplier_spec_samples', 'agent_configs')"
+                    )
+                )
+            }
+            missing = [w for w in wanted if (w[0], w[1]) not in have]
+            if missing:
+                conn.execute(_sqltext("SET LOCAL lock_timeout = '3s'"))
+            for table, column, sqltype in missing:
+                conn.execute(
+                    _sqltext(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sqltype}"
+                    )
+                )
     except Exception as exc:
         log.warning("Could not ensure config DB tables: %s", exc)
 

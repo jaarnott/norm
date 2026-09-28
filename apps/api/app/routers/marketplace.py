@@ -83,17 +83,42 @@ def _set_enabled(
     slug: str, enabled: bool, db: Session, config_db: Session, user: User
 ) -> dict:
     from app.db.config_models import MarketplaceApp
+    from app.services.entitlements import CUSTOM_PREFIX
 
-    app = (
-        config_db.query(MarketplaceApp)
-        .filter(MarketplaceApp.slug == slug, MarketplaceApp.status == "active")
-        .first()
-    )
-    if not app:
-        raise HTTPException(404, f"No marketplace app '{slug}'")
     org_id = org_id_for_user(user.id, db)
     if not org_id:
         raise HTTPException(400, "You are not a member of an organization.")
+    if slug.startswith(CUSTOM_PREFIX):
+        # One of the org's own App-platform apps: same switch, same row
+        # shape, keyed custom:<slug>. Only an app IN the caller's org — an app
+        # slug is unique per org, never across orgs.
+        from app.db.models import App
+
+        exists = (
+            db.query(App)
+            .filter(
+                App.organization_id == org_id,
+                App.slug == slug[len(CUSTOM_PREFIX) :],
+                App.archived_at.is_(None),
+            )
+            .first()
+        )
+        if not exists:
+            raise HTTPException(404, f"No app '{slug[len(CUSTOM_PREFIX) :]}'")
+    else:
+        app = (
+            config_db.query(MarketplaceApp)
+            .filter(MarketplaceApp.slug == slug, MarketplaceApp.status == "active")
+            .first()
+        )
+        if not app:
+            raise HTTPException(404, f"No marketplace app '{slug}'")
+        from app.services.entitlements import is_switchable
+
+        if app.tier == "app" and not is_switchable(app):
+            raise HTTPException(
+                400, f"{app.name} is always on while its team member is hired."
+            )
     row = (
         db.query(OrgAppEntitlement)
         .filter(

@@ -27,14 +27,13 @@ export default function ConnectionsMatrix() {
 
   // connector -> {display name, app names that use it (hired members' apps)}
   const rows: Record<string, { name: string; usedBy: Set<string> }> = {};
-  for (const m of team.members) {
-    if (team.gatingActive && !m.hired) continue;
-    for (const a of m.apps) {
-      if (team.gatingActive && !a.enabled) continue;
-      for (const c of a.required_connections) {
-        rows[c.connector] ??= { name: c.display_name, usedBy: new Set() };
-        rows[c.connector].usedBy.add(a.name);
-      }
+  // Every App that's on (its member hired ∧ the App switched on — the server
+  // folds both into `enabled`), including Reports' and your team's own Apps.
+  for (const a of team.apps) {
+    if (team.gatingActive && !a.enabled) continue;
+    for (const c of a.required_connections) {
+      rows[c.connector] ??= { name: c.display_name, usedBy: new Set() };
+      rows[c.connector].usedBy.add(a.name);
     }
   }
 
@@ -48,7 +47,7 @@ export default function ConnectionsMatrix() {
         .catch(() => setInfo((p) => ({ ...p, [conn]: [] })));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [team.members]);
+  }, [team.apps]);
 
   const venueNames: { id: string; name: string }[] = [];
   for (const v of Object.values(info)) {
@@ -94,7 +93,7 @@ export default function ConnectionsMatrix() {
               <tr key={conn} style={{ borderTop: '1px solid #eee' }}>
                 <td style={{ padding: '6px 10px 6px 0' }}>
                   <button type="button" onClick={() => setOpen(open === conn ? null : conn)}
-                    style={{ border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, fontSize: '0.78rem', padding: 0 }}>
+                    style={{ border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, fontSize: '0.78rem', padding: 0, textAlign: 'left', whiteSpace: 'nowrap' }}>
                     {r.name}
                   </button>
                 </td>

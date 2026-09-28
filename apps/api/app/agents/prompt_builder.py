@@ -101,6 +101,11 @@ _RETIRED_ACTIONS = {"delegate_to_agent"}
 # that had to stop depending on a binding first.
 _ENGINE_AND_MCP_ONLY = {"resolve_dates"}
 
+# Email connectors that act AS a person: each user connects their own mailbox,
+# so a tool on one reaches the agent only for users who have. Not an App
+# requirement either — nobody's venue "needs Gmail" (agent_catalog).
+USER_SCOPED_CONNECTORS = {"gmail", "microsoft_outlook"}
+
 
 def _collect_tools(
     db: Session,
@@ -123,13 +128,39 @@ def _collect_tools(
             "config_db is required — check that config_db is passed through the call chain"
         )
 
-    bindings = (
-        _cdb.query(AgentConnectionBinding)
-        .filter(
-            AgentConnectionBinding.enabled == True,  # noqa: E712
+    # Apps v3: once Apps own tools, THE APP MAP is the exposure list — a tool
+    # reaches the agent iff some App owns it (and, below, that App is on).
+    # Agent bindings stop mattering; they are synthesised here, one per
+    # connector, so the per-connector machinery below (spec, credentials,
+    # per-user connections, engine_only) runs unchanged. The validator keeps
+    # "unowned tools" at zero, so nothing that was exposed goes dark.
+    from app.services.entitlements import tool_owners as _tool_owners
+
+    _owned = _tool_owners(_cdb)
+    if _owned:
+        from types import SimpleNamespace
+
+        _by_conn: dict[str, list[str]] = {}
+        for _key in _owned:
+            _conn, _, _act = _key.partition(".")
+            _by_conn.setdefault(_conn, []).append(_act)
+        bindings = [
+            SimpleNamespace(
+                agent_slug="*",
+                connector_name=_conn,
+                capabilities=[{"action": a, "enabled": True} for a in sorted(_acts)],
+                enabled=True,
+            )
+            for _conn, _acts in sorted(_by_conn.items())
+        ]
+    else:
+        bindings = (
+            _cdb.query(AgentConnectionBinding)
+            .filter(
+                AgentConnectionBinding.enabled == True,  # noqa: E712
+            )
+            .all()
         )
-        .all()
-    )
 
     if not bindings:
         return []
@@ -154,15 +185,34 @@ def _collect_tools(
     # members' bindings (always-included ones ride along). None = gating
     # inactive (no tier='agent' catalog rows yet, or no org) = keep everything
     # — the dark-launch/fail-open contract.
-    _hired = hired_agent_slugs(_org, db, _cdb)
-    if _hired is not None:
-        bindings = [b for b in bindings if b.agent_slug in _hired]
-    # Filter two: is the App on? A disabled App's claimed connections /
-    # tool_actions drop out unless another entitled App claims them.
-    _blocked = unentitled_connectors(_org, db, _cdb)
-    if _blocked:
-        bindings = [b for b in bindings if b.connector_name not in _blocked]
-    _blocked_actions = unentitled_tool_actions(_org, db, _cdb)
+    # Apps v3: once any App declares `tools`, OWNERSHIP decides — every tool
+    # belongs to exactly one App and is on iff that App is on (its member
+    # hired ∧ the App switched on). That supersedes both older filters below.
+    # Bindings above are synthesised from owned tools only, so a tool no App
+    # owns never gets here — the validator and the admin App Map's Unassigned
+    # panel (ownership_findings, computed from the legacy bindings) keep that
+    # set at zero. No App declaring tools = not armed = the v2 filters run
+    # unchanged.
+    from app.services.entitlements import apps_on, tool_owners
+
+    _owners = tool_owners(_cdb)
+    _apps_on = apps_on(_org, db, _cdb) if _owners else None
+    _owner_blocked: set[str] = (
+        {k for k, app in _owners.items() if app not in _apps_on}
+        if _apps_on is not None
+        else set()
+    )
+    _blocked_actions: set[str] = set()
+    if not _owners:
+        _hired = hired_agent_slugs(_org, db, _cdb)
+        if _hired is not None:
+            bindings = [b for b in bindings if b.agent_slug in _hired]
+        # Filter two: is the App on? A disabled App's claimed connections /
+        # tool_actions drop out unless another entitled App claims them.
+        _blocked = unentitled_connectors(_org, db, _cdb)
+        if _blocked:
+            bindings = [b for b in bindings if b.connector_name not in _blocked]
+        _blocked_actions = unentitled_tool_actions(_org, db, _cdb)
 
     tools: list[dict] = []
     for binding in bindings:
@@ -191,8 +241,7 @@ def _collect_tools(
                 continue
 
         # User-scoped email connectors: require per-user Connection
-        _USER_SCOPED_CONNECTORS = {"gmail", "microsoft_outlook"}
-        if spec.connector_name in _USER_SCOPED_CONNECTORS:
+        if spec.connector_name in USER_SCOPED_CONNECTORS:
             if not user_id:
                 continue
             has_user_config = (
@@ -224,6 +273,8 @@ def _collect_tools(
                 f"{binding.connector_name}.{action}" in _blocked_actions
                 or f"{binding.connector_name}.*" in _blocked_actions
             ):
+                continue
+            if f"{binding.connector_name}.{action}" in _owner_blocked:
                 continue
             # Demoted tools ([consolidator-only]/[engine-only]) are for the
             # engine's own call_api, never the agent's menu — the structured
@@ -561,6 +612,7 @@ def build_tool_definitions(
     page_context: dict | None = None,
     tool_filter: list[str] | None = None,
     automated_task: dict | None = None,
+    prompt_mode: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
@@ -615,11 +667,26 @@ def build_tool_definitions(
     else:
         own_actions = set(_all_actions)
 
-    # System prompt comes directly from the DB — the admin manages the full
-    # prompt in the Settings UI. Supports {{today}} placeholder.
-    from app.services.agent_config_service import get_system_prompt
+    # System prompt. Unified mode (the Norm base row carries a prompt): ONE
+    # Norm prompt + this member's personality + notes for Apps that are on.
+    # Otherwise the legacy per-agent prompt. `prompt_mode` forces either — the
+    # replay eval compares both on the same conversations.
+    from app.services.agent_config_service import (
+        build_unified_prompt,
+        get_system_prompt,
+        unified_prompt_active,
+    )
 
-    system_prompt = get_system_prompt(domain, _cdb)
+    _mode = prompt_mode or ("unified" if unified_prompt_active(_cdb) else "per_agent")
+    if _mode == "unified":
+        from app.services.entitlements import apps_on as _apps_on_fn
+        from app.services.entitlements import org_id_for_user as _org_for
+
+        system_prompt = build_unified_prompt(
+            domain, _cdb, _apps_on_fn(_org_for(user_id, db), db, _cdb)
+        )
+    else:
+        system_prompt = get_system_prompt(domain, _cdb)
     if not system_prompt:
         system_prompt = (
             f"You are the {domain} agent for Norm, a hospitality operations platform."
@@ -976,7 +1043,7 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
             if t["name"].split("__", 1)[-1] in allowed or t["name"] in allowed
         ]
 
-    menu, read_tool = playbook_guidance(_cdb)
+    menu, read_tool = playbook_guidance(_cdb, user_id=user_id, db=db)
     if read_tool:
         system_prompt += menu
         anthropic_tools.append(read_tool)
@@ -989,7 +1056,29 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
     return system_prompt, anthropic_tools
 
 
-def playbook_guidance(config_db: Session) -> tuple[str, dict | None]:
+def blocked_playbook_slugs(
+    config_db: Session, user_id: str | None = None, db: Session | None = None
+) -> set[str] | None:
+    """Skills (playbooks) whose owning App is OFF for the user's org — i.e.
+    the ones to withhold — or None for "no filtering" (no App declares skills
+    yet, or no org to resolve).
+    Apps v3: a skill belongs to exactly one App, so it's never offered while
+    that App — and so its tools — is switched off. Unowned skills stay
+    offered (fail-open; flagged by the validator)."""
+    from app.services.entitlements import apps_on, org_id_for_user, skill_owners
+
+    owners = skill_owners(config_db)
+    if not owners or db is None:
+        return None
+    on = apps_on(org_id_for_user(user_id, db), db, config_db)
+    if on is None:
+        return None
+    return {slug for slug, app in owners.items() if app not in on}  # blocked
+
+
+def playbook_guidance(
+    config_db: Session, user_id: str | None = None, db: Session | None = None
+) -> tuple[str, dict | None]:
     """The playbook menu for the system prompt, and the tool that opens one.
 
     Modelled on Claude's Skills: the agent sees every playbook's name and when
@@ -1009,6 +1098,9 @@ def playbook_guidance(config_db: Session) -> tuple[str, dict | None]:
         .order_by(Playbook.slug)
         .all()
     )
+    blocked = blocked_playbook_slugs(config_db, user_id=user_id, db=db)
+    if blocked:
+        playbooks = [pb for pb in playbooks if pb.slug not in blocked]
     if not playbooks:
         return "", None
 

@@ -101,6 +101,7 @@ def _agent_to_dict(
         if config
         else slug.replace("_", " ").title(),
         "description": config.description if config else None,
+        "persona": getattr(config, "persona", None) if config else None,
         "has_prompt": bool(prompt),
         "enabled": config.enabled if config else True,
         "bindings": enriched_bindings,
@@ -125,6 +126,20 @@ async def get_team(
     from app.services.entitlements import org_id_for_user
 
     return team_payload(org_id_for_user(user.id, db), db, config_db)
+
+
+@router.get("/admin/app-map")
+async def get_app_map(
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """The platform App Map for admins: every App, its one team member, and
+    the tools, components, skills and connections it owns — derived live
+    from the catalog and specs, with ownership findings (anything unowned or
+    claimed twice) on top. Read-only; the seed script stays the source."""
+    from app.services.agent_catalog import app_map_payload
+
+    return app_map_payload(config_db)
 
 
 @router.get("/agents")
@@ -153,7 +168,12 @@ async def list_agents(
                 slug, configs.get(slug), bindings_by_slug.get(slug, []), specs_by_name
             )
         )
-    return {"agents": agents}
+    from app.services.agent_config_service import unified_prompt_active
+
+    # unified_prompt: one Norm prompt (the base row) + member personalities;
+    # the admin tab then edits the Norm prompt and personas, not per-agent
+    # prompts.
+    return {"agents": agents, "unified_prompt": unified_prompt_active(config_db)}
 
 
 @router.get("/agents/capabilities")
@@ -182,14 +202,18 @@ class AgentUpdateBody(BaseModel):
     system_prompt: str | None = None
     description: str | None = None
     display_name: str | None = None
+    persona: str | None = None
 
 
+# The writes below change the SHARED config DB — every org, every environment
+# (the Norm prompt in the base row now governs every conversation). Org owners
+# and managers hold settings:agents; these need the platform admin.
 @router.put("/agents/{slug}")
 async def update_agent(
     slug: str,
     body: AgentUpdateBody,
     config_db: Session = Depends(get_config_db_rw),
-    user: User = Depends(require_permission("settings:agents")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
@@ -199,6 +223,7 @@ async def update_agent(
         system_prompt=body.system_prompt,
         description=body.description,
         display_name=body.display_name,
+        persona=body.persona,
     )
     config_db.commit()
     bindings = get_connector_bindings(slug, config_db)
@@ -210,7 +235,7 @@ async def update_agent(
 async def reset_agent_prompt(
     slug: str,
     config_db: Session = Depends(get_config_db_rw),
-    user: User = Depends(require_permission("settings:agents")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
@@ -243,7 +268,7 @@ async def upsert_binding(
     connector: str,
     body: BindingBody,
     config_db: Session = Depends(get_config_db_rw),
-    user: User = Depends(require_permission("settings:agents")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")
@@ -272,7 +297,7 @@ async def remove_binding(
     slug: str,
     connector: str,
     config_db: Session = Depends(get_config_db_rw),
-    user: User = Depends(require_permission("settings:agents")),
+    user: User = Depends(require_permission("admin:system")),
 ):
     if slug not in _get_known_slugs(config_db):
         raise HTTPException(404, f"Unknown agent: {slug}")

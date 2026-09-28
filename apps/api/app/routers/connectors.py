@@ -154,19 +154,58 @@ async def connector_connect_info(
 
     venues = get_user_venues(db, user.id)
 
-    configs = {
-        c.venue_id: c
-        for c in db.query(Connection)
-        .filter(Connection.connector_name == connector)
+    rows = (
+        db.query(Connection)
+        .filter(
+            Connection.connector_name == connector,
+            Connection.user_id.is_(None),
+        )
         .all()
-    }
+    )
+    configs = {c.venue_id: c for c in rows if c.venue_id}
+    # An organisation-wide row (venue_id NULL) serves every venue that has no
+    # row of its own — the same fallback tool_executor uses at runtime, so the
+    # status here says what execution will actually find. Prod's BambooHR is
+    # exactly this shape: one basic-auth row, no venue, no OAuth token.
+    global_cfg = next(
+        (c for c in rows if c.venue_id is None and c.enabled == "true"), None
+    )
+    platform = spec.auth_type == "none"
+    required_keys = [
+        f["key"]
+        for f in (spec.credential_fields or [])
+        if isinstance(f, dict) and f.get("key") and f.get("required", True)
+    ]
+
+    def _cfg_for(venue_id):
+        return configs.get(venue_id) or global_cfg
 
     def _status(cfg) -> str:
-        if not cfg or not cfg.access_token:
+        # Truthful for every credential shape, not just per-venue OAuth:
+        #   auth_type none      -> Norm's own pipe, always connected
+        #   oauth2              -> needs a live access token
+        #   api key/basic/etc.  -> needs its credential fields filled in
+        if platform:
+            return "connected"
+        if not cfg or cfg.enabled != "true":
             return "not_connected"
-        if cfg.needs_reconnect:
-            return "needs_reconnect"
-        return "connected"
+        if spec.auth_type == "oauth2":
+            if not cfg.access_token:
+                return "not_connected"
+            if cfg.needs_reconnect:
+                return "needs_reconnect"
+            return "connected"
+        values = cfg.config or {}
+        if required_keys:
+            ok = all(str(values.get(k) or "").strip() for k in required_keys)
+        else:
+            ok = any(str(v or "").strip() for v in values.values())
+        return "connected" if ok else "not_connected"
+
+    def _scope(venue_id) -> str:
+        if platform:
+            return "platform"
+        return "venue" if venue_id in configs else "organisation"
 
     def _token_binding(cfg) -> tuple[str | None, bool]:
         # Which provider-side company the stored token actually belongs to
@@ -183,26 +222,36 @@ async def connector_connect_info(
         wrong = bool(token_company and stored and token_company != stored)
         return (str(name) if name else None), wrong
 
-    bindings = {v.id: _token_binding(configs.get(v.id)) for v in venues}
+    bindings = {v.id: _token_binding(_cfg_for(v.id)) for v in venues}
+    venue_rows = [
+        {
+            "venue_id": v.id,
+            "venue_name": v.name,
+            "status": _status(_cfg_for(v.id)),
+            # where the credential that serves this venue lives: its own row,
+            # the organisation-wide row, or Norm itself (no credential)
+            "scope": _scope(v.id),
+            "connected_as": bindings[v.id][0],
+            "wrong_company": bindings[v.id][1],
+            "last_auth_error": (
+                _cfg_for(v.id).last_auth_error if _cfg_for(v.id) else None
+            ),
+        }
+        for v in venues
+    ]
 
     return {
         "connector_name": spec.connector_name,
         "display_name": spec.display_name,
         "auth_type": spec.auth_type,
         "credential_fields": spec.credential_fields or [],
-        "venues": [
-            {
-                "venue_id": v.id,
-                "venue_name": v.name,
-                "status": _status(configs.get(v.id)),
-                "connected_as": bindings[v.id][0],
-                "wrong_company": bindings[v.id][1],
-                "last_auth_error": (
-                    configs.get(v.id).last_auth_error if configs.get(v.id) else None
-                ),
-            }
-            for v in venues
-        ],
+        # One honest answer for callers that don't care about venues: is this
+        # connection usable anywhere? (Platform pipes are always configured.)
+        "configured": platform
+        or (global_cfg is not None and _status(global_cfg) == "connected")
+        or any(r["status"] == "connected" for r in venue_rows),
+        "platform": platform,
+        "venues": venue_rows,
     }
 
 

@@ -73,6 +73,10 @@ class AgentConfig(ConfigBase):
     display_name = Column(String, nullable=False)
     system_prompt = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
+    # A light personality for the team member (tone only — never rules,
+    # tools or approvals). Unified-prompt mode adds it to conversations filed
+    # under this member. Added by main._ensure_config_tables.
+    persona = Column(Text, nullable=True)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)

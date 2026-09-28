@@ -2,17 +2,35 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
-import type { AgentConfig, AgentBinding } from '../../types';
+import type { AgentConfig } from '../../types';
+import type { TeamApp } from '../../hooks/useTeam';
 
 const labelStyle: React.CSSProperties = { fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' as const, marginBottom: 4, display: 'block' };
 const inputStyle: React.CSSProperties = { width: '100%', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: '0.85rem', fontFamily: 'inherit', boxSizing: 'border-box' as const };
+
+// In unified mode only these rows carry a real prompt: the Norm prompt (base)
+// and the router's classifier prompt. Everyone else has a personality line.
+const PROMPT_OWNERS = new Set(['base', 'router']);
 
 export default function AgentsPanel() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<AgentConfig | null>(null);
-  const [form, setForm] = useState({ description: '', system_prompt: '' });
+  const [form, setForm] = useState({ description: '', system_prompt: '', persona: '' });
+  // Unified mode: one Norm prompt (the base row) + a personality per member.
+  const [unified, setUnified] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Apps v3: an agent's reach is the Apps bound to it (the App Map), not the
+  // retired per-agent connection bindings.
+  const [mapApps, setMapApps] = useState<TeamApp[] | null>(null);
+  useEffect(() => {
+    apiFetch('/api/admin/app-map')
+      .then((r) => (r.ok ? r.json() : { apps: [] }))
+      .then((d) => setMapApps(d.apps ?? []))
+      .catch(() => setMapApps([]));
+  }, []);
+  const appsFor = (slug: string) => (mapApps ?? []).filter((a) => a.member === slug);
+  const coreApps = () => (mapApps ?? []).filter((a) => a.member === '*');
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -20,6 +38,7 @@ export default function AgentsPanel() {
       if (res.ok) {
         const data = await res.json();
         setAgents(data.agents || []);
+        setUnified(!!data.unified_prompt);
       }
     } catch { /* ignore */ }
     setLoading(false);
@@ -29,7 +48,7 @@ export default function AgentsPanel() {
 
   const openEdit = (agent: AgentConfig) => {
     setEditing(agent);
-    setForm({ description: agent.description || '', system_prompt: agent.system_prompt || '' });
+    setForm({ description: agent.description || '', system_prompt: agent.system_prompt || '', persona: agent.persona || '' });
   };
 
   const handleSave = async () => {
@@ -38,7 +57,11 @@ export default function AgentsPanel() {
     try {
       const res = await apiFetch(`/api/agents/${editing.slug}`, {
         method: 'PUT',
-        body: JSON.stringify({ system_prompt: form.system_prompt || null, description: form.description || null }),
+        body: JSON.stringify(
+          unified && !PROMPT_OWNERS.has(editing.slug)
+            ? { description: form.description || null, persona: form.persona }
+            : { system_prompt: form.system_prompt || null, description: form.description || null },
+        ),
       });
       if (res.ok) {
         await fetchAgents();
@@ -50,50 +73,17 @@ export default function AgentsPanel() {
 
   const handleReset = async () => {
     if (!editing) return;
+    // Clearing the base row's prompt switches EVERY conversation back to the
+    // per-agent prompts, in every environment — worth a second click.
+    if (editing.slug === 'base' && !window.confirm(
+      'Clear the Norm prompt? Every conversation, in every environment, falls back to the old per-agent prompts.',
+    )) return;
     try {
       const res = await apiFetch(`/api/agents/${editing.slug}/reset-prompt`, { method: 'POST' });
       if (res.ok) {
         await fetchAgents();
         setEditing(null);
       }
-    } catch { /* ignore */ }
-  };
-
-  const handleToggleCapability = async (binding: AgentBinding, capIndex: number) => {
-    if (!editing) return;
-    const updated = binding.capabilities.map((c, i) => i === capIndex ? { ...c, enabled: !c.enabled } : c);
-    try {
-      await apiFetch(`/api/agents/${editing.slug}/bindings/${binding.connector_name}`, {
-        method: 'PUT',
-        body: JSON.stringify({ capabilities: updated, enabled: binding.enabled }),
-      });
-      await fetchAgents();
-      // Refresh editing state
-      const res = await apiFetch(`/api/agents/${editing.slug}`);
-      if (res.ok) { const d = await res.json(); setEditing(d); }
-    } catch { /* ignore */ }
-  };
-
-  const handleDeleteBinding = async (connectorName: string) => {
-    if (!editing) return;
-    try {
-      await apiFetch(`/api/agents/${editing.slug}/bindings/${connectorName}`, { method: 'DELETE' });
-      await fetchAgents();
-      const res = await apiFetch(`/api/agents/${editing.slug}`);
-      if (res.ok) { const d = await res.json(); setEditing(d); }
-    } catch { /* ignore */ }
-  };
-
-  const handleAddConnector = async (connectorName: string) => {
-    if (!editing) return;
-    try {
-      await apiFetch(`/api/agents/${editing.slug}/bindings/${connectorName}`, {
-        method: 'PUT',
-        body: JSON.stringify({ capabilities: [], enabled: true }),
-      });
-      await fetchAgents();
-      const res = await apiFetch(`/api/agents/${editing.slug}`);
-      if (res.ok) { const d = await res.json(); setEditing(d); }
     } catch { /* ignore */ }
   };
 
@@ -117,9 +107,21 @@ export default function AgentsPanel() {
           <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} style={inputStyle} placeholder="What this agent does..." />
         </div>
 
-        {/* System Prompt */}
+        {unified && !PROMPT_OWNERS.has(editing.slug) && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={labelStyle}>Personality</label>
+            <input value={form.persona} onChange={e => setForm(f => ({ ...f, persona: e.target.value }))} style={inputStyle}
+              placeholder="In here you're the…" />
+            <div style={{ fontSize: '0.72rem', color: '#8a8a8a', marginTop: 4 }}>
+              Tone only — rules, tools and approvals all come from the Norm prompt and this agent&apos;s Apps.
+            </div>
+          </div>
+        )}
+
+        {/* System Prompt (legacy per-agent mode, or the Norm/router prompt in unified mode) */}
+        {(!unified || PROMPT_OWNERS.has(editing.slug)) && (
         <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>System Prompt</label>
+          <label style={labelStyle}>{unified && editing.slug === 'base' ? 'Norm prompt (every conversation)' : 'System Prompt'}</label>
           <textarea
             value={form.system_prompt}
             onChange={e => setForm(f => ({ ...f, system_prompt: e.target.value }))}
@@ -127,44 +129,55 @@ export default function AgentsPanel() {
             style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.78rem', resize: 'vertical', lineHeight: 1.5 }}
           />
         </div>
+        )}
 
-        {/* Connection Bindings */}
-        {editing.bindings.length > 0 && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={labelStyle}>Connection Bindings</label>
-            {editing.bindings.map(binding => (
-              <div key={binding.connector_name} style={{ border: '1px solid #edf2f7', borderRadius: 8, padding: '0.75rem', marginBottom: '0.5rem', backgroundColor: '#fafafa' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ fontWeight: 500, fontSize: '0.85rem' }}>{binding.connector_label}</span>
-                  <button onClick={() => handleDeleteBinding(binding.connector_name)} style={{
-                    padding: '2px 8px', fontSize: '0.72rem', border: '1px solid #e53e3e', borderRadius: 4,
-                    backgroundColor: '#fff', color: '#e53e3e', cursor: 'pointer', fontFamily: 'inherit',
-                  }}>Remove</button>
+        {/* Apps & tools — derived from the App Map (read-only) */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={labelStyle}>Apps &amp; tools</label>
+          <div style={{ fontSize: '0.74rem', color: '#8a8a8a', marginBottom: 8 }}>
+            What this agent can use comes from the Apps bound to it. Change it in the catalog seed;
+            see everything in Settings → App Map.
+          </div>
+          {mapApps === null ? (
+            <div style={{ fontSize: '0.78rem', color: '#999' }}>Loading…</div>
+          ) : (
+            <>
+              {[...appsFor(editing.slug), ...coreApps()].map((a) => (
+                <div key={a.slug} style={{ border: '1px solid #edf2f7', borderRadius: 8, padding: '0.6rem 0.75rem', marginBottom: '0.5rem', backgroundColor: '#fafafa' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600, fontSize: '0.84rem' }}>{a.name}</span>
+                    {a.member === '*' && <span style={{ fontSize: '0.64rem', color: '#8a8a8a' }}>shared by every agent</span>}
+                    {!a.switchable && <span style={{ fontSize: '0.62rem', fontWeight: 700, color: '#2e5a7d', background: '#e8f0f6', borderRadius: 8, padding: '1px 7px' }}>ALWAYS ON</span>}
+                    <span style={{ flex: 1 }} />
+                    <span style={{ fontSize: '0.7rem', color: '#8a8a8a' }}>
+                      {a.required_connections.length ? `uses ${a.required_connections.map((c) => c.display_name).join(', ')}` : 'runs on Norm'}
+                    </span>
+                  </div>
+                  {a.tools.length > 0 ? (
+                    <ul style={{ margin: 0, paddingLeft: 16 }}>
+                      {a.tools.map((t) => (
+                        <li key={t.key} style={{ fontSize: '0.76rem', color: '#444' }}>
+                          <span style={{ fontFamily: 'monospace' }}>{t.key}</span>
+                          <span style={{ color: '#999' }}> · {t.type}{t.writes ? ' · writes' : ''}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div style={{ fontSize: '0.74rem', color: '#999' }}>no chat tools</div>
+                  )}
+                  {a.skills.length > 0 && (
+                    <div style={{ fontSize: '0.72rem', color: '#6b6b6b', marginTop: 4 }}>
+                      Skills: {a.skills.map((sk) => sk.label).join(', ')}
+                    </div>
+                  )}
                 </div>
-                {binding.capabilities.map((cap, idx) => (
-                  <label key={`${binding.connector_name}__${cap.action}__${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', color: '#444', cursor: 'pointer', marginBottom: 2 }}>
-                    <input type="checkbox" checked={cap.enabled} onChange={() => handleToggleCapability(binding, idx)} />
-                    {cap.label}
-                  </label>
-                ))}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Add Connection */}
-        {editing.available_connectors && editing.available_connectors.length > 0 && (
-          <div style={{ marginBottom: 16 }}>
-            <label style={labelStyle}>Add Connection</label>
-            <select defaultValue="" onChange={e => { if (e.target.value) { handleAddConnector(e.target.value); e.target.value = ''; } }}
-              style={{ ...inputStyle, width: 'auto', cursor: 'pointer' }}>
-              <option value="" disabled>Select a connection...</option>
-              {editing.available_connectors.map(ac => (
-                <option key={ac.connector_name} value={ac.connector_name}>{ac.display_name}</option>
               ))}
-            </select>
-          </div>
-        )}
+              {appsFor(editing.slug).length === 0 && editing.slug !== 'base' && (
+                <div style={{ fontSize: '0.76rem', color: '#8a8a8a' }}>No Apps are bound to this agent yet — it uses Norm Core only.</div>
+              )}
+            </>
+          )}
+        </div>
 
         {/* Actions */}
         <div style={{ display: 'flex', gap: 8 }}>
@@ -172,7 +185,9 @@ export default function AgentsPanel() {
             padding: '6px 20px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6,
             backgroundColor: '#c4a882', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
           }}>{saving ? 'Saving...' : 'Save'}</button>
-          {editing.has_prompt && (
+          {/* In unified mode a member's old prompt is the rollback copy — nothing
+              reads it, so there's nothing to clear from here. */}
+          {editing.has_prompt && (!unified || PROMPT_OWNERS.has(editing.slug)) && (
             <button onClick={handleReset} style={{
               padding: '6px 20px', fontSize: '0.8rem', fontWeight: 500, border: '1px solid #ddd', borderRadius: 6,
               backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit',
@@ -214,8 +229,8 @@ export default function AgentsPanel() {
                 )}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {agent.bindings.length > 0 && (
-                  <span style={{ fontSize: '0.65rem', color: '#999' }}>{agent.bindings.length} connector{agent.bindings.length !== 1 ? 's' : ''}</span>
+                {mapApps && appsFor(agent.slug).length > 0 && (
+                  <span style={{ fontSize: '0.65rem', color: '#999' }}>{appsFor(agent.slug).length} app{appsFor(agent.slug).length !== 1 ? 's' : ''}</span>
                 )}
                 <span style={{ fontSize: '0.72rem', color: '#c4a882' }}>Edit</span>
               </div>

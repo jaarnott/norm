@@ -1361,6 +1361,22 @@ def _read_playbook(params: dict, db: Session, thread_id: str | None) -> dict:
         )
         if pb is None:
             return {"success": False, "data": {}, "error": f"No playbook '{slug}'"}
+        # Apps v3: a skill whose App is switched off isn't on the menu, and
+        # can't be opened by name either.
+        if thread_id:
+            from app.agents.prompt_builder import blocked_playbook_slugs
+            from app.db.models import Thread
+
+            th = db.query(Thread).filter(Thread.id == thread_id).first()
+            blocked = blocked_playbook_slugs(
+                config_db, user_id=th.user_id if th else None, db=db
+            )
+            if blocked and slug in blocked:
+                return {
+                    "success": False,
+                    "data": {},
+                    "error": f"The '{slug}' playbook belongs to an App that is switched off.",
+                }
         return {
             "success": True,
             "data": {"playbook": pb.display_name, "instructions": pb.instructions},
