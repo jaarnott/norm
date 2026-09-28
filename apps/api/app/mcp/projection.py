@@ -58,6 +58,7 @@ MCP_DENYLIST: frozenset[tuple[str, str]] = frozenset(
         ("norm", "search_tool_result"),  # needs a prior ToolCall row
         ("norm", "show_roster"),  # display-only
         ("norm", "show_orders"),  # display-only
+        ("norm", "open_app"),  # display-only: paints Norm's app runner
         ("norm", "update_thread_summary"),  # conversation bookkeeping
         ("norm", "set_override"),  # conversation bookkeeping
         # manage_task absorbed set_override and update_task_config, which

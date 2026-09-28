@@ -8,7 +8,9 @@
   "spec": {
     "actions": [],
     "writes": [],
-    "scopes": ["mcp:hr:read"],
+    "scopes": [
+      "mcp:hr:read"
+    ],
     "storage": {
       "namespace": "hr_suite",
       "collections": [
@@ -32,6 +34,19 @@
         "jd_templates"
       ]
     },
-    "max_api_calls": 0
+    "max_api_calls": 0,
+    "components": [
+      {
+        "key": "hiring",
+        "label": "Hiring",
+        "page": true,
+        "description": "Job openings, each job's candidate pipeline, candidates and the talent pool.",
+        "inputs": {
+          "view": "Which tab to open: 'openings' (default) or 'talent_pool'.",
+          "job": "A job opening, by id or title (e.g. 'Head Chef') — opens its pipeline.",
+          "candidate": "A candidate, by id or name — opens their application (within `job` when both are given)."
+        }
+      }
+    ]
   }
 }

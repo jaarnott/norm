@@ -1169,6 +1169,15 @@ def save_app(db: Session, user, payload: dict) -> dict:
         raise HTTPException(
             400, 'each spec.actions entry must be {"connector": ..., "action": ...}'
         )
+    # The screens Norm may open directly, and where each can start (see
+    # services/app_components.py). Optional — an app that declares none is one
+    # component — but a declaration that's there must be well-formed, or Norm
+    # would offer to open something the app can't honour.
+    from app.services.app_components import validate_components
+
+    problems = validate_components(spec)
+    if problems:
+        raise HTTPException(400, "; ".join(problems))
 
     missing = required_permissions(spec) - org_permissions(db, user)
     if missing:

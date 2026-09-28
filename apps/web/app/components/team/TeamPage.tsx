@@ -208,7 +208,11 @@ export default function TeamPage({ user }: { user?: PageUser | null }) {
       <li key={key} style={{ fontSize: '0.72rem', color: '#444', margin: '2px 0' }}>{children}</li>
     );
     const pages = a.components.filter((c) => c.page || c.shared);
-    const chatComponents = a.components.filter((c) => !c.page && !c.shared);
+    // App-platform components come from the app's own version (see
+    // services/app_components.py): the screens Norm can open, and where.
+    const appComponents = a.components.filter((c) => c.inputs !== undefined);
+    const chatComponents = a.components.filter((c) => !c.page && !c.shared && c.inputs === undefined);
+    const openAt = appComponents.flatMap((c) => (c.inputs ?? []).map((i) => ({ ...i, key: `${c.key}.${i.name}` })));
     return (
       <div style={{ borderTop: '1px solid #eee', marginTop: 8, paddingTop: 4, width: '100%' }}>
         {a.description && <div style={{ fontSize: '0.72rem', color: '#6b6b6b', marginTop: 4 }}>{a.description}</div>}
@@ -218,9 +222,16 @@ export default function TeamPage({ user }: { user?: PageUser | null }) {
               <>{c.shared ? `${c.label} — in every team member's menu` : `${c.label} — in the ${memberName(a.member ?? '')} menu`}</>,
               c.key,
             ))}
-            {a.app_platform && li(<>{a.name} — its own screen, in the {memberName(a.member ?? '')} menu</>, 'screen')}
+            {a.app_platform && (appComponents.some((c) => c.app_page)
+              ? appComponents.filter((c) => c.app_page).map((c) => li(<>{c.label} — in the {memberName(a.member ?? '')} menu</>, c.key))
+              : li(<>{a.name} — its own screen, in the {memberName(a.member ?? '')} menu</>, 'screen'))}
           </ul>
         ) : <span style={{ fontSize: '0.72rem', color: '#8a8a8a' }}>none — works in chat</span>)}
+        {openAt.length > 0 && section('Norm can open it at…', (
+          <ul style={{ margin: 0, paddingLeft: 16 }}>
+            {openAt.map((i) => li(<><strong style={{ fontWeight: 600 }}>{i.name.replace(/_/g, ' ')}</strong>{i.description ? <span style={{ color: '#6b6b6b' }}> — {i.description}</span> : null}</>, i.key))}
+          </ul>
+        ))}
         {chatComponents.length > 0 && section('Shows in chat', (
           <ul style={{ margin: 0, paddingLeft: 16 }}>
             {chatComponents.map((c) => li(<>{c.label}{c.description ? ` — ${c.description}` : ''}</>, c.key))}

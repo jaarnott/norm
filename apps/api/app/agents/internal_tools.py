@@ -1345,6 +1345,124 @@ def _show_connect(params: dict, db: Session, thread_id: str | None) -> dict:
     return {"success": True, "data": {"connector_name": connector}}
 
 
+@register("norm", "open_app")
+def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Open one of the org's App-platform apps in the conversation — Norm
+    Hiring, Norm Training, anything App Builder made — optionally somewhere
+    specific, through the inputs its component declares (Hiring: job,
+    candidate). The app resolves the inputs itself, by id or by name, so the
+    agent never needs the app's internal ids. See services/app_components.py.
+
+    Refusals carry the valid choices in the error text and an EMPTY payload:
+    a failed call must not paint an app card with nothing in it.
+    """
+    from app.db.engine import _ConfigSessionLocal
+    from app.db.models import App, AppVersion, Thread
+    from app.services.app_components import (
+        check_inputs,
+        declared_components,
+        pick_component,
+    )
+    from app.services.entitlements import (
+        CUSTOM_PREFIX,
+        _catalog,
+        apps_on,
+        org_id_for_user,
+    )
+
+    def refuse(msg: str) -> dict:
+        return {"success": False, "data": {}, "error": msg}
+
+    th = db.query(Thread).filter(Thread.id == thread_id).first() if thread_id else None
+    org = org_id_for_user(th.user_id if th else None, db)
+    if not org:
+        return refuse("No organization for this conversation, so no apps to open.")
+    rows = (
+        db.query(App)
+        .filter(App.organization_id == org, App.archived_at.is_(None))
+        .order_by(App.name)
+        .all()
+    )
+    config_db = _ConfigSessionLocal()
+    try:
+        catalog = _catalog(config_db)
+        on = apps_on(org, db, config_db)
+    finally:
+        config_db.close()
+    if on is not None:
+        rows = [a for a in rows if f"{CUSTOM_PREFIX}{a.slug}" in on]
+    if not rows:
+        return refuse("This organization has no apps switched on to open.")
+
+    # "Norm Hiring" is the catalog's name for the app whose slug is `hiring`.
+    fronted_by = {
+        (c.composition or {}).get("app_slug"): c.name
+        for c in catalog
+        if c.tier == "app" and (c.composition or {}).get("app_slug")
+    }
+    want = str(params.get("app") or "").strip().lower()
+
+    def names(a) -> set[str]:
+        return {
+            a.slug.lower(),
+            (a.name or "").lower(),
+            (fronted_by.get(a.slug) or "").lower(),
+        }
+
+    app = next((a for a in rows if want and want in names(a)), None) or next(
+        (a for a in rows if want and any(want in n for n in names(a) if n)), None
+    )
+    if app is None:
+        return refuse(
+            f"No app '{params.get('app') or ''}'. Apps you can open: "
+            + ", ".join(f"{fronted_by.get(a.slug) or a.name} ({a.slug})" for a in rows)
+        )
+
+    ver = (
+        db.query(AppVersion).filter(AppVersion.id == app.current_version_id).first()
+        if app.current_version_id
+        else None
+    )
+    comps = declared_components(
+        ver.spec if ver else None,
+        slug=app.slug,
+        name=app.name,
+        description=app.description,
+    )
+
+    def describe(c) -> str:
+        ins = ", ".join(i["name"] for i in c["inputs"]) or "no inputs"
+        return f"{c['key']} ({ins})"
+
+    comp = pick_component(comps, params.get("component"))
+    if comp is None:
+        return refuse(
+            f"{app.name} has no component '{params.get('component') or ''}'. "
+            "Its components: " + "; ".join(describe(c) for c in comps)
+        )
+    inputs = params.get("inputs") if isinstance(params.get("inputs"), dict) else {}
+    clean, unknown = check_inputs(comp, inputs)
+    if unknown:
+        return refuse(
+            f"{app.name} can't start at {', '.join(unknown)}. "
+            + (
+                "It takes: "
+                + "; ".join(f"{i['name']} — {i['description']}" for i in comp["inputs"])
+                if comp["inputs"]
+                else "It takes no inputs — open it without any."
+            )
+        )
+    return {
+        "success": True,
+        "data": {
+            "slug": app.slug,
+            "name": fronted_by.get(app.slug) or app.name,
+            "component": comp["key"],
+            "inputs": clean,
+        },
+    }
+
+
 @register("norm", "read_playbook")
 def _read_playbook(params: dict, db: Session, thread_id: str | None) -> dict:
     """Open one playbook's full instructions (see prompt_builder.playbook_guidance)."""

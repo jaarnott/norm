@@ -8,7 +8,9 @@
   "spec": {
     "actions": [],
     "writes": [],
-    "scopes": ["mcp:hr:read"],
+    "scopes": [
+      "mcp:hr:read"
+    ],
     "storage": {
       "namespace": "hr_suite",
       "collections": [
@@ -28,8 +30,23 @@
         "reminder_settings",
         "reminder_emails"
       ],
-      "shared_with": ["hiring"]
+      "shared_with": [
+        "hiring"
+      ]
     },
-    "max_api_calls": 0
+    "max_api_calls": 0,
+    "components": [
+      {
+        "key": "training",
+        "label": "Training",
+        "page": true,
+        "description": "Training programs, plans, the member tracker, sign-offs and capability frameworks.",
+        "inputs": {
+          "view": "Which tab to open: 'programs' (default), 'plans', 'tracker', 'signoffs' or 'frameworks'.",
+          "program": "A training program, by id or name — opens it.",
+          "person": "A team member, by id or name — opens their training: programs, progress and plans."
+        }
+      }
+    ]
   }
 }

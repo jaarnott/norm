@@ -7,7 +7,7 @@ through the same shape the save endpoint produces: a new immutable AppVersion
 each run, ``current_version_id`` moved forward, visibility untouched.
 
 Usage:
-    uv run python scripts/install_fixture_app.py weekly-venue-performance \
+    uv run python scripts/install_fixture_app.py hiring \
         --org-email admin@norm.local
 """
 

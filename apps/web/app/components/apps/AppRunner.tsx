@@ -21,6 +21,12 @@
  *   parent → iframe  {type:'norm:init', context}
  *                    {type:'norm:result', id, ok, data|error}
  *
+ * `context.component` / `context.inputs` say WHERE to start: which of the
+ * app's declared components, and the inputs it declared (Hiring: job,
+ * candidate — ids or names the app resolves itself). They ride every init,
+ * venue switches included, so an app honours them on its FIRST init only.
+ * See services/app_components.py.
+ *
  * Before anything renders, the viewer sees the app's declared reach in the
  * same consent language the Claude connector uses — and if their own
  * permissions cannot satisfy it, they are told which is missing instead of
@@ -136,7 +142,13 @@ const BASE_CSS = `
   body { margin: 0; font-family: system-ui, -apple-system, sans-serif; color: #2a2a2a; background: #fff; }
 `;
 
-export default function AppRunner({ slug }: { slug: string }) {
+export default function AppRunner({ slug, component, inputs }: {
+  slug: string;
+  /** which of the app's declared components to start on */
+  component?: string;
+  /** that component's inputs — where to start inside it */
+  inputs?: Record<string, unknown>;
+}) {
   const [app, setApp] = useState<AppDetail | null>(null);
   const [venues, setVenues] = useState<VenueRow[]>([]);
   const [venueId, setVenueId] = useState<string>('');
@@ -145,6 +157,8 @@ export default function AppRunner({ slug }: { slug: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const venueRef = useRef<string>('');
   venueRef.current = venueId;
+  const startRef = useRef<{ component: string | null; inputs: Record<string, unknown> }>({ component: null, inputs: {} });
+  startRef.current = { component: component || null, inputs: inputs || {} };
 
   // Tell the chat what the user is LOOKING AT: "rename this app" must
   // resolve to this slug without asking. Same publish/clear contract as the
@@ -195,6 +209,7 @@ export default function AppRunner({ slug }: { slug: string }) {
             app: { slug: app.slug, name: app.name, version: app.version },
             venueId: venueRef.current || null,
             venues,
+            ...startRef.current,
           },
         });
       } else if (m.type === 'norm:resize' && typeof m.height === 'number') {
@@ -335,7 +350,7 @@ export default function AppRunner({ slug }: { slug: string }) {
   // Venue changes re-init the app rather than reloading the iframe.
   useEffect(() => {
     if (app && venueId) {
-      post({ type: 'norm:init', context: { app: { slug: app.slug, name: app.name, version: app.version }, venueId, venues } });
+      post({ type: 'norm:init', context: { app: { slug: app.slug, name: app.name, version: app.version }, venueId, venues, ...startRef.current } });
     }
   }, [venueId, app, venues, post]);
 

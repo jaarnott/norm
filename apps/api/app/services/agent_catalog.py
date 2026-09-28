@@ -290,13 +290,18 @@ def _component_entry(entry: dict) -> dict:
     }
 
 
-def _app_platform_data(
+def _app_platform_info(
     app_slug: str | None, db: Session | None, organization_id: str | None
-) -> list[str]:
-    """Collections an App-platform component keeps (from its current version)."""
+) -> dict:
+    """What an App-platform app's CURRENT version declares: the collections of
+    data it keeps, and its components — the screens Norm may open directly,
+    with the inputs that say where each starts (services/app_components.py).
+    Derived per request, so the App Map can't drift from the running app."""
+    empty = {"data": [], "components": []}
     if not app_slug or db is None or not organization_id:
-        return []
+        return empty
     from app.db.models import App, AppVersion
+    from app.services.app_components import declared_components
 
     try:
         app = (
@@ -305,17 +310,31 @@ def _app_platform_data(
             .first()
         )
         if not app or not app.current_version_id:
-            return []
+            return empty
         ver = (
             db.query(AppVersion).filter(AppVersion.id == app.current_version_id).first()
         )
-        return (
-            list(((ver.spec or {}).get("storage") or {}).get("collections") or [])
-            if ver
-            else []
-        )
+        spec = (ver.spec if ver else None) or {}
+        return {
+            "data": list((spec.get("storage") or {}).get("collections") or []),
+            "components": [
+                {
+                    "key": c["key"],
+                    "label": c["label"],
+                    "description": c["description"],
+                    # the app's menu item is placed from the App row itself
+                    "page": None,
+                    "shared": False,
+                    "app_page": c["page"],
+                    "inputs": c["inputs"],
+                }
+                for c in declared_components(
+                    spec, slug=app.slug, name=app.name, description=app.description
+                )
+            ],
+        }
     except Exception:  # pragma: no cover
-        return []
+        return empty
 
 
 def _custom_apps(organization_id: str | None, db: Session) -> list:
@@ -366,6 +385,7 @@ def _catalog_app_entry(
     components = [
         _component_entry(e) for e in comp.get("components") or [] if isinstance(e, dict)
     ]
+    platform = _app_platform_info(comp.get("app_slug"), db, organization_id)
     return {
         "slug": row.slug,
         "name": row.name,
@@ -379,10 +399,10 @@ def _catalog_app_entry(
         "price_cents": row.price_cents or 0,
         "status": row.status,
         "pages": [c["page"] for c in components if c["page"]],
-        "components": components,
+        "components": components + platform["components"],
         "tools": [ctx.tool(k) for k in comp.get("tools") or []],
         "skills": [ctx.skill(sl) for sl in comp.get("skills") or []],
-        "data": _app_platform_data(comp.get("app_slug"), db, organization_id),
+        "data": platform["data"],
         "app_platform": bool(comp.get("app_slug")),
         "app_slug": comp.get("app_slug"),
         "required_connections": [
@@ -450,6 +470,7 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
         if app.slug in fronted:
             continue
         slug = f"{CUSTOM_PREFIX}{app.slug}"
+        platform = _app_platform_info(app.slug, db, organization_id)
         all_apps.append(
             {
                 "slug": slug,
@@ -466,10 +487,10 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
                 "status": "active",
                 "enabled": is_on(slug),
                 "pages": [],
-                "components": [],
+                "components": platform["components"],
                 "tools": [],
                 "skills": [],
-                "data": _app_platform_data(app.slug, db, organization_id),
+                "data": platform["data"],
                 "app_platform": True,
                 "required_connections": [
                     {
@@ -661,9 +682,15 @@ def ownership_findings(config_db: Session) -> dict:
     }
 
 
-def app_map_payload(config_db: Session) -> dict:
+def app_map_payload(
+    config_db: Session, db: Session | None = None, organization_id: str | None = None
+) -> dict:
     """The admin App Map: the platform's App → member → tools / components /
-    skills / connection table, derived live (never a hand-kept copy)."""
+    skills / connection table, derived live (never a hand-kept copy).
+
+    App-platform Apps (Norm Hiring, Norm Training) keep their components in the
+    app's own version, which lives in an org — given the viewing admin's org,
+    those are read from there; without one they're simply not listed."""
     from app.services.entitlements import app_member
 
     rows = _catalog_rows(config_db)
@@ -679,7 +706,7 @@ def app_map_payload(config_db: Session) -> dict:
     for row in rows:
         if row.tier not in ("app", "user"):
             continue
-        entry = _catalog_app_entry(row, agent_rows, ctx, config_db)
+        entry = _catalog_app_entry(row, agent_rows, ctx, config_db, db, organization_id)
         entry["member_name"] = member_names.get(
             app_member(row, agent_rows) or "", app_member(row, agent_rows)
         )

@@ -481,10 +481,34 @@
     });
   });
 
+  function selectTab(v) {
+    view = v;
+    document.querySelectorAll('.tab').forEach(function (x) { x.setAttribute('aria-selected', String(x.getAttribute('data-view') === v)); });
+  }
+
+  // Where Norm asked us to open — this component's inputs (view, job,
+  // candidate; ids or names). They ride every init, so only the FIRST one
+  // acts on them: a venue switch must not yank the user back.
+  var started = false;
+  function start(c) {
+    var ins = c.inputs || {};
+    if (ins.view === 'talent_pool' || ins.view === 'pool') selectTab('pool');
+    else if (ins.view === 'openings' || ins.view === 'jobs') selectTab('jobs');
+    if (!ins.job && !ins.candidate) return false;
+    loading();
+    run('locate', { job: ins.job || null, candidate: ins.candidate || null }).then(function (r) {
+      if (r.application_id) showCandidate(r.application_id, r.job_id);
+      else if (r.job_id) showPipeline(r.job_id);
+      else render();
+    }).catch(fail);
+    return true;
+  }
+
   norm.onReady(function (c) {
     ctx = c;
     var v = (c.venues || []).find(function (x) { return x.id === c.venueId; });
     document.getElementById('scope').textContent = 'Openings across the group' + (v ? ' · hiring into ' + v.name : '');
+    if (!started) { started = true; if (start(c)) return; }
     render();
   });
 })();

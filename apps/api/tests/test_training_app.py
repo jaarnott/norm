@@ -1688,3 +1688,36 @@ class TestFrameworkCategoryEditing:
         )["framework"]
         assert again["categories"][0]["id"] == cat_id
         assert again["categories"][0]["capabilities"][0]["id"] == cap_id
+
+
+class TestLocate:
+    """Norm opens Training by name (28 Sep 2026): `program` / `person`
+    inputs resolve to ids here, where the data is."""
+
+    def test_a_program_name_resolves(self, db_session, org, author, app_and_version):
+        app, version = app_and_version
+        program, _, _ = _program_with_two_items(db_session, org, author, "Food Safety")[
+            :3
+        ]
+        out = _run(db_session, app, version, author, op="locate", program="food")
+        assert out == {"program_id": program, "person_id": None}
+
+    def test_a_person_name_resolves(self, db_session, org, author, app_and_version):
+        app, version = app_and_version
+        sam = _rec(db_session, org, author, "people", {"name": "Sam Tui"})
+        _rec(db_session, org, author, "people", {"name": "Aroha Smith"})
+        out = _run(db_session, app, version, author, op="locate", person="sam")
+        assert out["person_id"] == sam
+
+    def test_nobody_matching_says_so(self, db_session, org, author, app_and_version):
+        app, version = app_and_version
+        out = AR.run_logic(
+            db_session,
+            None,
+            app=app,
+            version=version,
+            user=author,
+            venue_id=None,
+            params={"op": "locate", "person": "Nobody"},
+        )
+        assert "Nobody in training matching 'Nobody'" in str(out)

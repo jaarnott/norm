@@ -83,6 +83,9 @@ RETIRED_SLUGS = [
     "loaded-procurement",
     "loaded-rostering",
     "norm-procurement",
+    # an example App-platform app that was never installed in any org, so
+    # its row fronted nothing; the fixture was deleted with it (28 Sep 2026)
+    "weekly-venue-performance",
 ]
 
 # Connectors with no spec whose bindings are pure dead weight.
@@ -234,6 +237,9 @@ APPS = [
             "norm.recall_memory",
             "norm.manage_task",
             "norm.show_connect",
+            # opens any App-platform app in chat at the place its inputs name
+            # (Hiring at a job, Training at a person) — scripts/sync_app_components.py
+            "norm.open_app",
             "norm_email.send_report_email",
             "norm_reports.render_chart",
             "gmail.send_email",
@@ -303,17 +309,6 @@ APPS = [
                 description="Your saved report layouts.",
             ),
         ],
-    ),
-    _app(
-        "weekly-venue-performance",
-        name="Weekly venue performance",
-        member="reports",
-        icon="📈",
-        description="A weekly sales snapshot per venue.",
-        extra={
-            "app_slug": "weekly-venue-performance",
-            "component_connections": ["loadedhub"],
-        },
     ),
     _app(
         "loaded-stock",
@@ -452,6 +447,7 @@ APPS = [
         member="hr",
         icon="🧑‍💻",
         description="Roles, candidate pipeline, candidates and talent pool — runs on Norm.",
+        note="To show it, open_app 'Norm Hiring' — at a job or candidate by name (inputs job, candidate) or the talent pool (view).",
         extra={"app_slug": "hiring"},
     ),
     _app(
@@ -460,6 +456,7 @@ APPS = [
         member="hr",
         icon="🎓",
         description="Training programs, plans, tracker and sign-offs — runs on Norm.",
+        note="To show it, open_app 'Norm Training' — at a program or a person by name (inputs program, person) or a tab (view).",
         extra={"app_slug": "training"},
     ),
     _app(

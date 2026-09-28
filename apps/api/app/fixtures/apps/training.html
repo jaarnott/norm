@@ -1105,11 +1105,34 @@
     });
   });
 
+  function selectTab(v) {
+    view = v;
+    document.querySelectorAll('.tab').forEach(function (x) { x.setAttribute('aria-selected', String(x.getAttribute('data-view') === v)); });
+  }
+
+  // Where Norm asked us to open — this component's inputs (view, program,
+  // person; ids or names). They ride every init, so only the FIRST one acts
+  // on them: a venue switch must not yank the user back.
+  var started = false;
+  function start(c) {
+    var ins = c.inputs || {};
+    if (['programs', 'plans', 'signoffs', 'tracker', 'frameworks'].indexOf(ins.view) >= 0) selectTab(ins.view);
+    if (!ins.program && !ins.person) return false;
+    loading();
+    run('locate', { program: ins.program || null, person: ins.person || null }).then(function (r) {
+      if (r.person_id) { selectTab('tracker'); showMember(r.person_id); }
+      else if (r.program_id) showProgram(r.program_id);
+      else render();
+    }).catch(fail);
+    return true;
+  }
+
   norm.onReady(function (c) {
     ctx = c;
     var v = (c.venues || []).find(function (x) { return x.id === c.venueId; });
     document.getElementById('scope').textContent =
       'Group-wide programs and ' + (v ? v.name : 'all venues') + ' · ' + (c.app ? 'v' + c.app.version : '');
+    if (!started) { started = true; if (start(c)) return; }
     render();
   });
 })();

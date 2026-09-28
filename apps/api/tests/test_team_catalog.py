@@ -315,15 +315,13 @@ class TestEveryAppIsBoundToAMember:
         self._seed(db_session)
         _row(
             db_session,
-            "weekly-venue-performance",
+            "sales-snapshot",
             "app",
-            {"app_slug": "weekly-venue-performance", "agents": ["reports"]},
+            {"app_slug": "sales-snapshot", "agents": ["reports"]},
         )
         payload = agent_catalog.team_payload(org.id, db_session, db_session)
         reports = next(m for m in payload["included"] if m["slug"] == "reports")
-        app = next(
-            a for a in reports["apps"] if a["slug"] == "weekly-venue-performance"
-        )
+        app = next(a for a in reports["apps"] if a["slug"] == "sales-snapshot")
         assert app["enabled"] is True  # reports is always hired; app bundled
 
     def test_other_orgs_custom_apps_never_appear(self, db_session):

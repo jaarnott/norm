@@ -128,7 +128,8 @@ export default function AppMapPanel() {
           <tbody>
             {apps.map((a) => {
               const pages = a.components.filter((c) => c.page || c.shared);
-              const chat = a.components.filter((c) => !c.page && !c.shared);
+              const appComps = a.components.filter((c) => c.inputs !== undefined);
+              const chat = a.components.filter((c) => !c.page && !c.shared && c.inputs === undefined);
               return (
                 <tr key={a.slug}>
                   <td style={cell}>
@@ -150,9 +151,19 @@ export default function AppMapPanel() {
                   }))}</td>
                   <td style={cell}>{list([
                     ...pages.map((c) => <span key={c.key}>{c.shared ? `${c.label} (every member)` : c.label} <span style={{ color: '#aaa' }}>({c.key})</span></span>),
-                    ...(a.app_platform ? [<span key="screen">{a.name} <span style={{ color: '#aaa' }}>(App-platform screen)</span></span>] : []),
+                    ...(a.app_platform && !appComps.some((c) => c.app_page)
+                      ? [<span key="screen">{a.name} <span style={{ color: '#aaa' }}>(App-platform screen)</span></span>] : []),
+                    ...appComps.filter((c) => c.app_page).map((c) => <span key={c.key}>{c.label} <span style={{ color: '#aaa' }}>(App-platform, {c.key})</span></span>),
                   ])}</td>
-                  <td style={cell}>{list(chat.map((c) => <span key={c.key} style={{ fontFamily: 'monospace' }}>{c.key}</span>))}</td>
+                  <td style={cell}>{list([
+                    ...chat.map((c) => <span key={c.key} style={{ fontFamily: 'monospace' }}>{c.key}</span>),
+                    ...appComps.map((c) => (
+                      <span key={`open-${c.key}`}>
+                        <span style={{ fontFamily: 'monospace' }}>{c.key}</span>{' '}
+                        <span style={{ color: '#8a8a8a' }}>opens at: {(c.inputs ?? []).map((i) => i.name).join(', ') || 'start only'}</span>
+                      </span>
+                    )),
+                  ])}</td>
                   <td style={cell}>{list(a.skills.map((s) => <span key={s.slug}>{s.label}{s.enabled === false && <span style={{ color: '#aaa' }}> (disabled)</span>}</span>))}</td>
                   <td style={cell}>{a.required_connections.length
                     ? list(a.required_connections.map((c) => <span key={c.connector}>{c.display_name}</span>))

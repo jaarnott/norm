@@ -976,3 +976,57 @@ class TestInterviewDepth:
         assert iv["meeting_url"] == "https://meet.example/abc"
         assert iv["instructions"] == "Bring your portfolio"
         assert iv["interviewers"] == ["p1", "p2"]
+
+
+class TestLocate:
+    """Norm opens Hiring by what people call things (28 Sep 2026): the
+    component's `job` / `candidate` inputs arrive as names, and `locate`
+    turns them into the ids the screens need (services/app_components.py)."""
+
+    def test_a_job_title_finds_its_pipeline(self, db_session, org, author, hiring):
+        job, _ = _job_with_stages(db_session, org, author, title="Head Chef")
+        _job_with_stages(db_session, org, author, title="Bar Team")
+        out = _run(db_session, hiring, author, op="locate", job="head chef")
+        assert out == {"job_id": job, "application_id": None}
+        # a prefix is enough, and an id always works
+        assert (
+            _run(db_session, hiring, author, op="locate", job="Head")["job_id"] == job
+        )
+        assert _run(db_session, hiring, author, op="locate", job=job)["job_id"] == job
+
+    def test_a_candidate_name_finds_their_application(
+        self, db_session, org, author, hiring
+    ):
+        job, stages = _job_with_stages(db_session, org, author, title="Head Chef")
+        _, application = _applicant(db_session, org, author, job, stages["Applied"])
+        out = _run(db_session, hiring, author, op="locate", candidate="maia")
+        assert out == {"job_id": job, "application_id": application}
+
+    def test_a_candidate_is_looked_for_within_the_job_given(
+        self, db_session, org, author, hiring
+    ):
+        chef, s1 = _job_with_stages(db_session, org, author, title="Head Chef")
+        bar, s2 = _job_with_stages(db_session, org, author, title="Bar Team")
+        _applicant(db_session, org, author, chef, s1["Applied"], email="a@x.com")
+        out = AR.run_logic(
+            db_session,
+            None,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            venue_id=None,
+            params={"op": "locate", "job": "Bar Team", "candidate": "Maia"},
+        )
+        assert "No candidate matching 'Maia' for Bar Team" in str(out)
+
+    def test_an_unknown_job_says_so(self, db_session, org, author, hiring):
+        out = AR.run_logic(
+            db_session,
+            None,
+            app=hiring[0],
+            version=hiring[1],
+            user=author,
+            venue_id=None,
+            params={"op": "locate", "job": "Sommelier"},
+        )
+        assert "No job opening matching 'Sommelier'" in str(out)

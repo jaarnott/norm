@@ -71,6 +71,28 @@ def _candidate_name(candidate):
     return " ".join([p for p in parts if p]) or candidate.get("email") or "(no name)"
 
 
+def _best_match(rows, want, label):
+    """The row ``want`` names — its id, else its label: exact, then prefix,
+    then anywhere, ignoring case. Norm opens the app by what people call
+    things ("the chef role", "Sam"), never by our ids."""
+    want = str(want or "").strip().lower()
+    if not want:
+        return None
+    for r in rows:
+        if str(r.get("id") or "").lower() == want:
+            return r
+    named = [(str(label(r) or "").lower(), r) for r in rows]
+    for test in (
+        lambda n: n == want,
+        lambda n: n.startswith(want),
+        lambda n: want in n,
+    ):
+        hits = [r for n, r in named if n and test(n)]
+        if hits:
+            return hits[0]
+    return None
+
+
 def _stages_for(job_id):
     return sorted(
         store.list("pipeline_stages", where={"job_id": job_id}, limit=100),
@@ -175,6 +197,51 @@ def run(params, call_api, log):
             )
         rows.sort(key=lambda r: (r.get("status") != "open", str(r.get("title") or "")))
         return {"jobs": rows}
+
+    if op == "locate":
+        """Where Norm asked the app to open (its component's inputs, see
+        services/app_components.py): ``job`` and/or ``candidate``, as ids or
+        names. Resolved HERE, where the data is, so the agent never needs
+        Hiring's ids. An open job wins a name tie; a candidate's most recent
+        application wins (within ``job`` when both are given)."""
+        jobs = store.list("job_openings", limit=200)
+        jobs.sort(key=lambda j: j.get("status") != "open")
+        job = None
+        if params.get("job"):
+            job = _best_match(jobs, params.get("job"), lambda j: j.get("title"))
+            if job is None:
+                return {"error": f"No job opening matching '{params.get('job')}'"}
+        application = None
+        if params.get("candidate"):
+            want = params.get("candidate")
+            applications = store.list(
+                "applications", where={"job_id": job["id"]} if job else None, limit=2000
+            )
+            # (the app sandbox has no next() — a loop it is)
+            for a in applications:
+                if str(a.get("id")) == str(want):
+                    application = a
+                    break
+            if application is None:
+                candidates = store.list("candidates", limit=2000)
+                with_apps = {a.get("candidate_id") for a in applications}
+                candidate = _best_match(
+                    [c for c in candidates if c.get("id") in with_apps],
+                    want,
+                    _candidate_name,
+                )
+                if candidate is None:
+                    where = f" for {job.get('title')}" if job else ""
+                    return {"error": f"No candidate matching '{want}'{where}"}
+                mine = [
+                    a for a in applications if a.get("candidate_id") == candidate["id"]
+                ]
+                mine.sort(key=lambda a: str(a.get("created_at") or ""), reverse=True)
+                application = mine[0]
+        return {
+            "job_id": (job or {}).get("id") or (application or {}).get("job_id"),
+            "application_id": (application or {}).get("id"),
+        }
 
     if op == "pipeline":
         job_id = params.get("job_id")

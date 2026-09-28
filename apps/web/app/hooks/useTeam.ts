@@ -29,6 +29,10 @@ export interface TeamComponent {
   page: { id: string; label: string; icon?: string } | null;
   /** Norm Core only: gives every member a menu item */
   shared?: boolean;
+  /** App-platform components only (declared in the app's own version): does
+   *  it get the app's menu item, and the inputs Norm can open it at */
+  app_page?: boolean;
+  inputs?: { name: string; description: string }[];
 }
 
 export interface TeamApp {

@@ -1,16 +1,25 @@
 'use client';
 
 /**
- * A single pinned app as a main-panel page: the display-registry adapter that
- * turns { props: { slug } } into the AppRunner. Exists so a pinned app renders
- * through the same FunctionalPage machinery as Invoices and friends.
+ * One App-platform app as a display block — a pinned app's page, or the card
+ * `norm.open_app` puts in a conversation. Turns { slug, component?, inputs? }
+ * (from props for a page, from data for a tool result) into the AppRunner, so
+ * a pinned app renders through the same FunctionalPage machinery as Invoices
+ * and friends, and Norm can open Hiring on one job's pipeline in chat.
  */
 
 import AppRunner from './AppRunner';
 import type { DisplayBlockProps } from '../display/DisplayBlockRenderer';
 
-export default function AppPage({ props }: DisplayBlockProps) {
-  const slug = (props?.slug as string) || '';
+export default function AppPage({ data, props }: DisplayBlockProps) {
+  const pick = (k: string) => props?.[k] ?? data?.[k];
+  const slug = (pick('slug') as string) || '';
   if (!slug) return <div style={{ padding: '2rem', color: '#888' }}>No app selected.</div>;
-  return <AppRunner slug={slug} />;
+  return (
+    <AppRunner
+      slug={slug}
+      component={(pick('component') as string) || undefined}
+      inputs={(pick('inputs') as Record<string, unknown>) || undefined}
+    />
+  );
 }

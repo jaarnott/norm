@@ -52,6 +52,28 @@ def _group(rows, key):
     return out
 
 
+def _best_match(rows, want, label):
+    """The row ``want`` names — its id, else its label: exact, then prefix,
+    then anywhere, ignoring case. Norm opens the app by what people call
+    things ("barista basics", "Sam"), never by our ids."""
+    want = str(want or "").strip().lower()
+    if not want:
+        return None
+    for r in rows:
+        if str(r.get("id") or "").lower() == want:
+            return r
+    named = [(str(label(r) or "").lower(), r) for r in rows]
+    for test in (
+        lambda n: n == want,
+        lambda n: n.startswith(want),
+        lambda n: want in n,
+    ):
+        hits = [r for n, r in named if n and test(n)]
+        if hits:
+            return hits[0]
+    return None
+
+
 def _counts(completion):
     """Does this completion count toward progress?
 
@@ -112,6 +134,35 @@ def _delete_module_tree(module_id):
 def run(params, call_api, log):
     op = (params or {}).get("op") or "overview"
     venues = {v.get("id"): v.get("name") for v in (params or {}).get("venues") or []}
+
+    if op == "locate":
+        """Where Norm asked the app to open (its component's inputs, see
+        services/app_components.py): ``program`` and/or ``person``, as ids or
+        names, resolved here where the data is. An active program wins a name
+        tie. A person wins over a program — their page shows every program
+        they're on."""
+        out = {"program_id": None, "person_id": None}
+        if params.get("program"):
+            programs = store.list("programs")
+            programs.sort(key=lambda p: not p.get("is_active", True))
+            program = _best_match(
+                programs, params.get("program"), lambda p: p.get("name")
+            )
+            if program is None:
+                return {
+                    "error": f"No training program matching '{params.get('program')}'"
+                }
+            out["program_id"] = program["id"]
+        if params.get("person"):
+            person = _best_match(
+                store.list("people"), params.get("person"), lambda p: p.get("name")
+            )
+            if person is None:
+                return {
+                    "error": f"Nobody in training matching '{params.get('person')}'"
+                }
+            out["person_id"] = person["id"]
+        return out
 
     if op == "overview":
         programs = store.list("programs")

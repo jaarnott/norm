@@ -130,6 +130,7 @@ async def get_team(
 
 @router.get("/admin/app-map")
 async def get_app_map(
+    db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("admin:system")),
 ):
@@ -138,8 +139,9 @@ async def get_app_map(
     from the catalog and specs, with ownership findings (anything unowned or
     claimed twice) on top. Read-only; the seed script stays the source."""
     from app.services.agent_catalog import app_map_payload
+    from app.services.entitlements import org_id_for_user
 
-    return app_map_payload(config_db)
+    return app_map_payload(config_db, db, org_id_for_user(user.id, db))
 
 
 @router.get("/agents")
