@@ -13,6 +13,7 @@ from sqlalchemy import (
     LargeBinary,
     UniqueConstraint,
     Index,
+    CheckConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -1432,10 +1433,26 @@ class AppCall(Base):
     """
 
     __tablename__ = "app_calls"
+    __table_args__ = (
+        CheckConstraint(
+            "app_id IS NOT NULL OR builtin_slug IS NOT NULL",
+            name="ck_app_calls_names_an_app",
+        ),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
+    #: NULL for an app built into Norm (services/builtin_apps.py) — it has no
+    #: ``apps`` row, and is named by ``builtin_slug`` instead.
     app_id = Column(
-        String, ForeignKey("apps.id", ondelete="CASCADE"), nullable=False, index=True
+        String, ForeignKey("apps.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    builtin_slug = Column(String, nullable=True, index=True)
+    #: The org the action ran in — for a built-in, the only link to it.
+    organization_id = Column(
+        String,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     app_version_id = Column(String, nullable=True)
     user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

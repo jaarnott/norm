@@ -31,9 +31,9 @@ STORAGE_SPEC = {
     "writes": [],
     "scopes": ["mcp:hr:read"],
     "storage": {
-        "namespace": "hr_suite",
+        "namespace": "team_suite",
         "collections": ["people", "programs"],
-        "shared_with": ["training"],
+        "shared_with": ["coaching"],
     },
 }
 
@@ -59,7 +59,7 @@ def _member(db, org, perms):
     return user
 
 
-def _app_with(db, org, author, spec, slug="hiring", name="Hiring"):
+def _app_with(db, org, author, spec, slug="recruiting", name="Recruiting"):
     app = App(
         organization_id=org.id,
         created_by=author.id,
@@ -294,7 +294,7 @@ class TestIsolation:
         other_org = _make_organization(db_session, name="Other Co")
         other_author = _member(db_session, other_org, ["hr:read"])
         other_app, other_v = _app_with(
-            db_session, other_org, other_author, STORAGE_SPEC, slug="hiring"
+            db_session, other_org, other_author, STORAGE_SPEC, slug="recruiting"
         )
         rows = AR.store_list(
             db_session,
@@ -420,7 +420,7 @@ class TestNamespaceClaim:
                         "actions": [],
                         "scopes": [],
                         "storage": {
-                            "namespace": "hr_suite",
+                            "namespace": "team_suite",
                             "collections": ["people"],
                         },
                     },
@@ -432,22 +432,22 @@ class TestNamespaceClaim:
         assert "shared_with" in str(e.value.detail)
 
     def test_an_invited_app_may_join(self, db_session, org, author):
-        _app_with(db_session, org, author, STORAGE_SPEC)  # shared_with: ["training"]
+        _app_with(db_session, org, author, STORAGE_SPEC)  # shared_with: ["coaching"]
         out = AR.save_app(
             db_session,
             author,
             {
-                "name": "Training",
-                "slug": "training",
+                "name": "Coaching",
+                "slug": "coaching",
                 "spec": {
                     "actions": [],
                     "scopes": [],
-                    "storage": {"namespace": "hr_suite", "collections": ["programs"]},
+                    "storage": {"namespace": "team_suite", "collections": ["programs"]},
                 },
                 "ui_source": "<div/>",
             },
         )
-        assert out["slug"] == "training"
+        assert out["slug"] == "coaching"
 
     def test_the_two_apps_then_see_the_same_rows(self, db_session, org, author):
         hiring, hv = _app_with(db_session, org, author, STORAGE_SPEC)
@@ -455,19 +455,19 @@ class TestNamespaceClaim:
             db_session,
             author,
             {
-                "name": "Training",
-                "slug": "training",
+                "name": "Coaching",
+                "slug": "coaching",
                 "spec": {
                     "actions": [],
                     "scopes": [],
-                    "storage": {"namespace": "hr_suite", "collections": ["people"]},
+                    "storage": {"namespace": "team_suite", "collections": ["people"]},
                 },
                 "ui_source": "<div/>",
             },
         )
         training = (
             db_session.query(App)
-            .filter(App.organization_id == org.id, App.slug == "training")
+            .filter(App.organization_id == org.id, App.slug == "coaching")
             .first()
         )
         tv = (
@@ -905,12 +905,12 @@ class TestNamespaceOwnershipSurvivesRevision:
             db_session,
             author,
             {
-                "name": "Training",
-                "slug": "training",
+                "name": "Coaching",
+                "slug": "coaching",
                 "spec": {
                     "actions": [],
                     "scopes": [],
-                    "storage": {"namespace": "hr_suite", "collections": ["programs"]},
+                    "storage": {"namespace": "team_suite", "collections": ["programs"]},
                 },
                 "ui_source": "<div/>",
             },
@@ -933,14 +933,14 @@ class TestNamespaceOwnershipSurvivesRevision:
         joiner_spec = {
             "actions": [],
             "scopes": [],
-            "storage": {"namespace": "hr_suite", "collections": ["programs"]},
+            "storage": {"namespace": "team_suite", "collections": ["programs"]},
         }
         AR.save_app(
             db_session,
             author,
             {
-                "name": "Training",
-                "slug": "training",
+                "name": "Coaching",
+                "slug": "coaching",
                 "spec": joiner_spec,
                 "ui_source": "<div/>",
             },
@@ -949,8 +949,8 @@ class TestNamespaceOwnershipSurvivesRevision:
             db_session,
             author,
             {
-                "name": "Training",
-                "slug": "training",
+                "name": "Coaching",
+                "slug": "coaching",
                 "spec": joiner_spec,
                 "ui_source": "<div>v2</div>",
             },
@@ -965,12 +965,12 @@ class TestNamespaceOwnershipSurvivesRevision:
             db_session,
             author,
             {
-                "name": "Training",
-                "slug": "training",
+                "name": "Coaching",
+                "slug": "coaching",
                 "spec": {
                     "actions": [],
                     "scopes": [],
-                    "storage": {"namespace": "hr_suite", "collections": ["programs"]},
+                    "storage": {"namespace": "team_suite", "collections": ["programs"]},
                 },
                 "ui_source": "<div/>",
             },
@@ -985,7 +985,7 @@ class TestNamespaceOwnershipSurvivesRevision:
                     "spec": {
                         "actions": [],
                         "scopes": [],
-                        "storage": {"namespace": "hr_suite", "collections": ["people"]},
+                        "storage": {"namespace": "team_suite", "collections": ["people"]},
                     },
                     "ui_source": "<div/>",
                 },
@@ -1009,7 +1009,7 @@ class TestNoSilentTruncation:
             db_session.add(
                 AppRecord(
                     id=str(uuid.uuid4()),
-                    namespace="hr_suite",
+                    namespace="team_suite",
                     organization_id=org.id,
                     collection="people",
                     data={"name": f"P{i:04d}"},
@@ -1037,7 +1037,7 @@ class TestNoSilentTruncation:
             db_session.add(
                 AppRecord(
                     id=str(uuid.uuid4()),
-                    namespace="hr_suite",
+                    namespace="team_suite",
                     organization_id=org.id,
                     collection="people",
                     data={"name": f"P{i}"},
@@ -1064,7 +1064,7 @@ class TestNoSilentTruncation:
             db_session.add(
                 AppRecord(
                     id=str(uuid.uuid4()),
-                    namespace="hr_suite",
+                    namespace="team_suite",
                     organization_id=org.id,
                     collection="people",
                     data={"name": f"P{i}"},

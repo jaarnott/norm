@@ -46,6 +46,9 @@ interface AppDetail {
   access: string;
   write_approved: boolean;
   version: number;
+  /** built into Norm: no author, no versions — `build` is its code's hash */
+  builtin?: boolean;
+  build?: string | null;
   ui_source?: string | null;
   has_logic: boolean;
   reach: string[];
@@ -374,7 +377,7 @@ export default function AppRunner({ slug, component, inputs }: {
     <div style={{ maxWidth: 1080, margin: '0 auto', padding: '1rem' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
         <h2 style={{ margin: 0, fontSize: '1.1rem' }}>{app.icon} {app.name}</h2>
-        <span style={{ fontSize: '0.7rem', color: '#999' }}>v{app.version}</span>
+        <span style={{ fontSize: '0.7rem', color: '#999' }}>{app.builtin ? 'built into Norm' : `v${app.version}`}</span>
         {venues.length > 1 && (
           <select value={venueId} onChange={(e) => setVenueId(e.target.value)}
             style={{ marginLeft: 'auto', font: 'inherit', fontSize: '0.8rem', padding: '3px 8px' }}>

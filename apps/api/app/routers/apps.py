@@ -33,14 +33,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _load(db: Session, slug: str, user: User):
+def _load(db: Session, slug: str, user: User, config_db: Session):
     """Resolve an app + the version to run, or 404.
 
     A viewer always runs the app's CURRENT version. Sharing pins a version by
     setting ``current_version_id``, so the author editing a draft never changes
     what anyone else is running.
+
+    An app built into Norm (Norm Hiring, Norm Training) resolves first: its
+    code comes from the repo, bound to the viewer's own org, and only while
+    the org has its catalog App on (services/builtin_apps.py).
     """
     from app.db.models import App, AppVersion, OrganizationMembership
+    from app.services.builtin_apps import load_for_user
+
+    builtin = load_for_user(db, config_db, slug, user)
+    if builtin is not None:
+        return builtin
 
     membership = (
         db.query(OrganizationMembership)
@@ -71,6 +80,19 @@ def _load(db: Session, slug: str, user: User):
     return app, version
 
 
+def _refuse_builtin(app) -> None:
+    """Sharing is how a user-built app reaches people. A built-in app already
+    reaches everyone in the org, and has no row a share could point at."""
+    from app.services.builtin_apps import is_builtin
+
+    if is_builtin(app):
+        raise HTTPException(
+            400,
+            f"{app.name} is built into Norm — everyone in your organization "
+            "already has it",
+        )
+
+
 class CallRequest(BaseModel):
     connector: str
     action: str
@@ -87,7 +109,7 @@ async def app_call(
     user: User = Depends(get_current_user),
 ):
     """The data door. Everything an app reads or writes comes through here."""
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     data = call_action(
         db,
         config_db,
@@ -116,7 +138,7 @@ async def app_run(
     user: User = Depends(get_current_user),
 ):
     """Run the app's server-side logic in the consolidator sandbox."""
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     out = run_logic(
         db,
         config_db,
@@ -141,9 +163,11 @@ async def app_run(
 @router.get("/apps")
 async def list_apps(
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Every app this user may run — theirs, plus whatever is shared with them."""
+    """Every app this user may run — the apps built into Norm that their org
+    has on, then theirs, plus whatever is shared with them."""
     from app.db.models import App, OrganizationMembership
 
     membership = (
@@ -158,7 +182,26 @@ async def list_apps(
     # on the user's own preferences blob under a reserved key.
     pinned = set((user.dashboard_preferences or {}).get("_pinned_apps") or [])
 
+    from app.services.builtin_apps import builtin_apps, is_on
+
     out = []
+    for b in builtin_apps().values():
+        if not is_on(b.slug, membership.organization_id, db, config_db):
+            continue
+        out.append(
+            {
+                "slug": b.slug,
+                "name": b.name,
+                "description": b.description,
+                "icon": b.icon,
+                "visibility": "builtin",
+                "builtin": True,
+                "mine": False,
+                "access": "view",
+                "pinned": b.slug in pinned,
+                "agent": b.agent or "app_builder",
+            }
+        )
     for app in (
         db.query(App)
         .filter(
@@ -168,6 +211,8 @@ async def list_apps(
         .order_by(App.name)
         .all()
     ):
+        if app.slug in builtin_apps():
+            continue  # a leftover per-org copy; the built-in is listed above
         access = resolve_access(db, app, user)
         if not access.can_run:
             continue
@@ -193,6 +238,7 @@ async def list_apps(
 async def get_app(
     slug: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """One app, with the version to render and its reach in plain language.
@@ -202,7 +248,7 @@ async def get_app(
     connector uses, and a viewer who cannot do what the app does is told which
     permission is missing rather than watching every call fail.
     """
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     access = resolve_access(db, app, user)
     if not access.can_run:
         raise HTTPException(404, "app not found")
@@ -215,6 +261,9 @@ async def get_app(
         "agent": app.agent or "app_builder",
         "purpose": app.purpose,
         "visibility": app.visibility,
+        "builtin": bool(getattr(app, "builtin", False)),
+        # a built-in's version is its code's hash — it changes with Norm
+        "build": getattr(version, "build", None),
         "access": access.role,
         "write_approved": access.write_approved,
         "version": version.version,
@@ -268,6 +317,7 @@ async def share_app(
     slug: str,
     body: ShareRequest,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("apps:share")),
 ):
     """Widen an app's audience — and, separately, approve its writes for them.
@@ -278,7 +328,8 @@ async def share_app(
     """
     from app.db.models import AppShare
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
+    _refuse_builtin(app)
     access = resolve_access(db, app, user)
     if access.role != "owner" and access.role != "edit":
         raise HTTPException(403, "only the author can share this app")
@@ -342,13 +393,15 @@ def _principal_label(db: Session, share) -> str:
 async def list_shares(
     slug: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Who can run this app. Owners/editors only — the audience list is itself
     information about the org."""
     from app.db.models import AppShare
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
+    _refuse_builtin(app)
     access = resolve_access(db, app, user)
     if access.role not in ("owner", "edit"):
         raise HTTPException(403, "only the author can see who this app is shared with")
@@ -381,6 +434,7 @@ async def list_shares(
 async def share_candidates(
     slug: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("apps:share")),
 ):
     """Who a share COULD name: the app's org members and venues, plus the
@@ -392,7 +446,8 @@ async def share_candidates(
         Venue,
     )
 
-    app, _ = _load(db, slug, user)
+    app, _ = _load(db, slug, user, config_db)
+    _refuse_builtin(app)
     access = resolve_access(db, app, user)
     if access.role not in ("owner", "edit"):
         raise HTTPException(403, "only the author can share this app")
@@ -429,13 +484,15 @@ async def revoke_share(
     slug: str,
     share_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("apps:share")),
 ):
     """Take a grant back. Visibility narrows to private when the last share
     goes — an app with no shares IS private, and the label should say so."""
     from app.db.models import AppShare
 
-    app, _ = _load(db, slug, user)
+    app, _ = _load(db, slug, user, config_db)
+    _refuse_builtin(app)
     access = resolve_access(db, app, user)
     if access.role not in ("owner", "edit"):
         raise HTTPException(403, "only the author can share this app")
@@ -469,6 +526,7 @@ async def pin_app(
     slug: str,
     body: PinRequest,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Pin (or unpin) an app to this user's nav.
@@ -480,7 +538,7 @@ async def pin_app(
     """
     from sqlalchemy.orm.attributes import flag_modified
 
-    app, _ = _load(db, slug, user)
+    app, _ = _load(db, slug, user, config_db)
     if not resolve_access(db, app, user).can_run:
         raise HTTPException(404, "app not found")
 
@@ -531,13 +589,14 @@ async def app_records_query(
     collection: str,
     body: RecordQuery,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """A POST because a query carries a body, not because it changes anything —
     the door audits it as a read."""
     from app.services.app_runtime import store_count, store_list
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     if body.count_only:
         return {
             "count": store_count(
@@ -575,11 +634,12 @@ async def app_record_get(
     collection: str,
     record_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     from app.services.app_runtime import store_get
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     return store_get(
         db,
         app=app,
@@ -596,11 +656,12 @@ async def app_record_create(
     collection: str,
     body: RecordBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     from app.services.app_runtime import store_put
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     out = store_put(
         db,
         app=app,
@@ -621,11 +682,12 @@ async def app_record_update(
     record_id: str,
     body: RecordBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     from app.services.app_runtime import store_put
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     out = store_put(
         db,
         app=app,
@@ -646,11 +708,12 @@ async def app_record_delete(
     collection: str,
     record_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     from app.services.app_runtime import store_delete
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     out = store_delete(
         db,
         app=app,
@@ -680,11 +743,12 @@ async def app_file_upload(
     record_id: str | None = Form(None),
     venue_id: str | None = Form(None),
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     from app.services.app_runtime import file_put
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     out = file_put(
         db,
         app=app,
@@ -707,11 +771,12 @@ async def app_file_list(
     collection: str,
     record_id: str | None = None,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     from app.services.app_runtime import file_list
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     return {
         "files": file_list(
             db,
@@ -729,11 +794,12 @@ async def app_file_download(
     slug: str,
     file_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     from app.services.app_runtime import file_fetch
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     row = file_fetch(db, app=app, version=version, user=user, file_id=file_id)
     db.commit()
     return Response(
@@ -753,11 +819,12 @@ async def app_file_delete(
     slug: str,
     file_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     from app.services.app_runtime import file_delete
 
-    app, version = _load(db, slug, user)
+    app, version = _load(db, slug, user, config_db)
     out = file_delete(db, app=app, version=version, user=user, file_id=file_id)
     db.commit()
     return out

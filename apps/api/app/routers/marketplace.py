@@ -187,9 +187,21 @@ async def submit_app(
     org_id = org_id_for_user(user.id, db)
     if not org_id:
         raise HTTPException(400, "You are not a member of an organization.")
+    # Norm's own apps (services/builtin_apps.py) are already in every org —
+    # there is nothing of the org's to publish, only a leftover copy.
+    from app.services.builtin_apps import reserved_slugs
+
+    if req.app_slug in reserved_slugs():
+        raise HTTPException(
+            400, f"'{req.app_slug}' is built into Norm — it can't be published."
+        )
     app_row = (
         db.query(App)
-        .filter(App.organization_id == org_id, App.slug == req.app_slug)
+        .filter(
+            App.organization_id == org_id,
+            App.slug == req.app_slug,
+            App.archived_at.is_(None),
+        )
         .first()
     )
     if not app_row:

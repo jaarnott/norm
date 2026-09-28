@@ -1131,7 +1131,7 @@
     ctx = c;
     var v = (c.venues || []).find(function (x) { return x.id === c.venueId; });
     document.getElementById('scope').textContent =
-      'Group-wide programs and ' + (v ? v.name : 'all venues') + ' · ' + (c.app ? 'v' + c.app.version : '');
+      'Group-wide programs and ' + (v ? v.name : 'all venues') + (c.app && c.app.version ? ' · v' + c.app.version : '');
     if (!started) { started = true; if (start(c)) return; }
     render();
   });

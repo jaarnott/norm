@@ -24,7 +24,7 @@ from app.services.app_components import (
 )
 from tests.conftest import _make_membership, _make_organization, _make_user
 
-FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "fixtures" / "apps"
+FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "builtin_apps"
 
 
 @pytest.fixture(autouse=True)
@@ -190,8 +190,7 @@ class TestTheFirstPartyApps:
 
 class TestOpenApp:
     def test_opens_by_the_catalog_name_at_a_job(self, db_session):
-        user, org, thread = _world(db_session)
-        _install(db_session, org, user, "hiring", _spec("hiring"), name="Hiring")
+        _, org, thread = _world(db_session)
         db_session.add(
             MarketplaceApp(
                 slug="hiring",
@@ -214,7 +213,6 @@ class TestOpenApp:
 
     def test_an_undeclared_input_is_refused_with_the_valid_ones(self, db_session):
         user, org, thread = _world(db_session)
-        _install(db_session, org, user, "hiring", _spec("hiring"))
         out = _open(db_session, thread, app="hiring", inputs={"shift": "Friday"})
         assert out["success"] is False
         assert out["data"] == {}  # a refusal never paints an empty app card
@@ -222,13 +220,11 @@ class TestOpenApp:
 
     def test_an_unknown_app_lists_the_ones_there_are(self, db_session):
         user, org, thread = _world(db_session)
-        _install(db_session, org, user, "training", _spec("training"))
         out = _open(db_session, thread, app="Payroll")
         assert out["success"] is False and "Training (training)" in out["error"]
 
     def test_an_app_that_is_switched_off_cannot_be_opened(self, db_session):
         user, org, thread = _world(db_session)
-        _install(db_session, org, user, "hiring", _spec("hiring"))
         db_session.add_all(
             [
                 MarketplaceApp(
@@ -265,7 +261,6 @@ class TestOpenApp:
 class TestTheTeamPageShowsThem:
     def test_a_fronted_app_lists_its_component_and_inputs(self, db_session):
         user, org, _ = _world(db_session)
-        _install(db_session, org, user, "training", _spec("training"))
         db_session.add(
             MarketplaceApp(
                 slug="training",

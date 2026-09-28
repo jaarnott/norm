@@ -298,23 +298,34 @@ def _app_platform_info(
     with the inputs that say where each starts (services/app_components.py).
     Derived per request, so the App Map can't drift from the running app."""
     empty = {"data": [], "components": []}
-    if not app_slug or db is None or not organization_id:
+    if not app_slug:
         return empty
     from app.db.models import App, AppVersion
     from app.services.app_components import declared_components
+    from app.services.builtin_apps import get_builtin
 
     try:
-        app = (
-            db.query(App)
-            .filter(App.organization_id == organization_id, App.slug == app_slug)
-            .first()
-        )
-        if not app or not app.current_version_id:
-            return empty
-        ver = (
-            db.query(AppVersion).filter(AppVersion.id == app.current_version_id).first()
-        )
-        spec = (ver.spec if ver else None) or {}
+        # Built into Norm: the same code for every org — no org row to read.
+        builtin = get_builtin(app_slug)
+        if builtin is not None:
+            app = builtin
+            spec = builtin.spec
+        else:
+            if db is None or not organization_id:
+                return empty
+            app = (
+                db.query(App)
+                .filter(App.organization_id == organization_id, App.slug == app_slug)
+                .first()
+            )
+            if not app or not app.current_version_id:
+                return empty
+            ver = (
+                db.query(AppVersion)
+                .filter(AppVersion.id == app.current_version_id)
+                .first()
+            )
+            spec = (ver.spec if ver else None) or {}
         return {
             "data": list((spec.get("storage") or {}).get("collections") or []),
             "components": [
@@ -342,13 +353,18 @@ def _custom_apps(organization_id: str | None, db: Session) -> list:
         return []
     from app.db.models import App
 
+    from app.services.builtin_apps import reserved_slugs
+
     try:
-        return (
-            db.query(App)
+        return [
+            a
+            for a in db.query(App)
             .filter(App.organization_id == organization_id, App.archived_at.is_(None))
             .order_by(App.name)
             .all()
-        )
+            # a leftover per-org copy of a built-in is not the org's own app
+            if a.slug not in reserved_slugs()
+        ]
     except Exception:  # pragma: no cover
         logger.warning("custom apps unavailable")
         return []

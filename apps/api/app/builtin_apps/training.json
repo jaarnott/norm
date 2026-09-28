@@ -1,6 +1,6 @@
 {
   "slug": "training",
-  "name": "Training",
+  "name": "Norm Training",
   "icon": "🎓",
   "agent": "hr",
   "description": "Programs, enrolments and completion across the group — who has been trained on what.",
@@ -8,9 +8,7 @@
   "spec": {
     "actions": [],
     "writes": [],
-    "scopes": [
-      "mcp:hr:read"
-    ],
+    "scopes": [],
     "storage": {
       "namespace": "hr_suite",
       "collections": [

@@ -35,6 +35,8 @@ interface AppRow {
   description?: string | null;
   icon?: string | null;
   visibility: string;
+  /** built into Norm (Norm Hiring, Norm Training) — everyone in the org has it */
+  builtin?: boolean;
   mine: boolean;
   access: string;
   pinned: boolean;
@@ -111,7 +113,9 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
   const load = useCallback(() => {
     apiFetch('/api/apps')
       .then((r) => (r.ok ? r.json() : { apps: [] }))
-      .then((d) => setApps(d.apps ?? []))
+      // Norm's built-in apps (Hiring, Training) aren't built by the team —
+      // they live in their team member's menu and on the Team page.
+      .then((d) => setApps(((d.apps ?? []) as AppRow[]).filter((a) => !a.builtin)))
       .catch(() => setApps([]));
     apiFetch('/api/marketplace')
       .then((r) => (r.ok ? r.json() : { apps: [] }))
@@ -357,8 +361,8 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
                 <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
                   <strong style={{ fontSize: '0.92rem' }}>{a.icon} {a.name}</strong>
                   <span style={{ fontSize: '0.62rem', color: a.mine ? '#2e7d4f' : '#8a6d3b', whiteSpace: 'nowrap' }}>
-                    {a.mine ? 'yours' : `shared · ${a.access}`}
-                    {a.visibility !== 'private' && ` · ${a.visibility}`}
+                    {a.builtin ? 'built into Norm' : a.mine ? 'yours' : `shared · ${a.access}`}
+                    {!a.builtin && a.visibility !== 'private' && ` · ${a.visibility}`}
                   </span>
                   {sub && badge(sub.status === 'pending' ? 'in review' : 'in marketplace', '#6b655c', '#f2efe9')}
                 </div>
@@ -366,7 +370,7 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
                   {a.description}
                 </div>
               </div>
-              {!sub && (
+              {!sub && !a.builtin && (
                 <button type="button" title="Publish this app to the marketplace (owners only)"
                   onClick={() => { void submitApp(a); }} disabled={busy === a.slug}
                   style={{ fontSize: '0.68rem', border: '1px solid #d8d4cc', borderRadius: 5, background: '#fff', color: '#6b6b6b', cursor: 'pointer', padding: '4px 10px', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>

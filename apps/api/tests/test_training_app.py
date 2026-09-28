@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from app.db.models import App, AppRecord, AppVersion, Role
+from app.db.models import AppRecord, Role
 from app.services import app_runtime as AR
 from tests.conftest import (
     _make_membership,
@@ -25,7 +25,7 @@ from tests.conftest import (
     _make_venue_access,
 )
 
-FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "fixtures" / "apps"
+FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "builtin_apps"
 SPEC = {
     "actions": [],
     "writes": [],
@@ -73,29 +73,10 @@ def author(db_session, org):
 
 @pytest.fixture()
 def app_and_version(db_session, org, author):
-    app = App(
-        organization_id=org.id,
-        created_by=author.id,
-        slug="training",
-        name="Training",
-        agent="hr",
-        visibility="private",
-    )
-    db_session.add(app)
-    db_session.flush()
-    version = AppVersion(
-        app_id=app.id,
-        version=1,
-        spec=SPEC,
-        ui_source="<div/>",
-        logic_source=(FIXTURES / "training.py").read_text(),
-        created_by=author.id,
-    )
-    db_session.add(version)
-    db_session.flush()
-    app.current_version_id = version.id
-    db_session.flush()
-    return app, version
+    """The built-in Training app bound to this org (services/builtin_apps.py)."""
+    from app.services.builtin_apps import bind, get_builtin
+
+    return bind(get_builtin("training"), org.id)
 
 
 def _rec(db, org, user, collection, data, venue_id=None):

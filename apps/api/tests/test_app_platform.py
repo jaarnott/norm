@@ -975,14 +975,14 @@ class TestAppAgent:
             author,
             {
                 "name": "Hiring",
-                "slug": "hiring",
+                "slug": "recruiting",
                 "agent": "hr",
                 "spec": READ_SPEC,
                 "ui_source": "<div/>",
             },
         )
-        assert out["slug"] == "hiring"
-        app = db_session.query(App).filter(App.slug == "hiring").first()
+        assert out["slug"] == "recruiting"
+        app = db_session.query(App).filter(App.slug == "recruiting").first()
         assert app.agent == "hr"
 
     def test_an_unregistered_agent_is_refused_by_name(self, db_session, org, author):

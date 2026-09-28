@@ -1356,13 +1356,18 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
     Refusals carry the valid choices in the error text and an EMPTY payload:
     a failed call must not paint an app card with nothing in it.
     """
+    from types import SimpleNamespace
+
     from app.db.engine import _ConfigSessionLocal
-    from app.db.models import App, AppVersion, Thread
+    from app.db.models import App, AppVersion, Thread, User
     from app.services.app_components import (
         check_inputs,
         declared_components,
         pick_component,
     )
+    from app.services.app_runtime import resolve_access
+    from app.services.builtin_apps import builtin_apps, reserved_slugs
+    from app.services.builtin_apps import is_on as builtin_is_on
     from app.services.entitlements import (
         CUSTOM_PREFIX,
         _catalog,
@@ -1374,25 +1379,54 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
         return {"success": False, "data": {}, "error": msg}
 
     th = db.query(Thread).filter(Thread.id == thread_id).first() if thread_id else None
-    org = org_id_for_user(th.user_id if th else None, db)
-    if not org:
+    user = db.query(User).filter(User.id == th.user_id).first() if th else None
+    org = org_id_for_user(user.id if user else None, db)
+    if not org or user is None:
         return refuse("No organization for this conversation, so no apps to open.")
-    rows = (
-        db.query(App)
-        .filter(App.organization_id == org, App.archived_at.is_(None))
-        .order_by(App.name)
-        .all()
-    )
+
+    # What this person can actually open: the apps built into Norm that the
+    # org has on, then the org's own apps this person may run (creator or
+    # shared) whose App is on — never an app whose card would fail to load.
     config_db = _ConfigSessionLocal()
     try:
         catalog = _catalog(config_db)
         on = apps_on(org, db, config_db)
+        candidates = [
+            SimpleNamespace(
+                slug=b.slug, name=b.name, description=b.description, spec=b.spec
+            )
+            for b in builtin_apps().values()
+            if builtin_is_on(b.slug, org, db, config_db)
+        ]
     finally:
         config_db.close()
-    if on is not None:
-        rows = [a for a in rows if f"{CUSTOM_PREFIX}{a.slug}" in on]
-    if not rows:
-        return refuse("This organization has no apps switched on to open.")
+    for a in (
+        db.query(App)
+        .filter(App.organization_id == org, App.archived_at.is_(None))
+        .order_by(App.name)
+        .all()
+    ):
+        if a.slug in reserved_slugs():
+            continue  # a leftover per-org copy of a built-in
+        if on is not None and f"{CUSTOM_PREFIX}{a.slug}" not in on:
+            continue
+        if not resolve_access(db, a, user).can_run:
+            continue
+        ver = (
+            db.query(AppVersion).filter(AppVersion.id == a.current_version_id).first()
+            if a.current_version_id
+            else None
+        )
+        candidates.append(
+            SimpleNamespace(
+                slug=a.slug,
+                name=a.name,
+                description=a.description,
+                spec=(ver.spec if ver else None),
+            )
+        )
+    if not candidates:
+        return refuse("There are no apps you can open here.")
 
     # "Norm Hiring" is the catalog's name for the app whose slug is `hiring`.
     fronted_by = {
@@ -1409,25 +1443,20 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
             (fronted_by.get(a.slug) or "").lower(),
         }
 
-    app = next((a for a in rows if want and want in names(a)), None) or next(
-        (a for a in rows if want and any(want in n for n in names(a) if n)), None
+    app = next((a for a in candidates if want and want in names(a)), None) or next(
+        (a for a in candidates if want and any(want in n for n in names(a) if n)),
+        None,
     )
     if app is None:
         return refuse(
             f"No app '{params.get('app') or ''}'. Apps you can open: "
-            + ", ".join(f"{fronted_by.get(a.slug) or a.name} ({a.slug})" for a in rows)
+            + ", ".join(
+                f"{fronted_by.get(a.slug) or a.name} ({a.slug})" for a in candidates
+            )
         )
 
-    ver = (
-        db.query(AppVersion).filter(AppVersion.id == app.current_version_id).first()
-        if app.current_version_id
-        else None
-    )
     comps = declared_components(
-        ver.spec if ver else None,
-        slug=app.slug,
-        name=app.name,
-        description=app.description,
+        app.spec, slug=app.slug, name=app.name, description=app.description
     )
 
     def describe(c) -> str:

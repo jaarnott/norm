@@ -77,6 +77,27 @@ def resolve_access(db: Session, app, user) -> AppAccess:
     if app.archived_at is not None:
         return AppAccess(False, "none", False, "this app has been archived")
 
+    # Built into Norm (services/builtin_apps.py): no author, no shares —
+    # anyone in the org it was bound to may use it and change its data. The
+    # org was taken from the viewer's membership when it was bound; it is
+    # re-checked here on every call rather than trusted.
+    from app.services.builtin_apps import is_builtin
+
+    if is_builtin(app):
+        from app.db.models import OrganizationMembership
+
+        member = (
+            db.query(OrganizationMembership)
+            .filter(
+                OrganizationMembership.user_id == user.id,
+                OrganizationMembership.organization_id == app.organization_id,
+            )
+            .first()
+        )
+        if not member:
+            return AppAccess(False, "none", False, "app not found")
+        return AppAccess(True, "view", True)
+
     if app.created_by and app.created_by == user.id:
         # The author always runs their own app at full declared reach; the
         # intersection rule below still holds them to their own permissions.
@@ -354,7 +375,7 @@ def call_action(
     try:
         db.add(
             AppCall(
-                app_id=app.id,
+                **_audit_app(app),
                 app_version_id=version.id,
                 user_id=user.id,
                 venue_id=venue_id,
@@ -448,6 +469,15 @@ def _storage_guard(
 
     spec = version.spec or {}
     namespace = _storage_reach(spec, collection)
+    # A built-in app's namespace is reserved platform-wide (see
+    # services/builtin_apps.py) — refused here too, at run time, so no app
+    # saved before the reservation existed can reach the built-ins' data.
+    from app.services.builtin_apps import is_builtin, reserved_namespaces
+
+    if namespace in reserved_namespaces() and not is_builtin(app):
+        raise HTTPException(
+            403, f"storage namespace '{namespace}' is reserved for Norm's own apps"
+        )
 
     missing = required_permissions(spec) - org_permissions(db, user)
     if missing:
@@ -466,7 +496,29 @@ def _storage_guard(
 
     if venue_id:
         _check_venue(db, user, venue_id)
+        # A built-in serves every org from one codebase: a venue it tags a row
+        # with must be one of THIS org's venues, whatever access rows say.
+        if is_builtin(app):
+            from app.db.models import Venue
+
+            venue = db.query(Venue).filter(Venue.id == venue_id).first()
+            if venue is None or venue.organization_id != app.organization_id:
+                raise HTTPException(403, "that venue isn't in this organization")
     return namespace, app.organization_id
+
+
+def _audit_app(app) -> dict:
+    """Who an audit row is about. A built-in app has no ``apps`` row to point
+    at, so it is named by slug instead (its org is on the viewer's own row)."""
+    from app.services.builtin_apps import is_builtin
+
+    if is_builtin(app):
+        return {
+            "app_id": None,
+            "builtin_slug": app.slug,
+            "organization_id": app.organization_id,
+        }
+    return {"app_id": app.id, "organization_id": app.organization_id}
 
 
 def _audit_storage(
@@ -484,7 +536,7 @@ def _audit_storage(
     try:
         db.add(
             AppCall(
-                app_id=app.id,
+                **_audit_app(app),
                 app_version_id=version.id,
                 user_id=user.id,
                 venue_id=venue_id,
@@ -896,6 +948,14 @@ def _check_namespace_claim(
     namespace = str(st.get("namespace") or "").strip()
     if not namespace:
         return
+    # First-come ownership (below) is per org, and a built-in app has no row
+    # to claim with — so its namespace is reserved outright, platform-wide.
+    from app.services.builtin_apps import reserved_namespaces
+
+    if namespace in reserved_namespaces():
+        raise HTTPException(
+            403, f"storage namespace '{namespace}' is reserved for Norm's own apps"
+        )
 
     collections = st.get("collections")
     if not isinstance(collections, list) or not collections:
@@ -1067,7 +1127,7 @@ def file_fetch(db: Session, *, app, version, user, file_id: str):
     row = db.query(AppFile).filter(AppFile.id == file_id).first()
     if not row or row.organization_id != app.organization_id:
         raise HTTPException(404, "no such file")
-    _storage_guard(
+    namespace, _ = _storage_guard(
         db,
         app=app,
         version=version,
@@ -1075,6 +1135,10 @@ def file_fetch(db: Session, *, app, version, user, file_id: str):
         collection=row.collection or "",
         mutating=False,
     )
+    # By id, so the org and collection checks alone would let an app reach a
+    # file in ANOTHER namespace that happens to use the same collection name.
+    if row.namespace != namespace:
+        raise HTTPException(404, "no such file")
     if not _may_see_venue(db, user, row):
         raise HTTPException(403, "you do not have access to that venue")
     _audit_storage(
@@ -1097,7 +1161,7 @@ def file_delete(db: Session, *, app, version, user, file_id: str) -> dict:
     row = db.query(AppFile).filter(AppFile.id == file_id).first()
     if not row or row.organization_id != app.organization_id:
         raise HTTPException(404, "no such file")
-    _storage_guard(
+    namespace, _ = _storage_guard(
         db,
         app=app,
         version=version,
@@ -1105,6 +1169,10 @@ def file_delete(db: Session, *, app, version, user, file_id: str) -> dict:
         collection=row.collection or "",
         mutating=True,
     )
+    # By id, so the org and collection checks alone would let an app reach a
+    # file in ANOTHER namespace that happens to use the same collection name.
+    if row.namespace != namespace:
+        raise HTTPException(404, "no such file")
     if not _may_see_venue(db, user, row):
         raise HTTPException(403, "you do not have access to that venue")
     collection = row.collection or ""
@@ -1211,6 +1279,14 @@ def save_app(db: Session, user, payload: dict) -> dict:
     )
     if not name or not slug:
         raise HTTPException(400, "a name is required")
+    # Built into Norm (services/builtin_apps.py): the slug is Norm's, so a
+    # user-built app can't shadow Norm Hiring in anyone's menu.
+    from app.services.builtin_apps import reserved_slugs
+
+    if slug in reserved_slugs():
+        raise HTTPException(
+            400, f"'{slug}' is the name of an app built into Norm — pick another"
+        )
 
     _check_namespace_claim(db, membership.organization_id, slug, spec)
 

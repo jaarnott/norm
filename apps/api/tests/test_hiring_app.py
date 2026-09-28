@@ -14,11 +14,11 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from app.db.models import App, AppRecord, AppVersion, Role
+from app.db.models import AppRecord, Role
 from app.services import app_runtime as AR
 from tests.conftest import _make_membership, _make_organization, _make_user
 
-FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "fixtures" / "apps"
+FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "builtin_apps"
 
 
 def _spec(slug):
@@ -51,29 +51,11 @@ def author(db_session, org):
 
 
 def _install(db, org, author, slug):
-    app = App(
-        organization_id=org.id,
-        created_by=author.id,
-        slug=slug,
-        name=slug.title(),
-        agent="hr",
-        visibility="private",
-    )
-    db.add(app)
-    db.flush()
-    version = AppVersion(
-        app_id=app.id,
-        version=1,
-        spec=_spec(slug),
-        ui_source="<div/>",
-        logic_source=(FIXTURES / f"{slug}.py").read_text(),
-        created_by=author.id,
-    )
-    db.add(version)
-    db.flush()
-    app.current_version_id = version.id
-    db.flush()
-    return app, version
+    """The built-in app, bound to this org — exactly what the runtime serves
+    (services/builtin_apps.py): Norm's code, the org's data."""
+    from app.services.builtin_apps import bind, get_builtin
+
+    return bind(get_builtin(slug), org.id)
 
 
 @pytest.fixture()
@@ -390,7 +372,9 @@ class TestHireIsTheHandoff:
                     "ui_source": "<div/>",
                 },
             )
-        assert "shared_with" in str(e.value.detail)
+        # Stricter than the shared_with rule it used to hit: the built-ins'
+        # namespace is reserved outright (services/builtin_apps.py).
+        assert "reserved for Norm's own apps" in str(e.value.detail)
 
 
 class TestBoardAndPipeline:

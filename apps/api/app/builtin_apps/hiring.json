@@ -1,6 +1,6 @@
 {
   "slug": "hiring",
-  "name": "Hiring",
+  "name": "Norm Hiring",
   "icon": "🧑‍🍳",
   "agent": "hr",
   "description": "Job openings and the candidate pipeline — from application to hired and onboarding.",
@@ -8,9 +8,7 @@
   "spec": {
     "actions": [],
     "writes": [],
-    "scopes": [
-      "mcp:hr:read"
-    ],
+    "scopes": [],
     "storage": {
       "namespace": "hr_suite",
       "collections": [
