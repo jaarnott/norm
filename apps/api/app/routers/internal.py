@@ -47,6 +47,41 @@ async def run_due_tasks_endpoint(
     return result
 
 
+@router.post("/internal/prewarm-reviews")
+async def prewarm_reviews_endpoint(
+    venue_id: str | None = None,
+    x_scheduler_secret: str = Header(default=""),
+):
+    """Warm the invoice-copy extraction cache ahead of whoever opens next.
+
+    Called on a cadence by Cloud Scheduler. Bounded by construction (see
+    ``invoice_prewarm``): a handful of extractions per tick, one at a time
+    fleet-wide, behind an advisory lock — so this can never become the
+    200-invoice sequential loop docs/scaling-and-load.md warns about, and
+    never holds more than one open invoice's worth of memory.
+
+    Runs INLINE rather than in a daemon thread: a tick is well inside the
+    scheduler's deadline, and inline means a failure is a visible non-200 in
+    Cloud Scheduler's logs instead of a thread nobody hears about.
+
+    ``venue_id`` is for local smoke tests. There is deliberately no ``limit``
+    parameter — the cap is a constant, not a caller's choice.
+    """
+    _authorize(x_scheduler_secret)
+
+    from app.services.invoice_prewarm import prewarm_extractions
+
+    result = prewarm_extractions(venue_id=venue_id)
+    if result.get("warmed") or result.get("failed"):
+        logger.info(
+            "prewarm-reviews: warmed %s, failed %s (%ss)",
+            result.get("warmed"),
+            result.get("failed"),
+            result.get("seconds"),
+        )
+    return result
+
+
 @router.post("/internal/validate-config")
 async def validate_config_endpoint(
     x_scheduler_secret: str = Header(default=""),

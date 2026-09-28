@@ -46,9 +46,9 @@ data "google_secret_manager_secret_version" "scheduler_secret" {
 }
 
 resource "google_cloud_scheduler_job" "run_due_tasks" {
-  name      = "norm-run-due-tasks-${var.environment}"
-  project   = var.project_id
-  region    = var.region
+  name    = "norm-run-due-tasks-${var.environment}"
+  project = var.project_id
+  region  = var.region
   # Every 5 minutes, not every minute. The endpoint only claims tasks that are
   # already due, so the cadence is the worst-case lateness of a task, not its
   # accuracy — and at one task a day, a per-minute poll was 43,200 invocations
@@ -146,6 +146,49 @@ resource "google_cloud_scheduler_job" "refresh_tokens" {
   http_target {
     http_method = "POST"
     uri         = "${module.cloud_run.api_url}/internal/refresh-tokens"
+
+    headers = {
+      "X-Scheduler-Secret" = data.google_secret_manager_secret_version.scheduler_secret.secret_data
+      "Content-Type"       = "application/json"
+    }
+  }
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
+  ]
+}
+
+# ── Invoice extraction pre-warm ─────────────────────────────────
+# Opening an invoice used to run the whole review inside the user's wait:
+# 4-7 serial LLM calls (measured avg 5.9s, p90 10.9s each) plus ~15-25 Loaded
+# round trips — 20-60s on a first open. This warms the largest single piece,
+# the PDF extraction, before anyone opens it.
+#
+# retry_count = 0 on purpose: a retry buys nothing when the next tick is five
+# minutes away, and every attempt is a paid LLM call. The endpoint is bounded
+# and single-flighted, so a tick that overruns is skipped rather than stacked.
+#
+# Kill switch needs no deploy: `gcloud scheduler jobs pause
+# norm-prewarm-reviews-<env>`.
+resource "google_cloud_scheduler_job" "prewarm_reviews" {
+  name      = "norm-prewarm-reviews-${var.environment}"
+  project   = var.project_id
+  region    = var.region
+  schedule  = "*/5 * * * *"
+  time_zone = "Etc/UTC"
+
+  # Comfortably above a full tick (~6 extractions at ~10s) so a normal run is
+  # never reported as a timeout.
+  attempt_deadline = "300s"
+
+  retry_config {
+    retry_count = 0
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${module.cloud_run.api_url}/internal/prewarm-reviews"
 
     headers = {
       "X-Scheduler-Secret" = data.google_secret_manager_secret_version.scheduler_secret.secret_data

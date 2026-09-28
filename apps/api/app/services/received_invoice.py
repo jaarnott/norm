@@ -757,9 +757,22 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
                     + " — every line must share the document's sign",
                 )
         inv["isReceived"] = True
-        # Honour a Received Date set in the header; otherwise stamp now.
+        # Honour a Received Date set in the header; otherwise take the INVOICE
+        # DATE, and only stamp now if there isn't one.
+        #
+        # Stamping now was the single biggest source of hand-correction: of the
+        # manual edits recorded across 183 human receives, 22 were
+        # `header.received_at` — more than twice any other field, and enough on
+        # its own to hold autopilot's match rate down. An invoice dated the 3rd
+        # and received on the 28th landed 25 days out, so someone retyped the
+        # date every time. The delivery is what the invoice is billing, so the
+        # invoice's own date is the honest default; "now" only describes when
+        # the paperwork happened to be processed.
         if not inv.get("receivedAt"):
-            inv["receivedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            inv["receivedAt"] = (
+                inv.get("issuedAt")
+                or datetime.datetime.now(datetime.timezone.utc).isoformat()
+            )
 
     # Loaded's validations (e.g. invoice-totals-mismatch) come back as clean
     # 4xx bodies — surface them as a 502 with the detail instead of letting
@@ -914,6 +927,25 @@ def _inv_includes_tax(detail: dict) -> bool:
     if v is None:
         v = detail.get("unitCostIncludesTax")
     return bool(v)
+
+
+def outstanding_invoice_rows(lh) -> list[dict]:
+    """This venue's unreceived supplier invoices, as Loaded returns them.
+
+    One query string, three callers (the Invoices page, the chat batch, the
+    extraction pre-warm). It lived in two places already; a third copy is how
+    a filter gets fixed in one of them and not the others.
+    """
+    rows = lh.get(
+        "/1.0/stock/internal/invoices"
+        "?from=1901-01-01&to=9999-12-31&status=NotReceived&page=0&pageSize=200"
+    )
+    rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
+    return [
+        i
+        for i in rows
+        if isinstance(i, dict) and not i.get("isReceived") and not i.get("deletedAt")
+    ]
 
 
 def invoice_fingerprint(detail: dict) -> str:

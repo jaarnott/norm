@@ -541,6 +541,50 @@ class DocumentExtraction(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
 
 
+class InvoicePrewarmAttempt(Base):
+    """Failure memory for the background extraction pre-warm.
+
+    The pre-warm picks candidates by "outstanding in Loaded, not yet in the
+    extraction cache", newest first. Success needs no row — the extraction
+    cache itself is the record. FAILURE does: without this table an invoice
+    that can never be extracted (unreadable copy, missing file) stays a
+    candidate forever and, being newest-first, consumes a slot on every tick.
+    A handful of them would starve the feature completely while looking
+    perfectly healthy.
+
+    It records successes too (``warmed_at``), because selection has no cheaper
+    way to know: the extraction cache is keyed on the composed supplier
+    instructions, so asking it directly would mean fetching every outstanding
+    invoice's detail every tick.
+
+    Known limitation: if a sensei study later changes a supplier's spec, the
+    cache key changes but ``warmed_at`` still reads warm, so the pre-warm will
+    not redo it and that invoice's next open pays a cold extraction — exactly
+    today's behaviour, never worse.
+
+    Between them the two columns are also the observability surface: "what is
+    failing and why" and "what has been warmed" are one query each.
+    """
+
+    __tablename__ = "invoice_prewarm_attempts"
+    __table_args__ = (
+        UniqueConstraint("venue_id", "invoice_id", name="uq_prewarm_attempt"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    venue_id = Column(String, nullable=False, index=True)
+    invoice_id = Column(String, nullable=False)
+    # Set once the extraction landed. Selection skips these — without it a
+    # tick would have to fetch every outstanding invoice's detail just to
+    # compute its cache key and discover it was already warm.
+    warmed_at = Column(DateTime(timezone=True))
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(String)
+    # NULL means "never retry" — the terminal state after MAX_ATTEMPTS.
+    next_attempt_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class HrSetup(Base):
     __tablename__ = "hr_setups"
 

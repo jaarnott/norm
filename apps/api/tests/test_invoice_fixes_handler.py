@@ -2278,3 +2278,50 @@ def test_heal_review_clears_studying_flag_and_does_not_loop(
     assert "sensei_studying" not in (doc.data or {})  # flag cleared
     assert doc.version == 6  # draft re-written
     assert n["autostudy"] == 0  # NO new study triggered
+
+
+class TestTheInteractiveReviewPrefetchesReferenceOnce:
+    """The path a human waits on must not re-fetch the catalogue three times.
+
+    Without a ``reference``, ``build_replica`` self-fetches: the stock
+    catalogue is pulled once by ``loaded_reference`` (TTL-cached), again in
+    ``invoice_replica`` (bypassing that cache) and a third time inside
+    ``suggest_item_matches`` — plus the 400-day received feed twice. The batch
+    path has always prefetched once and passed it down; the interactive path
+    never did, and it is the only one with a person watching.
+    """
+
+    def test_squash_forwards_reference_to_review_invoice(self, monkeypatch):
+        import app.services.invoice_review as ir
+        from app.routers import invoice_fixes as IF
+
+        seen: dict = {}
+
+        def fake_review_invoice(db, config_db, venue_id, invoice_id, **kw):
+            seen["reference"] = kw.get("reference")
+            return {"invoice_id": invoice_id, "lines": [], "doc_schema": "replica_v1"}
+
+        monkeypatch.setattr(ir, "review_invoice", fake_review_invoice)
+        monkeypatch.setattr(ir, "carry_forward_decisions", lambda *a, **k: None)
+        monkeypatch.setattr(IF, "_Loaded", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no loaded")))
+
+        class _Db:
+            def commit(self):
+                pass
+
+        sentinel = {"catalogue": [{"id": "i-1"}], "units": [], "suppliers": []}
+        IF._squash_review_into_drafts(
+            _Db(), None, "v-1", "inv-1", [], reference=sentinel
+        )
+        assert seen["reference"] is sentinel
+
+    def test_the_review_endpoint_prefetches(self):
+        """The endpoint must actually CALL the prefetch — a reference kwarg
+        nothing populates is the silent way this optimisation dies."""
+        import inspect
+
+        from app.routers import invoice_fixes as IF
+
+        src = inspect.getsource(IF.review_receive_draft)
+        assert "prefetch_replica_reference" in src
+        assert "reference=reference" in src

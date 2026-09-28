@@ -758,21 +758,10 @@ def outstanding_invoices(
     receive without a config-DB component-api row.
     """
     response.headers["Cache-Control"] = "no-store"
+    from app.services.received_invoice import outstanding_invoice_rows
+
     lh = _Loaded(db, config_db, venue_id)
-    invs = lh.get(
-        "/1.0/stock/internal/invoices"
-        "?from=1901-01-01&to=9999-12-31&status=NotReceived&page=0&pageSize=200"
-    )
-    invs = invs if isinstance(invs, list) else (invs or {}).get("data") or []
-    return {
-        "invoices": [
-            i
-            for i in invs
-            if isinstance(i, dict)
-            and not i.get("isReceived")
-            and not i.get("deletedAt")
-        ]
-    }
+    return {"invoices": outstanding_invoice_rows(lh)}
 
 
 @router.get("/invoice-fixes/units")
@@ -1309,6 +1298,7 @@ def _squash_review_into_drafts(
     docs,
     *,
     trigger_autostudy: bool = True,
+    reference: dict | None = None,
 ) -> None:
     """Run the review pipeline and store the result into every open draft.
 
@@ -1321,6 +1311,14 @@ def _squash_review_into_drafts(
     whenever the spec it wrote is filed under a name the review can't match
     (an orphaned spec — ATOMIC, 29 Aug 2026). Only a user-driven review should
     start a study.
+
+    ``reference`` is the venue's catalogue/units/suppliers/tax/received-feed,
+    prefetched ONCE by the caller. Without it ``build_replica`` self-fetches,
+    and the stock catalogue is pulled THREE times in a single review: once by
+    ``loaded_reference`` (TTL-cached), again at ``invoice_replica`` (which
+    bypasses that cache), and a third time inside ``suggest_item_matches`` —
+    plus the 400-day received feed twice. The batch path has always passed it;
+    the interactive path, the one a human waits on, never did.
     """
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1330,7 +1328,7 @@ def _squash_review_into_drafts(
     # default): the card must tell the story autopilot acts on — a PO-less
     # invoice reads as blocked-from-auto-receive naming the toggle, unless the
     # venue has said POs aren't required (18 Aug 2026).
-    fresh = review_invoice(db, config_db, venue_id, invoice_id)
+    fresh = review_invoice(db, config_db, venue_id, invoice_id, reference=reference)
     try:
         lh = _Loaded(db, config_db, venue_id)
         _attach_po_reference(fresh, lh)
@@ -1451,7 +1449,16 @@ def review_receive_draft(
     ):
         return _doc_to_dict(doc)
 
-    _squash_review_into_drafts(db, config_db, body.venue_id, body.invoice_id, docs)
+    # Prefetch the venue's reference data ONCE. Best-effort by construction
+    # (prefetch_replica_reference swallows its own failures and returns {}),
+    # so a Loaded hiccup here degrades to the old self-fetching behaviour
+    # rather than failing the review a human is waiting on.
+    from app.services.spec_dojo import prefetch_replica_reference
+
+    reference = prefetch_replica_reference(db, config_db, body.venue_id)
+    _squash_review_into_drafts(
+        db, config_db, body.venue_id, body.invoice_id, docs, reference=reference
+    )
     db.refresh(doc)
     return _doc_to_dict(doc)
 

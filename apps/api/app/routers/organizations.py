@@ -461,6 +461,7 @@ async def delete_venue(
         InvoiceAutopilotOutcome,
         HiringCriteria,
         HrSetup,
+        InvoicePrewarmAttempt,
         Job,
         OAuthState,
         Order,
@@ -491,6 +492,11 @@ async def delete_venue(
     db.query(HrSetup).filter(HrSetup.venue_id == venue_id).delete(
         synchronize_session=False
     )
+    # Pre-warm bookkeeping is cache state about THIS venue's invoices —
+    # meaningless without it, and venue_id is NOT NULL. Delete, never null.
+    db.query(InvoicePrewarmAttempt).filter(
+        InvoicePrewarmAttempt.venue_id == venue_id
+    ).delete(synchronize_session=False)
     # An app record scoped to a venue is that venue's operational data — a
     # training assignment at this venue, a job opening for it. NULLing the
     # column would not orphan it, it would PROMOTE it: NULL means "belongs to

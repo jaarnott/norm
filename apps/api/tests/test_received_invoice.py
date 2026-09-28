@@ -535,3 +535,77 @@ class TestOrderRowReconciliation:
         out = self._receive(lh)
         assert out["received"] is True and out["order_rows_reconciled"] == 0
         assert any("invoices/inv-1" in w[1] for w in lh.writes)
+
+
+class TestTheReceivedDateDefaultsToTheInvoiceDate:
+    """Stamping "now" was the single biggest source of hand-correction.
+
+    Of the manual edits recorded across 183 human receives in production,
+    22 were ``header.received_at`` — more than twice any other field. An
+    invoice dated the 3rd and received on the 28th landed 25 days out, so
+    someone retyped the date every time, and autopilot could never match.
+    """
+
+    class _Lh:
+        def __init__(self, inv):
+            self.inv = inv
+            self.writes: list[tuple] = []
+
+        def get(self, path):  # noqa: ARG002 — no order lookups in these cases
+            return None
+
+        def invoice(self, invoice_id):  # noqa: ARG002
+            return self.inv
+
+        def request(self, method, path, body=None):
+            self.writes.append((method, path, body))
+            return {**(body or {}), "isReceived": True}
+
+    @staticmethod
+    def _inv(**kw):
+        base = {
+            "id": "inv-1",
+            "linkedSupplierId": "sup-1",
+            "issuedAt": "2026-09-03",
+            "receivedAt": None,
+            "total": 115.23,
+            "linkedPurchaseOrderId": None,
+            "lines": [
+                {
+                    "id": "ln-1",
+                    "code": "A",
+                    "description": "Thing",
+                    "linkedItemId": "item-1",
+                    "linkedUnitId": "unit-1",
+                    "totalCost": 115.23,
+                }
+            ],
+        }
+        base.update(kw)
+        return base
+
+    def _receive(self, inv):
+        from app.services.received_invoice import ReceiveRequest, do_receive
+
+        lh = self._Lh(inv)
+        do_receive(
+            lh,
+            ReceiveRequest(venue_id="v-1", invoice_id="inv-1", lines=[], receive=True),
+        )
+        return lh.writes[-1][2]
+
+    def test_an_unset_received_date_takes_the_invoice_date(self):
+        assert self._receive(self._inv())["receivedAt"] == "2026-09-03"
+
+    def test_a_received_date_already_set_is_left_alone(self):
+        out = self._receive(self._inv(receivedAt="2026-09-10"))
+        assert out["receivedAt"] == "2026-09-10"
+
+    def test_without_an_invoice_date_it_still_stamps_now(self):
+        # The fallback has to survive: Loaded will not accept a null date.
+        import datetime
+
+        out = self._receive(self._inv(issuedAt=None))
+        assert out["receivedAt"].startswith(
+            datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        )
