@@ -78,8 +78,23 @@ def _build_params(op: dict, doc: WorkingDocument, mapping: dict) -> dict:
     return params
 
 
-def sync_document(doc_id: str, db: Session) -> None:
-    """Process pending_ops for a working document by executing them against the external API."""
+def sync_document(doc_id: str, db: Session, config_db: Session | None = None) -> None:
+    """Process pending_ops for a working document by executing them against the external API.
+
+    ``config_db`` is optional because both callers (the submit route and the
+    background auto-sync thread) run outside a config-DB request scope; without
+    one this opens its own. It used to pass none at all, and
+    ``_execute_tool_call`` refuses to run without it, so every mapped op failed
+    and the document sat in the error state.
+    """
+    if config_db is None:
+        from app.db.engine import _ConfigSessionLocal
+
+        cdb = _ConfigSessionLocal()
+        try:
+            return sync_document(doc_id, db, config_db=cdb)
+        finally:
+            cdb.close()
     doc = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id).first()
     if not doc:
         return
@@ -126,7 +141,7 @@ def sync_document(doc_id: str, db: Session) -> None:
             db.add(tc)
             db.flush()
 
-            result = _execute_tool_call(tc, db)
+            result = _execute_tool_call(tc, db, config_db=config_db)
 
             if tc.status == "failed":
                 raise Exception(

@@ -442,6 +442,15 @@ class ExecuteBody(BaseModel):
     params: dict = {}
 
 
+# Built-in handlers the web app calls straight through this route. Every other
+# handler belongs to the agent, which runs it inside a thread behind its venue,
+# approval and tool-menu gates. This route has none of those, and until Sep 2026
+# it ran ANY registered handler for any logged-in user — gmail.send_email,
+# norm.save_app, norm.run_automated_task. Add an entry only for a handler a
+# page really calls, and only if it is safe with no thread and no venue.
+_UI_CALLABLE_HANDLERS = frozenset({("norm_hr", "save_criteria")})
+
+
 @router.post("/connectors/{name}/execute/{action}")
 async def execute_connector_action(
     name: str,
@@ -451,12 +460,21 @@ async def execute_connector_action(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Execute a connector tool directly (no LLM, no task)."""
-    # Check internal tool handlers first — these don't need a ConnectionSpec row
+    """Execute a connector endpoint directly (no LLM, no task).
+
+    Serves page components (the Hiring board, the criteria editor). Endpoints
+    must be GET; built-in handlers must be on ``_UI_CALLABLE_HANDLERS``.
+    Credentials are resolved strictly: the caller's ``venue_id`` if they hold
+    that venue, otherwise a platform-wide connection — never another venue's.
+    """
     from app.agents.internal_tools import get_handler
 
     handler = get_handler(name, action)
     if handler:
+        if (name, action) not in _UI_CALLABLE_HANDLERS:
+            raise HTTPException(
+                403, f"{name}.{action} can't be run directly — ask Norm instead"
+            )
         result = handler(body.params, db, None)
         db.commit()
         return result
@@ -480,24 +498,27 @@ async def execute_connector_action(
     if tool_def.get("method", "POST").upper() != "GET":
         raise HTTPException(400, "Only read-only (GET) tools can be executed directly")
 
-    # External tools — need credentials
-    config_row = (
-        db.query(Connection)
-        .filter(
-            Connection.connector_name == name,
-            Connection.enabled == "true",
-        )
-        .first()
-    )
+    # Credentials: the requested venue if the caller holds it, else a
+    # platform-wide connection. The old lookup took the first enabled
+    # connection of ANY venue, so one org's page could read another's data.
+    from app.connectors.tool_executor import _resolve_credentials
+    from app.services.venue_service import user_can_access_venue
+
+    params = dict(body.params)
+    venue_id = params.pop("venue_id", None)
+    params.pop("venue", None)
+    params.pop("venue_name", None)
+    if venue_id and not user_can_access_venue(db, user.id, venue_id):
+        raise HTTPException(403, "You don't have access to that venue.")
+
+    config_row = _resolve_credentials(name, venue_id, db, strict_venue=True)
     if not config_row:
         raise HTTPException(400, f"No credentials configured for {name}")
 
     from app.connectors.spec_executor import execute_spec
 
     try:
-        result, rendered = execute_spec(
-            spec, tool_def, body.params, config_row.config, db
-        )
+        result, rendered = execute_spec(spec, tool_def, params, config_row.config, db)
         return {
             "success": result.success,
             "data": result.response_payload,

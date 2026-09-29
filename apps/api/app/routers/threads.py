@@ -621,7 +621,7 @@ async def widget_action(
 
     if is_read_only:
         # Auto-execute read-only tool
-        result = _execute_tool_call(tc, db)
+        result = _execute_tool_call(tc, db, config_db=config_db)
         db.commit()
         return {"status": "executed", "data": result}
     else:
