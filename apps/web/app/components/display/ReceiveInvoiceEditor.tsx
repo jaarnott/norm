@@ -2375,7 +2375,22 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             )}
             <label style={fieldCol}>
               <span style={microLabel}>Received Date</span>
-              <input type="date" value={dateVal(doc.received_at)} disabled={doneState}
+              {/* Show the invoice date when Loaded holds no received date —
+                  mirroring do_receive, which writes issuedAt on receive when
+                  this field is untouched. The box used to render empty, so the
+                  date was retyped by hand on almost every invoice even after
+                  the server default shipped: 22 of the manual edits across 183
+                  human receives were header.received_at, more than twice any
+                  other field.
+
+                  Display-only on purpose. Writing the default into the draft
+                  would put it in the header that `manual_edits` diffs against
+                  `loaded_snapshot`, and every untouched receive would be
+                  recorded as hand-edited — the phantom-edit bug that made
+                  autopilot readiness read 0% from the day it shipped. A user
+                  who accepts this date types nothing, so `received_at` stays
+                  null and the server writes the same value. */}
+              <input type="date" value={dateVal(doc.received_at || doc.issued_at)} disabled={doneState}
                 onChange={(e) => patchHeader({ received_at: e.target.value || null })} style={{ ...inputStyle, width: '100%' }} />
             </label>
           </div>
