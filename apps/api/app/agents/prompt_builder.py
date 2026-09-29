@@ -266,7 +266,8 @@ def _collect_tools(
                 if cap.get("enabled", True)
             }
 
-        for tool in spec_rows.rows(spec):
+        # Only TOOLS reach an LLM (Sep 2026) — never an endpoint.
+        for tool in spec_rows.tools(spec):
             action = tool.get("action", "")
             if enabled_actions is not None and action not in enabled_actions:
                 continue

@@ -33,7 +33,6 @@ const EMPTY_TOOL: ConnectorSpecTool = {
   display_props: null,
   working_document: null,
   summary_fields: null,
-  response_transform: null,
   consolidator_config: null,
 };
 
@@ -707,384 +706,6 @@ function FieldMappingEditor({
 }
 
 // ---------------------------------------------------------------------------
-// ResponseTransformSection component
-// ---------------------------------------------------------------------------
-
-function ResponseTransformSection({
-  op, idx, updateTool, connectorName, isNew, externalSample, venueId,
-}: {
-  op: ConnectorSpecTool;
-  idx: number;
-  updateTool: (index: number, field: keyof ConnectorSpecTool, value: unknown) => void;
-  connectorName: string;
-  isNew: boolean;
-  externalSample?: unknown;
-  venueId?: string;
-}) {
-  const [sampleResponse, setSampleResponse] = useState<unknown>(externalSample ?? null);
-  const [fetchingSample, setFetchingSample] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-
-  // Sync with external sample when it changes (e.g., from manual test)
-  useEffect(() => {
-    if (externalSample) {
-      setSampleResponse(externalSample);
-      // Auto-map fields if no existing transform
-      if (!transform.enabled || Object.keys(transform.fields || {}).length === 0) {
-        const arr = findArray(externalSample);
-        if (arr && arr.length > 0 && typeof arr[0] === 'object') {
-          const allItems = arr.filter(i => i && typeof i === 'object') as Record<string, unknown>[];
-          const paths = extractLeafPaths(arr[0] as Record<string, unknown>, '', allItems);
-          const merged: Record<string, string> = {};
-          for (const p of paths) {
-            merged[p] = p.split('.').pop() || p;
-          }
-          updateTool(idx, 'response_transform', { enabled: true, fields: merged });
-        }
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [externalSample]);
-  const [sampleFields, setSampleFields] = useState<Record<string, string>>(() => {
-    // Pre-fill from field_descriptions examples
-    const init: Record<string, string> = {};
-    for (const [key, desc] of Object.entries(op.field_descriptions || {})) {
-      const match = String(desc).match(/\(e\.g\.?,?\s*(.+?)\)\s*$/);
-      if (match) init[key] = match[1];
-    }
-    return init;
-  });
-
-  const transform = op.response_transform || { enabled: false, fields: {} };
-  const fields = transform.fields || {};
-  // Sort entries: top-level first, then grouped by parent for nesting display
-  const fieldEntries = Object.entries(fields).sort(([a], [b]) => {
-    const aParts = a.split('.');
-    const bParts = b.split('.');
-    // Top-level fields come first
-    if (aParts.length === 1 && bParts.length > 1) return -1;
-    if (aParts.length > 1 && bParts.length === 1) return 1;
-    // Group by parent, then alphabetical within group
-    if (aParts.length > 1 && bParts.length > 1) {
-      const parentCmp = aParts[0].localeCompare(bParts[0]);
-      if (parentCmp !== 0) return parentCmp;
-    }
-    return a.localeCompare(b);
-  });
-
-  const setTransform = (patch: Partial<typeof transform>) => {
-    updateTool(idx, 'response_transform', { ...transform, ...patch });
-  };
-
-  const updateField = (oldSrc: string, newSrc: string, newDest: string) => {
-    const next = { ...fields };
-    if (oldSrc !== newSrc) delete next[oldSrc];
-    next[newSrc] = newDest;
-    setTransform({ fields: next });
-  };
-
-  const flattenList: string[] = transform.flatten || [];
-  const filterList: { field: string; operator: string; value: string }[] = transform.filters || [];
-
-  // Compute filter stats for display
-  const filterStats = useMemo(() => {
-    if (!sampleResponse || filterList.length === 0) return null;
-    const arr = findArray(sampleResponse);
-    if (!arr) return null;
-    const total = arr.length;
-    const passing = arr.filter(item => typeof item === 'object' && item != null && evaluateFilters(item as Record<string, unknown>, filterList)).length;
-    return { total, passing, filtered: total - passing };
-  }, [sampleResponse, filterList]);
-
-  const preview = useMemo(() => {
-    if (!sampleResponse || !transform.enabled) return null;
-    const included = Object.fromEntries(Object.entries(fields).filter(([, v]) => v));
-    if (Object.keys(included).length === 0) return null;
-    return applyTransformPreview(sampleResponse, included, flattenList, filterList);
-  }, [sampleResponse, fields, transform.enabled, flattenList, filterList]);
-
-  const handleFetchSample = async () => {
-    setFetchingSample(true);
-    setFetchError(null);
-    try {
-      let res: Response;
-      if (op.consolidator_config) {
-        // Consolidator tools: test via the consolidator endpoint
-        res = await apiFetch('/api/connector-specs/norm/test-consolidator', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ consolidator_config: op.consolidator_config, params: sampleFields }),
-        });
-      } else {
-        res = await apiFetch(`/api/connector-specs/${connectorName}/test`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ extracted_fields: sampleFields, tool_action: op.action, ...(venueId ? { venue_id: venueId } : {}) }),
-        });
-      }
-      const data = await res.json();
-      if (!res.ok) {
-        setFetchError(`Test failed (${res.status}): ${data.detail || JSON.stringify(data)}`);
-        return;
-      }
-      const payload = op.consolidator_config ? (data.data || data) : (data.response_payload || data);
-      setSampleResponse(payload);
-
-      // Auto-map all leaf fields from the first array item
-      const arr = findArray(payload);
-      if (arr && arr.length > 0 && typeof arr[0] === 'object') {
-        const allItems = arr.filter(i => i && typeof i === 'object') as Record<string, unknown>[];
-        const paths = extractLeafPaths(arr[0] as Record<string, unknown>, '', allItems);
-        // Merge with existing mappings — keep user edits, add new paths
-        const existing = { ...fields };
-        const merged: Record<string, string> = {};
-        for (const p of paths) {
-          merged[p] = existing[p] !== undefined ? existing[p] : (p.split('.').pop() || p);
-        }
-        setTransform({ fields: merged, enabled: true });
-      }
-    } catch (e) {
-      setFetchError(String(e));
-    } finally {
-      setFetchingSample(false);
-    }
-  };
-
-  const [previewHeight, setPreviewHeight] = useState(260);
-  const resizeRef = useRef<{ startY: number; startH: number } | null>(null);
-
-  const handleResizeMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    resizeRef.current = { startY: e.clientY, startH: previewHeight };
-    const onMove = (ev: MouseEvent) => {
-      if (!resizeRef.current) return;
-      const delta = ev.clientY - resizeRef.current.startY;
-      setPreviewHeight(Math.max(120, resizeRef.current.startH + delta));
-    };
-    const onUp = () => {
-      resizeRef.current = null;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  };
-
-  const rawJson = sampleResponse ? JSON.stringify(sampleResponse, null, 2) : '';
-  const previewJson = preview ? JSON.stringify(preview, null, 2) : '';
-  const rawSize = sampleResponse ? JSON.stringify(sampleResponse).length : 0;
-  const previewSize = preview ? JSON.stringify(preview).length : 0;
-
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024) return `${bytes} B`;
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  };
-
-  const preStyle: React.CSSProperties = {
-    fontSize: '0.75rem', fontFamily: 'monospace', backgroundColor: '#1e1e2e',
-    color: '#cdd6f4', padding: '0.6rem', borderRadius: 6, overflow: 'auto',
-    height: previewHeight, margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-  };
-
-  return (
-    <div style={{ marginTop: '0.75rem', borderTop: '1px solid #e2e8f0', paddingTop: '0.75rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-        <label style={{ fontSize: '0.78rem', fontWeight: 600, color: '#444' }}>Response Transform</label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.78rem', color: '#555' }}>
-          <input
-            type="checkbox"
-            checked={!!transform.enabled}
-            onChange={e => setTransform({ enabled: e.target.checked })}
-          />
-          {transform.enabled ? 'Enabled' : 'Disabled'}
-        </label>
-      </div>
-
-      {/* Field mapping editor */}
-      {fieldEntries.length > 0 && (
-        <FieldMappingEditor
-          fieldEntries={fieldEntries}
-          flattenList={flattenList}
-          updateField={updateField}
-          toggleFlatten={(arrName: string) => {
-            const next = flattenList.includes(arrName)
-              ? flattenList.filter(n => n !== arrName)
-              : [...flattenList, arrName];
-            setTransform({ flatten: next });
-          }}
-        />
-      )}
-
-      {/* Filters */}
-      <div style={{ marginBottom: '0.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-          <label style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555' }}>Filters</label>
-          <button
-            onClick={() => setTransform({ filters: [...filterList, { field: '', operator: 'is_empty', value: '' }] })}
-            style={{
-              padding: '1px 8px', fontSize: '0.68rem', border: '1px solid #ddd', borderRadius: 4,
-              backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit', color: '#555',
-            }}
-          >
-            + Add Filter
-          </button>
-        </div>
-        {filterList.length > 0 && (
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
-            {filterList.map((f, fi) => (
-              <div key={fi} style={{
-                display: 'grid', gridTemplateColumns: '1fr auto 1fr 24px', gap: 4,
-                padding: '4px 8px', alignItems: 'center',
-                borderBottom: fi < filterList.length - 1 ? '1px solid #f0f0f0' : 'none',
-              }}>
-                <select
-                  value={f.field}
-                  onChange={e => {
-                    const next = [...filterList];
-                    next[fi] = { ...f, field: e.target.value };
-                    setTransform({ filters: next });
-                  }}
-                  style={{ ...inputStyle, fontSize: '0.75rem', padding: '2px 4px' }}
-                >
-                  <option value="">Select field</option>
-                  {Object.keys(fields).map(fk => (
-                    <option key={fk} value={fk}>{fk}</option>
-                  ))}
-                </select>
-                <select
-                  value={f.operator}
-                  onChange={e => {
-                    const next = [...filterList];
-                    next[fi] = { ...f, operator: e.target.value };
-                    setTransform({ filters: next });
-                  }}
-                  style={{ ...inputStyle, fontSize: '0.72rem', padding: '2px 4px', width: 'auto' }}
-                >
-                  <option value="is_empty">is empty</option>
-                  <option value="is_not_empty">is not empty</option>
-                  <option value="equals">equals</option>
-                  <option value="not_equals">not equals</option>
-                  <option value="contains">contains</option>
-                  <option value="gt">&gt;</option>
-                  <option value="lt">&lt;</option>
-                </select>
-                {!['is_empty', 'is_not_empty'].includes(f.operator) ? (
-                  <input
-                    type="text"
-                    value={f.value}
-                    onChange={e => {
-                      const next = [...filterList];
-                      next[fi] = { ...f, value: e.target.value };
-                      setTransform({ filters: next });
-                    }}
-                    placeholder="value"
-                    style={{ ...inputStyle, fontSize: '0.75rem', padding: '2px 6px' }}
-                  />
-                ) : <div />}
-                <button
-                  onClick={() => {
-                    const next = filterList.filter((_, i) => i !== fi);
-                    setTransform({ filters: next });
-                  }}
-                  style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#e53e3e', fontSize: '0.82rem', padding: 0 }}
-                >
-                  &times;
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {filterStats && (
-          <div style={{ fontSize: '0.68rem', color: '#888', marginTop: 3 }}>
-            Showing {filterStats.passing.toLocaleString()} of {filterStats.total.toLocaleString()} items
-            ({filterStats.filtered.toLocaleString()} filtered out)
-          </div>
-        )}
-      </div>
-
-      {/* Request fields for sample fetch */}
-      {(!isNew && (Object.keys(op.field_mapping || {}).length > 0 || (op.consolidator_config && (op.required_fields || []).length > 0))) ? (
-        <div style={{ marginBottom: '0.5rem', padding: '0.5rem', backgroundColor: '#f8fafc', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-          <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#666', marginBottom: 4 }}>Test Parameters</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
-            {(op.consolidator_config ? (op.required_fields || []) : Object.keys(op.field_mapping || {})).map(fieldKey => (
-              <div key={fieldKey}>
-                <label style={{ fontSize: '0.68rem', color: '#888', display: 'flex', alignItems: 'center', gap: 2 }}>
-                  {fieldKey}
-                  {(op.required_fields || []).includes(fieldKey) && (
-                    <span style={{ color: '#e53e3e' }}>*</span>
-                  )}
-                </label>
-                <input
-                  value={sampleFields[fieldKey] || ''}
-                  onChange={e => setSampleFields(prev => ({ ...prev, [fieldKey]: e.target.value }))}
-                  placeholder={op.field_descriptions?.[fieldKey] || fieldKey}
-                  style={{ ...inputStyle, fontSize: '0.75rem', padding: '3px 6px' }}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {/* Fetch sample + auto-map */}
-      {!isNew && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '0.5rem' }}>
-          <button
-            onClick={handleFetchSample}
-            disabled={fetchingSample}
-            style={{
-              padding: '4px 10px', fontSize: '0.72rem', fontWeight: 500,
-              border: '1px solid #cbd5e1', borderRadius: 5, backgroundColor: '#fff',
-              color: '#555', cursor: fetchingSample ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-            }}
-          >{fetchingSample ? 'Fetching...' : 'Fetch Sample Response'}</button>
-          {fetchError && (
-            <span style={{ fontSize: '0.72rem', color: '#e53e3e' }}>{fetchError}</span>
-          )}
-        </div>
-      )}
-
-      {/* Split preview */}
-      {sampleResponse ? (
-        <div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <div>
-              <div style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-                Raw Response <span style={{ fontWeight: 400, color: '#aaa' }}>— {formatSize(rawSize)}</span>
-              </div>
-              <pre style={preStyle}>{rawJson}</pre>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.68rem', fontWeight: 600, color: '#2563eb', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-                Transformed Preview <span style={{ fontWeight: 400, color: previewSize < rawSize ? '#22c55e' : '#aaa' }}>— {formatSize(previewSize)}{previewSize > 0 && rawSize > 0 && previewSize < rawSize ? ` (${Math.round((1 - previewSize / rawSize) * 100)}% smaller)` : ''}</span>
-              </div>
-              <pre style={{ ...preStyle, backgroundColor: '#1a2332' }}>
-                {previewJson || '(configure field mappings above)'}
-              </pre>
-            </div>
-          </div>
-          {/* Resize handle */}
-          <div
-            onMouseDown={handleResizeMouseDown}
-            style={{
-              height: 8, cursor: 'row-resize', display: 'flex', alignItems: 'center',
-              justifyContent: 'center', marginTop: 2, borderRadius: 4,
-              userSelect: 'none',
-            }}
-            title="Drag to resize"
-          >
-            <div style={{ width: 40, height: 3, backgroundColor: '#cbd5e1', borderRadius: 2 }} />
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Consolidator Tool Editor — chat-based AI builder
-// ---------------------------------------------------------------------------
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -1487,7 +1108,9 @@ function ConsolidatorToolEditor({
       <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '0.5rem', marginBottom: '0.5rem' }}>
         <FunctionEditor
           functionCode={((op.consolidator_config as Record<string, unknown>)?.function_code as string) || 'def run(params, call_api, log):\n    venue = params.get("venue", "")\n    log(f"Hello from {venue}")\n    return {"message": "Replace this with your function"}'}
-          onChange={(code) => updateTool(idx, 'consolidator_config', { function_code: code })}
+          // Keep the rest of the config (max_api_calls, allowed_write_actions,
+          // wraps, shapes) — replacing it with just the code silently dropped them.
+          onChange={(code) => updateTool(idx, 'consolidator_config', { ...(op.consolidator_config || {}), function_code: code })}
           requiredFields={op.required_fields || []}
           connectorName="norm"
         />
@@ -1495,15 +1118,7 @@ function ConsolidatorToolEditor({
 
       {/* Config JSON removed — function editor is the only way to edit consolidator config */}
 
-      {/* Response Transform — hidden for consolidator tools (transform is applied inside the sub-step) */}
-      {!op.consolidator_config && <ResponseTransformSection
-        op={op}
-        idx={idx}
-        updateTool={updateTool}
-        connectorName="norm"
-        isNew={false}
-        externalSample={testResult?.success ? testResult.data : undefined}
-      />}
+      {/* Endpoints return raw data (Sep 2026): shaping lives in the consolidator's shapes. */}
     </div>
   );
 }
@@ -2608,12 +2223,6 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                           {op.path_template}
                         </span>
                       )}
-                      {op.response_transform?.enabled && (
-                        <span style={{
-                          fontSize: '0.65rem', fontWeight: 600, color: '#2563eb',
-                          backgroundColor: '#eff6ff', padding: '1px 6px', borderRadius: 3, marginLeft: 4,
-                        }}>Transform</span>
-                      )}
                     </>
                   )}
                 </div>
@@ -2971,15 +2580,6 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     </div>
                   </div>
 
-                  {/* Response Transform */}
-                  <ResponseTransformSection
-                    op={op}
-                    idx={idx}
-                    updateTool={updateTool}
-                    connectorName={form.connector_name}
-                    isNew={isNew}
-                    venueId={tryVenueId || undefined}
-                  />
                   </>
                   )}
                 </div>

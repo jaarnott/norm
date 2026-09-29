@@ -215,7 +215,8 @@ def _tool_method(config_db: Session, connector: str, action: str) -> str:
         .filter(ConnectionSpec.connector_name == connector)
         .first()
     )
-    for tool in spec_rows.rows(spec):
+    # An app calls TOOLS only (Sep 2026) — an endpoint is not an action.
+    for tool in spec_rows.tools(spec):
         if isinstance(tool, dict) and tool.get("action") == action:
             return str(tool.get("method") or "GET").upper()
     raise HTTPException(404, f"unknown action {connector}.{action}")
@@ -265,7 +266,7 @@ def _tool_read_only(config_db: Session, connector: str, action: str) -> bool:
         )
         if not spec or (spec.execution_mode or "") != "mcp":
             return False
-        for tool in spec_rows.rows(spec):
+        for tool in spec_rows.tools(spec):
             if isinstance(tool, dict) and tool.get("action") == action:
                 return bool(tool.get("read_only"))
     except Exception:  # noqa: BLE001 — an unreadable spec is not a read grant

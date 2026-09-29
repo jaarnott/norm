@@ -176,6 +176,12 @@ def _require_tool(script: dict | None, config_db: Session) -> None:
         )
 
 
+_PLACEHOLDER_TOKEN = __import__("re").compile(
+    r"\b(today_start|today_end|yesterday_start|yesterday_end|tomorrow_start|"
+    r"tomorrow_end|week_start|month_start|12h_ago|now)\b"
+)
+
+
 def _resolve_date_placeholders(params: dict, venue=None) -> dict:
     """Replace placeholder strings with actual timestamps.
 
@@ -218,8 +224,12 @@ def _resolve_date_placeholders(params: dict, venue=None) -> dict:
         if k.startswith("_"):
             continue
         if isinstance(v, str):
-            for placeholder, value in placeholders.items():
-                v = v.replace(placeholder, value)
+            # Whole tokens only. A plain substring replace turned the "now" in
+            # status "Acknowledged" into a timestamp ("Ack2026-09-30T…ledged"),
+            # so the Pending Deliveries chart matched nothing (29 Sep 2026).
+            v = _PLACEHOLDER_TOKEN.sub(
+                lambda m: placeholders.get(m.group(1), m.group(1)), v
+            )
             # Round ISO datetimes to nearest 30 minutes if flag is set
             if round_30 and _re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", v):
                 try:

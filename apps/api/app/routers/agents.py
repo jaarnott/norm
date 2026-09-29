@@ -73,8 +73,8 @@ def _agent_to_dict(
         bound_connector_names.add(connector_name)
         spec = specs_by_name.get(connector_name)
         caps = b["capabilities"]
-        if spec and spec_rows.rows(spec):
-            caps = _merge_capabilities(caps, spec_rows.rows(spec))
+        if spec and spec_rows.tools(spec):
+            caps = _merge_capabilities(caps, spec_rows.tools(spec))
         label = spec.display_name if spec else connector_name
         enriched_bindings.append(
             {
@@ -285,8 +285,8 @@ async def upsert_binding(
         .first()
     )
     caps = row.capabilities or []
-    if spec and spec_rows.rows(spec):
-        caps = _merge_capabilities(caps, spec_rows.rows(spec))
+    if spec and spec_rows.tools(spec):
+        caps = _merge_capabilities(caps, spec_rows.tools(spec))
     return {
         "connector_name": row.connector_name,
         "connector_label": spec.display_name if spec else row.connector_name,

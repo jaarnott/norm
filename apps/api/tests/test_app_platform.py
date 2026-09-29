@@ -271,7 +271,13 @@ class TestReadOnlyOverTransport:
     not intent. Without an explicit signal, merely LISTING data would demand a
     write approval (all 114 Cook Brothers App actions are POST, and the
     `get_`-prefix heuristic never fires on domain-prefixed names like
-    `training_get_job_opening`)."""
+    `training_get_job_opening`).
+
+    Since Sep 2026 an app calls TOOLS only (an app is written by the App
+    Builder, an LLM, and endpoints never reach one), so the rows here are
+    tools — consolidators on the MCP connector — as record_recipe is."""
+
+    TOOL_CODE = {"function_code": "def run(params, call_api, log):\n    return {}\n"}
 
     def _spec_with(self, db, connector, action, **over):
         from app.db.config_models import ConnectionSpec
@@ -284,7 +290,14 @@ class TestReadOnlyOverTransport:
                 category="internal",
                 execution_mode="mcp",
                 auth_type="none",
-                tools=[{"action": action, "method": "POST", **over}],
+                tools=[
+                    {
+                        "action": action,
+                        "method": "POST",
+                        "consolidator_config": self.TOOL_CODE,
+                        **over,
+                    }
+                ],
                 enabled=True,
             )
         )
@@ -343,6 +356,47 @@ class TestReadOnlyOverTransport:
                 action="training_move_candidate_stage",
             )
         assert "not declared as a write" in str(e.value.detail)
+
+
+    def test_an_endpoint_is_not_an_action_an_app_can_call(
+        self, db_session, org, author
+    ):
+        """Only tools reach an LLM — and an app is LLM-written. An Orbit
+        function that is an ENDPOINT (no tool wraps it) can't be called."""
+        from app.db.config_models import ConnectionSpec
+
+        db_session.add(
+            ConnectionSpec(
+                id=str(uuid.uuid4()),
+                connector_name="orbit_raw",
+                display_name="orbit_raw",
+                category="internal",
+                execution_mode="mcp",
+                auth_type="none",
+                tools=[],
+                endpoints=[{"action": "training_list_job_openings", "method": "POST", "read_only": True}],
+                enabled=True,
+            )
+        )
+        db_session.flush()
+        spec = {
+            "actions": [{"connector": "orbit_raw", "action": "training_list_job_openings"}],
+            "writes": [],
+            "scopes": [],
+        }
+        app = _app(db_session, org, author)
+        v = _version(db_session, app, spec, author)
+        with pytest.raises(HTTPException) as e:
+            _call(
+                db_session,
+                db_session,
+                app,
+                v,
+                author,
+                connector="orbit_raw",
+                action="training_list_job_openings",
+            )
+        assert e.value.status_code == 404
 
 
 class TestVenueAccess:

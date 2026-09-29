@@ -146,15 +146,19 @@ Use these words exactly; they are how the database is split (`connector_specs.en
 `connector_specs.tools`). Full decision and the built-in audit: `docs/tool-architecture-strategy.md`.
 
 - **API endpoint** — one call to an outside system (an HTTP template, or one of Orbit's MCP
-  functions). A building block. **Never shown to an LLM**, and returns raw data (transformed
-  endpoints are retired).
+  functions). A building block. **Never shown to an LLM**, and returns raw data — no
+  `response_transform`. A consolidator shapes what it reads with its own
+  `consolidator_config.shapes`.
 - **Tool** — the only thing an LLM sees. Either a **consolidator** (config Python over
   endpoints) or a **built-in** (Norm code, `@register` in `app/agents/internal_tools.py`) —
   and a built-in may only work on Norm itself; anything reaching an outside system is a
   consolidator.
 - **Exposure** is the App Map: a tool reaches the agent or MCP only when an App claims it.
 - `app/connectors/spec_rows.py` is the one place that decides a row's kind and reads the two
-  lists — don't loop over `spec.tools` directly.
+  lists — don't loop over `spec.tools` directly. Anything LLM-facing reads `spec_rows.tools()`.
+- Saved report charts call tools too (`script["rows"]` names the list to plot).
+- `validate_config` (`check_endpoints_and_tools`) fails on an endpoint in an App claim, an MCP
+  capability, the tools list, or carrying a transform.
 
 ## Architecture
 

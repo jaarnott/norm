@@ -192,3 +192,16 @@ class TestTheMapping:
         from app.services.chart_tools import to_tool_chart
 
         assert to_tool_chart("Hiring Board", "component", None, {}) is None
+
+
+class TestDatePlaceholders:
+    def test_a_placeholder_inside_a_word_is_left_alone(self):
+        """'Acknowledged' contains 'now'; a substring replace turned it into
+        'Ack2026-…ledged' and the Pending Deliveries chart matched nothing."""
+        from app.routers.reports_crud import _resolve_date_placeholders
+
+        out = _resolve_date_placeholders(
+            {"status": "Acknowledged", "end": "now", "start": "today_start"}
+        )
+        assert out["status"] == "Acknowledged"
+        assert out["end"][:2] == "20" and out["start"][:2] == "20"

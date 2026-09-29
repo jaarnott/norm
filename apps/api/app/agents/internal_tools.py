@@ -369,66 +369,10 @@ def _update_application(params: dict, db: Session, thread_id: str | None) -> dic
 # ---------------------------------------------------------------------------
 
 
-@register("bamboohr", "get_applicant_resume")
-def _get_applicant_resume(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Fetch an applicant's resume from BambooHR and return as a document block for the LLM."""
-    import base64
-    import httpx
-    from app.db.models import Connection
-
-    file_id = params.get("file_id") or params.get("resume_file_id")
-    if not file_id:
-        return {"success": False, "data": {}, "error": "file_id is required"}
-
-    config = (
-        db.query(Connection).filter(Connection.connector_name == "bamboohr").first()
-    )
-    if not config:
-        return {
-            "success": False,
-            "data": {},
-            "error": "BambooHR connector not configured",
-        }
-
-    subdomain = config.config.get("subdomain", "")
-    api_key = config.config.get("api_key", "")
-    url = f"https://{subdomain}.bamboohr.com/api/gateway.php/{subdomain}/v1/files/{file_id}"
-
-    try:
-        resp = httpx.get(url, auth=(api_key, "x"), timeout=30.0)
-    except httpx.HTTPError as exc:
-        return {"success": False, "data": {}, "error": f"Failed to fetch file: {exc}"}
-
-    if resp.status_code != 200:
-        return {
-            "success": False,
-            "data": {},
-            "error": f"BambooHR returned {resp.status_code}",
-        }
-
-    content_type = (
-        resp.headers.get("content-type", "application/pdf").split(";")[0].strip()
-    )
-    # Parse filename from Content-Disposition header
-    cd = resp.headers.get("content-disposition", "")
-    filename = "resume.pdf"
-    if "filename=" in cd:
-        filename = cd.split("filename=")[-1].strip().strip('"')
-
-    b64 = base64.b64encode(resp.content).decode()
-
-    return {
-        "success": True,
-        "data": {
-            "filename": filename,
-            "size_bytes": len(resp.content),
-            "content_type": content_type,
-        },
-        "_document": {
-            "type": "document",
-            "source": {"type": "base64", "media_type": content_type, "data": b64},
-        },
-    }
+# bamboohr.get_applicant_resume is a consolidator since Sep 2026
+# (config/consolidators/get_applicant_resume.py, over the download_file
+# endpoint): a built-in may only work on Norm itself — anything reaching an
+# outside system is a consolidator (docs/tool-architecture-strategy.md).
 
 
 @register("norm", "get_attachment")
@@ -3233,7 +3177,8 @@ def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> 
                 .filter(ConnectionSpec.connector_name == cn)
                 .first()
             )
-            for t in spec_rows.rows(spec):
+            # Apps are built on TOOLS (Sep 2026) — never an endpoint.
+            for t in spec_rows.tools(spec):
                 if not isinstance(t, dict) or not t.get("action"):
                     continue
                 actions.append(

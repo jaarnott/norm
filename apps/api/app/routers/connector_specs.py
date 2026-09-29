@@ -38,13 +38,7 @@ class ToolSchema(BaseModel):
     display_component: str | None = None
     display_props: dict | None = None
     summary_fields: list[str] | None = None
-    response_transform: dict | None = None
     consolidator_config: dict | None = None
-
-
-class TransformPreviewBody(BaseModel):
-    payload: dict | list
-    response_transform: dict
 
 
 class ConnectorSpecCreate(BaseModel):
@@ -544,7 +538,6 @@ async def sync_mcp_tools(
         "method",
         "display_component",
         "display_props",
-        "response_transform",
         "consolidator_config",
     }
     for tool in new_tools:
@@ -576,22 +569,6 @@ async def sync_mcp_tools(
             for t in new_tools
         ],
     }
-
-
-@router.post("/{name}/preview-transform")
-async def preview_transform(
-    name: str,
-    body: TransformPreviewBody,
-    user: User = Depends(require_permission("admin:system")),
-):
-    """Preview a response transform on a sample payload."""
-    from app.connectors.response_transform import apply_response_transform
-
-    try:
-        transformed = apply_response_transform(body.payload, body.response_transform)
-        return {"transformed": transformed}
-    except Exception as exc:
-        raise HTTPException(400, f"Transform failed: {exc}")
 
 
 @router.post("/generate")

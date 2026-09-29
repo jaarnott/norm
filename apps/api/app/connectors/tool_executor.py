@@ -1,6 +1,7 @@
 """Reusable connector tool execution — the same path the LLM tool loop uses.
 
-Handles: spec lookup, field normalization, execute_spec, response_transform.
+Handles: spec lookup, field normalization, execute_spec. (Endpoints return raw
+data since Sep 2026 — shaping lives in the consolidators' shapes.)
 Used by both the LLM tool loop and the dashboard chart refresh.
 """
 
@@ -48,7 +49,6 @@ def execute_connector_tool(
        applies (mirrors tool_loop._execute_tool_call)
     3. Resolve venue-aware credentials
     4. Call execute_spec (which normalizes fields via _normalize_fields)
-    5. Apply response_transform if configured
     6. Return clean result
 
     ``strict_venue`` controls the credential fallback when no config exists for
@@ -132,7 +132,6 @@ def execute_connector_tool(
             return ToolResult(success=False, payload=None, error=str(exc))
 
         payload = handler_result.get("data")
-        payload = _apply_transform(tool_def, payload)
         logs = handler_result.get("_logs", [])
         return ToolResult(
             success=handler_result.get("success", True),
@@ -199,15 +198,8 @@ def execute_connector_tool(
             auth_failed=getattr(result, "auth_failed", False),
         )
 
-    # 5. Apply response_transform if configured
-    # Resolve venue timezone for datetime field options (|tz, |dow)
-    venue_tz_name = None
-    if resolved_venue_id:
-        venue_obj = db.query(Venue).filter(Venue.id == resolved_venue_id).first()
-        if venue_obj and venue_obj.timezone:
-            venue_tz_name = venue_obj.timezone
-
-    payload = _apply_transform(tool_def, result.response_payload, venue_tz_name)
+    # Endpoints return raw data (Sep 2026): no transform here.
+    payload = result.response_payload
 
     row_count = len(payload) if isinstance(payload, list) else (1 if payload else 0)
 
@@ -314,35 +306,6 @@ def list_connector_tools(connector_name: str, config_db: Session) -> dict:
         )
 
     return {"tools": tools}
-
-
-def _apply_transform(
-    tool_def: dict, payload: Any, venue_timezone: str | None = None
-) -> Any:
-    """Apply a tool's response_transform, if it has one enabled.
-
-    Shared by the handler and spec paths so a transform behaves the same
-    however the tool was dispatched.
-    """
-    transform_config = (tool_def or {}).get("response_transform")
-    if not (transform_config and transform_config.get("enabled") and payload):
-        return payload
-
-    from app.connectors.response_transform import apply_response_transform
-
-    wrapped = (
-        {"data": payload}
-        if isinstance(payload, list)
-        else (payload if isinstance(payload, dict) else {"data": payload})
-    )
-    transformed = apply_response_transform(
-        wrapped, transform_config, venue_timezone=venue_timezone
-    )
-    return (
-        transformed.get("data", transformed)
-        if isinstance(transformed, dict)
-        else transformed
-    )
 
 
 def _resolve_credentials(

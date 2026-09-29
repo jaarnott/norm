@@ -280,7 +280,8 @@ def raw_tool_defs(config_db: Session) -> dict[tuple[str, str], dict]:
 
     out: dict[tuple[str, str], dict] = {}
     for spec in config_db.query(ConnectionSpec).all():
-        for tool in spec_rows.rows(spec):
+        # Only TOOLS are projected to MCP (Sep 2026) — never an endpoint.
+        for tool in spec_rows.tools(spec):
             action = tool.get("action")
             if action:
                 out[(spec.connector_name, action)] = tool

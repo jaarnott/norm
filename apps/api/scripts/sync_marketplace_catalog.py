@@ -561,6 +561,14 @@ def main() -> None:
             }
             for s in all_specs
         }
+        # Only TOOLS may be claimed (Sep 2026): an App claim puts a row in
+        # front of an LLM, and endpoints never reach one.
+        spec_tools = {
+            s.connector_name: {
+                t.get("action") for t in spec_rows.tools(s) if isinstance(t, dict)
+            }
+            for s in all_specs
+        }
         agent_slugs = {a.agent_slug for a in db.query(AgentConfig).all()}
         playbook_slugs = {pb.slug for pb in db.query(Playbook).all()}
         tool_claimed: dict[str, str] = {}
@@ -604,6 +612,11 @@ def main() -> None:
                 conn, _, action = key.partition(".")
                 if action not in spec_actions.get(conn, set()):
                     errors.append(f"{app['slug']}: tool '{key}' does not exist")
+                elif action not in spec_tools.get(conn, set()):
+                    errors.append(
+                        f"{app['slug']}: '{key}' is an API endpoint, not a tool — "
+                        "claim a consolidator that wraps it"
+                    )
                 if key in tool_claimed:
                     errors.append(
                         f"tool '{key}' claimed by both '{tool_claimed[key]}' and '{app['slug']}'"

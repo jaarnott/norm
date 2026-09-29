@@ -462,13 +462,10 @@ def execute_function(
 
         payload = result.response_payload
 
-        # Shape the payload: the consolidator's own shape for this endpoint
-        # wins (and replaces, never stacks on, the endpoint's legacy
-        # response_transform — which applies only until every consolidator
-        # carries its shapes; transforms are then removed from endpoints).
-        step_transform = shapes.get(f"{connector}.{action}") or tool_def.get(
-            "response_transform"
-        )
+        # Shape the payload with the consolidator's own shape for this
+        # endpoint. Endpoints themselves return raw data (Sep 2026; the
+        # validator refuses a response_transform on an endpoint).
+        step_transform = shapes.get(f"{connector}.{action}")
         if step_transform and step_transform.get("enabled") and payload:
             from app.connectors.response_transform import apply_response_transform
 

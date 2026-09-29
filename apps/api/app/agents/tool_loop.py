@@ -1231,27 +1231,15 @@ def _execute_tool_call(
             # Preserve _chart_props on result_payload so _build_display_block can find them
             if isinstance(payload, dict) and "_chart_props" in result:
                 payload = {**payload, "_chart_props": result["_chart_props"]}
-            # Apply response transform for internal tools too
-            if tool_def:
-                transform_config = tool_def.get("response_transform")
-                if transform_config and transform_config.get("enabled") and payload:
-                    from app.connectors.response_transform import (
-                        apply_response_transform,
-                    )
-
-                    wrapped = (
-                        {"data": payload}
-                        if isinstance(payload, list)
-                        else (
-                            payload if isinstance(payload, dict) else {"data": payload}
-                        )
-                    )
-                    transformed = apply_response_transform(wrapped, transform_config)
-                    payload = (
-                        transformed.get("data", transformed)
-                        if isinstance(transformed, dict)
-                        else transformed
-                    )
+            # A built-in hands the model a file beside its data
+            # (result["_document"]); carry it into the stored payload, where the
+            # loop lifts it out and attaches it to the tool result. Only `data`
+            # was ever stored, so no built-in's file ever reached the model —
+            # re-opened attachments included. Found Sep 2026. (A consolidator
+            # returns its `_document` inside its data, which already works.)
+            if isinstance(result.get("_document"), dict):
+                base = payload if isinstance(payload, dict) else {"data": payload}
+                payload = {**base, "_document": result["_document"]}
             tc.result_payload = payload
             tc.status = "executed" if result.get("success") else "failed"
             tc.error_message = result.get("error")
@@ -1298,36 +1286,8 @@ def _execute_tool_call(
         tc.duration_ms = int((time.time() - t0) * 1000)
         tc.rendered_request = rendered.to_audit_dict()
 
-        # Apply response transform BEFORE storing — the DB stores only transformed data
+        # Endpoints return raw data (Sep 2026) — no transform on the way in.
         payload = result.response_payload
-
-        # Resolve venue timezone for datetime field options (|tz, |dow)
-        venue_tz_name = None
-        if resolved_venue_id:
-            from app.db.models import Venue
-
-            venue_obj = db.query(Venue).filter(Venue.id == resolved_venue_id).first()
-            if venue_obj and venue_obj.timezone:
-                venue_tz_name = venue_obj.timezone
-
-        if tool_def:
-            transform_config = tool_def.get("response_transform")
-            if transform_config and transform_config.get("enabled"):
-                from app.connectors.response_transform import apply_response_transform
-
-                wrapped = (
-                    {"data": payload}
-                    if isinstance(payload, list)
-                    else (payload if isinstance(payload, dict) else {"data": payload})
-                )
-                transformed = apply_response_transform(
-                    wrapped, transform_config, venue_timezone=venue_tz_name
-                )
-                payload = (
-                    transformed.get("data", transformed)
-                    if isinstance(transformed, dict)
-                    else transformed
-                )
 
         tc.result_payload = payload
         tc.status = "executed" if result.success else "failed"

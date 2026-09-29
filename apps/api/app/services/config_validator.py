@@ -210,7 +210,20 @@ def _check_stale_aggregates(where: str, tool: dict) -> list[ConfigIssue]:
     source computes the summary over the right rows (what get_roster now does),
     or stop passing the summary through and let the caller add up the rows.
     """
-    transform = tool.get("response_transform")
+    # Since Sep 2026 shaping lives in the consolidators that call an endpoint
+    # (consolidator_config.shapes), so the same guard runs over every shape as
+    # well as over any legacy endpoint transform.
+    issues: list[ConfigIssue] = []
+    shapes = (tool.get("consolidator_config") or {}).get("shapes") or {}
+    candidates = [(where, tool.get("response_transform"))] + [
+        (f"{where} (shape for {ep})", t) for ep, t in sorted(shapes.items())
+    ]
+    for label, transform in candidates:
+        issues.extend(_stale_aggregates_in(label, transform))
+    return issues
+
+
+def _stale_aggregates_in(where: str, transform) -> list[ConfigIssue]:
     if not isinstance(transform, dict) or not transform.get("enabled"):
         return []
 
@@ -983,6 +996,123 @@ def check_mcp_capability(
     return issues
 
 
+def check_endpoints_and_tools(
+    specs: list[tuple[str, str | None, list, list | None]],
+    claims: dict[str, str],
+    mcp_actions: list[tuple[str, str]],
+) -> list[ConfigIssue]:
+    """The Sep 2026 rule (docs/tool-architecture-strategy.md): an LLM only ever
+    sees TOOLS — consolidators and built-ins — and API endpoints are building
+    blocks that return raw data.
+
+    ``specs``: (connector, execution_mode, tools, endpoints-or-None).
+    ``claims``: App Map claims, ``connector.action`` -> App slug.
+    ``mcp_actions``: (connector, action) of every enabled MCP capability.
+    """
+    from app.connectors import spec_rows
+    from app.services.spec_inventory import calls_in_code
+
+    issues: list[ConfigIssue] = []
+    kind: dict[str, str] = {}
+    for name, mode, tools, endpoints in specs:
+        tools = [t for t in tools or [] if isinstance(t, dict)]
+        eps = (
+            [e for e in endpoints or [] if isinstance(e, dict)]
+            if endpoints is not None
+            else None
+        )
+        for t in tools + (eps or []):
+            kind.setdefault(
+                f"{name}.{t.get('action')}",
+                spec_rows.classify(name, t, execution_mode=mode),
+            )
+        if eps is None:
+            continue  # not split yet: one list, nothing to misfile
+        both = {t.get("action") for t in tools} & {e.get("action") for e in eps}
+        for a in sorted(both):
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    f"{name}.{a}",
+                    "is in both the tools and the endpoints list",
+                    "Keep it in the list its kind says (spec_rows.classify).",
+                )
+            )
+        for e in eps:
+            key = f"{name}.{e.get('action')}"
+            if spec_rows.classify(name, e, execution_mode=mode) == "tool":
+                issues.append(
+                    ConfigIssue(
+                        "error",
+                        key,
+                        "is a tool (consolidator or built-in) filed under endpoints",
+                        "Move it to the tools list.",
+                    )
+                )
+            if e.get("response_transform"):
+                issues.append(
+                    ConfigIssue(
+                        "error",
+                        key,
+                        "is an endpoint carrying a response_transform — endpoints return raw data",
+                        "Move the shaping into the calling consolidators' consolidator_config.shapes (scripts/sync_move_transforms_to_tools.py).",
+                    )
+                )
+            kind[key] = spec_rows.classify(name, e, execution_mode=mode)
+        for t in tools:
+            key = f"{name}.{t.get('action')}"
+            if spec_rows.classify(name, t, execution_mode=mode) == "endpoint":
+                issues.append(
+                    ConfigIssue(
+                        "error",
+                        key,
+                        "is an endpoint filed under tools",
+                        "Move it to the endpoints list, or wrap it in a consolidator.",
+                    )
+                )
+            kind[key] = spec_rows.classify(name, t, execution_mode=mode)
+    for key, app in sorted(claims.items()):
+        if kind.get(key) == "endpoint":
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    key,
+                    f"is an API endpoint, but the {app} App claims it — only tools reach an LLM",
+                    "Claim a tool that wraps it (a consolidator).",
+                )
+            )
+    for c, a in mcp_actions:
+        if kind.get(f"{c}.{a}") == "endpoint":
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    f"{c}.{a}",
+                    "is an API endpoint enabled as an MCP capability — only tools reach an LLM",
+                    "Disable the capability, or expose a tool that wraps it.",
+                )
+            )
+    connectors = {name for name, *_ in specs}
+    for name, mode, tools, endpoints in specs:
+        for t in tools or []:
+            if not spec_rows.is_consolidator(t):
+                continue
+            for c, a in sorted(
+                calls_in_code(
+                    t["consolidator_config"].get("function_code") or "", connectors
+                )
+            ):
+                if f"{c}.{a}" not in kind:
+                    issues.append(
+                        ConfigIssue(
+                            "error",
+                            f"{name}.{t.get('action')}",
+                            f"calls {c}.{a}, which does not exist",
+                            "Fix the call, or add the endpoint.",
+                        )
+                    )
+    return issues
+
+
 def validate_config(db=None, config_db=None) -> dict:
     """Run every check against the live databases. Returns a summary dict.
 
@@ -1141,6 +1271,30 @@ def validate_config(db=None, config_db=None) -> dict:
             issues.extend(check_app_ownership(ownership_findings(config_db)))
             issues.extend(check_app_notes(app_rows))
             issues.extend(check_priced_rows_have_stripe_keys(active_rows))
+
+        # Tools vs API endpoints (Sep 2026): endpoints never reach an LLM.
+        from app.db.config_models import McpCapability as _McpCap
+        from app.services.entitlements import tool_owners
+
+        try:
+            _claims = tool_owners(config_db)
+        except Exception:  # noqa: BLE001 — an unreadable catalog claims nothing
+            _claims = {}
+        issues.extend(
+            check_endpoints_and_tools(
+                [
+                    (s.connector_name, s.execution_mode, s.tools, s.endpoints)
+                    for s in specs
+                ],
+                _claims,
+                [
+                    (c.target, c.action)
+                    for c in config_db.query(_McpCap)
+                    .filter(_McpCap.enabled == True, _McpCap.kind == "connector")  # noqa: E712
+                    .all()
+                ],
+            )
+        )
 
         # MCP capability drift: every enabled row must still resolve to a real,
         # read-only connector action or an enabled playbook.

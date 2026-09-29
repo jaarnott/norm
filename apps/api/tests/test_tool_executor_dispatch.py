@@ -15,7 +15,6 @@ import uuid
 import pytest
 
 from app.connectors.tool_executor import (
-    _apply_transform,
     _resolve_credentials,
     execute_connector_tool,
 )
@@ -224,19 +223,3 @@ class TestStrictVenueCredentials:
         b = _venue(db_session, "Venue B")
         _config(db_session, connector, a.id, "key-A")
         assert _resolve_credentials(connector, b.id, db_session) is not None
-
-
-class TestApplyTransform:
-    def test_no_transform_returns_payload_unchanged(self):
-        assert _apply_transform({}, {"a": 1}) == {"a": 1}
-
-    def test_disabled_transform_is_a_no_op(self):
-        assert _apply_transform(
-            {"response_transform": {"enabled": False}}, {"a": 1}
-        ) == {"a": 1}
-
-    @pytest.mark.parametrize("empty", [None, {}, []])
-    def test_empty_payload_short_circuits(self, empty):
-        assert (
-            _apply_transform({"response_transform": {"enabled": True}}, empty) == empty
-        )

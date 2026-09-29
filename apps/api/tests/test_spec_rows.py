@@ -38,15 +38,22 @@ class TestClassify:
         assert spec_rows.build_of("norm", row) == "built-in"
         assert spec_rows.classify("norm", row) == "tool"
 
-    def test_the_cv_reader_is_a_built_in_not_an_endpoint(self):
-        """Its row carries an HTTP template, but a registered handler runs
-        instead of it — the admin screen used to show it as a plain GET."""
-        row = {
-            "action": "get_applicant_resume",
-            "method": "GET",
-            "path_template": "/files/{{ file_id }}",
-        }
-        assert spec_rows.build_of("bamboohr", row) == "built-in"
+    def test_a_handler_shadows_the_rows_http_template(self, monkeypatch):
+        """A row can carry an HTTP template while a registered handler runs
+        instead of it — the BambooHR CV reader did, and the admin screen showed
+        it as a plain GET. Classification follows what RUNS."""
+        import app.agents.internal_tools as it
+
+        monkeypatch.setattr(it, "get_handler", lambda c, a: (lambda *x: {}) if (c, a) == ("acme", "fetch_file") else None)
+        row = {"action": "fetch_file", "method": "GET", "path_template": "/files/{{ file_id }}"}
+        assert spec_rows.build_of("acme", row) == "built-in"
+
+    def test_the_cv_reader_is_a_consolidator_now(self):
+        """Built-in audit wave 1 (Sep 2026): it reaches BambooHR, so it is a
+        consolidator over the download_file endpoint, not a built-in."""
+        from app.agents.internal_tools import get_handler
+
+        assert get_handler("bamboohr", "get_applicant_resume") is None
 
     def test_a_plain_http_row_is_an_endpoint(self):
         assert spec_rows.classify("acme", ENDPOINT) == "endpoint"

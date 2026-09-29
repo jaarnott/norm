@@ -33,6 +33,15 @@ endpoints stay, as the building blocks tools are made from.
 - One classifier decides a row's kind: `app/connectors/spec_rows.py`. A row with
   `consolidator_config.function_code`, or whose `(connector, action)` has a registered
   handler, is a tool; everything else is an endpoint.
+- **Shaping belongs to the tool.** An endpoint returns raw data — no `response_transform`
+  (the validator refuses one). A consolidator shapes each endpoint it calls with its own
+  `consolidator_config.shapes` (`{"connector.action": transform}`), applied by the
+  sandbox's `call_api`; `config/consolidators/shapes.json` is the canonical record.
+- **Charts are tools too.** A saved chart calls a tool and names the list it plots
+  (`script["rows"]`); `services/chart_tools.py` maps the old endpoint charts.
+- `config_validator.check_endpoints_and_tools` enforces all of it: no row in the wrong
+  list, no App or MCP capability naming an endpoint, no transform on an endpoint, no
+  consolidator calling a missing row.
 
 ### Built-in audit (29 Sep 2026)
 
@@ -41,7 +50,7 @@ endpoints stay, as the building blocks tools are made from.
 | Verdict | Handlers | Why |
 |---|---|---|
 | **Stays built-in** (Norm itself) | `norm.*`: create/list/update/run automated tasks, `manage_task`, `update_task_config`, `remember`, `recall_memory`, `search_tool_result`, `update_thread_summary`, `get_attachment`, `get_criteria`, `get_supplier_invoice_specs`, `get_workflow_mode`, `set_workflow_mode`, `set_override`, `read_playbook`, `resolve_dates`, `list_venues`, `show_connect`, `show_orders`, `show_roster`, `open_app`, `get_app`, `save_app`, `list_app_capabilities`; `norm_hr.*` (8, Norm's own hiring tables); `norm_reports.render_chart`; `norm_email.send_report_email` (Norm's own email); `loadedhub.edit_recipe` (opens Norm's recipe working document — misfiled under `loadedhub`) | Read or write Norm's database, config or LLM helpers only |
-| **Becomes a consolidator — wave 1** | `bamboohr.get_applicant_resume` | Calls BambooHR's `/files/{id}` directly with the API key |
+| **Done (wave 1, 29 Sep 2026)** | `bamboohr.get_applicant_resume` | Was a direct BambooHR `/files/{id}` call; now `config/consolidators/get_applicant_resume.py` over the `download_file` endpoint, taking an application id |
 | **Becomes a consolidator — wave 2** | `gmail.send_email`, `microsoft_outlook.send_email` | Call Google and Microsoft Graph directly with the user's OAuth token |
 | **Becomes a consolidator — wave 3** | `norm.create_purchase_order` | Hybrid: reaches Loaded through endpoints via an embedded consolidator, then writes a Norm draft |
 | **Becomes a consolidator — last wave (invoice engine)** | `norm.match_stock_items`, `norm.match_supplier`, `norm.review_invoices`, `norm.sensei_train_supplier`, `norm.invoice_copy_evidence`, `norm.record_split_order` | Reach Loaded through `LoadedInvoiceClient`, a hand-written client that bypasses the endpoint rows; they sit inside the invoice review engine |

@@ -676,11 +676,11 @@ class TestConsolidatorShapes:
         out = self._run(db_session, {"shapes": {"fake.read_thing": shape}})
         assert out == [{"alpha": 1, "b": 2}]
 
-    def test_without_a_shape_the_endpoint_transform_still_applies(
-        self, monkeypatch, db_session
-    ):
+    def test_an_endpoints_own_transform_is_ignored(self, monkeypatch, db_session):
+        """Endpoints return raw data; a stray response_transform on one is a
+        validator error, never applied."""
         endpoint_transform = {"enabled": True, "fields": {"a": "renamed"}}
         _wire_fake_connector(
             monkeypatch, {"read_thing": self.RAW}, tools=self._tools(endpoint_transform)
         )
-        assert self._run(db_session, {}) == [{"renamed": 1}]
+        assert self._run(db_session, {}) == self.RAW
