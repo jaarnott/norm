@@ -13,6 +13,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.db.engine import get_db, get_config_db
 from app.db.models import WorkingDocument, User
 from app.auth.dependencies import get_current_user
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -246,7 +247,7 @@ async def create_from_connector(
             raise HTTPException(404, f"Connector not found: {body.connector_name}")
 
         tool_def = None
-        for t in spec.tools or []:
+        for t in spec_rows.rows(spec):
             if t.get("action") == body.action:
                 tool_def = t
                 break

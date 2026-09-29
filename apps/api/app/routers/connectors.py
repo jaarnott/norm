@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.db.engine import get_db, get_config_db
 from app.db.models import Connection, ConnectionSpec, User
 from app.auth.dependencies import get_current_user, require_permission
+from app.connectors import spec_rows
 
 router = APIRouter()
 
@@ -488,7 +489,7 @@ async def execute_connector_action(
         raise HTTPException(404, f"Connector not found: {name}")
 
     tool_def = None
-    for t in spec.tools or []:
+    for t in spec_rows.rows(spec):
         if t.get("action") == action:
             tool_def = t
             break

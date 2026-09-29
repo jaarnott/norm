@@ -1,8 +1,50 @@
 # Tool Architecture Strategy
 
-*Status: direction agreed July 2026, revised after measurement on 2026-07-20. Nothing below
-has been implemented — Steps 1–5 of the original plan were never executed. This document is
-the map, not a work order.*
+*Status: direction agreed July 2026, revised after measurement on 2026-07-20. **Superseded in
+part by the September 2026 decision directly below**, which is being implemented. The rest of
+this document is the July analysis that led to it.*
+
+## Decision (September 2026): endpoints and tools
+
+Connector rows evolved in three generations, and all three used to be called "tools":
+
+1. **API endpoints** — one raw call to an outside system.
+2. **Transformed endpoints** — the same call plus a `response_transform` that trimmed fields and
+   fixed dates, because the LLM was getting confused by raw payloads.
+3. **Consolidators** — Python functions over endpoints that combine calls, reshape data and add
+   variables.
+
+**An LLM may only ever see v3 functions, and only those are called tools.** Transformed
+endpoints are retired (their shaping moves into the consolidators that use them). Plain
+endpoints stay, as the building blocks tools are made from.
+
+| Term | What it is | Stored in | Seen by an LLM? |
+|---|---|---|---|
+| **API endpoint** | One call to an outside system: an HTTP template, or one of Orbit's MCP functions. Returns raw data. | `connector_specs.endpoints` | Never — except the admin-only assistant that helps build consolidators |
+| **Tool — consolidator** | Config Python over endpoints (`consolidator_config.function_code`), run in the sandbox | `connector_specs.tools` | Yes, when an App claims it |
+| **Tool — built-in** | Norm code registered with `@register` in `app/agents/internal_tools.py`. **Only for work on Norm itself**: its database, its LLM helpers, its own email. Anything that reaches an outside system must be a consolidator. | `connector_specs.tools` | Yes, when an App claims it |
+
+- **Exposure** is the App Map: a tool reaches the agent or MCP only when an App claims it in
+  `composition.tools`. An unclaimed tool is an engine-side building block.
+- **Non-LLM callers may still use endpoints:** a consolidator's `call_api` (endpoints first,
+  then built-ins such as `norm.resolve_dates`); page components and widgets (roster editor
+  writes, Hiring board, page loads, recipe save, tenders, menu engineering); the admin
+  endpoint test and dry-run.
+- One classifier decides a row's kind: `app/connectors/spec_rows.py`. A row with
+  `consolidator_config.function_code`, or whose `(connector, action)` has a registered
+  handler, is a tool; everything else is an endpoint.
+
+### Built-in audit (29 Sep 2026)
+
+47 handlers are registered. The rule above sorts them:
+
+| Verdict | Handlers | Why |
+|---|---|---|
+| **Stays built-in** (Norm itself) | `norm.*`: create/list/update/run automated tasks, `manage_task`, `update_task_config`, `remember`, `recall_memory`, `search_tool_result`, `update_thread_summary`, `get_attachment`, `get_criteria`, `get_supplier_invoice_specs`, `get_workflow_mode`, `set_workflow_mode`, `set_override`, `read_playbook`, `resolve_dates`, `list_venues`, `show_connect`, `show_orders`, `show_roster`, `open_app`, `get_app`, `save_app`, `list_app_capabilities`; `norm_hr.*` (8, Norm's own hiring tables); `norm_reports.render_chart`; `norm_email.send_report_email` (Norm's own email); `loadedhub.edit_recipe` (opens Norm's recipe working document — misfiled under `loadedhub`) | Read or write Norm's database, config or LLM helpers only |
+| **Becomes a consolidator — wave 1** | `bamboohr.get_applicant_resume` | Calls BambooHR's `/files/{id}` directly with the API key |
+| **Becomes a consolidator — wave 2** | `gmail.send_email`, `microsoft_outlook.send_email` | Call Google and Microsoft Graph directly with the user's OAuth token |
+| **Becomes a consolidator — wave 3** | `norm.create_purchase_order` | Hybrid: reaches Loaded through endpoints via an embedded consolidator, then writes a Norm draft |
+| **Becomes a consolidator — last wave (invoice engine)** | `norm.match_stock_items`, `norm.match_supplier`, `norm.review_invoices`, `norm.sensei_train_supplier`, `norm.invoice_copy_evidence`, `norm.record_split_order` | Reach Loaded through `LoadedInvoiceClient`, a hand-written client that bypasses the endpoint rows; they sit inside the invoice review engine |
 
 ## The question
 

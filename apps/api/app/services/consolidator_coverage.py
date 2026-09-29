@@ -24,6 +24,7 @@ import pathlib
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
 
     connectors: list[dict] = []
     for spec in config_db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name):
-        tools = [t for t in (spec.tools or []) if isinstance(t, dict)]
+        tools = [t for t in spec_rows.rows(spec) if isinstance(t, dict)]
         if not tools:
             continue
         actions = {str(t.get("action")) for t in tools}

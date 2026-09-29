@@ -45,6 +45,7 @@ from app.agents.prompt_builder import (
 from app.config import settings
 from app.mcp.scopes import ACCESS_DRAFT, ACCESS_READ
 from app.mcp.ui_apps import ui_resource_for, ui_resource_for_playbook
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +280,7 @@ def raw_tool_defs(config_db: Session) -> dict[tuple[str, str], dict]:
 
     out: dict[tuple[str, str], dict] = {}
     for spec in config_db.query(ConnectionSpec).all():
-        for tool in spec.tools or []:
+        for tool in spec_rows.rows(spec):
             action = tool.get("action")
             if action:
                 out[(spec.connector_name, action)] = tool

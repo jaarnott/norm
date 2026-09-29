@@ -233,6 +233,7 @@ _SHAPE_KEYS = {
 
 
 def main(family: str | None = None) -> None:
+    from app.connectors import spec_rows
     from app.agents.internal_tools import execute_consolidator
     from app.db.config_models import ConnectionSpec
     from app.db.engine import SessionLocal, _ConfigSessionLocal
@@ -245,7 +246,7 @@ def main(family: str | None = None) -> None:
             .filter(ConnectionSpec.connector_name.in_(["loadedhub", "norm_reports"]))
             .all()
         ):
-            for t in spec.tools or []:
+            for t in spec_rows.rows(spec):
                 configs[(spec.connector_name, t.get("action"))] = t.get(
                     "consolidator_config"
                 )

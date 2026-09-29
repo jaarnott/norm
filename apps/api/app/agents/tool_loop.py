@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.orm import Session
 
 from app.db.models import Thread, Message, ToolCall
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -1185,7 +1186,7 @@ def _execute_tool_call(
 
     # Find the matching tool definition
     tool_def = None
-    for t in spec.tools or []:
+    for t in spec_rows.rows(spec):
         if t.get("action") == tc.action:
             tool_def = t
             break
@@ -2131,7 +2132,7 @@ def _find_tool_def(
     )
     if not spec:
         return None
-    for t in spec.tools or []:
+    for t in spec_rows.rows(spec):
         if t.get("action") == action:
             return t
     return None

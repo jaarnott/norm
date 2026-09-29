@@ -4,6 +4,7 @@ import datetime
 import logging
 
 from sqlalchemy.orm import Session
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +266,7 @@ def _collect_tools(
                 if cap.get("enabled", True)
             }
 
-        for tool in spec.tools or []:
+        for tool in spec_rows.rows(spec):
             action = tool.get("action", "")
             if enabled_actions is not None and action not in enabled_actions:
                 continue

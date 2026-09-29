@@ -26,6 +26,8 @@ sys.path.insert(0, ".")
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
+    from app.connectors import spec_rows
+
     from app.agents.prompt_builder import _ENGINE_AND_MCP_ONLY, _RETIRED_ACTIONS
     from app.db.config_models import ConnectionSpec
     from app.db.engine import SessionLocal, _ConfigSessionLocal
@@ -37,7 +39,7 @@ def main(dry_run: bool = False) -> None:
         known: set[str] = set()
         hidden: set[str] = set(_ENGINE_AND_MCP_ONLY) | set(_RETIRED_ACTIONS)
         for spec in cfg.query(ConnectionSpec).all():
-            for t in spec.tools or []:
+            for t in spec_rows.rows(spec):
                 if isinstance(t, dict) and t.get("action"):
                     known.add(t["action"])
                     if t.get("engine_only"):

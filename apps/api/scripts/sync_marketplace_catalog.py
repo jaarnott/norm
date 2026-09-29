@@ -535,6 +535,8 @@ def main() -> None:
 
     from sqlalchemy.orm.attributes import flag_modified
 
+    from app.connectors import spec_rows
+
     from app.db.config_models import (
         AgentConfig,
         AgentConnectionBinding,
@@ -554,7 +556,7 @@ def main() -> None:
         spec_names = {s.connector_name for s in all_specs}
         spec_actions = {
             s.connector_name: {
-                t.get("action") for t in s.tools or [] if isinstance(t, dict)
+                t.get("action") for t in spec_rows.rows(s) if isinstance(t, dict)
             }
             for s in all_specs
         }
@@ -700,7 +702,7 @@ def main() -> None:
             if not wanted:
                 continue
             changed = []
-            for t in spec.tools or []:
+            for t in spec_rows.rows(spec):
                 if not isinstance(t, dict) or t.get("engine_only"):
                     continue
                 if wanted == "*" or t.get("action") in wanted:
@@ -713,6 +715,8 @@ def main() -> None:
                 )
                 if not args.dry_run:
                     flag_modified(spec, "tools")
+                    if spec_rows.is_split(spec):
+                        flag_modified(spec, "endpoints")
                     spec.version = (spec.version or 0) + 1
 
         # ── …and out of every binding: a capability naming an engine-only
@@ -721,13 +725,13 @@ def main() -> None:
         hidden = {
             (s.connector_name, t.get("action"))
             for s in all_specs
-            for t in s.tools or []
+            for t in spec_rows.rows(s)
             if isinstance(t, dict) and t.get("engine_only")
         }
         for spec in all_specs:
             wanted = ENGINE_ONLY.get(spec.connector_name)
             if wanted:
-                for t in spec.tools or []:
+                for t in spec_rows.rows(spec):
                     if isinstance(t, dict) and (
                         wanted == "*" or t.get("action") in wanted
                     ):

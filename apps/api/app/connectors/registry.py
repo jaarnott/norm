@@ -3,6 +3,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.connectors.base import BaseConnector
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def resolve_connector(
         if not spec:
             continue
 
-        for op in spec.tools or []:
+        for op in spec_rows.rows(spec):
             if op.get("action") == action:
                 config_row = (
                     db.query(Connection)

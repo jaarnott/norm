@@ -54,6 +54,12 @@ class ConnectionSpec(ConfigBase):
     auth_config = Column(JSON, nullable=False, default=dict)
     base_url_template = Column(String)
     tools = Column(JSON, nullable=False, default=list)
+    # API endpoints — one raw call to an outside system each; building blocks
+    # for tools, never shown to an LLM. NULL means the connector has not been
+    # split yet and every row is still in ``tools``. Read both lists through
+    # app/connectors/spec_rows.py, never directly. Added by
+    # main._ensure_config_tables.
+    endpoints = Column(JSON, nullable=True)
     api_documentation = Column(Text)
     example_requests = Column(JSON, nullable=False, default=list)
     credential_fields = Column(JSON, nullable=False, default=list)
@@ -82,24 +88,24 @@ class AgentConfig(ConfigBase):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
-@event.listens_for(ConnectionSpec.tools, "set", retval=True)
-def _stamp_tool_added_at(target, value, oldvalue, initiator):
-    """Stamp ``added_at`` on tool entries NEW to this spec, at assignment.
+def _stamp_added_at(value, oldvalue, sibling):
+    """Stamp ``added_at`` on rows NEW to this spec, at assignment.
 
-    Every writer assigns ``spec.tools = tools`` (the sync scripts, the admin
-    editor, the MCP tool sync), so stamping here covers them all without a
-    call-site convention. Rules: an action not present before gets
-    ``added_at`` now; an action that already carried a stamp keeps it even
-    when the writer rebuilt the dict without one; an action that predates
-    stamping stays unstamped ("—" in the UI) rather than being given a
-    fabricated date. When the old value isn't loaded, nothing is stamped —
-    a skipped stamp beats a wrong one.
+    Every writer assigns ``spec.tools = …`` or ``spec.endpoints = …`` (the sync
+    scripts, the admin editor, the MCP tool sync), so stamping here covers them
+    all without a call-site convention. Rules: an action not present before —
+    in this list or its sibling — gets ``added_at`` now; an action that already
+    carried a stamp keeps it even when the writer rebuilt the dict without one;
+    an action that predates stamping stays unstamped ("—" in the UI) rather
+    than being given a fabricated date. When the old value isn't loaded,
+    nothing is stamped — a skipped stamp beats a wrong one.
     """
     if not isinstance(value, list) or not isinstance(oldvalue, list):
         return value
-    prev = {
-        t.get("action"): t for t in oldvalue if isinstance(t, dict) and t.get("action")
-    }
+    prev = {}
+    for t in list(sibling or []) + list(oldvalue):
+        if isinstance(t, dict) and t.get("action"):
+            prev[t.get("action")] = t
     now = datetime.now(timezone.utc).isoformat()
     out = []
     for t in value:
@@ -111,6 +117,47 @@ def _stamp_tool_added_at(target, value, oldvalue, initiator):
                 t = {**t, "added_at": old["added_at"]}
         out.append(t)
     return out
+
+
+@event.listens_for(ConnectionSpec.tools, "set", retval=True)
+def _on_tools_set(target, value, oldvalue, initiator):
+    """Stamp new rows; on a split connector, route endpoint rows to ``endpoints``.
+
+    Dozens of older sync scripts rebuild ``spec.tools`` with endpoints and
+    tools mixed together. Once a connector is split, an endpoint written into
+    ``tools`` is moved into ``endpoints`` here (replacing the row of the same
+    action), so those scripts stay correct without each being rewritten.
+    Only an edit of a loaded spec is routed — never construction, where the
+    caller put rows in the lists it meant.
+    """
+    from app.connectors import spec_rows
+
+    if spec_rows.is_moving():
+        return value
+    sibling = target.__dict__.get("endpoints")
+    value = _stamp_added_at(value, oldvalue, sibling)
+    if (
+        isinstance(sibling, list)
+        and isinstance(oldvalue, list)
+        and isinstance(value, list)
+    ):
+        keep, stray = spec_rows.partition(
+            target.connector_name, value, execution_mode=target.execution_mode
+        )
+        if stray:
+            target.endpoints = spec_rows.upsert(sibling, stray)
+            value = keep
+    return value
+
+
+@event.listens_for(ConnectionSpec.endpoints, "set", retval=True)
+def _on_endpoints_set(target, value, oldvalue, initiator):
+    """Stamp new endpoint rows (a row moving over from ``tools`` is not new)."""
+    from app.connectors import spec_rows
+
+    if spec_rows.is_moving():
+        return value
+    return _stamp_added_at(value, oldvalue, target.__dict__.get("tools"))
 
 
 class AgentConnectionBinding(ConfigBase):

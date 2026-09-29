@@ -15,6 +15,7 @@ from app.services.agent_config_service import (
     delete_connector_binding,
     get_all_capabilities_summary,
 )
+from app.connectors import spec_rows
 
 router = APIRouter()
 
@@ -72,8 +73,8 @@ def _agent_to_dict(
         bound_connector_names.add(connector_name)
         spec = specs_by_name.get(connector_name)
         caps = b["capabilities"]
-        if spec and spec.tools:
-            caps = _merge_capabilities(caps, spec.tools)
+        if spec and spec_rows.rows(spec):
+            caps = _merge_capabilities(caps, spec_rows.rows(spec))
         label = spec.display_name if spec else connector_name
         enriched_bindings.append(
             {
@@ -284,8 +285,8 @@ async def upsert_binding(
         .first()
     )
     caps = row.capabilities or []
-    if spec and spec.tools:
-        caps = _merge_capabilities(caps, spec.tools)
+    if spec and spec_rows.rows(spec):
+        caps = _merge_capabilities(caps, spec_rows.rows(spec))
     return {
         "connector_name": row.connector_name,
         "connector_label": spec.display_name if spec else row.connector_name,

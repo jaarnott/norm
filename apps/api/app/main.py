@@ -202,6 +202,9 @@ def _ensure_config_tables() -> None:
             # Apps v3 prompt consolidation: a team member's one-line
             # personality (tone only), used in the unified Norm prompt.
             ("agent_configs", "persona", "TEXT"),
+            # Sep 2026: API endpoints get their own list, separate from tools
+            # (app/connectors/spec_rows.py). NULL = connector not split yet.
+            ("connector_specs", "endpoints", "JSON"),
         ]
         with _config_engine.begin() as conn:
             have = {
@@ -209,7 +212,8 @@ def _ensure_config_tables() -> None:
                 for r in conn.execute(
                     _sqltext(
                         "SELECT table_name, column_name FROM information_schema.columns "
-                        "WHERE table_name IN ('supplier_spec_samples', 'agent_configs')"
+                        "WHERE table_name IN ('supplier_spec_samples', 'agent_configs', "
+                        "'connector_specs')"
                     )
                 )
             }

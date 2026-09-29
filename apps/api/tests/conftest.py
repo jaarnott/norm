@@ -135,6 +135,7 @@ def _setup_tables():
             "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS expected_replica JSON",
             "ALTER TABLE supplier_spec_samples ADD COLUMN IF NOT EXISTS draft BOOLEAN",
             "ALTER TABLE agent_configs ADD COLUMN IF NOT EXISTS persona TEXT",
+            "ALTER TABLE connector_specs ADD COLUMN IF NOT EXISTS endpoints JSON",
             # component_api_configs gained the field-mapping columns after the
             # table first shipped; a persistent local test DB needs them added.
             "ALTER TABLE component_api_configs "

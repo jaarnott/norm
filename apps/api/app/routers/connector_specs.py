@@ -12,6 +12,7 @@ from app.db.engine import get_db, get_config_db, get_config_db_rw, SessionLocal
 from app.db.models import ConnectionSpec, Connection, User
 from app.auth.dependencies import get_current_user, require_permission
 from app.services.models import agent_model
+from app.connectors import spec_rows
 
 router = APIRouter(prefix="/connector-specs", tags=["connector-specs"])
 
@@ -55,6 +56,8 @@ class ConnectorSpecCreate(BaseModel):
     auth_config: dict = {}
     base_url_template: str | None = None
     tools: list[dict] = []
+    # API endpoints (building blocks). Omit to create an unsplit connector.
+    endpoints: list[dict] | None = None
     api_documentation: str | None = None
     example_requests: list[dict] = []
     credential_fields: list[dict] = []
@@ -71,6 +74,7 @@ class ConnectorSpecUpdate(BaseModel):
     auth_config: dict | None = None
     base_url_template: str | None = None
     tools: list[dict] | None = None
+    endpoints: list[dict] | None = None
     api_documentation: str | None = None
     example_requests: list[dict] | None = None
     credential_fields: list[dict] | None = None
@@ -105,6 +109,9 @@ def _spec_to_dict(spec: ConnectionSpec) -> dict:
         "auth_config": spec.auth_config,
         "base_url_template": spec.base_url_template,
         "tools": spec.tools,
+        # None until the connector is split (see app/connectors/spec_rows.py);
+        # until then every row, endpoints included, is in "tools".
+        "endpoints": spec.endpoints,
         "api_documentation": spec.api_documentation,
         "example_requests": spec.example_requests,
         "credential_fields": spec.credential_fields,
@@ -171,6 +178,7 @@ async def create_spec(
         auth_config=body.auth_config,
         base_url_template=body.base_url_template,
         tools=body.tools,
+        endpoints=body.endpoints,
         api_documentation=body.api_documentation,
         example_requests=body.example_requests,
         credential_fields=body.credential_fields,
@@ -216,6 +224,19 @@ async def update_spec(
         raise HTTPException(404, f"Spec not found: {name}")
 
     update_data = body.model_dump(exclude_unset=True)
+    # Endpoints before tools: on a split connector the tools listener routes
+    # any endpoint row it is handed into ``endpoints``, so the explicit list
+    # must already be in place. An unsplit connector keeps ONE list — the
+    # move script is the only thing that splits one — so endpoints sent for
+    # it are folded back into ``tools``.
+    endpoints = update_data.pop("endpoints", None)
+    if endpoints is not None:
+        if spec_rows.is_split(spec):
+            spec.endpoints = endpoints
+        else:
+            update_data["tools"] = spec_rows.upsert(
+                update_data.get("tools", spec.tools), endpoints
+            )
     for key, value in update_data.items():
         setattr(spec, key, value)
 
@@ -267,18 +288,18 @@ async def dry_run(
 
     # Find tool
     operation = None
-    for op in spec.tools or []:
+    for op in spec_rows.rows(spec):
         if body.tool_action and op.get("action") == body.tool_action:
             operation = op
             break
     if operation is None and body.tool_action:
-        available = [op.get("action") for op in (spec.tools or [])]
+        available = [op.get("action") for op in spec_rows.rows(spec)]
         raise HTTPException(
             400,
             f"Tool '{body.tool_action}' not found. Save the spec first. Available: {available}",
         )
-    if operation is None and spec.tools:
-        operation = spec.tools[0]
+    if operation is None and spec_rows.rows(spec):
+        operation = spec_rows.rows(spec)[0]
     if operation is None:
         raise HTTPException(400, "No tools defined on this spec")
 
@@ -328,18 +349,18 @@ async def test_spec(
 
     # Find tool
     operation = None
-    for op in spec.tools or []:
+    for op in spec_rows.rows(spec):
         if body.tool_action and op.get("action") == body.tool_action:
             operation = op
             break
     if operation is None and body.tool_action:
-        available = [op.get("action") for op in (spec.tools or [])]
+        available = [op.get("action") for op in spec_rows.rows(spec)]
         raise HTTPException(
             400,
             f"Tool '{body.tool_action}' not found. Save the spec first. Available: {available}",
         )
-    if operation is None and spec.tools:
-        operation = spec.tools[0]
+    if operation is None and spec_rows.rows(spec):
+        operation = spec_rows.rows(spec)[0]
     if operation is None:
         raise HTTPException(400, "No tools defined on this spec")
 
@@ -499,7 +520,7 @@ async def sync_mcp_tools(
 
     # Merge: preserve manual overrides from existing tools
     existing_by_action = {
-        t["action"]: t for t in (spec.tools or []) if isinstance(t, dict)
+        t["action"]: t for t in spec_rows.rows(spec) if isinstance(t, dict)
     }
     preserve_keys = {
         "method",
@@ -515,8 +536,15 @@ async def sync_mcp_tools(
                 if key in existing:
                     tool[key] = existing[key]
 
-    spec.tools = new_tools
-    flag_modified(spec, "tools")
+    if spec_rows.is_split(spec):
+        # Discovered MCP functions are endpoints. Tools on this connector
+        # (consolidators wrapping them) are left exactly as they are — the
+        # old whole-list replace would have wiped them.
+        spec.endpoints = new_tools
+        flag_modified(spec, "endpoints")
+    else:
+        spec.tools = new_tools
+        flag_modified(spec, "tools")
     config_db.commit()
 
     return {
@@ -598,7 +626,7 @@ def _build_tools_context(config_db: Session) -> str:
     for spec in specs:
         if spec.execution_mode == "internal":
             continue
-        for t in spec.tools or []:
+        for t in spec_rows.rows(spec):
             tools_context.append(
                 f"- {spec.connector_name}.{t.get('action')} [{t.get('method', 'GET')}]: {t.get('description', '')}"
             )
@@ -1083,7 +1111,7 @@ def _build_connector_tools(db, config_db=None) -> list[dict]:
         if spec.execution_mode == "internal":
             continue
         configured_venues = venue_map.get(spec.connector_name, [])
-        for t in spec.tools or []:
+        for t in spec_rows.rows(spec):
             action = t.get("action", "")
             if not action:
                 continue
@@ -1394,7 +1422,7 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                             continue
 
                         tool_def = None
-                        for t in spec.tools or []:
+                        for t in spec_rows.rows(spec):
                             if t.get("action") == action:
                                 tool_def = t
                                 break

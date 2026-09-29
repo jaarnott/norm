@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, asdict
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -1017,13 +1018,13 @@ def validate_config(db=None, config_db=None) -> dict:
                 check_connector_tools(
                     spec.connector_name,
                     spec.execution_mode,
-                    spec.tools,
+                    spec_rows.rows(spec),
                     internal_actions,
                 )
             )
             actions_by_connector.setdefault(spec.connector_name, set())
             engine_only_by_connector.setdefault(spec.connector_name, set())
-            for tool in spec.tools or []:
+            for tool in spec_rows.rows(spec):
                 if isinstance(tool, dict) and tool.get("action"):
                     known_actions.add(tool["action"])
                     actions_by_connector[spec.connector_name].add(tool["action"])
@@ -1037,7 +1038,7 @@ def validate_config(db=None, config_db=None) -> dict:
         for spec in specs:
             issues.extend(
                 check_consolidator_write_actions(
-                    spec.connector_name, spec.tools, actions_by_connector
+                    spec.connector_name, spec_rows.rows(spec), actions_by_connector
                 )
             )
 
@@ -1096,7 +1097,7 @@ def validate_config(db=None, config_db=None) -> dict:
             for spec in specs:
                 issues.extend(
                     check_display_components(
-                        spec.connector_name, spec.tools, known_components
+                        spec.connector_name, spec_rows.rows(spec), known_components
                     )
                 )
             for capi in config_db.query(ComponentApiConfig).all():
@@ -1149,7 +1150,7 @@ def validate_config(db=None, config_db=None) -> dict:
 
         tool_def_by_key: dict = {}
         for spec in specs:
-            for tool in spec.tools or []:
+            for tool in spec_rows.rows(spec):
                 if isinstance(tool, dict) and tool.get("action"):
                     tool_def_by_key[(spec.connector_name, tool["action"])] = tool
         playbook_enabled_by_slug = {

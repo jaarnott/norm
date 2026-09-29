@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy.orm import Session
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class RecipeSaveError(Exception):
 
 
 def _op(spec, action: str) -> dict:
-    for t in spec.tools or []:
+    for t in spec_rows.rows(spec):
         if t.get("action") == action:
             return t
     raise RecipeSaveError(

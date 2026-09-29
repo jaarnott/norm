@@ -94,8 +94,12 @@ Only fire a real write when the side effect is understood and acceptable —
 token points at a **real** LoadedHub venue, not a sandbox.
 
 Environment notes: **testing** has no venues, so it cannot exercise connectors.
-**Production** has the data but you don't have its admin credentials. Local is
-the place to test.
+**Staging** gives its admin no organisation or venues either, so a chat there
+proves the plumbing only. **Production** has the data, and on `norm-dev` you can
+log into it: `TOKEN=$(norm-prod-token)` (see *Where secrets live*). Production
+is live: reads and chat questions are fine, but any write needs the user's
+go-ahead, and a chat you send appears in production's threads — say so when you
+report. Local is still the place to test writes.
 
 ## Quick Start
 
@@ -135,6 +139,22 @@ On `norm-dev`:
 - `dev.sh` is deliberately NOT auto-started on boot — it would make the
   idle-shutdown think the box is permanently busy.
 - Setup lives in `infra/terraform/dev-vm/` and can be rebuilt from it.
+
+## Endpoints and tools (the vocabulary)
+
+Use these words exactly; they are how the database is split (`connector_specs.endpoints` /
+`connector_specs.tools`). Full decision and the built-in audit: `docs/tool-architecture-strategy.md`.
+
+- **API endpoint** — one call to an outside system (an HTTP template, or one of Orbit's MCP
+  functions). A building block. **Never shown to an LLM**, and returns raw data (transformed
+  endpoints are retired).
+- **Tool** — the only thing an LLM sees. Either a **consolidator** (config Python over
+  endpoints) or a **built-in** (Norm code, `@register` in `app/agents/internal_tools.py`) —
+  and a built-in may only work on Norm itself; anything reaching an outside system is a
+  consolidator.
+- **Exposure** is the App Map: a tool reaches the agent or MCP only when an App claims it.
+- `app/connectors/spec_rows.py` is the one place that decides a row's kind and reads the two
+  lists — don't loop over `spec.tools` directly.
 
 ## Architecture
 
@@ -264,6 +284,38 @@ gcloud run services update norm-api-production \
 
 - All config in `apps/api/app/config.py` (Pydantic BaseSettings)
 - Secrets stored in GCP Secret Manager, injected as env vars to Cloud Run
+
+### Where secrets live
+
+| What | Where |
+|---|---|
+| Deployed app secrets (`DATABASE_URL`, API keys, …) | GCP Secret Manager in each environment's project, injected into Cloud Run as env vars |
+| System secrets shared by every environment | config DB `system_secrets` table, loaded at startup by `_load_system_secrets()` |
+| Local app settings | `.env` at the repo root (git-ignored; template `.env.example`) |
+| Logins and keys for agents on this machine | `.local/` at the repo root (git-ignored via `/.local/`, files `chmod 600`) |
+
+What `.local/` holds:
+
+- `norm-credentials.json` — Norm admin logins for production, staging and local.
+  `norm-prod-token [production|staging|local]` (in `~/.local/bin` on `norm-dev`)
+  logs in and prints a bearer token; production is the default.
+- `loadedhub-credentials.json` — LoadedHub browser and integration-test logins
+  (Loaded's test environment and production).
+- `orbit-supabase.json` — Orbit's Supabase service key and read-only Postgres URL.
+- `prod-db-readonly.json` — the `norm_ro` login on the **production** app
+  database. `norm-prod-psql` (in `~/.local/bin`) opens it through the 5435
+  proxy. **Reach for this first.** It holds SELECT only and every session
+  starts read-only, so a diagnosis cannot change live data; `CONNECTION
+  LIMIT 3` keeps it off the API's budget, because `max_connections` on
+  `norm-prod-db` is only 50 and the app's own pools already run close to it.
+  A production WRITE needs the `norm` password from `DATABASE_URL_DIRECT` in
+  Secret Manager — a separate, deliberate act that wants the user's go-ahead.
+
+`.local/` is per machine. It is in neither git nor Terraform, so a rebuilt box or
+a new Codespace starts without it: copy it across. On `norm-dev` it is
+`~/projects/norm/.local`; some older scripts still hardcode the Codespace path
+`/workspaces/norm/.local`. Never copy its values into the repo, memory, commits
+or logs.
 
 ### Centralized Config Database
 

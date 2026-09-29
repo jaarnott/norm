@@ -3,6 +3,7 @@
 from sqlalchemy.orm import Session
 
 from app.db.models import AgentConfig, AgentConnectionBinding
+from app.connectors import spec_rows
 
 
 def get_system_prompt(agent_slug: str, db: Session) -> str:
@@ -246,7 +247,7 @@ def _read_only_scope(apps, config_db: Session) -> list[str]:
     for spec in config_db.query(ConnectionSpec).filter(
         ConnectionSpec.connector_name.in_(connectors)
     ):
-        for t in spec.tools or []:
+        for t in spec_rows.rows(spec):
             if t.get("read_only") is True and t.get("action"):
                 read_only.add(f"{spec.connector_name}.{t['action']}")
     return sorted(

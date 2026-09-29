@@ -41,6 +41,7 @@ from app.mcp.ui_apps import (
     ui_resource_for_playbook,
 )
 from app.mcp.scopes import MCP_SCOPES
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ def list_capabilities(
     out: list[McpCapabilityOut] = []
 
     for spec in config_db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name):
-        for tool in spec.tools or []:
+        for tool in spec_rows.rows(spec):
             action = tool.get("action") or ""
             if not action:
                 continue
@@ -219,7 +220,7 @@ def upsert_capability(
                 status.HTTP_404_NOT_FOUND, f"No such connector: {body.target}"
             )
         tool_def = next(
-            (t for t in (spec.tools or []) if t.get("action") == action), None
+            (t for t in spec_rows.rows(spec) if t.get("action") == action), None
         )
         if not tool_def:
             raise HTTPException(

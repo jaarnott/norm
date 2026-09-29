@@ -12,6 +12,7 @@ import uuid
 from typing import Callable
 
 from sqlalchemy.orm import Session
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -3179,7 +3180,7 @@ def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> 
                 .filter(ConnectionSpec.connector_name == cn)
                 .first()
             )
-            for t in (spec.tools if spec else None) or []:
+            for t in spec_rows.rows(spec):
                 if not isinstance(t, dict) or not t.get("action"):
                     continue
                 actions.append(

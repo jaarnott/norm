@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from sqlalchemy.orm import Session
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +313,7 @@ def execute_function(
             raise ValueError(f"Connector not found: {connector}")
 
         tool_def = None
-        for t in spec.tools or []:
+        for t in spec_rows.rows(spec):
             if isinstance(t, dict) and t.get("action") == action:
                 tool_def = t
                 break

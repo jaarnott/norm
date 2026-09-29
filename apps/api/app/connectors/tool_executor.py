@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +82,12 @@ def execute_connector_tool(
 
     # 2. Find matching tool definition
     tool_def = None
-    for t in spec.tools or []:
+    for t in spec_rows.rows(spec):
         if t.get("action") == action:
             tool_def = t
             break
     if not tool_def:
-        available_actions = [t.get("action") for t in (spec.tools or [])]
+        available_actions = [t.get("action") for t in spec_rows.rows(spec)]
         return ToolResult(
             success=False,
             payload=None,
@@ -243,14 +244,14 @@ def get_tool_info(
         }
 
     tool_def = None
-    for t in spec.tools or []:
+    for t in spec_rows.rows(spec):
         if t.get("action") == action:
             tool_def = t
             break
     if not tool_def:
         return {
             "error": f"Action not found: {action}",
-            "available_actions": [t.get("action") for t in (spec.tools or [])],
+            "available_actions": [t.get("action") for t in spec_rows.rows(spec)],
         }
 
     accepted_params = []
@@ -296,7 +297,7 @@ def list_connector_tools(connector_name: str, config_db: Session) -> dict:
         }
 
     tools = []
-    for t in spec.tools or []:
+    for t in spec_rows.rows(spec):
         field_descs = t.get("field_descriptions") or {}
         required = t.get("required_fields") or []
         tools.append(

@@ -22,6 +22,7 @@ import logging
 import time
 
 from sqlalchemy.orm import Session
+from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +232,7 @@ class _CapabilityContext:
         }
         self.tool_defs: dict[str, dict] = {}
         for name, spec in self.specs.items():
-            for t in spec.tools or []:
+            for t in spec_rows.rows(spec):
                 if isinstance(t, dict) and t.get("action"):
                     self.tool_defs[f"{name}.{t['action']}"] = t
         self.labels: dict[str, str] = {}
@@ -588,7 +589,7 @@ def _agent_visible_tools(config_db: Session) -> set[str]:
             continue
         tools = {
             t["action"]: t
-            for t in spec.tools or []
+            for t in spec_rows.rows(spec)
             if isinstance(t, dict) and t.get("action")
         }
         caps = b.capabilities or []
