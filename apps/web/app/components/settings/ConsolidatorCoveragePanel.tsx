@@ -4,38 +4,42 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 
 /**
- * The consolidator-migration dashboard — fully DERIVED from the config DB,
- * agent bindings, MCP capability rows and tool_calls usage. Nothing here is
- * a checkbox: a tool is "done" because the config says it's a consolidator
- * and its raw twin is demoted, never because someone ticked it.
+ * Tools and API endpoints — fully DERIVED from the config DB, the App Map,
+ * MCP capability rows, the consolidators' own code and tool_calls usage.
+ * Nothing here is a checkbox.
  *
- * Lifecycle per action: raw → consolidator exists (raw twin still exposed =
- * a LEAK, listed in red) → raw twin demoted (Backend) → done.
+ * Sep 2026 rule (docs/tool-architecture-strategy.md): an LLM only ever sees
+ * TOOLS — consolidators and built-ins. API ENDPOINTS are building blocks. A
+ * LEAK is an endpoint an LLM can still reach (an App claims it, or it is
+ * enabled on MCP); "done" is zero leaks.
  */
 
-interface ToolRow {
+interface Row {
   action: string;
-  status: 'consolidator' | 'backend' | 'raw';
+  status: 'consolidator' | 'built-in' | 'endpoint';
+  kind: 'tool' | 'endpoint';
   added_at?: string | null;
   calls_30d: number;
-  agents: string[];
+  app: string | null;
   mcp: boolean;
+  used_by: string[];
   superseded_by?: string | null;
   leak: boolean;
 }
 
 interface ConnectorRow {
   connector: string;
-  counts: { consolidator: number; backend: number; raw: number };
-  leaks: ToolRow[];
-  backlog: ToolRow[];
+  split: boolean;
+  counts: { consolidator: number; 'built-in': number; endpoint: number };
+  leaks: Row[];
+  unused: Row[];
   drift: { action: string; state: string }[];
-  tools: ToolRow[];
+  tools: Row[];
 }
 
 interface Coverage {
   window_days: number;
-  totals: { consolidator: number; backend: number; raw: number; leaks: number };
+  totals: { consolidator: number; 'built-in': number; endpoint: number; leaks: number };
   connectors: ConnectorRow[];
 }
 
@@ -74,31 +78,32 @@ export default function ConsolidatorCoveragePanel() {
   return (
     <div style={{ borderTop: '1px solid #e8e4de', marginTop: '2rem', paddingTop: '1.5rem' }}>
       <h3 style={{ margin: '0 0 4px', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        Consolidator coverage
+        Tools and endpoints
       </h3>
       <div style={{ fontSize: '0.74rem', color: '#777', marginBottom: 10, maxWidth: 760 }}>
-        The migration to fewer, richer tools — derived live from the config, the agent bindings and the
-        last {data.window_days} days of real usage. A <strong>leak</strong> is a raw tool that already has a
-        consolidator but is still offered to agents.
+        An LLM only ever sees <strong>tools</strong> — consolidators and built-ins. <strong>API endpoints</strong> are
+        the building blocks tools are made from. A <strong>leak</strong> is an endpoint an LLM can still reach: an App
+        claims it, or it is enabled on MCP. Derived live from the config and the last {data.window_days} days of usage.
       </div>
 
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.8rem', marginBottom: 10 }}>
         <span><strong style={{ color: '#7c3aed' }}>{t.consolidator}</strong> consolidators</span>
-        <span><strong style={{ color: '#92400e' }}>{t.backend}</strong> demoted backends</span>
-        <span><strong style={{ color: '#666' }}>{t.raw}</strong> raw remaining</span>
+        <span><strong style={{ color: '#0f766e' }}>{t['built-in']}</strong> built-ins</span>
+        <span><strong style={{ color: '#666' }}>{t.endpoint}</strong> API endpoints</span>
         <span><strong style={{ color: t.leaks ? '#c0392b' : '#065f46' }}>{t.leaks}</strong> leaks</span>
       </div>
 
       {withLeaks.length > 0 && (
         <>
-          <div style={label}>Leaks — converted but still exposed</div>
+          <div style={label}>Leaks — endpoints an LLM can reach</div>
           {withLeaks.flatMap(c => c.leaks.map(l => (
             <div key={`${c.connector}.${l.action}`} style={row}>
-              <span style={{ width: 260, fontFamily: 'monospace', fontSize: '0.72rem', color: '#c0392b' }}>
+              <span style={{ width: 300, fontFamily: 'monospace', fontSize: '0.72rem', color: '#c0392b' }}>
                 {c.connector}.{l.action}
               </span>
               <span style={{ flex: 1, color: '#777' }}>
-                use <strong>{l.superseded_by}</strong> · offered to {l.agents.join(', ') || 'MCP only'}
+                {[l.app ? `claimed by the ${l.app} App` : '', l.mcp ? 'enabled on MCP' : ''].filter(Boolean).join(' · ')}
+                {l.superseded_by ? <> · use <strong>{l.superseded_by}</strong></> : null}
               </span>
               <span style={{ width: 90, textAlign: 'right', color: '#999' }}>{l.calls_30d} calls</span>
             </div>
@@ -128,23 +133,26 @@ export default function ConsolidatorCoveragePanel() {
       {data.connectors.map(c => (
         <div key={c.connector}>
           <div
-            style={{ ...row, cursor: 'pointer' }}
+            style={{ ...row, cursor: c.unused.length ? 'pointer' : 'default' }}
             onClick={() => setOpen(open === c.connector ? null : c.connector)}
           >
             <span style={{ width: 180, fontWeight: 600 }}>{c.connector}</span>
             <span style={{ flex: 1, color: '#777' }}>
-              {c.counts.consolidator} consolidated · {c.counts.backend} backend · {c.counts.raw} raw
+              {c.counts.consolidator} consolidators · {c.counts['built-in']} built-ins · {c.counts.endpoint} endpoints
+              {!c.split && <span style={{ color: '#92400e' }}> · not split yet</span>}
               {c.leaks.length > 0 && <span style={{ color: '#c0392b' }}> · {c.leaks.length} leaks</span>}
             </span>
-            <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{open === c.connector ? 'hide' : 'backlog'}</span>
-          </div>
-          {open === c.connector && c.backlog.slice(0, 15).map(b => (
-            <div key={b.action} style={{ ...row, paddingLeft: 28, background: '#fbfaf8' }}>
-              <span style={{ width: 260, fontFamily: 'monospace', fontSize: '0.72rem' }}>{b.action}</span>
-              <span style={{ flex: 1, color: '#999' }}>
-                {b.agents.length ? `agents: ${b.agents.join(', ')}` : 'not agent-exposed'}
+            {c.unused.length > 0 && (
+              <span style={{ color: '#aaa', fontSize: '0.7rem' }}>
+                {open === c.connector ? 'hide' : `${c.unused.length} unused endpoints`}
               </span>
-              <span style={{ width: 90, textAlign: 'right', color: '#999' }}>{b.calls_30d} calls</span>
+            )}
+          </div>
+          {open === c.connector && c.unused.slice(0, 30).map(u => (
+            <div key={u.action} style={{ ...row, paddingLeft: 28, background: '#fbfaf8' }}>
+              <span style={{ width: 300, fontFamily: 'monospace', fontSize: '0.72rem' }}>{u.action}</span>
+              <span style={{ flex: 1, color: '#999' }}>no tool calls it</span>
+              <span style={{ width: 90, textAlign: 'right', color: '#999' }}>{u.calls_30d} calls</span>
             </div>
           ))}
         </div>

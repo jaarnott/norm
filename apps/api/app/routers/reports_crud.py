@@ -113,6 +113,69 @@ def _venue_for_dates(db, venue_id: str | None):
     return db.query(Venue).filter(Venue.id == venue_id).first()
 
 
+def _rows_from_payload(payload, script: dict) -> list:
+    """The rows a chart plots, out of one tool result.
+
+    A tool (consolidator) returns a document — ``{"rows": [...], "totals": …,
+    "window": …}`` — so a chart names the list it plots in ``script["rows"]``
+    (a dotted path: "rows", "jobs", "days"). Without one, the old behaviour
+    for a raw endpoint's payload: a list as-is, anything else as one row.
+    """
+    path = (script or {}).get("rows")
+    if path:
+        cur = payload
+        for part in str(path).split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        return [r for r in cur if isinstance(r, dict)] if isinstance(cur, list) else []
+    return payload if isinstance(payload, list) else [payload]
+
+
+def _apply_global_dates(resolved: dict, gf: dict) -> dict:
+    """A dashboard's date filter onto one chart's params.
+
+    Tools take a plain-English ``period``; a window the viewer picked replaces
+    it with start/end, confirmed — the viewer chose those times. Charts still
+    carrying explicit date keys get them overwritten, as before.
+    """
+    if gf.get("start") and gf.get("end") and "period" in resolved:
+        resolved.pop("period")
+        resolved["start"] = gf["start"]
+        resolved["end"] = gf["end"]
+        resolved["confirmed_by_user"] = True
+        return resolved
+    if gf.get("start"):
+        for k in ("start_datetime", "start", "start_time", "from_date", "from"):
+            if k in resolved:
+                resolved[k] = gf["start"]
+    if gf.get("end"):
+        for k in ("end_datetime", "end", "end_time", "to_date", "to"):
+            if k in resolved:
+                resolved[k] = gf["end"]
+    return resolved
+
+
+def _require_tool(script: dict | None, config_db: Session) -> None:
+    """A saved chart may only call a TOOL (Sep 2026 — the same rule as the
+    agent's; docs/tool-architecture-strategy.md). Endpoints are building blocks:
+    their payloads are raw, unshaped and change with the API."""
+    if not script or not script.get("action"):
+        return
+    from app.connectors import spec_rows
+    from app.db.config_models import ConnectionSpec
+
+    spec = (
+        config_db.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == script.get("connector"))
+        .first()
+    )
+    if spec is None or spec_rows.find_tool(spec, script["action"]) is None:
+        raise HTTPException(
+            400,
+            f"A chart must call a tool, not an API endpoint: "
+            f"{script.get('connector')}.{script['action']} is not a tool.",
+        )
+
+
 def _resolve_date_placeholders(params: dict, venue=None) -> dict:
     """Replace placeholder strings with actual timestamps.
 
@@ -287,15 +350,29 @@ async def instantiate_template(
     db.add(report)
     db.flush()
 
+    from app.services.chart_tools import to_tool_chart
+
     layout = []
     for chart_def in tmpl.charts or []:
+        title = chart_def["title"]
+        chart_type = chart_def["chart_type"]
+        chart_spec = chart_def.get("chart_spec", {})
+        script = chart_def.get("script", {})
+        # A template written before Sep 2026 may name a raw endpoint; build the
+        # chart on the tool that answers the same question instead.
+        try:
+            _require_tool(script, config_db)
+        except HTTPException:
+            mapped = to_tool_chart(title, chart_type, script, chart_spec)
+            if isinstance(mapped, tuple):
+                title, chart_type, script, chart_spec, _note = mapped
         chart = ReportChart(
             report_id=report.id,
-            title=chart_def["title"],
-            chart_type=chart_def["chart_type"],
-            chart_spec=chart_def.get("chart_spec", {}),
+            title=title,
+            chart_type=chart_type,
+            chart_spec=chart_spec,
             data=chart_def.get("data", []),
-            script=chart_def.get("script", {}),
+            script=script,
             position=len(layout),
         )
         db.add(chart)
@@ -412,11 +489,13 @@ async def add_chart(
     report_id: str,
     body: AddChartBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(404, "Report not found")
+    _require_tool(body.script, config_db)
 
     position = len(report.charts)
     chart = ReportChart(
@@ -463,8 +542,11 @@ async def update_chart(
     chart_id: str,
     body: UpdateChartBody,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
+    if body.script is not None:
+        _require_tool(body.script, config_db)
     chart = (
         db.query(ReportChart)
         .filter(
@@ -568,15 +650,7 @@ async def refresh_report(
     def _resolve_params(params: dict) -> dict:
         """Resolve date placeholders and merge global date filters."""
         resolved = _resolve_date_placeholders(params, venue=date_venue)
-        if gf.get("start"):
-            for k in ("start_datetime", "start", "start_time", "from_date", "from"):
-                if k in resolved:
-                    resolved[k] = gf["start"]
-        if gf.get("end"):
-            for k in ("end_datetime", "end", "end_time", "to_date", "to"):
-                if k in resolved:
-                    resolved[k] = gf["end"]
-        return resolved
+        return _apply_global_dates(resolved, gf)
 
     debug_info: list[dict] = []
 
@@ -638,6 +712,7 @@ async def refresh_report(
                         db=_db,
                         config_db=_cdb,
                         venue_id=vid,
+                        strict_venue=True,
                     )
                 finally:
                     _db.close()
@@ -657,6 +732,7 @@ async def refresh_report(
                             db=db,
                             config_db=config_db,
                             venue_id=venue_ids[0],
+                            strict_venue=True,
                         ),
                     )
                 ]
@@ -668,11 +744,7 @@ async def refresh_report(
 
                 if tool_result.success and tool_result.payload:
                     any_success = True
-                    rows = (
-                        tool_result.payload
-                        if isinstance(tool_result.payload, list)
-                        else [tool_result.payload]
-                    )
+                    rows = _rows_from_payload(tool_result.payload, script)
                     # Always tag rows with venue name for multi-venue queries
                     if not venue_id and len(venue_ids) > 1:
                         from app.db.models import Venue
@@ -753,15 +825,9 @@ def refresh_single_chart(
     date_venue = _venue_for_dates(db, venue_id_for_day)
 
     raw_params = script.get("params", {})
-    resolved = _resolve_date_placeholders(raw_params, venue=date_venue)
-    if gf.get("start"):
-        for k in ("start_datetime", "start", "start_time", "from_date", "from"):
-            if k in resolved:
-                resolved[k] = gf["start"]
-    if gf.get("end"):
-        for k in ("end_datetime", "end", "end_time", "to_date", "to"):
-            if k in resolved:
-                resolved[k] = gf["end"]
+    resolved = _apply_global_dates(
+        _resolve_date_placeholders(raw_params, venue=date_venue), gf
+    )
 
     # Resolve venue
     if gf_venue == "__all__":
@@ -799,15 +865,12 @@ def refresh_single_chart(
             db=db,
             config_db=config_db,
             venue_id=vid,
+            strict_venue=True,
         )
 
         if tool_result.success and tool_result.payload:
             any_success = True
-            rows = (
-                tool_result.payload
-                if isinstance(tool_result.payload, list)
-                else [tool_result.payload]
-            )
+            rows = _rows_from_payload(tool_result.payload, script)
             if not venue_id and len(venue_ids) > 1:
                 from app.db.models import Venue
 
@@ -1076,6 +1139,7 @@ async def test_chart_script(
             db=db,
             config_db=config_db,
             venue_id=vid,
+            strict_venue=True,
         )
         # Resolve venue name
         venue_name = vid
@@ -1102,11 +1166,7 @@ async def test_chart_script(
 
         if tool_result.success and tool_result.payload:
             any_success = True
-            rows = (
-                tool_result.payload
-                if isinstance(tool_result.payload, list)
-                else [tool_result.payload]
-            )
+            rows = _rows_from_payload(tool_result.payload, script)
             # Tag rows with venue name when querying multiple venues
             if len(venue_ids) > 1 and venue_name:
                 for row in rows:

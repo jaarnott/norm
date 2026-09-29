@@ -30,7 +30,11 @@
 # venue-aware trading calendar; explicit start/end stay the exact-times
 # path behind the trading-day confirmation gate.
 #
-# Requires consolidator_config: {"max_api_calls": 12}
+# Requires consolidator_config: {"max_api_calls": 20}
+# (venues='all' fans out 2 calls per venue — roster + timeclock — plus
+# list_venues and resolve_dates: 14 for six venues. 12 failed every
+# group-wide attendance question with "Too many API calls" — found 29 Sep
+# 2026. 20 leaves room for nine venues.)
 
 _CONSUMED = (
     "period",

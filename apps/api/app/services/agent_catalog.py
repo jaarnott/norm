@@ -246,19 +246,18 @@ class _CapabilityContext:
         self.playbooks = {pb.slug: pb for pb in config_db.query(Playbook).all()}
 
     def tool(self, key: str) -> dict:
-        from app.services.consolidator_coverage import _classify
-
         conn, _, action = key.partition(".")
         t = self.tool_defs.get(key, {})
         spec = self.specs.get(conn)
-        if t.get("consolidator_config"):
-            kind = _classify(t)  # consolidator (or a demoted backend)
-        elif (conn, action) in self.handlers or (spec and spec.auth_type == "none"):
-            kind = "norm function"
-        elif spec and spec.execution_mode == "mcp":
-            kind = "CB tool"
-        else:
-            kind = "raw"
+        # Sep 2026 vocabulary (app/connectors/spec_rows.py): a claim should
+        # name a consolidator or a built-in; an "endpoint" here is a finding.
+        kind = (
+            spec_rows.build_of(
+                conn, t, execution_mode=spec.execution_mode if spec else None
+            )
+            if t
+            else "missing"
+        )
         method = str(t.get("method") or "GET").upper()
         return {
             "key": key,

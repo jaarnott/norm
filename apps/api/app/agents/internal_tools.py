@@ -1086,7 +1086,7 @@ def _render_chart(params: dict, db: Session, thread_id: str | None) -> dict:
     # The result_payload is already transformed (transforms are applied during
     # tool execution in the tool loop) — do NOT re-apply transforms here.
     payload = tc.result_payload
-    rows = _find_data_array(payload)
+    rows_path, rows = _find_data_path(payload)
 
     # Build replayable script from the source tool call
     script = {
@@ -1094,6 +1094,9 @@ def _render_chart(params: dict, db: Session, thread_id: str | None) -> dict:
         "action": tc.action,
         "params": tc.input_params or {},
     }
+    if rows_path:
+        # A tool returns a document; the refresh must plot the same list.
+        script["rows"] = rows_path
 
     # Filter to selected fields only (handle JSON string or list)
     select_fields = params.get("select_fields")
@@ -1186,21 +1189,41 @@ def _render_chart(params: dict, db: Session, thread_id: str | None) -> dict:
     }
 
 
-def _find_data_array(payload):
-    """Extract the primary data array from a tool result payload."""
+# Where a tool result keeps its rows. Tools (consolidators) return a document
+# — {"rows": [...], "totals": …, "window": …}, or a named list such as "jobs"
+# or "days" — where raw endpoints returned a bare list or {"data": [...]}.
+_DATA_KEYS = ("rows", "data", "items", "lines", "results", "jobs", "days")
+
+
+def _find_data_path(payload) -> tuple[str | None, list | None]:
+    """``(path, rows)``: the primary data array of a tool result, and the dotted
+    path to it (None when the payload IS the list). A chart saves the path as
+    ``script["rows"]`` so a refresh plots the same list (reports_crud)."""
     if isinstance(payload, list):
-        return payload
+        return None, payload
     if isinstance(payload, dict):
-        for key in ("data", "items", "lines", "results"):
+        for key in _DATA_KEYS:
             val = payload.get(key)
             if isinstance(val, list):
-                return val
+                return key, val
             if key == "data" and isinstance(val, dict):
-                for inner in ("items", "lines", "results", "data"):
+                for inner in ("rows", "items", "lines", "results", "data"):
                     inner_val = val.get(inner)
                     if isinstance(inner_val, list):
-                        return inner_val
-    return None
+                        return f"data.{inner}", inner_val
+        for key, val in payload.items():
+            if (
+                isinstance(val, list)
+                and val
+                and all(isinstance(x, dict) for x in val[:5])
+            ):
+                return key, val
+    return None, None
+
+
+def _find_data_array(payload):
+    """Extract the primary data array from a tool result payload."""
+    return _find_data_path(payload)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -2044,6 +2067,30 @@ def _resolve_stock_items(
     return resolved, ambiguous, failed
 
 
+# How create_purchase_order shapes the two stock-item endpoints it reads (the
+# response_transforms those endpoints carried until Sep 2026, when shaping
+# moved into the callers): live items only, and only the fields name/code
+# matching uses.
+_LIVE_ONLY = [{"field": "datestampRemoved", "operator": "is_empty", "value": ""}]
+_STOCK_ITEM_LIST_SHAPES = {
+    "loadedhub.get_stock_items_raw": {
+        "enabled": True,
+        "fields": {
+            "id": "id",
+            "groupId": "groupId",
+            "groupName": "groupName",
+            "name": "name",
+        },
+        "filters": _LIVE_ONLY,
+    },
+    "loadedhub.get_stock_items_with_codes": {
+        "enabled": True,
+        "fields": {"id": "id", "name": "name", "suppliers": "suppliers"},
+        "filters": _LIVE_ONLY,
+    },
+}
+
+
 @register("norm", "create_purchase_order")
 def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> dict:
     """Create a purchase order with items resolved by name.
@@ -2095,7 +2142,13 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
                 "    return []\n"
             )
             result = execute_function(
-                fetch_code, {"venue": venue, "actions": actions}, db, thread_id
+                fetch_code,
+                {"venue": venue, "actions": actions},
+                db,
+                thread_id,
+                # Endpoints return raw data (Sep 2026): shape the two stock
+                # lists here — live items only, just the fields matching needs.
+                options={"shapes": _STOCK_ITEM_LIST_SHAPES},
             )
             raw = result.get("data", [])
             if isinstance(raw, list):

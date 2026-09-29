@@ -1,0 +1,693 @@
+{
+ "loadedhub.calculate_template_stock_requirements": {
+  "loadedhub.get_received_invoices": {
+   "enabled": true,
+   "fields": {
+    "createdBy": "",
+    "creditRequest": "creditRequest",
+    "fileId": "",
+    "freight": "freight",
+    "id": "id",
+    "invoiceNumber": "invoiceNumber",
+    "invoicedAt": "invoicedAt",
+    "lines[].brandId": "",
+    "lines[].brandName": "",
+    "lines[].id": "",
+    "lines[].itemCategory.externalAccountCode": "",
+    "lines[].itemCategory.id": "",
+    "lines[].itemCategory.name": "Category",
+    "lines[].itemCategory.subcategories": "",
+    "lines[].itemCode": "StockVariantCode",
+    "lines[].itemId": "StockItemId",
+    "lines[].quantityOrdered": "",
+    "lines[].quantityReceived": "quantityReceived",
+    "lines[].saleTaxRate": "saleTaxRate",
+    "lines[].unitCost": "unitCost",
+    "lines[].unitId": "",
+    "lines[].unitName": "unitName",
+    "lines[].unitRatio": "unitRatio",
+    "orderedAt": "",
+    "orderedBy": "orderedBy",
+    "purchaseOrderNumber": "",
+    "receivedAt": "receivedAt",
+    "reconciled": "",
+    "statementId": "",
+    "subtotal": "subtotal",
+    "supplierId": "supplierId",
+    "supplierName": "supplierName",
+    "thirdPartyInvoiceId": "",
+    "total": "total",
+    "type": "type"
+   },
+   "flatten": []
+  },
+  "loadedhub.get_sales_data": {
+   "enabled": true,
+   "fields": {
+    "count": "",
+    "discounts": "",
+    "invoices": "amount|round:0",
+    "invoicesTax": "",
+    "period": "",
+    "quantity": "",
+    "startTime": "startTime|tz|dow",
+    "surcharges": ""
+   }
+  },
+  "loadedhub.get_stock_item_minimums": {
+   "enabled": true,
+   "fields": {
+    "countingUnitRatio": "countingUnitRatio",
+    "id": "id",
+    "minimumStockOnHandQuantity": "minQty",
+    "minimumStockOnHandUnit.ratio": "minUnitRatio",
+    "name": "itemName"
+   },
+   "filters": [
+    {
+     "field": "datestampRemoved",
+     "operator": "is_empty",
+     "value": ""
+    }
+   ],
+   "flatten": []
+  },
+  "loadedhub.get_stock_on_hand": {
+   "enabled": true,
+   "fields": {
+    "calculatedUsage": "",
+    "countingUnitId": "",
+    "countingUnitName": "countingUnitName",
+    "countingUnitRatio": "countingUnitRatio",
+    "header": "Category",
+    "isItemDeleted": "isItemDeleted",
+    "itemId": "stockItemID",
+    "itemName": "itemName",
+    "lastPrice.at": "",
+    "lastPrice.cost": "",
+    "lastPrice.documentId": "",
+    "lastPrice.documentNumber": "",
+    "lastPrice.documentReceivedAt": "",
+    "lastPrice.documentType": "",
+    "lastPrice.id": "",
+    "lastPrice.salesTaxRate": "",
+    "lastPrice.unitId": "",
+    "lastPrice.unitName": "",
+    "lastPrice.unitRatio": "",
+    "minimumStockOnHandQuantity": "",
+    "minimumStockOnHandUnitId": "",
+    "quantityOnHand": "quantityOnHand",
+    "receivedQuantity": "",
+    "sortOrder": "",
+    "stockReceivedLines": "",
+    "stockUsages[].endTime": "",
+    "stockUsages[].posItemLinkPortion": "",
+    "stockUsages[].posItemLinkQuantity": "",
+    "stockUsages[].posItemLinkUnitRatio": "",
+    "stockUsages[].posItemName": "",
+    "stockUsages[].posItemPosIdentifier": "",
+    "stockUsages[].posOrdered": "",
+    "stockUsages[].posWasted": "",
+    "stockUsages[].startTime": "",
+    "stocktakeCompletedAt": "",
+    "stocktakeId": "",
+    "stocktakeQuantity": "",
+    "stocktakeTitle": "",
+    "stocktakeUnitId": "",
+    "stocktakeUnitName": "",
+    "stocktakeUnitRatio": "",
+    "usedQuantity": "",
+    "valueOnHand": "valueOnHand"
+   }
+  },
+  "loadedhub.get_stock_units": {
+   "enabled": true,
+   "fields": {
+    "datestampDeleted": "datestampDeleted",
+    "id": "id",
+    "masterId": "masterId",
+    "name": "name",
+    "ratio": "ratio",
+    "stockUnitType": "stockUnitType"
+   },
+   "filters": [],
+   "flatten": []
+  }
+ },
+ "loadedhub.get_cogs_detail_for_period": {
+  "loadedhub.get_cogs_detail": {
+   "enabled": true,
+   "fields": {
+    "cost": "cost|round:2",
+    "discounts": "discounts|round:2",
+    "posItemCategoryName": "category",
+    "posItemGroupName": "group",
+    "posItemName": "product",
+    "quantitySold": "quantity",
+    "salesExcludeTax": "revenue|round:2"
+   }
+  }
+ },
+ "loadedhub.get_labour": {
+  "loadedhub.get_roster": {
+   "enabled": true,
+   "fields": {
+    "datestampCreated": "",
+    "datestampDeleted": "",
+    "datestampLocked": "",
+    "datestampModified": "",
+    "datestampPublished": "",
+    "endDateTime": "endDateTime",
+    "id": "id",
+    "rosteredShifts[].adjustedHourlyRate": "",
+    "rosteredShifts[].adjustedHourlyRatePrecise": "adjustedHourlyRatePrecise",
+    "rosteredShifts[].breaks[].breakEnd": "breakEnd",
+    "rosteredShifts[].breaks[].breakStart": "breakStart",
+    "rosteredShifts[].breaks[].createdAt": "",
+    "rosteredShifts[].breaks[].deletedAt": "deletedAt",
+    "rosteredShifts[].breaks[].id": "",
+    "rosteredShifts[].breaks[].paid": "paid",
+    "rosteredShifts[].breaks[].shiftId": "shiftId",
+    "rosteredShifts[].breaks[].type": "",
+    "rosteredShifts[].clockinTime": "clockinTime",
+    "rosteredShifts[].clockoutTime": "clockoutTime",
+    "rosteredShifts[].datestampCreated": "",
+    "rosteredShifts[].datestampDeleted": "",
+    "rosteredShifts[].datestampModified": "",
+    "rosteredShifts[].hourlyRate": "",
+    "rosteredShifts[].id": "",
+    "rosteredShifts[].isFinalised": "",
+    "rosteredShifts[].isFromOtherVenue": "",
+    "rosteredShifts[].jobs": "jobs",
+    "rosteredShifts[].payRateBreakdown[].hoursWorked": "",
+    "rosteredShifts[].payRateBreakdown[].includeInPayrollExport": "",
+    "rosteredShifts[].payRateBreakdown[].isOrdinaryPay": "",
+    "rosteredShifts[].payRateBreakdown[].order": "",
+    "rosteredShifts[].payRateBreakdown[].payRate": "",
+    "rosteredShifts[].payRateBreakdown[].periodEnd": "",
+    "rosteredShifts[].payRateBreakdown[].periodStart": "",
+    "rosteredShifts[].payRateBreakdown[].title": "",
+    "rosteredShifts[].payRateBreakdown[].total": "",
+    "rosteredShifts[].posIdentifier": "",
+    "rosteredShifts[].remunerationType": "remunerationType",
+    "rosteredShifts[].roleId": "",
+    "rosteredShifts[].roleName": "roleName",
+    "rosteredShifts[].rosterId": "",
+    "rosteredShifts[].rules[].actions": "",
+    "rosteredShifts[].rules[].appliedTimePeriods[].from": "",
+    "rosteredShifts[].rules[].appliedTimePeriods[].to": "",
+    "rosteredShifts[].rules[].endTime": "endTime",
+    "rosteredShifts[].rules[].id": "",
+    "rosteredShifts[].rules[].packageId": "",
+    "rosteredShifts[].rules[].processedRuleCost": "processedRuleCost",
+    "rosteredShifts[].rules[].processedTotalHours": "processedTotalHours",
+    "rosteredShifts[].rules[].rosterId": "",
+    "rosteredShifts[].rules[].roundUpHours": "",
+    "rosteredShifts[].rules[].ruleId": "",
+    "rosteredShifts[].rules[].ruleName": "ruleName",
+    "rosteredShifts[].rules[].ruleRate": "ruleRate",
+    "rosteredShifts[].rules[].ruleType": "ruleType",
+    "rosteredShifts[].rules[].source": "",
+    "rosteredShifts[].rules[].startTime": "startTime",
+    "rosteredShifts[].rules[].totalHours": "",
+    "rosteredShifts[].rules[].totalPaidHours": "totalPaidHours",
+    "rosteredShifts[].showOnFinancialReports": "",
+    "rosteredShifts[].staffMemberDatestampDeleted": "",
+    "rosteredShifts[].staffMemberFirstName": "staffMemberFirstName",
+    "rosteredShifts[].staffMemberId": "staffMemberId",
+    "rosteredShifts[].staffMemberLastName": "staffMemberLastName",
+    "rosteredShifts[].staffMemberPayCode": "",
+    "rosteredShifts[].staffMemberShowInRoster": "",
+    "rosteredShifts[].totalCost": "totalCost",
+    "rosteredShifts[].totalHours": "totalHours",
+    "rosteredShifts[].type": "",
+    "rosteredShifts[].venueFullName": "",
+    "rosteredShifts[].venueId": "",
+    "rosteredShifts[].venueShortName": "",
+    "startDateTime": "startDateTime",
+    "templateName": "",
+    "totalHours": "totalHours"
+   },
+   "filters": [
+    {
+     "field": "datestampDeleted",
+     "operator": "is_empty",
+     "value": ""
+    },
+    {
+     "field": "rosteredShifts[].datestampDeleted",
+     "operator": "is_empty",
+     "value": ""
+    },
+    {
+     "field": "rosteredShifts[].isFromOtherVenue",
+     "operator": "equals",
+     "value": "false"
+    }
+   ],
+   "recompute": [
+    {
+     "field": "totalHours",
+     "from": "rosteredShifts[].totalHours",
+     "op": "sum"
+    }
+   ]
+  },
+  "loadedhub.get_roster_vs_actual": {
+   "enabled": true,
+   "fields": {
+    "actualCost": "actualCost",
+    "actualHours": "actualHours",
+    "categories[].actualCost": "",
+    "categories[].actualHours": "",
+    "categories[].posItemCategoryIdentifier": "",
+    "categories[].posItemCategoryName": "",
+    "categories[].rosteredCost": "",
+    "categories[].rosteredHours": "",
+    "rosteredCost": "rosteredCost",
+    "rosteredHours": "rosteredHours",
+    "startTime": "startTime"
+   }
+  },
+  "loadedhub.get_staff_members": {
+   "enabled": true,
+   "fields": {
+    "activeRemuneration.createdAt": "",
+    "activeRemuneration.defaultRoleId": "defaultRoleId",
+    "activeRemuneration.deletedAt": "",
+    "activeRemuneration.employmentType": "",
+    "activeRemuneration.id": "",
+    "activeRemuneration.isActive": "",
+    "activeRemuneration.memberRoles[].code": "code",
+    "activeRemuneration.memberRoles[].hourlyRate": "hourlyRate",
+    "activeRemuneration.memberRoles[].id": "id",
+    "activeRemuneration.memberRoles[].payClassificationId": "payClassificationId",
+    "activeRemuneration.memberRoles[].payClassificationName": "payClassificationName",
+    "activeRemuneration.memberRoles[].payClassificationVariationId": "payClassificationVariationId",
+    "activeRemuneration.memberRoles[].remunerationTimelineVenueId": "remunerationTimelineVenueId",
+    "activeRemuneration.memberRoles[].roleId": "roleId",
+    "activeRemuneration.memberRoles[].roleName": "roleName",
+    "activeRemuneration.payrollVenueId": "payrollVenueId",
+    "activeRemuneration.salaryRate": "salaryRate",
+    "activeRemuneration.staffMemberId": "",
+    "activeRemuneration.type": "",
+    "activeRemuneration.validFrom": "",
+    "activeRemuneration.validTo": "",
+    "activeRemuneration.venueAssignments[].assignedAt": "assignedAt",
+    "activeRemuneration.venueAssignments[].defaultRoleId": "defaultRoleId",
+    "activeRemuneration.venueAssignments[].defaultRoleName": "defaultRoleName",
+    "activeRemuneration.venueAssignments[].id": "id",
+    "activeRemuneration.venueAssignments[].isActive": "isActive",
+    "activeRemuneration.venueAssignments[].memberRoles[].code": "code",
+    "activeRemuneration.venueAssignments[].memberRoles[].hourlyRate": "hourlyRate",
+    "activeRemuneration.venueAssignments[].memberRoles[].id": "id",
+    "activeRemuneration.venueAssignments[].memberRoles[].payClassificationId": "payClassificationId",
+    "activeRemuneration.venueAssignments[].memberRoles[].payClassificationName": "payClassificationName",
+    "activeRemuneration.venueAssignments[].memberRoles[].payClassificationVariationId": "payClassificationVariationId",
+    "activeRemuneration.venueAssignments[].memberRoles[].remunerationTimelineVenueId": "remunerationTimelineVenueId",
+    "activeRemuneration.venueAssignments[].memberRoles[].roleId": "roleId",
+    "activeRemuneration.venueAssignments[].memberRoles[].roleName": "roleName",
+    "activeRemuneration.venueAssignments[].remunerationTimelineId": "",
+    "activeRemuneration.venueAssignments[].unassignedAt": "",
+    "activeRemuneration.venueAssignments[].venueFullName": "venueFullName",
+    "activeRemuneration.venueAssignments[].venueId": "venueId",
+    "activeRemuneration.venueAssignments[].venueShortName": "",
+    "activeRemuneration.weeklyContractedHours": "",
+    "datestampDeleted": "",
+    "defaultMemberRoleHourlyRate": "defaultMemberRoleHourlyRate",
+    "defaultMemberRoleRoleId": "defaultMemberRoleRoleId",
+    "defaultMemberRoleRoleName": "defaultMemberRoleRoleName",
+    "email": "email",
+    "id": "id",
+    "isExported": "",
+    "lastClockBreaks": "",
+    "lastClockClockinTime": "",
+    "lastClockClockoutTime": "",
+    "lastClockId": "",
+    "lastClockRoleName": "",
+    "memberRoles[].code": "",
+    "memberRoles[].hourlyRate": "hourlyRate",
+    "memberRoles[].id": "",
+    "memberRoles[].payClassificationId": "",
+    "memberRoles[].payClassificationName": "",
+    "memberRoles[].payClassificationVariationId": "",
+    "memberRoles[].remunerationTimelineVenueId": "",
+    "memberRoles[].roleId": "roleId",
+    "memberRoles[].roleName": "roleName",
+    "name": "name",
+    "nextRemuneration": "",
+    "payCode": "payCode",
+    "phoneMobile": "phoneMobile",
+    "posStaffName": "",
+    "previousRemuneration": "",
+    "remunerationType": "remunerationType",
+    "salaryRate": "salaryRate",
+    "showInRoster": ""
+   },
+   "filters": [
+    {
+     "field": "datestampDeleted",
+     "operator": "is_empty",
+     "value": ""
+    }
+   ]
+  },
+  "loadedhub.get_timeclock_entries": {
+   "enabled": true,
+   "fields": {
+    "adjustedHourlyRate": "",
+    "adjustedHourlyRatePrecise": "adjustedHourlyRatePrecise",
+    "breaks[].breakEnd": "breakEnd|tz|dow",
+    "breaks[].breakStart": "breakStart|tz|dow",
+    "breaks[].createdAt": "",
+    "breaks[].deletedAt": "",
+    "breaks[].id": "",
+    "breaks[].paid": "paid",
+    "breaks[].shiftId": "",
+    "breaks[].type": "type",
+    "clockinTime": "clockinTime|tz|dow",
+    "clockoutTime": "clockoutTime|tz|dow",
+    "datestampApproved": "",
+    "datestampCreated": "",
+    "datestampDeleted": "",
+    "hourlyRate": "",
+    "id": "",
+    "isCompanyClockin": "",
+    "isFinalised": "",
+    "isFromOtherVenue": "",
+    "payRateBreakdown[].hoursWorked": "",
+    "payRateBreakdown[].includeInPayrollExport": "",
+    "payRateBreakdown[].isOrdinaryPay": "",
+    "payRateBreakdown[].order": "",
+    "payRateBreakdown[].payRate": "",
+    "payRateBreakdown[].periodEnd": "",
+    "payRateBreakdown[].periodStart": "",
+    "payRateBreakdown[].title": "",
+    "payRateBreakdown[].total": "",
+    "posIdentifier": "",
+    "remunerationType": "remunerationType",
+    "roleId": "",
+    "roleName": "roleName",
+    "rules": "",
+    "showOnFinancialReports": "",
+    "staffMemberFirstName": "staffMemberFirstName",
+    "staffMemberId": "staffMemberId",
+    "staffMemberLastName": "staffMemberLastName",
+    "staffMemberPayCode": "",
+    "totalCost": "totalCost",
+    "totalHours": "totalHours",
+    "type": "type",
+    "venueFullName": "",
+    "venueId": "",
+    "venueShortName": ""
+   },
+   "filters": [
+    {
+     "field": "datestampDeleted",
+     "operator": "is_empty",
+     "value": ""
+    }
+   ]
+  }
+ },
+ "loadedhub.get_pos_orders_for_period": {
+  "loadedhub.get_pos_orders": {
+   "enabled": true,
+   "fields": {
+    "amount": "amount|round:0",
+    "count": "count",
+    "period": "",
+    "startTime": "startTime"
+   }
+  }
+ },
+ "loadedhub.get_received_items_for_period": {
+  "loadedhub.get_received_invoices": {
+   "enabled": true,
+   "fields": {
+    "createdBy": "",
+    "creditRequest": "creditRequest",
+    "fileId": "",
+    "freight": "freight",
+    "id": "id",
+    "invoiceNumber": "invoiceNumber",
+    "invoicedAt": "invoicedAt",
+    "lines[].brandId": "",
+    "lines[].brandName": "",
+    "lines[].id": "",
+    "lines[].itemCategory.externalAccountCode": "",
+    "lines[].itemCategory.id": "",
+    "lines[].itemCategory.name": "Category",
+    "lines[].itemCategory.subcategories": "",
+    "lines[].itemCode": "StockVariantCode",
+    "lines[].itemId": "StockItemId",
+    "lines[].quantityOrdered": "",
+    "lines[].quantityReceived": "quantityReceived",
+    "lines[].saleTaxRate": "saleTaxRate",
+    "lines[].unitCost": "unitCost",
+    "lines[].unitId": "",
+    "lines[].unitName": "unitName",
+    "lines[].unitRatio": "unitRatio",
+    "orderedAt": "",
+    "orderedBy": "orderedBy",
+    "purchaseOrderNumber": "",
+    "receivedAt": "receivedAt",
+    "reconciled": "",
+    "statementId": "",
+    "subtotal": "subtotal",
+    "supplierId": "supplierId",
+    "supplierName": "supplierName",
+    "thirdPartyInvoiceId": "",
+    "total": "total",
+    "type": "type"
+   },
+   "flatten": []
+  },
+  "loadedhub.get_stock_item_groups": {
+   "enabled": true,
+   "fields": {
+    "categoryId": "categoryId",
+    "categoryName": "categoryName",
+    "id": "id",
+    "name": "name"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_stock_items_raw": {
+   "enabled": true,
+   "fields": {
+    "countingUnitId": "",
+    "countingUnitName": "",
+    "countingUnitRatio": "",
+    "currentPrice": "",
+    "currentPricePurchaseOrderId": "",
+    "currentPricePurchaseOrderOrderNumber": "",
+    "datestampRemoved": "",
+    "defaultBrandId": "",
+    "defaultBrandName": "",
+    "defaultSupplierId": "",
+    "defaultSupplierName": "",
+    "defaultSupplierValidateStockCode": "",
+    "globalPrice": "",
+    "globalSalesTaxRate": "",
+    "groupId": "groupId",
+    "groupName": "groupName",
+    "id": "id",
+    "isShared": "",
+    "masterId": "",
+    "name": "name",
+    "orderingUnitId": "",
+    "orderingUnitName": "",
+    "orderingUnitRatio": ""
+   },
+   "filters": [
+    {
+     "field": "datestampRemoved",
+     "operator": "is_empty",
+     "value": ""
+    }
+   ]
+  },
+  "loadedhub.get_stock_units": {
+   "enabled": true,
+   "fields": {
+    "datestampDeleted": "datestampDeleted",
+    "id": "id",
+    "masterId": "masterId",
+    "name": "name",
+    "ratio": "ratio",
+    "stockUnitType": "stockUnitType"
+   },
+   "filters": [],
+   "flatten": []
+  }
+ },
+ "loadedhub.get_sales": {
+  "loadedhub.get_pos_item_sales": {
+   "enabled": true,
+   "fields": {
+    "amount": "amount",
+    "itemCategoryIdentifier": "itemCategoryIdentifier",
+    "itemCategoryName": "itemCategoryName",
+    "itemGroupIdentifier": "itemGroupIdentifier",
+    "itemGroupName": "itemGroupName",
+    "itemName": "itemName",
+    "itemPosIdentifier": "itemPosIdentifier",
+    "quantity": "quantity"
+   }
+  },
+  "loadedhub.get_sales_data": {
+   "enabled": true,
+   "fields": {
+    "count": "",
+    "discounts": "",
+    "invoices": "amount|round:0",
+    "invoicesTax": "",
+    "period": "",
+    "quantity": "",
+    "startTime": "startTime|tz|dow",
+    "surcharges": ""
+   }
+  },
+  "loadedhub.get_staff_orders": {
+   "enabled": true,
+   "fields": {
+    "amount": "amount",
+    "count": "count",
+    "id": "id",
+    "label": "label",
+    "period": "period",
+    "quantity": "quantity",
+    "startTime": "startTime"
+   }
+  }
+ },
+ "loadedhub.get_stock": {
+  "loadedhub.get_stock_item_groups": {
+   "enabled": true,
+   "fields": {
+    "categoryId": "categoryId",
+    "categoryName": "categoryName",
+    "id": "id",
+    "name": "name"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_stock_item_minimums": {
+   "enabled": true,
+   "fields": {
+    "countingUnitRatio": "countingUnitRatio",
+    "id": "id",
+    "minimumStockOnHandQuantity": "minQty",
+    "minimumStockOnHandUnit.ratio": "minUnitRatio",
+    "name": "itemName"
+   },
+   "filters": [
+    {
+     "field": "datestampRemoved",
+     "operator": "is_empty",
+     "value": ""
+    }
+   ],
+   "flatten": []
+  },
+  "loadedhub.get_stock_items_raw": {
+   "enabled": true,
+   "fields": {
+    "countingUnitId": "",
+    "countingUnitName": "",
+    "countingUnitRatio": "",
+    "currentPrice": "",
+    "currentPricePurchaseOrderId": "",
+    "currentPricePurchaseOrderOrderNumber": "",
+    "datestampRemoved": "",
+    "defaultBrandId": "",
+    "defaultBrandName": "",
+    "defaultSupplierId": "",
+    "defaultSupplierName": "",
+    "defaultSupplierValidateStockCode": "",
+    "globalPrice": "",
+    "globalSalesTaxRate": "",
+    "groupId": "groupId",
+    "groupName": "groupName",
+    "id": "id",
+    "isShared": "",
+    "masterId": "",
+    "name": "name",
+    "orderingUnitId": "",
+    "orderingUnitName": "",
+    "orderingUnitRatio": ""
+   },
+   "filters": [
+    {
+     "field": "datestampRemoved",
+     "operator": "is_empty",
+     "value": ""
+    }
+   ]
+  },
+  "loadedhub.get_stock_on_hand": {
+   "enabled": true,
+   "fields": {
+    "calculatedUsage": "",
+    "countingUnitId": "",
+    "countingUnitName": "countingUnitName",
+    "countingUnitRatio": "countingUnitRatio",
+    "header": "Category",
+    "isItemDeleted": "isItemDeleted",
+    "itemId": "stockItemID",
+    "itemName": "itemName",
+    "lastPrice.at": "",
+    "lastPrice.cost": "",
+    "lastPrice.documentId": "",
+    "lastPrice.documentNumber": "",
+    "lastPrice.documentReceivedAt": "",
+    "lastPrice.documentType": "",
+    "lastPrice.id": "",
+    "lastPrice.salesTaxRate": "",
+    "lastPrice.unitId": "",
+    "lastPrice.unitName": "",
+    "lastPrice.unitRatio": "",
+    "minimumStockOnHandQuantity": "",
+    "minimumStockOnHandUnitId": "",
+    "quantityOnHand": "quantityOnHand",
+    "receivedQuantity": "",
+    "sortOrder": "",
+    "stockReceivedLines": "",
+    "stockUsages[].endTime": "",
+    "stockUsages[].posItemLinkPortion": "",
+    "stockUsages[].posItemLinkQuantity": "",
+    "stockUsages[].posItemLinkUnitRatio": "",
+    "stockUsages[].posItemName": "",
+    "stockUsages[].posItemPosIdentifier": "",
+    "stockUsages[].posOrdered": "",
+    "stockUsages[].posWasted": "",
+    "stockUsages[].startTime": "",
+    "stocktakeCompletedAt": "",
+    "stocktakeId": "",
+    "stocktakeQuantity": "",
+    "stocktakeTitle": "",
+    "stocktakeUnitId": "",
+    "stocktakeUnitName": "",
+    "stocktakeUnitRatio": "",
+    "usedQuantity": "",
+    "valueOnHand": "valueOnHand"
+   }
+  },
+  "loadedhub.get_stock_units": {
+   "enabled": true,
+   "fields": {
+    "datestampDeleted": "datestampDeleted",
+    "id": "id",
+    "masterId": "masterId",
+    "name": "name",
+    "ratio": "ratio",
+    "stockUnitType": "stockUnitType"
+   },
+   "filters": [],
+   "flatten": []
+  }
+ }
+}

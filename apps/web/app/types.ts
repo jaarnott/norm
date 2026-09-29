@@ -40,6 +40,23 @@ export interface ConnectorSpecTool {
   added_at?: string | null;
   // Demoted: engine/consolidator use only — never offered to agents.
   engine_only?: boolean | null;
+  read_only?: boolean | null;
+  optional_fields?: string[];
+  // Editor-only: which stored list the row belongs to (Sep 2026 — tools and
+  // API endpoints are two lists). Stripped before the spec is saved.
+  _list?: 'tools' | 'endpoints';
+}
+
+/** One row of GET /api/connector-specs/{name}/inventory (services/spec_inventory). */
+export interface SpecInventoryRow {
+  action: string;
+  kind: 'tool' | 'endpoint';
+  build: 'consolidator' | 'built-in' | 'endpoint';
+  app: { slug: string; name: string } | null;
+  uses: string[];
+  used_by: string[];
+  calls_30d: number;
+  code: string | null;
 }
 
 export interface BillingInfo {
@@ -183,6 +200,9 @@ export interface ConnectorSpecFull extends ConnectorSpecSummary {
   auth_config: Record<string, unknown>;
   base_url_template: string | null;
   tools: ConnectorSpecTool[];
+  // API endpoints — building blocks, never shown to an LLM. null until the
+  // connector is split; until then every row is in `tools`.
+  endpoints?: ConnectorSpecTool[] | null;
   api_documentation: string | null;
   example_requests: Record<string, unknown>[];
   credential_fields: { key: string; label: string; secret: boolean }[];

@@ -1,20 +1,21 @@
-"""The consolidator-migration dashboard — derived, never maintained.
+"""The tools-and-endpoints dashboard — derived, never maintained.
 
-The strategy (Aug 2026): move agent-facing tools to fewer, higher-value
-consolidators. This module derives the whole state of that migration from
-what the system already knows, so there is no checklist to drift:
+Sep 2026 vocabulary (docs/tool-architecture-strategy.md): every connector row
+is a TOOL — a consolidator (config Python over endpoints) or a built-in (Norm
+code) — or an API ENDPOINT, a building block no LLM should see. This module
+derives the state of that rule from what the system already knows, so there is
+no checklist to drift:
 
-- the config DB's connector specs say what each action IS
-  (consolidator / demoted backend / raw),
-- the agent bindings and MCP capability rows say what is actually EXPOSED,
-- ``tool_calls`` says what actually gets USED (ranking the backlog by value),
-- and ``config/consolidators/*.py`` says what the canonical source is
-  (drift check — a hand-edited config row must not silently diverge from
-  the reviewed, tested file).
+- ``app/connectors/spec_rows.py`` says what each row IS,
+- the App Map and the MCP capability rows say what is actually EXPOSED,
+- the consolidators' own code says which endpoints each tool is built on,
+- ``tool_calls`` says what actually gets USED,
+- and ``config/consolidators/*.py`` says what the canonical source is (drift
+  check — a hand-edited config row must not silently diverge from the
+  reviewed, tested file).
 
-A tool's lifecycle: raw → consolidator exists (its raw twin is now a LEAK if
-still exposed) → raw twin demoted (``engine_only: true`` + out of every
-binding) → done. "Done" is a fact about the config DB, never a checkbox.
+A LEAK is an endpoint an LLM can still reach. "Done" is zero leaks — a fact
+about the config DB, never a checkbox.
 """
 
 from __future__ import annotations
@@ -85,7 +86,6 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
     },
 }
 
-_BACKEND_MARKERS = ("[consolidator-only]", "[engine-only]")
 
 #: Consolidators whose canonical source is a file named for a SIBLING tool
 #: (many-to-one, beyond the `wraps` marker that maps every *_for_period
@@ -93,16 +93,6 @@ _BACKEND_MARKERS = ("[consolidator-only]", "[engine-only]")
 _SHARED_CANONICAL = {
     "receive_loadedhub_invoice": "review_and_receive_invoices",
 }
-
-
-def _classify(tool: dict) -> str:
-    cfg = tool.get("consolidator_config")
-    if isinstance(cfg, dict) and cfg.get("function_code"):
-        return "consolidator"
-    desc = str(tool.get("description") or "")
-    if tool.get("engine_only") or desc.startswith(_BACKEND_MARKERS):
-        return "backend"
-    return "raw"
 
 
 def _canonical_files() -> dict[str, str]:
@@ -120,50 +110,6 @@ def _canonical_files() -> dict[str, str]:
             out.setdefault(f"get_{f.stem}", src)
     except OSError as exc:  # pragma: no cover — image without the dir
         logger.info("canonical consolidator dir unreadable: %s", exc)
-    return out
-
-
-def _exposure(config_db: Session, db: Session) -> dict[tuple[str, str], dict]:
-    """(connector, action) → {"agents": [slugs], "mcp": bool}.
-
-    A binding with an EMPTY capabilities list exposes every action on its
-    connector — recorded as agent slug ``<slug>*`` so the report shows that
-    the exposure is implicit.
-    """
-    from app.db.config_models import AgentConnectionBinding, McpCapability
-
-    out: dict[tuple[str, str], dict] = {}
-
-    def _slot(connector: str, action: str) -> dict:
-        return out.setdefault((connector, str(action)), {"agents": [], "mcp": False})
-
-    all_of: dict[str, list[str]] = {}  # connector → slugs with empty caps
-    for b in (
-        config_db.query(AgentConnectionBinding)
-        .filter(AgentConnectionBinding.enabled == True)  # noqa: E712
-        .all()
-    ):
-        caps = b.capabilities or []
-        if not caps:
-            all_of.setdefault(b.connector_name, []).append(f"{b.agent_slug}*")
-            continue
-        for cap in caps:
-            if isinstance(cap, dict) and cap.get("enabled", True):
-                _slot(b.connector_name, cap.get("action")).setdefault("agents", [])
-                _slot(b.connector_name, cap.get("action"))["agents"].append(
-                    b.agent_slug
-                )
-    try:
-        for row in (
-            config_db.query(McpCapability)
-            .filter(McpCapability.enabled == True)  # noqa: E712
-            .all()
-        ):
-            if row.kind == "connector" and row.target and row.action:
-                _slot(row.target, row.action)["mcp"] = True
-    except Exception as exc:  # noqa: BLE001 — MCP rows are env-local, optional
-        logger.info("mcp capability read failed: %s", exc)
-    out["__all__"] = all_of  # type: ignore[assignment]
     return out
 
 
@@ -187,33 +133,70 @@ def _usage(db: Session, days: int) -> dict[str, int]:
         return {}
 
 
+def _exposed(config_db: Session) -> tuple[dict[str, str], set[tuple[str, str]]]:
+    """What puts a row in front of an LLM: App Map claims (``connector.action``
+    -> App slug) and enabled MCP capabilities. Legacy agent bindings no longer
+    decide the menu once the App Map is armed, so they are not exposure."""
+    from app.db.config_models import McpCapability
+    from app.services.entitlements import tool_owners
+
+    try:
+        owners = tool_owners(config_db)
+    except Exception as exc:  # noqa: BLE001 — enrichment only
+        logger.info("App Map read failed: %s", exc)
+        owners = {}
+    mcp: set[tuple[str, str]] = set()
+    try:
+        for row in (
+            config_db.query(McpCapability)
+            .filter(McpCapability.enabled == True)  # noqa: E712
+            .all()
+        ):
+            if row.kind == "connector" and row.target and row.action:
+                mcp.add((row.target, row.action))
+    except Exception as exc:  # noqa: BLE001 — MCP rows are optional
+        logger.info("mcp capability read failed: %s", exc)
+    return owners, mcp
+
+
 def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
-    """The migration dashboard payload. Read-only; never raises."""
+    """The tools-and-endpoints dashboard payload. Read-only; never raises.
+
+    Sep 2026 vocabulary (docs/tool-architecture-strategy.md): every row is a
+    tool — a consolidator or a built-in — or an API endpoint. A LEAK is an
+    endpoint an LLM can still reach: claimed by an App, or enabled as an MCP
+    capability. An endpoint no tool calls is listed as unused.
+    """
     from app.db.config_models import ConnectionSpec
+    from app.services.spec_inventory import dependency_map
 
     canonical = _canonical_files()
-    exposure = _exposure(config_db, db)
-    all_of: dict[str, list[str]] = exposure.pop("__all__", {})  # type: ignore[arg-type]
+    owners, mcp = _exposed(config_db)
     usage = _usage(db, days)
+    specs = (
+        config_db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name).all()
+    )
+    _uses, used_by = dependency_map(specs)
 
     connectors: list[dict] = []
-    for spec in config_db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name):
-        tools = [t for t in spec_rows.rows(spec) if isinstance(t, dict)]
+    for spec in specs:
+        tools = spec_rows.rows(spec)
         if not tools:
             continue
+        name = spec.connector_name
         actions = {str(t.get("action")) for t in tools}
         consolidator_actions = {
-            str(t.get("action")) for t in tools if _classify(t) == "consolidator"
+            str(t.get("action")) for t in tools if spec_rows.is_consolidator(t)
         }
         rows: list[dict] = []
         drift: list[dict] = []
         for t in tools:
             action = str(t.get("action"))
-            status = _classify(t)
-            exp = exposure.get((spec.connector_name, action), {})
-            agents = list(exp.get("agents") or []) + all_of.get(spec.connector_name, [])
-            calls = usage.get(f"{spec.connector_name}__{action}", 0)
-            superseded_by = _SUPERSEDES.get(spec.connector_name, {}).get(action)
+            key = f"{name}.{action}"
+            build = spec_rows.build_of(name, t, execution_mode=spec.execution_mode)
+            app = owners.get(key)
+            in_mcp = (name, action) in mcp
+            superseded_by = _SUPERSEDES.get(name, {}).get(action)
             if not superseded_by and f"{action}_for_period" in consolidator_actions:
                 superseded_by = f"{action}_for_period"
             if superseded_by not in actions:
@@ -221,18 +204,18 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
             rows.append(
                 {
                     "action": action,
-                    "status": status,
+                    "status": build,
+                    "kind": "endpoint" if build == "endpoint" else "tool",
                     "added_at": t.get("added_at"),
-                    "calls_30d": calls,
-                    "agents": sorted(set(agents)),
-                    "mcp": bool(exp.get("mcp")),
+                    "calls_30d": usage.get(f"{name}__{action}", 0),
+                    "app": app,
+                    "mcp": in_mcp,
+                    "used_by": used_by.get(key, []),
                     "superseded_by": superseded_by,
-                    "leak": bool(
-                        status == "raw" and superseded_by and (agents or exp.get("mcp"))
-                    ),
+                    "leak": build == "endpoint" and bool(app or in_mcp),
                 }
             )
-            if status == "consolidator":
+            if build == "consolidator":
                 cc = t.get("consolidator_config") or {}
                 code = cc.get("function_code") or ""
                 # Many-to-one canonical sources: every *_for_period wrapper
@@ -240,34 +223,39 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
                 # receive_loadedhub_invoice is the single-invoice mode of the
                 # batch review's file.
                 if cc.get("wraps"):
-                    key = "for_period"
+                    ckey = "for_period"
                 elif action in _SHARED_CANONICAL:
-                    key = _SHARED_CANONICAL[action]
+                    ckey = _SHARED_CANONICAL[action]
                 else:
-                    key = action
-                src = canonical.get(key)
+                    ckey = action
+                src = canonical.get(ckey)
                 if src is None:
                     drift.append({"action": action, "state": "no_canonical_file"})
                 elif src != code:
                     drift.append({"action": action, "state": "differs_from_file"})
         rows.sort(key=lambda r: (-r["calls_30d"], r["action"]))
-        counts = {"consolidator": 0, "backend": 0, "raw": 0}
+        counts = {"consolidator": 0, "built-in": 0, "endpoint": 0}
         for r in rows:
             counts[r["status"]] += 1
         connectors.append(
             {
-                "connector": spec.connector_name,
+                "connector": name,
+                "split": spec_rows.is_split(spec),
                 "counts": counts,
                 "leaks": [r for r in rows if r["leak"]],
-                "backlog": [r for r in rows if r["status"] == "raw" and not r["leak"]],
+                "unused": [
+                    r
+                    for r in rows
+                    if r["kind"] == "endpoint" and not r["used_by"] and not r["leak"]
+                ],
                 "drift": drift,
                 "tools": rows,
             }
         )
     connectors.sort(key=lambda c: -sum(c["counts"].values()))
-    totals = {"consolidator": 0, "backend": 0, "raw": 0, "leaks": 0}
+    totals = {"consolidator": 0, "built-in": 0, "endpoint": 0, "leaks": 0}
     for c in connectors:
-        for k in ("consolidator", "backend", "raw"):
+        for k in ("consolidator", "built-in", "endpoint"):
             totals[k] += c["counts"][k]
         totals["leaks"] += len(c["leaks"])
     return {"window_days": days, "totals": totals, "connectors": connectors}

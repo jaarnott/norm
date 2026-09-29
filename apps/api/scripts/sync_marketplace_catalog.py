@@ -397,7 +397,8 @@ APPS = [
             "loadedhub.get_menus",
             "loadedhub.manage_menu",
             "loadedhub.manage_stock_item",
-            "cook_brothers_app.kitchen_record_recipe",
+            # the tool wrapping Orbit's recipe endpoint (sync_orbit_recipe_wrapper.py)
+            "cook_brothers_app.record_recipe",
         ],
         components=[
             _c(

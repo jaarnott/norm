@@ -100,7 +100,7 @@ TOOL = {
         # function_code injected at sync time. Budget: resolve(1) +
         # list_venues(1) + 2 calls per venue (roster + timeclock) — four
         # venues fit with headroom.
-        "max_api_calls": 12,
+        "max_api_calls": 20,  # 2 per venue for venues='all' (see get_labour.py)
         "allowed_write_actions": [],
     },
 }

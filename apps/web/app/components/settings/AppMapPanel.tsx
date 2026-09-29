@@ -24,12 +24,13 @@ interface Findings {
   bad_members: { app: string; member: string | null; problem: string }[];
 }
 
+// Sep 2026: an App claims TOOLS — consolidators and built-ins. An endpoint
+// (or a missing row) in a claim is a problem, shown in red.
 const TYPE_STYLE: Record<string, { color: string; bg: string }> = {
   consolidator: { color: '#2e7d4f', bg: '#eef6f0' },
-  'norm function': { color: '#2e5a7d', bg: '#e8f0f6' },
-  raw: { color: '#b04a4a', bg: '#fbecec' },
-  'CB tool': { color: '#8a5a1f', bg: '#fdf3e4' },
-  backend: { color: '#6b6b6b', bg: '#f0ebe5' },
+  'built-in': { color: '#2e5a7d', bg: '#e8f0f6' },
+  endpoint: { color: '#b04a4a', bg: '#fbecec' },
+  missing: { color: '#b04a4a', bg: '#fbecec' },
 };
 
 const cell: React.CSSProperties = { padding: '6px 8px', verticalAlign: 'top', borderTop: '1px solid #eee', fontSize: '0.7rem' };
@@ -138,7 +139,7 @@ export default function AppMapPanel() {
                   </td>
                   <td style={cell}>{a.member_name ?? a.member ?? <span style={{ color: '#b04a4a' }}>none</span>}</td>
                   <td style={cell}>{list(a.tools.map((t) => {
-                    const st = TYPE_STYLE[t.type] ?? TYPE_STYLE.backend;
+                    const st = TYPE_STYLE[t.type] ?? TYPE_STYLE.endpoint;
                     return (
                       <span key={t.key}>
                         <span style={{ fontFamily: 'monospace' }}>{t.key}</span>{' '}

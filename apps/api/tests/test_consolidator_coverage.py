@@ -1,12 +1,13 @@
-"""The consolidator-migration dashboard: derived truth, no checklist.
+"""The tools-and-endpoints dashboard: derived truth, no checklist.
 
-Pins the lifecycle classification (consolidator / backend / raw), leak
-detection (a superseded raw tool still exposed to an agent), the drift check
-against config/consolidators/*.py, and the added_at stamping listener that
-gives the tools list its "date added" column.
+Sep 2026 vocabulary (docs/tool-architecture-strategy.md): every row is a tool
+(consolidator or built-in) or an API endpoint. Pins the classification, leak
+detection (an endpoint an LLM can still reach — App claim or MCP), the unused
+list, the drift check against config/consolidators/*.py, and the added_at
+stamping listener that gives the tools list its "date added" column.
 """
 
-from app.db.config_models import AgentConnectionBinding, ConnectionSpec
+from app.db.config_models import ConnectionSpec
 from app.services import consolidator_coverage as cc
 
 
@@ -24,23 +25,16 @@ def _spec(db, name="fakehub", tools=None):
     return s
 
 
-def _bind(db, connector, agent="reports", caps=None):
-    b = AgentConnectionBinding(
-        agent_slug=agent,
-        connector_name=connector,
-        capabilities=caps if caps is not None else [],
-        enabled=True,
-    )
-    db.add(b)
-    db.flush()
-    return b
-
-
 TOOLS = [
     {
         "action": "get_sales",
         "read_only": True,
-        "consolidator_config": {"function_code": "def run(p, c, l): return {}"},
+        "consolidator_config": {
+            "function_code": (
+                "def run(p, call_api, l):\n"
+                "    return call_api('fakehub', 'get_sales_data', {})\n"
+            )
+        },
     },
     {"action": "get_sales_data", "method": "GET", "path_template": "//x"},
     {
@@ -52,65 +46,64 @@ TOOLS = [
 ]
 
 
+def _report(db_session, monkeypatch, *, claims=None, mcp=None, usage=None):
+    monkeypatch.setattr(cc, "_canonical_files", lambda: {})
+    monkeypatch.setattr(cc, "_usage", lambda db, days: usage or {})
+    monkeypatch.setattr(cc, "_exposed", lambda cdb: (claims or {}, mcp or set()))
+    report = cc.coverage_report(db_session, db_session)
+    return next(x for x in report["connectors"] if x["connector"] == "fakehub")
+
+
 class TestClassificationAndLeaks:
-    def test_lifecycle_counts(self, db_session, monkeypatch):
+    def test_rows_are_tools_or_endpoints(self, db_session, monkeypatch):
+        _spec(db_session, tools=TOOLS)
+        c = _report(db_session, monkeypatch)
+        # the [consolidator-only] prefix no longer makes a row special: with
+        # no code of its own it is an endpoint.
+        assert c["counts"] == {"consolidator": 1, "built-in": 0, "endpoint": 3}
+
+    def test_a_registered_handler_is_a_built_in(self, db_session, monkeypatch):
         monkeypatch.setattr(cc, "_canonical_files", lambda: {})
         monkeypatch.setattr(cc, "_usage", lambda db, days: {})
-        _spec(db_session, tools=TOOLS)
+        monkeypatch.setattr(cc, "_exposed", lambda cdb: ({}, set()))
+        _spec(db_session, name="gmail", tools=[{"action": "send_email"}])
         report = cc.coverage_report(db_session, db_session)
-        c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
-        assert c["counts"] == {"consolidator": 1, "backend": 1, "raw": 2}
+        c = next(x for x in report["connectors"] if x["connector"] == "gmail")
+        assert c["counts"]["built-in"] == 1
 
-    def test_a_superseded_exposed_raw_tool_is_a_leak(self, db_session, monkeypatch):
-        # get_sales_data has no explicit map entry for fakehub — but the
-        # _for_period heuristic doesn't match its name, so wire the map.
-        monkeypatch.setattr(cc, "_canonical_files", lambda: {})
-        monkeypatch.setattr(
-            cc, "_usage", lambda db, days: {"fakehub__get_sales_data": 66}
-        )
-        monkeypatch.setitem(
-            cc._SUPERSEDES, "fakehub", {"get_sales_data": "get_sales"}
-        )
+    def test_an_endpoint_an_app_claims_is_a_leak(self, db_session, monkeypatch):
         _spec(db_session, tools=TOOLS)
-        _bind(
+        c = _report(
             db_session,
-            "fakehub",
-            caps=[{"action": "get_sales_data", "enabled": True}],
+            monkeypatch,
+            claims={"fakehub.get_sales_data": "loaded-reports"},
+            usage={"fakehub__get_sales_data": 66},
         )
-        report = cc.coverage_report(db_session, db_session)
-        c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
         assert [leak["action"] for leak in c["leaks"]] == ["get_sales_data"]
         leak = c["leaks"][0]
-        assert leak["superseded_by"] == "get_sales"
-        assert leak["agents"] == ["reports"]
+        assert leak["app"] == "loaded-reports"
         assert leak["calls_30d"] == 66
-        # the unrelated raw tool is backlog, not a leak
-        assert "unrelated_tool" in [r["action"] for r in c["backlog"]]
 
-    def test_unexposed_superseded_raw_is_not_a_leak(self, db_session, monkeypatch):
-        monkeypatch.setattr(cc, "_canonical_files", lambda: {})
-        monkeypatch.setattr(cc, "_usage", lambda db, days: {})
-        monkeypatch.setitem(
-            cc._SUPERSEDES, "fakehub", {"get_sales_data": "get_sales"}
-        )
-        _spec(db_session, tools=TOOLS)  # no bindings at all
-        report = cc.coverage_report(db_session, db_session)
-        c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
-        assert c["leaks"] == []
-
-    def test_empty_capabilities_expose_everything(self, db_session, monkeypatch):
-        monkeypatch.setattr(cc, "_canonical_files", lambda: {})
-        monkeypatch.setattr(cc, "_usage", lambda db, days: {})
+    def test_an_endpoint_enabled_on_mcp_is_a_leak(self, db_session, monkeypatch):
         _spec(db_session, tools=TOOLS)
-        _bind(db_session, "fakehub", agent="router", caps=[])
-        report = cc.coverage_report(db_session, db_session)
-        c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
-        raw = next(r for r in c["tools"] if r["action"] == "get_sales_data")
-        assert raw["agents"] == ["router*"]  # implicit, starred
+        c = _report(db_session, monkeypatch, mcp={("fakehub", "unrelated_tool")})
+        assert [leak["action"] for leak in c["leaks"]] == ["unrelated_tool"]
+
+    def test_a_claimed_tool_is_not_a_leak(self, db_session, monkeypatch):
+        _spec(db_session, tools=TOOLS)
+        c = _report(db_session, monkeypatch, claims={"fakehub.get_sales": "loaded-reports"})
+        assert c["leaks"] == []
+        tool = next(r for r in c["tools"] if r["action"] == "get_sales")
+        assert tool["app"] == "loaded-reports"
+
+    def test_endpoints_no_tool_calls_are_unused(self, db_session, monkeypatch):
+        _spec(db_session, tools=TOOLS)
+        c = _report(db_session, monkeypatch)
+        assert sorted(r["action"] for r in c["unused"]) == ["get_sales_raw", "unrelated_tool"]
+        used = next(r for r in c["tools"] if r["action"] == "get_sales_data")
+        assert used["used_by"] == ["fakehub.get_sales"]
 
     def test_for_period_twin_is_inferred_by_name(self, db_session, monkeypatch):
-        monkeypatch.setattr(cc, "_canonical_files", lambda: {})
-        monkeypatch.setattr(cc, "_usage", lambda db, days: {})
         tools = [
             {
                 "action": "get_cogs_for_period",
@@ -119,8 +112,7 @@ class TestClassificationAndLeaks:
             {"action": "get_cogs", "method": "GET", "path_template": "//x"},
         ]
         _spec(db_session, tools=tools)
-        report = cc.coverage_report(db_session, db_session)
-        c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
+        c = _report(db_session, monkeypatch)
         raw = next(r for r in c["tools"] if r["action"] == "get_cogs")
         assert raw["superseded_by"] == "get_cogs_for_period"
 

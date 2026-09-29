@@ -155,6 +155,24 @@ def consolidator_coverage(
     return coverage_report(db, config_db, days=max(1, min(days, 365)))
 
 
+@router.get("/{name}/inventory")
+def spec_inventory(
+    name: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Per row: tool or endpoint, how it's built, which App exposes it, what
+    it calls and what calls it — see services/spec_inventory. Plain ``def``:
+    sync DB work off the loop."""
+    from app.services.spec_inventory import inventory
+
+    result = inventory(name, db, config_db)
+    if result is None:
+        raise HTTPException(404, f"Spec not found: {name}")
+    return result
+
+
 @router.post("", status_code=201)
 async def create_spec(
     body: ConnectorSpecCreate,

@@ -570,3 +570,117 @@ class TestNestedConsolidators:
         )
         assert not result["success"]
         assert "Too many API calls" in str(result["error"])
+
+
+class TestPerCallVenueWins:
+    """A group-wide fan-out must read each venue with THAT venue's credentials.
+
+    29 Sep 2026: the shared executor (MCP, charts, apps) puts the calling
+    venue's venue_id in a consolidator's input. call_api merged it with each
+    call's own venue name, and _resolve_venue_config prefers an id — so
+    get_sales / get_labour with venues='all' read one venue's token six times:
+    six identical rows. The agent passes no venue_id and was unaffected.
+    """
+
+    def _capture(self, monkeypatch):
+        import app.agents.tool_loop as tool_loop_mod
+
+        seen = []
+        monkeypatch.setattr(
+            tool_loop_mod,
+            "_resolve_venue_config",
+            lambda connector, lookup, db: seen.append(dict(lookup)),
+        )
+        return seen
+
+    def test_a_venue_named_on_the_call_beats_the_inputs_venue_id(
+        self, monkeypatch, db_session
+    ):
+        _wire_fake_connector(monkeypatch, {})
+        seen = self._capture(monkeypatch)
+        code = (
+            "def run(params, call_api, log):\n"
+            "    call_api('fake', 'read_thing', {'venue': 'Mr Murdochs'})\n"
+            "    call_api('fake', 'read_thing', {})\n"
+            "    return {}\n"
+        )
+        execute_function(
+            code,
+            {"venue_id": "venue-A", "venue": "La Zeppa"},
+            db_session,
+            None,
+            options={},
+        )
+        assert seen[0]["venue"] == "Mr Murdochs" and "venue_id" not in seen[0]
+        # a call that names no venue still runs as the calling venue
+        assert seen[1]["venue_id"] == "venue-A"
+
+    def test_the_parallel_fan_out_routes_each_call_to_its_venue(
+        self, monkeypatch, db_session
+    ):
+        _wire_fake_connector(monkeypatch, {})
+        seen = self._capture(monkeypatch)
+        code = (
+            "def run(params, call_api, log, call_api_parallel):\n"
+            "    call_api_parallel([\n"
+            "        ('fake', 'read_thing', {'venue': 'Dunedin Social Club'}),\n"
+            "        ('fake', 'read_thing', {'venue': 'Freeman & Grey'}),\n"
+            "    ])\n"
+            "    return {}\n"
+        )
+        execute_function(
+            code,
+            {"venue_id": "venue-A", "venue": "La Zeppa"},
+            db_session,
+            None,
+            options={},
+        )
+        assert sorted(s["venue"] for s in seen) == [
+            "Dunedin Social Club",
+            "Freeman & Grey",
+        ]
+        assert all("venue_id" not in s for s in seen)
+
+
+class TestConsolidatorShapes:
+    """Sep 2026: endpoints return RAW data; a consolidator shapes each endpoint
+    it calls with its own ``consolidator_config.shapes``. During the move off
+    endpoint ``response_transform``s the consolidator's shape must REPLACE the
+    endpoint's transform, never stack on it — a second pass of a whitelist that
+    renames fields would find none of its source fields and drop them."""
+
+    RAW = [{"a": 1, "b": 2, "gone": ""}]
+
+    def _tools(self, transform=None):
+        row = {"action": "read_thing", "method": "GET", "path_template": "//x"}
+        if transform:
+            row["response_transform"] = transform
+        return [row]
+
+    def _run(self, db_session, options):
+        code = "def run(params, call_api, log):\n    return call_api('fake', 'read_thing', {})\n"
+        return execute_function(code, {}, db_session, None, options=options)["data"]
+
+    def test_the_consolidators_shape_is_applied(self, monkeypatch, db_session):
+        _wire_fake_connector(monkeypatch, {"read_thing": self.RAW}, tools=self._tools())
+        shape = {"enabled": True, "fields": {"a": "alpha"}}
+        out = self._run(db_session, {"shapes": {"fake.read_thing": shape}})
+        assert out == [{"alpha": 1}]
+
+    def test_it_replaces_the_endpoints_transform(self, monkeypatch, db_session):
+        endpoint_transform = {"enabled": True, "fields": {"a": "renamed"}}
+        _wire_fake_connector(
+            monkeypatch, {"read_thing": self.RAW}, tools=self._tools(endpoint_transform)
+        )
+        shape = {"enabled": True, "fields": {"a": "alpha", "b": "b"}}
+        out = self._run(db_session, {"shapes": {"fake.read_thing": shape}})
+        assert out == [{"alpha": 1, "b": 2}]
+
+    def test_without_a_shape_the_endpoint_transform_still_applies(
+        self, monkeypatch, db_session
+    ):
+        endpoint_transform = {"enabled": True, "fields": {"a": "renamed"}}
+        _wire_fake_connector(
+            monkeypatch, {"read_thing": self.RAW}, tools=self._tools(endpoint_transform)
+        )
+        assert self._run(db_session, {}) == [{"renamed": 1}]

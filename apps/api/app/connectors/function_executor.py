@@ -226,9 +226,11 @@ def execute_function(
         db: Database session for API calls
         thread_id: Thread ID for context
         options: The consolidator_config dict. Honored keys:
-            max_api_calls (int, default 20, hard cap 200) and
+            max_api_calls (int, default 20, hard cap 200),
             allowed_write_actions (list of "connector.action" or bare action
-            names allowed to use non-GET methods — default: none).
+            names allowed to use non-GET methods — default: none) and
+            shapes ({"connector.action": response_transform config} — how
+            this consolidator shapes each endpoint's raw payload).
         call_api_override: Replaces the `call_api` the sandbox hands the
             function. Used by the app platform, whose door
             (services/app_runtime.call_action) enforces a per-version allowlist
@@ -249,6 +251,11 @@ def execute_function(
         _HARD_MAX_API_CALLS,
     )
     allowed_write_actions = set(options.get("allowed_write_actions") or [])
+    # Sep 2026 (docs/tool-architecture-strategy.md): an endpoint returns RAW
+    # data. How a consolidator wants an endpoint's payload shaped — whitelist,
+    # renames, venue-local times — is the consolidator's own config:
+    # {"connector.action": <response_transform config>}.
+    shapes: dict = options.get("shapes") or {}
     # Nesting depth for consolidator-to-consolidator calls (see the dispatch
     # in _do_api_call): absent = a top-level run.
     depth = int(options.get("_depth") or 0)
@@ -409,6 +416,17 @@ def execute_function(
         from app.agents.tool_loop import _resolve_venue_config
 
         venue_lookup = {**input_params, **api_params}
+        # A venue named on THIS call wins over the tool call's own venue. The
+        # merge above kept the input's venue_id alongside the call's venue
+        # name, and _resolve_venue_config prefers an id — so a group-wide
+        # fan-out (get_sales / get_labour with venues='all') answered every
+        # venue with the calling venue's credentials: six identical rows.
+        # The agent passes no venue_id and was unaffected; the shared
+        # executor (MCP, charts, apps) injects one. Found 29 Sep 2026.
+        if (api_params.get("venue") or api_params.get("venue_name")) and not (
+            api_params.get("venue_id")
+        ):
+            venue_lookup.pop("venue_id", None)
         config_row = _resolve_venue_config(connector, venue_lookup, use_db)
         if not config_row:
             config_row = (
@@ -444,8 +462,13 @@ def execute_function(
 
         payload = result.response_payload
 
-        # Apply response transform
-        step_transform = tool_def.get("response_transform")
+        # Shape the payload: the consolidator's own shape for this endpoint
+        # wins (and replaces, never stacks on, the endpoint's legacy
+        # response_transform — which applies only until every consolidator
+        # carries its shapes; transforms are then removed from endpoints).
+        step_transform = shapes.get(f"{connector}.{action}") or tool_def.get(
+            "response_transform"
+        )
         if step_transform and step_transform.get("enabled") and payload:
             from app.connectors.response_transform import apply_response_transform
 

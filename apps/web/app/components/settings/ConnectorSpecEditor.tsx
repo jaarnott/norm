@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
-import type { ConnectorSpecFull, ConnectorSpecTool, TestRequest } from '../../types';
+import type { ConnectorSpecFull, ConnectorSpecTool, SpecInventoryRow, TestRequest } from '../../types';
 import { apiFetch, getToken } from '../../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -49,6 +49,7 @@ const EMPTY_SPEC: ConnectorSpecFull = {
   version: 1,
   enabled: true,
   tools: [],
+  endpoints: [],
   api_documentation: null,
   example_requests: [],
   credential_fields: [],
@@ -57,6 +58,41 @@ const EMPTY_SPEC: ConnectorSpecFull = {
   created_at: '',
   updated_at: null,
 };
+
+// Tools and API endpoints are two lists in the database (Sep 2026 — see
+// docs/tool-architecture-strategy.md). The editor keeps ONE array so row
+// indexes, drag-to-reorder and collapse state work unchanged; each row carries
+// the list it belongs to (tools first, then endpoints), stripped again on save.
+function withListMarkers(spec: ConnectorSpecFull): ConnectorSpecFull {
+  if (!Array.isArray(spec.endpoints)) return spec; // not split yet: one list
+  return {
+    ...spec,
+    tools: [
+      ...spec.tools.map(t => ({ ...t, _list: 'tools' as const })),
+      ...spec.endpoints.map(t => ({ ...t, _list: 'endpoints' as const })),
+    ],
+  };
+}
+
+function toStoredSpec(form: ConnectorSpecFull, split: boolean): ConnectorSpecFull {
+  const strip = (row: ConnectorSpecTool): ConnectorSpecTool => {
+    const { _list: _ignored, ...rest } = row;
+    void _ignored;
+    return rest;
+  };
+  if (!split) return { ...form, tools: form.tools.map(strip) };
+  return {
+    ...form,
+    tools: form.tools.filter(t => t._list !== 'endpoints').map(strip),
+    endpoints: form.tools.filter(t => t._list === 'endpoints').map(strip),
+  };
+}
+
+const rowBadge = (color: string, bg: string): React.CSSProperties => ({
+  fontSize: '0.65rem', fontWeight: 600, color, backgroundColor: bg,
+  padding: '1px 6px', borderRadius: 3, marginLeft: 4, whiteSpace: 'nowrap',
+});
+const rowMeta: React.CSSProperties = { fontSize: '0.7rem', color: '#888', whiteSpace: 'nowrap' };
 
 const inputStyle: React.CSSProperties = {
   width: '100%',
@@ -1473,8 +1509,21 @@ function ConsolidatorToolEditor({
 }
 
 export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: Props) {
-  const [form, setForm] = useState<ConnectorSpecFull>(spec ?? { ...EMPTY_SPEC });
+  const [form, setForm] = useState<ConnectorSpecFull>(() => withListMarkers(spec ?? { ...EMPTY_SPEC }));
+  // Split into tools + endpoints lists (every connector since Sep 2026; new ones start split).
+  const [split] = useState(() => Array.isArray((spec ?? EMPTY_SPEC).endpoints));
   const [saving, setSaving] = useState(false);
+  // What each row is, who exposes it, what it calls and what calls it.
+  const [inventory, setInventory] = useState<Record<string, SpecInventoryRow>>({});
+  useEffect(() => {
+    if (isNew || !spec?.connector_name) return;
+    apiFetch(`/api/connector-specs/${spec.connector_name}/inventory`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: { rows?: SpecInventoryRow[] } | null) => {
+        if (d?.rows) setInventory(Object.fromEntries(d.rows.map(r => [r.action, r])));
+      })
+      .catch(() => {});
+  }, [isNew, spec?.connector_name]);
   const [collapsedTools, setCollapsedTools] = useState<Set<number>>(() => new Set(form.tools.map((_, i) => i)));
 
   // Consolidator builder state
@@ -1571,7 +1620,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
   const addTool = () => {
     setForm(prev => ({
       ...prev,
-      tools: [...prev.tools, { ...EMPTY_TOOL }],
+      tools: [...prev.tools, split ? { ...EMPTY_TOOL, _list: 'endpoints' as const } : { ...EMPTY_TOOL }],
     }));
   };
 
@@ -1589,6 +1638,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
   const handleDragEnd = () => {
     if (dragIdx !== null && dragOverIdx !== null && dragIdx !== dragOverIdx) {
       setForm(prev => {
+        // A row stays in its own list: tools and endpoints reorder separately.
+        if (prev.tools[dragIdx]?._list !== prev.tools[dragOverIdx]?._list) return prev;
         const tools = [...prev.tools];
         const [moved] = tools.splice(dragIdx, 1);
         tools.splice(dragOverIdx, 0, moved);
@@ -1667,7 +1718,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
   const handleSubmit = async () => {
     setSaving(true);
     try {
-      await onSave(form, isNew);
+      await onSave(toStoredSpec(form, split), isNew);
     } finally {
       setSaving(false);
     }
@@ -1841,10 +1892,14 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                         field_descriptions: (consolidatorResult?.field_descriptions || {}) as Record<string, string>,
                         consolidator_config: (consolidatorResult?.consolidator_config || {}) as Record<string, unknown>,
                       };
-                      setForm(prev => ({
-                        ...prev,
-                        tools: [...prev.tools, newTool],
-                      }));
+                      setForm(prev => {
+                        const tools = [...prev.tools];
+                        const firstEndpoint = tools.findIndex(t => t._list === 'endpoints');
+                        const row = split ? { ...newTool, _list: 'tools' as const } : newTool;
+                        if (firstEndpoint >= 0) tools.splice(firstEndpoint, 0, row);
+                        else tools.push(row);
+                        return { ...prev, tools };
+                      });
                       setShowConsolidatorBuilder(false);
                       setConsolidatorResult(null);
                       setConsolidatorTestResult(null);
@@ -2239,7 +2294,14 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
       {/* Operations */}
       <div style={sectionStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Tools</h4>
+          <div>
+            <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Tools</h4>
+            <p style={{ margin: '2px 0 0', fontSize: '0.72rem', color: '#888' }}>
+              {split
+                ? 'What an LLM can see — consolidators and built-ins. A tool reaches the agent only when an App claims it.'
+                : 'Not split yet: tools and API endpoints are still one list.'}
+            </p>
+          </div>
           <div style={{ display: 'flex', gap: '0.3rem' }}>
             <button onClick={() => setShowConsolidatorBuilder(true)} style={{
               padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #6366f1', borderRadius: 4,
@@ -2247,12 +2309,14 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
             }}>
               + Consolidator
             </button>
-            <button onClick={addTool} style={{
-              padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
-              backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-            }}>
-              + Add Tool
-            </button>
+            {!split && (
+              <button onClick={addTool} style={{
+                padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
+                backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
+              }}>
+                + Add Tool
+              </button>
+            )}
           </div>
         </div>
         {form.tools.length > 0 && !isNew && (
@@ -2466,8 +2530,15 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
           </div>
         )}
 
-        {form.tools.map((op, idx) => {
+        {(() => {
+        const renderRow = (op: ConnectorSpecTool, idx: number) => {
           const isCollapsed = collapsedTools.has(idx);
+          const inv = inventory[op.action];
+          const isEndpoint = split ? op._list === 'endpoints' : inv?.kind === 'endpoint';
+          const build = inv?.build ?? (op.consolidator_config ? 'consolidator' : null);
+          const removeBlocked = isEndpoint
+            ? (inv?.used_by.length ? `Used by ${inv.used_by.join(', ')} — change those first` : '')
+            : (inv?.app ? `The ${inv.app.name} App claims this tool — remove the claim first` : '');
           const isDragOver = dragOverIdx === idx && dragIdx !== idx;
           return (
             <div
@@ -2510,13 +2581,13 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     : <ChevronDown size={14} strokeWidth={2} style={{ color: '#999' }} />
                   }
                   <span style={{ fontWeight: 500, fontSize: '0.85rem', color: '#444' }}>
-                    {op.action || `Tool ${idx + 1}`}
+                    {op.action || (isEndpoint ? `Endpoint ${idx + 1}` : `Tool ${idx + 1}`)}
                   </span>
-                  {op.consolidator_config ? (
-                    <span style={{
-                      fontSize: '0.65rem', fontWeight: 600, color: '#7c3aed',
-                      backgroundColor: '#f5f3ff', padding: '1px 6px', borderRadius: 3, marginLeft: 4,
-                    }}>Consolidator</span>
+                  {!isEndpoint && build === 'built-in' ? (
+                    <span style={rowBadge('#0f766e', '#f0fdfa')}
+                      title={inv?.code ? `Norm code runs instead of this row: ${inv.code}` : 'Norm code'}>Built-in</span>
+                  ) : !isEndpoint && build === 'consolidator' ? (
+                    <span style={rowBadge('#7c3aed', '#f5f3ff')}>Consolidator</span>
                   ) : (
                     <>
                       {op.method && (
@@ -2547,26 +2618,54 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                  {(op.engine_only || (op.description || '').startsWith('[consolidator-only]') || (op.description || '').startsWith('[engine-only]')) && (
-                    <span style={{
-                      fontSize: '0.65rem', fontWeight: 600, color: '#92400e',
-                      backgroundColor: '#fef3c7', padding: '1px 6px', borderRadius: 3,
-                    }} title="Engine/consolidator use only — never offered to agents">Backend</span>
+                  {!isEndpoint && inv && (
+                    <span style={rowBadge(inv.app ? '#166534' : '#6b7280', inv.app ? '#f0fdf4' : '#f3f4f6')}
+                      title={inv.app
+                        ? `The ${inv.app.name} App puts this tool in front of the agent`
+                        : 'No App claims this tool: the agent never sees it — other tools may use it'}>
+                      {inv.app ? inv.app.name : 'not exposed'}
+                    </span>
+                  )}
+                  {!isEndpoint && inv && inv.uses.length > 0 && (
+                    <span style={rowMeta} title={inv.uses.join('\n')}>uses {inv.uses.length}</span>
+                  )}
+                  {inv && inv.used_by.length > 0 && (
+                    <span style={rowMeta} title={inv.used_by.join('\n')}>
+                      used by {inv.used_by.map(u => u.split('.').pop()).slice(0, 2).join(', ')}
+                      {inv.used_by.length > 2 ? ` +${inv.used_by.length - 2}` : ''}
+                    </span>
+                  )}
+                  {isEndpoint && inv && inv.used_by.length === 0 && (
+                    <span style={rowMeta} title="No tool calls this endpoint">unused</span>
+                  )}
+                  {!isEndpoint && inv && inv.calls_30d > 0 && (
+                    <span style={rowMeta} title="Direct calls in the last 30 days">{inv.calls_30d} calls</span>
                   )}
                   <span style={{ fontSize: '0.7rem', color: '#aaa', whiteSpace: 'nowrap' }}
-                    title="When this tool was first added to the spec">
+                    title="When this row was first added to the spec">
                     {op.added_at ? `added ${new Date(op.added_at).toLocaleDateString()}` : 'added —'}
                   </span>
-                  <button onClick={(e) => { e.stopPropagation(); removeTool(idx); }} style={{
-                    border: '1px solid #e53e3e', borderRadius: 4, backgroundColor: '#fff', color: '#e53e3e',
-                    padding: '2px 8px', fontSize: '0.72rem', cursor: 'pointer', fontFamily: 'inherit',
-                  }}>
+                  <button
+                    disabled={!!removeBlocked}
+                    title={removeBlocked || 'Remove (saved when you press Update Spec)'}
+                    onClick={(e) => { e.stopPropagation(); if (!removeBlocked) removeTool(idx); }}
+                    style={{
+                      border: '1px solid #e53e3e', borderRadius: 4, backgroundColor: '#fff', color: '#e53e3e',
+                      padding: '2px 8px', fontSize: '0.72rem', fontFamily: 'inherit',
+                      cursor: removeBlocked ? 'not-allowed' : 'pointer', opacity: removeBlocked ? 0.4 : 1,
+                    }}>
                     Remove
                   </button>
                 </div>
               </div>
               {!isCollapsed && (
                 <div style={{ padding: '0.75rem' }}>
+                  {!isEndpoint && build === 'built-in' && (
+                    <p style={{ margin: '0 0 0.6rem', fontSize: '0.75rem', color: '#0f766e' }}>
+                      Built-in: Norm code{inv?.code ? <> at <code>{inv.code}</code></> : ''} runs instead of this row.
+                      The description and fields below are what the agent sees; the behaviour lives in code.
+                    </p>
+                  )}
                   {op.consolidator_config ? (
                     <ConsolidatorToolEditor
                       op={op}
@@ -2887,7 +2986,39 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
               )}
             </div>
           );
-        })}
+        };
+        const rowIdxs = form.tools.map((_, i) => i);
+        const toolIdxs = split ? rowIdxs.filter(i => form.tools[i]._list !== 'endpoints') : rowIdxs;
+        const endpointIdxs = split ? rowIdxs.filter(i => form.tools[i]._list === 'endpoints') : [];
+        return (
+          <>
+            {toolIdxs.map(i => renderRow(form.tools[i], i))}
+            {split && toolIdxs.length === 0 && (
+              <p style={{ fontSize: '0.78rem', color: '#999', fontStyle: 'italic', margin: '0 0 0.5rem' }}>No tools yet.</p>
+            )}
+            {split && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '1.25rem 0 0.75rem' }}>
+                <div>
+                  <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>API endpoints</h4>
+                  <p style={{ margin: '2px 0 0', fontSize: '0.72rem', color: '#888' }}>
+                    Building blocks — one call to {form.display_name || 'the outside system'} each. Tools call them; an LLM never sees them.
+                  </p>
+                </div>
+                <button onClick={addTool} style={{
+                  padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
+                  backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
+                }}>
+                  + Endpoint
+                </button>
+              </div>
+            )}
+            {endpointIdxs.map(i => renderRow(form.tools[i], i))}
+            {split && endpointIdxs.length === 0 && (
+              <p style={{ fontSize: '0.78rem', color: '#999', fontStyle: 'italic', margin: 0 }}>No endpoints.</p>
+            )}
+          </>
+        );
+        })()}
       </div>
 
       {/* Agent Mode (conditional) */}

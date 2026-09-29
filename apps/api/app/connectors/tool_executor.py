@@ -278,7 +278,8 @@ def get_tool_info(
 
 
 def list_connector_tools(connector_name: str, config_db: Session) -> dict:
-    """Return all available tools for a connector with method, path, and param info."""
+    """The TOOLS a chart may call on a connector, with method, path and params.
+    Endpoints are not listed: charts follow the same rule as the agent."""
     from app.db.config_models import ConnectionSpec
 
     spec = (
@@ -297,7 +298,8 @@ def list_connector_tools(connector_name: str, config_db: Session) -> dict:
         }
 
     tools = []
-    for t in spec_rows.rows(spec):
+    # Charts call TOOLS only (Sep 2026) — never an endpoint.
+    for t in spec_rows.tools(spec):
         field_descs = t.get("field_descriptions") or {}
         required = t.get("required_fields") or []
         tools.append(

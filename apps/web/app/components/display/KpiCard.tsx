@@ -4,6 +4,9 @@ interface KpiCardProps {
   rows: Record<string, unknown>[];
   spec?: {
     value_key: string;
+    // 'count' shows how many rows there are (open jobs, outstanding orders)
+    // instead of summing value_key. Default 'sum'.
+    aggregate?: 'sum' | 'count';
     format?: 'number' | 'currency' | 'percent';
     prefix?: string;
     suffix?: string;
@@ -50,7 +53,8 @@ function getThresholdColor(val: number, threshold?: { warning: number; danger: n
 }
 
 export default function KpiCard({ rows, spec, title }: KpiCardProps) {
-  if (!spec?.value_key || !rows || rows.length === 0) {
+  const countRows = spec?.aggregate === 'count';
+  if ((!spec?.value_key && !countRows) || !rows || (rows.length === 0 && !countRows)) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#bbb', fontSize: '0.82rem' }}>
         No data
@@ -58,12 +62,12 @@ export default function KpiCard({ rows, spec, title }: KpiCardProps) {
     );
   }
 
-  const valueKey = spec.value_key;
+  const valueKey = spec?.value_key || '';
   const compKey = spec.comparison_key || spec.delta_key;
   const compLabel = spec.comparison_label || spec.delta_label;
 
   // Check if value_key actually exists in the data
-  const keyExists = rows.some(r => valueKey in r);
+  const keyExists = countRows || rows.some(r => valueKey in r);
   if (!keyExists) {
     const availableKeys = Object.keys(rows[0]).filter(k => !k.startsWith('_') && typeof rows[0][k] === 'number');
     return (
@@ -79,9 +83,11 @@ export default function KpiCard({ rows, spec, title }: KpiCardProps) {
   }
 
   // Get the value — use the last row (most recent) or sum if multiple
-  const value = rows.length === 1
-    ? Number(rows[0][valueKey] || 0)
-    : rows.reduce((sum, r) => sum + Number(r[valueKey] || 0), 0);
+  const value = countRows
+    ? rows.length
+    : rows.length === 1
+      ? Number(rows[0][valueKey] || 0)
+      : rows.reduce((sum, r) => sum + Number(r[valueKey] || 0), 0);
 
   const comparison = compKey
     ? rows.length === 1
