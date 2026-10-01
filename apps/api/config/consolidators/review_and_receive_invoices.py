@@ -64,9 +64,10 @@ def run(params, call_api, log, call_api_parallel=None):
                 - datetime.timedelta(days=60)
             ).isoformat()
 
-    # Single-invoice review: the Invoices page (or the receive-one chat tool)
-    # opening ONE invoice. Same service pipeline, present-only — the editor
-    # card is where the user acts.
+    # Single-invoice review: a chat call with invoice_id opens ONE invoice's
+    # card (this absorbed the receive_loadedhub_invoice tool, 1 Oct 2026; the
+    # Invoices page reviews through /invoice-fixes/review instead). Same
+    # service pipeline, present-only — the card is where the user acts.
     only_invoice_id = params.get("invoice_id")
 
     request = {

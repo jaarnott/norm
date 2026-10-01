@@ -6,8 +6,22 @@
 # scripts/sync_received_items_config.py.
 #
 # Requires consolidator_config:
-#   {"max_api_calls": 30, "allowed_write_actions": []}   # reads only, always
-#   (30: venues="all" reads invoices + catalogue + units per venue)
+#   {"max_api_calls": 50, "allowed_write_actions": []}   # reads only, always
+#   (venues="all" reads invoices + catalogue + units [+ groups] per venue,
+#   plus one catalogue retry per venue whose catalogue read failed: 2 + 5N)
+#
+# Consolidator review (1 Oct 2026):
+#   - `venue_id` wasn't consumed, so it rode into every per-venue invoices
+#     call — and the engine reads a call's credentials from venue_id before
+#     venue, so a venues='all' run from MCP, a chart or an app read EVERY
+#     venue's invoices with the calling venue's login.
+#   - a venue whose catalogue read failed had every line as "(unknown item)",
+#     so a `query` or `group` filter silently dropped it while the venue still
+#     appeared with its full spend. The catalogue is retried once; if it still
+#     fails, a filtered answer flags the venue and leaves it out.
+#   - the per-venue totals of a group answer ignored query/group/item_id
+#     ($147,737 shown beside a $2,252 filtered answer). They follow the
+#     filters now.
 #
 # WHAT THIS IS FOR
 #
@@ -61,6 +75,7 @@ _CONSUMED = (
     "limit",
     "venues",
     "venue",
+    "venue_id",
 )
 
 
@@ -363,8 +378,9 @@ def run(params, call_api, log, call_api_parallel=None):
     warnings = []
     venue_errors = {}
     supplier_filter = {norm(s) for s in (params.get("suppliers") or []) if s}
+    by_name = bool(params.get("query") or params.get("group"))
     flat = []
-    per_venue = {}
+    venues_read = []
     for i, v in enumerate(targets):
         invoices, catalogue, units = results[i * per : i * per + 3]
         subcats = results[i * per + 3] if per == 4 else None
@@ -375,6 +391,21 @@ def run(params, call_api, log, call_api_parallel=None):
                 return {"error": str(invoices["error"]), "window": window}
             venue_errors[v] = str(invoices["error"])
             continue
+        if isinstance(catalogue, dict) and catalogue.get("error"):
+            # Item names come only from the catalogue (Loaded's feed carries
+            # none): retry once — 502s on this list are usually transient.
+            at = {"venue": v} if v else {}
+            catalogue = call_api("loadedhub", "get_stock_items_raw", at)
+            if isinstance(catalogue, dict) and catalogue.get("error") and by_name:
+                why = (
+                    "item names unavailable ("
+                    + str(catalogue["error"])
+                    + ") — a query/group filter can't be matched without them"
+                )
+                if not multi:
+                    return {"error": why, "window": window}
+                venue_errors[v] = why
+                continue
         rows, notes = _flatten(
             invoices if isinstance(invoices, list) else [],
             catalogue,
@@ -389,7 +420,7 @@ def run(params, call_api, log, call_api_parallel=None):
         warnings.extend(prefix + n for n in notes)
         for r in rows:
             r["venue"] = v
-        per_venue[v] = rows
+        venues_read.append(v)
         flat.extend(rows)
     if multi and not flat and venue_errors:
         return {"error": "every venue failed: " + json.dumps(venue_errors)}
@@ -440,15 +471,18 @@ def run(params, call_api, log, call_api_parallel=None):
     }
     if multi:
         # The group answer carries its own per-venue totals, so "and by
-        # venue?" is answered without another fetch.
+        # venue?" is answered without another fetch — from the FILTERED
+        # lines, so they add up to the answer they sit beside.
         result["venues"] = sorted(
             (
                 {
                     "venue": v,
-                    "net_spend": round(sum(r["spend"] for r in rows), 2),
-                    "lines": len(rows),
+                    "net_spend": round(
+                        sum(r["spend"] for r in flat if r["venue"] == v), 2
+                    ),
+                    "lines": sum(1 for r in flat if r["venue"] == v),
                 }
-                for v, rows in per_venue.items()
+                for v in venues_read
             ),
             key=lambda r: r["net_spend"],
             reverse=True,

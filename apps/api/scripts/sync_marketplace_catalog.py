@@ -328,7 +328,6 @@ APPS = [
             "norm.create_purchase_order",
             "loadedhub.get_invoices",
             "loadedhub.review_and_receive_invoices",
-            "loadedhub.receive_loadedhub_invoice",
             "loadedhub.reconcile_received_invoices",
             "norm.set_workflow_mode",
         ],

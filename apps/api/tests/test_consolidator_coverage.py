@@ -91,7 +91,9 @@ class TestClassificationAndLeaks:
 
     def test_a_claimed_tool_is_not_a_leak(self, db_session, monkeypatch):
         _spec(db_session, tools=TOOLS)
-        c = _report(db_session, monkeypatch, claims={"fakehub.get_sales": "loaded-reports"})
+        c = _report(
+            db_session, monkeypatch, claims={"fakehub.get_sales": "loaded-reports"}
+        )
         assert c["leaks"] == []
         tool = next(r for r in c["tools"] if r["action"] == "get_sales")
         assert tool["app"] == "loaded-reports"
@@ -99,7 +101,10 @@ class TestClassificationAndLeaks:
     def test_endpoints_no_tool_calls_are_unused(self, db_session, monkeypatch):
         _spec(db_session, tools=TOOLS)
         c = _report(db_session, monkeypatch)
-        assert sorted(r["action"] for r in c["unused"]) == ["get_sales_raw", "unrelated_tool"]
+        assert sorted(r["action"] for r in c["unused"]) == [
+            "get_sales_raw",
+            "unrelated_tool",
+        ]
         used = next(r for r in c["tools"] if r["action"] == "get_sales_data")
         assert used["used_by"] == ["fakehub.get_sales"]
 
@@ -146,9 +151,7 @@ class TestDrift:
 
     def test_matching_code_is_clean(self, db_session, monkeypatch):
         code = "def run(p, c, l): return 1"
-        monkeypatch.setattr(
-            cc, "_canonical_files", lambda: {"get_sales": code}
-        )
+        monkeypatch.setattr(cc, "_canonical_files", lambda: {"get_sales": code})
         monkeypatch.setattr(cc, "_usage", lambda db, days: {})
         _spec(
             db_session,
@@ -192,19 +195,16 @@ class TestDrift:
     def test_the_real_matcher_resolves_every_live_style_name(self):
         # No monkeypatching: the shipped canonical map must resolve the stem
         # (get_budgets), the get_-prefixed stem fallback, and the shared
-        # files (for_period.py for
-        # wrappers via `wraps`; review_and_receive_invoices.py for
-        # receive_loadedhub_invoice via _SHARED_CANONICAL).
+        # files (for_period.py for wrappers via `wraps`).
         canonical = cc._canonical_files()
         assert "get_budgets" in canonical
         # The get_ prefix fallback: reconcile_received_invoices.py also
         # resolves under get_reconcile_received_invoices (harmlessly).
         assert "get_reconcile_received_invoices" in canonical
         assert "for_period" in canonical
-        assert (
-            cc._SHARED_CANONICAL["receive_loadedhub_invoice"]
-            == "review_and_receive_invoices"
-        )
+        # receive_loadedhub_invoice folded into review_and_receive_invoices
+        # (1 Oct 2026): no shared-file tools remain.
+        assert cc._SHARED_CANONICAL == {}
         assert "review_and_receive_invoices" in canonical
 
 

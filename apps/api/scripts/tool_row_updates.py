@@ -31,6 +31,7 @@ class RowUpdate:
     fields: dict = field(default_factory=dict)  # top-level keys to set
     code: str | None = None  # consolidator_config.function_code
     shapes: dict | None = None  # consolidator_config.shapes
+    config: dict = field(default_factory=dict)  # other consolidator_config keys
 
 
 def load_script(name: str):
@@ -58,15 +59,28 @@ def merged(live: dict, update: RowUpdate) -> dict:
         cc["function_code"] = update.code
     if update.shapes is not None:
         cc["shapes"] = update.shapes
+    cc.update(update.config)
     row["consolidator_config"] = cc
     return row
 
 
-def apply_row_updates(updates, *, dry_run: bool, label: str, db=None) -> list[str]:
+def apply_row_updates(
+    updates,
+    *,
+    dry_run: bool,
+    label: str,
+    db=None,
+    delete: tuple = (),
+    also=None,
+) -> list[str]:
     """Plan, back up, write and validate. Returns the change lines printed.
 
     ``updates`` is a list of RowUpdate, or a callable taking {connector: spec}
-    and returning one (for definitions that need a live endpoint row)."""
+    and returning one (for definitions that need a live endpoint row).
+    ``delete`` names (connector, action) tool rows to remove — backed up with
+    the rest. ``also(db, dry_run)`` makes any other config edits in the same
+    transaction (App claims, bindings, playbooks) and returns its change
+    lines; it must only write when dry_run is False."""
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.connectors import spec_rows
@@ -81,7 +95,8 @@ def apply_row_updates(updates, *, dry_run: bool, label: str, db=None) -> list[st
     lines: list[str] = []
     try:
         names = sorted(
-            {u.connector for u in updates} if not callable(updates) else set()
+            ({u.connector for u in updates} if not callable(updates) else set())
+            | {c for c, _ in delete}
         )
         if callable(updates):
             specs = {
@@ -122,7 +137,21 @@ def apply_row_updates(updates, *, dry_run: bool, label: str, db=None) -> list[st
             if diff:
                 plan.append((spec, u.action, row))
                 backup[f"{u.connector}.{u.action}"] = live
-        if dry_run or not plan:
+        removals = []
+        for connector, action in delete:
+            spec = specs.get(connector)
+            live = spec_rows.find_tool(spec, action) if spec else None
+            line = f"{connector}.{action}: " + ("delete" if live else "already gone")
+            lines.append(line)
+            print(("[dry-run] " if dry_run else "") + line)
+            if live is not None:
+                removals.append((spec, action))
+                backup[f"{connector}.{action}"] = live
+        also_lines = list(also(db, dry_run)) if also is not None else []
+        for line in also_lines:
+            lines.append(line)
+            print(("[dry-run] " if dry_run else "") + line)
+        if dry_run or not (plan or removals or also_lines):
             db.rollback()
             return lines
 
@@ -134,6 +163,10 @@ def apply_row_updates(updates, *, dry_run: bool, label: str, db=None) -> list[st
         touched = {}
         for spec, action, row in plan:
             spec.tools = [row if t.get("action") == action else t for t in spec.tools]
+            flag_modified(spec, "tools")
+            touched[spec.connector_name] = spec
+        for spec, action in removals:
+            spec.tools = [t for t in spec.tools if t.get("action") != action]
             flag_modified(spec, "tools")
             touched[spec.connector_name] = spec
         for spec in touched.values():

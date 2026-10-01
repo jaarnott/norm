@@ -126,6 +126,9 @@ RETIRED_ACTIONS = {
     "get_stock_purchase_order",
     "get_outstanding_invoices",
     "get_received_invoices_for_period",
+    # Folded into review_and_receive_invoices (invoice_id) on 1 Oct 2026 —
+    # scripts/sync_fold_receive_one_invoice.py.
+    "receive_loadedhub_invoice",
 }
 
 # Phase 2 — reconcile received invoices against supplier statements.
@@ -303,11 +306,18 @@ CONSOLIDATOR_TOOL = {
         "with nothing to change; autopilot auto-accepts every suggestion "
         "(each recorded) and receives every invoice with no blocking issues. "
         "Flagged invoices are never modified — every issue is reported with "
-        "its specific reason."
+        "its specific reason. Pass invoice_id to open ONE outstanding invoice "
+        "as its Receive Invoice card (id from get_invoices, kind "
+        "'outstanding'): reviewed the same way, never received — the user "
+        "receives it from the card."
     ),
     "required_fields": [],
-    "optional_fields": ["period", "from_date", "to_date"],
+    "optional_fields": ["period", "from_date", "to_date", "invoice_id"],
     "field_descriptions": {
+        "invoice_id": (
+            "One outstanding invoice to open as its card (from get_invoices, "
+            "kind 'outstanding'). Review only — nothing is received."
+        ),
         "period": (
             "The window in plain English — 'last month'. Norm resolves it "
             "against the venue's calendar; prefer this over from/to dates."
@@ -350,46 +360,11 @@ CONSOLIDATOR_TOOL = {
     "suppress_display_early_exit": True,
 }
 
-# The single-invoice "open one and receive it" tool. SAME function_code as the
-# batch review — passing invoice_id puts the engine in single-invoice mode
-# (present-only, full replica review), so the chat card carries the same
-# suggestions and confidence as the batch cards and the web editor. The old
-# separate prepare_receive_invoice consolidator (a hand-synced no-validation
-# mirror) is retired.
-PREPARE_RECEIVE_TOOL = {
-    "action": "receive_loadedhub_invoice",
-    "method": "GET",  # read/consolidator dispatch; the write is the user's click
-    "description": (
-        "Open ONE outstanding supplier invoice as an editable Receive Invoice "
-        "card — fully reviewed against Norm's reading of the invoice copy, "
-        "with suggested changes and confidence issues — so the user can check "
-        "it and receive it into Loaded with a click. Pass the invoice_id "
-        "(from get_invoices, kind 'outstanding'). This prepares a "
-        "draft only — it never receives the invoice itself; the user does "
-        "that from the card."
-    ),
-    "required_fields": ["invoice_id"],
-    "field_descriptions": {
-        "invoice_id": "The Loaded invoice id to receive (from get_invoices).",
-    },
-    "field_schema": {},
-    "consolidator_config": {
-        # function_code injected from FUNCTION_CODE_PATH at sync time (the
-        # review engine; invoice_id triggers its single-invoice mode).
-        "max_api_calls": 10,
-        "allowed_write_actions": ["review_invoices"],
-    },
-    # Materialise a working document from the review's card, then render the
-    # editor over it — the tool loop keys off this config (tool_loop.py:509).
-    "working_document": {
-        "doc_type": "received_invoice",
-        "sync_mode": "submit",
-        "items_path": "fix_invoices",
-        "ref_fields": ["invoice_id"],
-    },
-    "display_component": "receive_invoice_editor",
-    "display_props": {"title": "Receive Invoice"},
-}
+# The single-invoice tool `receive_loadedhub_invoice` (same function_code,
+# invoice_id → single-invoice mode) was folded into review_and_receive_invoices
+# on 1 Oct 2026: it had never been called, and the batch tool already took
+# invoice_id. One difference: its card opened full-size; the batch card opens
+# compact. RETIRED_ACTIONS prunes the row if this script is re-run.
 
 RECEIVE_ONE_PLAYBOOK = {
     "slug": "receive_loadedhub_invoice",
@@ -402,7 +377,7 @@ RECEIVE_ONE_PLAYBOOK = {
     "instructions": """Goal: help the user receive ONE specific supplier invoice.
 
 1. Identify the invoice. If the user named it (a reference number, supplier, or "the latest from X"), call get_invoices (kind 'outstanding', optionally query=<supplier>) for the venue and find the matching invoice's id. If several match, show the candidates (reference, supplier, date, total) and ask which one — do not guess.
-2. Call receive_loadedhub_invoice with that invoice_id. This opens an editable **Receive Invoice** card: units, quantities, unit costs and the linked purchase order, pre-filled from Loaded.
+2. Call review_and_receive_invoices with that invoice_id (and no period). This opens an editable **Receive Invoice** card: units, quantities, unit costs and the linked purchase order, pre-filled from Loaded.
 3. Tell the user the card is ready below and that they review it, adjust anything that needs it, then click **Accept & Receive** to receive the invoice into Loaded. NEVER say you have received it — only the user's click on the card does that.
 
 Do not link POs, edit lines, or receive invoices yourself in prose — everything happens on the card. If the user wants to review ALL outstanding invoices at once instead, that is the separate review-and-receive workflow.""",
@@ -479,7 +454,6 @@ If the user asks about a specific invoice, use get_invoices (invoice_id for one 
 # router and prompt_builder index into them; a bare string breaks both.
 BINDING_CAPABILITY_ACTIONS = [
     "review_and_receive_invoices",
-    "receive_loadedhub_invoice",
     "reconcile_received_invoices",
     "get_invoices",
     "get_purchase_orders",
@@ -580,12 +554,6 @@ def main() -> None:
         **RECONCILE_CONSOLIDATOR_TOOL["consolidator_config"],
         "function_code": RECONCILE_FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
     }
-    prepare_receive = dict(PREPARE_RECEIVE_TOOL)
-    prepare_receive["consolidator_config"] = {
-        **PREPARE_RECEIVE_TOOL["consolidator_config"],
-        # Same engine as the batch review — invoice_id selects single mode.
-        "function_code": FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
-    }
     get_invoices_tool = dict(GET_INVOICES_TOOL)
     get_invoices_tool["consolidator_config"] = {
         **GET_INVOICES_TOOL["consolidator_config"],
@@ -603,7 +571,6 @@ def main() -> None:
             *RECONCILE_SPEC_TOOLS,
             consolidator,
             reconcile_consolidator,
-            prepare_receive,
             get_invoices_tool,
             get_pos_tool,
         ]

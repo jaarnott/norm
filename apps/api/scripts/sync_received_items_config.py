@@ -86,7 +86,8 @@ TOOL = {
         "call returns one merged ranking across venues, with each row's "
         "per-venue split and per-venue totals — never fetch venue by venue and "
         "merge yourself. THE tool for 'how much of X did we buy over N months' "
-        "— never page invoices and sum lines yourself."
+        "— never page invoices and sum lines yourself. Ask ONCE for the whole "
+        "period per venue — not month by month."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -165,7 +166,7 @@ TOOL = {
     "consolidator_config": {
         # function_code injected from FUNCTION_CODE_PATH at sync time
         # 6 venues x (invoices, catalogue, units[, groups]) + dates + venue list.
-        "max_api_calls": 30,
+        "max_api_calls": 50,  # 2 + 5 per venue (incl. one catalogue retry)
         # Reads only — the sandbox refuses any non-GET action with this empty.
         "allowed_write_actions": [],
     },

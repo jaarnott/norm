@@ -32,8 +32,9 @@ CONSOLIDATORS = API / "config" / "consolidators"
 SCRIPTS = API / "scripts"
 
 # A consolidator whose canonical file is named for a SIBLING tool (mirrors
-# consolidator_coverage._SHARED_CANONICAL).
-SHARED_FILE = {"receive_loadedhub_invoice": "review_and_receive_invoices"}
+# consolidator_coverage._SHARED_CANONICAL — empty since
+# receive_loadedhub_invoice folded into review_and_receive_invoices, 1 Oct 2026).
+SHARED_FILE: dict[str, str] = {}
 
 _BUDGET = re.compile(r'"max_api_calls":\s*(\d+)')
 

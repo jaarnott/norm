@@ -319,10 +319,9 @@ class TestSyncConfigContract:
         spec.loader.exec_module(mod)
         cfg = mod.CONSOLIDATOR_TOOL["consolidator_config"]
         assert cfg["allowed_write_actions"] == ["review_invoices"]
-        # the single-invoice tool runs the SAME engine and needs the same grant
-        pcfg = mod.PREPARE_RECEIVE_TOOL["consolidator_config"]
-        assert pcfg["allowed_write_actions"] == ["review_invoices"]
-        assert mod.PREPARE_RECEIVE_TOOL["working_document"]["items_path"] == (
+        # one invoice (invoice_id) rides the same tool since the single-invoice
+        # tool folded in (1 Oct 2026): same grant, same card fan-out
+        assert mod.CONSOLIDATOR_TOOL["working_document"]["items_path"] == (
             "fix_invoices"
         )
         assert "receive_invoice" in mod.RETIRED_ACTIONS
@@ -349,3 +348,40 @@ class TestPeriodResolution:
         req = next(p for (_c, a, p) in api.calls if a == "review_invoices")
         assert req["from_date"] == "2026-06-11"  # today (10 Aug) - 60 days
         assert not [c for c in api.calls if c[1] == "resolve_dates"]
+
+
+class TestReceiveOneFoldedIn:
+    """receive_loadedhub_invoice folded into review_and_receive_invoices
+    (1 Oct 2026): never called, and the batch tool already ran its
+    single-invoice mode on invoice_id. Nothing may bring it back."""
+
+    @staticmethod
+    def _script(name):
+        import importlib.util
+        import pathlib
+
+        path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_the_batch_tool_declares_invoice_id(self):
+        cfg = self._script("sync_invoice_receiving_config")
+        tool = cfg.CONSOLIDATOR_TOOL
+        assert "invoice_id" in tool["optional_fields"]
+        assert "never received" in tool["description"]
+
+    def test_no_installer_re_adds_or_claims_the_old_tool(self):
+        cfg = self._script("sync_invoice_receiving_config")
+        assert "receive_loadedhub_invoice" in cfg.RETIRED_ACTIONS
+        assert not hasattr(cfg, "PREPARE_RECEIVE_TOOL")
+        assert "receive_loadedhub_invoice" not in cfg.BINDING_CAPABILITY_ACTIONS
+        steps = cfg.RECEIVE_ONE_PLAYBOOK["instructions"]
+        assert "Call review_and_receive_invoices with that invoice_id" in steps
+        assert "Call receive_loadedhub_invoice" not in steps
+        catalog = self._script("sync_marketplace_catalog")
+        claims = {
+            t for app in catalog.APPS for t in (app["composition"].get("tools") or [])
+        }
+        assert "loadedhub.receive_loadedhub_invoice" not in claims

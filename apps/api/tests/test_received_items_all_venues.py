@@ -145,3 +145,62 @@ class TestAFailingVenueIsFlaggedNotHidden:
     def test_every_venue_failing_is_an_error(self):
         out = run(Api(failing=set(VENUES)), venues="all")
         assert "every venue failed" in out["error"]
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    class Recording(Api):
+        def __init__(self, catalogue_fails=None, **kw):
+            super().__init__(**kw)
+            self.catalogue_fails = dict(catalogue_fails or {})  # venue -> times
+            self.params = []
+
+        def call_api(self, connector, action, params=None):
+            self.params.append((action, dict(params or {})))
+            v = (params or {}).get("venue")
+            if action == "get_stock_items_raw" and self.catalogue_fails.get(v):
+                self.catalogue_fails[v] -= 1
+                self.calls.append((action, v))
+                return {"error": "502 Bad Gateway"}
+            return super().call_api(connector, action, params)
+
+    def test_the_calling_venues_id_never_rides_into_other_venues_calls(self):
+        """venue_id beats venue when the engine picks credentials — so every
+        venue was read with the calling venue's login (MCP, charts, apps)."""
+        api = self.Recording()
+        run(api, venues="all", venue_id="v-calling")
+        reads = [p for a, p in api.params if a == "get_received_invoices"]
+        assert len(reads) == 2
+        assert not any("venue_id" in p for p in reads)
+
+    def test_a_failed_catalogue_is_retried_once(self):
+        api = self.Recording(catalogue_fails={"The Glass Goose": 1})
+        out = run(api, venues="all", query="potato")
+        assert "venue_errors" not in out
+        assert out["summary"]["net_spend"] == 77.5
+        retries = [v for a, v in api.calls if a == "get_stock_items_raw"]
+        assert retries.count("The Glass Goose") == 2
+
+    def test_a_venue_without_names_is_flagged_when_filtering_by_name(self):
+        """It used to drop silently out of a query answer while still listed
+        with its full spend."""
+        api = self.Recording(catalogue_fails={"The Glass Goose": 2})
+        out = run(api, venues="all", query="potato")
+        assert "item names unavailable" in out["venue_errors"]["The Glass Goose"]
+        assert out["summary"]["net_spend"] == 60.0
+        assert [v["venue"] for v in out["venues"]] == ["Bessie & Engineers"]
+        # without a name filter the lines still count (names just missing)
+        api = self.Recording(catalogue_fails={"The Glass Goose": 2})
+        unfiltered = run(api, venues="all")
+        assert "venue_errors" not in unfiltered
+        assert unfiltered["summary"]["net_spend"] == 107.5
+
+    def test_per_venue_totals_follow_the_filters(self):
+        """$147,737 shown beside a $2,252 filtered answer (1 Oct 2026)."""
+        out = run(Api(), venues="all", query="potato")
+        assert out["venues"] == [
+            {"venue": "Bessie & Engineers", "net_spend": 60.0, "lines": 1},
+            {"venue": "The Glass Goose", "net_spend": 17.5, "lines": 1},
+        ]
+        assert sum(v["net_spend"] for v in out["venues"]) == out["summary"]["net_spend"]

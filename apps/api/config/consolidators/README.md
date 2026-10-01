@@ -17,7 +17,7 @@ sync overwrites it.
 
 | File | Config row | Sync script |
 |---|---|---|
-| `review_and_receive_invoices.py` | `loadedhub` spec → tools `review_and_receive_invoices` AND `receive_loadedhub_invoice` (single-invoice mode) | `scripts/sync_invoice_receiving_config.py` |
+| `review_and_receive_invoices.py` | `loadedhub` spec → tool `review_and_receive_invoices` (`invoice_id` = single-invoice mode; `receive_loadedhub_invoice` folded in 1 Oct 2026) | `scripts/sync_invoice_receiving_config.py` |
 | `reconcile_received_invoices.py` | `loadedhub` spec → tool `reconcile_received_invoices` | `scripts/sync_invoice_receiving_config.py` |
 | `calculate_template_stock_requirements.py` | `loadedhub` spec → tool `calculate_template_stock_requirements` | `scripts/sync_stock_requirements_config.py` |
 | `received_items_for_period.py` | `loadedhub` spec → tool `get_received_items_for_period` | `scripts/sync_received_items_config.py` |

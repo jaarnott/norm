@@ -89,9 +89,10 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
 #: Consolidators whose canonical source is a file named for a SIBLING tool
 #: (many-to-one, beyond the `wraps` marker that maps every *_for_period
 #: wrapper to for_period.py).
-_SHARED_CANONICAL = {
-    "receive_loadedhub_invoice": "review_and_receive_invoices",
-}
+#: Tools whose code is another tool's file, by action. Empty since
+#: receive_loadedhub_invoice folded into review_and_receive_invoices (1 Oct
+#: 2026); the *_for_period wrappers are matched by `wraps` instead.
+_SHARED_CANONICAL: dict[str, str] = {}
 
 
 def _canonical_files() -> dict[str, str]:
@@ -219,8 +220,7 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
                 code = cc.get("function_code") or ""
                 # Many-to-one canonical sources: every *_for_period wrapper
                 # (marked by `wraps` in its config) shares for_period.py, and
-                # receive_loadedhub_invoice is the single-invoice mode of the
-                # batch review's file.
+                # any action in _SHARED_CANONICAL names its file.
                 if cc.get("wraps"):
                     ckey = "for_period"
                 elif action in _SHARED_CANONICAL:
