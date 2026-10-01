@@ -18,12 +18,22 @@
 # Update deltas, all optional:
 #   changes        {"name": ...}
 #   line_changes   [{"line_id" | "name" (+ "section" to disambiguate),
-#                    "price": ..., "name": ..., "section": ...}]
+#                    "price": ..., "new_name": ..., "move_to": ...}]
 #   add_lines      [{"section": ..., "name": ..., "price": ...,
 #                    "recipe_id": ... | "stock_item_id": ...}]  (a missing
 #                  section is created)
 #   remove_lines   ["line_id" | "name", ...]
 #   remove_sections ["section name", ...]   (with their lines)
+#
+# Delete needs the menu's NAME as well as its id, checked against Loaded
+# before anything is deleted — the approval card then names what goes, not
+# a bare UUID.
+#
+# Consolidator review (1 Oct 2026): `section` only narrowed a line_changes
+# match when line_id was ALSO given — the one case it isn't needed — so two
+# same-named dishes could never be told apart; and a price that wasn't a
+# plain number ("$12.50", "twelve") became a $0 dish on create and add_lines.
+# Prices now accept "$12.50" and refuse anything else.
 #
 # New lines carry no id (Loaded assigns one). Because a PUT can silently drop
 # a line it does not accept, the menu is read back after the write and the
@@ -38,6 +48,7 @@
 # Requires consolidator_config:
 #   {"max_api_calls": 3, "allowed_write_actions": ["create_menu", "update_menu",
 #    "delete_menu"]}
+#   (update = read + PUT + re-read; delete = read + delete.)
 
 _OPS = ("create", "update", "delete")
 
@@ -85,6 +96,15 @@ def _num(v):
         return None
 
 
+def _price(v):
+    """A menu price: a number, or text like "$12.50" / "1,250"; else None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, str):
+        v = v.strip().lstrip("$").replace(",", "").strip()
+    return _num(v)
+
+
 # --------------------------------------------------------------- create ----
 
 
@@ -102,6 +122,7 @@ def _create(params, venue, call_api, log):
         return {"error": "menu needs a name"}
     groups = []
     order = 0
+    bad = []
     for s in menu.get("sections") or menu.get("groups") or []:
         if not isinstance(s, dict):
             continue
@@ -109,11 +130,18 @@ def _create(params, venue, call_api, log):
         for ln in s.get("lines") or []:
             if not isinstance(ln, dict) or not ln.get("name"):
                 continue
+            price = _price(ln.get("price", ln.get("workingPrice")))
+            if price is None:
+                bad.append(
+                    f"'{ln.get('name')}' has no usable price "
+                    f"({ln.get('price', ln.get('workingPrice'))!r}) — pass a number, 0 if free"
+                )
+                continue
             order += 1
             lines.append(
                 {
                     "name": ln.get("name"),
-                    "workingPrice": _num(ln.get("price", ln.get("workingPrice"))) or 0,
+                    "workingPrice": price,
                     "recipeId": ln.get("recipe_id") or ln.get("recipeId"),
                     "stockItemId": ln.get("stock_item_id") or ln.get("stockItemId"),
                     "lineOrder": ln.get("lineOrder") or order,
@@ -121,6 +149,10 @@ def _create(params, venue, call_api, log):
                 }
             )
         groups.append({"name": s.get("name"), "lines": lines})
+    if bad:
+        # A menu is created whole or not at all: half a menu with $0 dishes
+        # on it is worse than asking again.
+        return {"error": "nothing created — " + "; ".join(bad)}
     body = {"name": name, "groups": groups}
     log(f"creating menu '{name}' with {len(groups)} section(s)")
     out = call_api("loadedhub", "create_menu", {"venue": venue, "menu": body})
@@ -234,15 +266,13 @@ def _update(params, venue, call_api, log):
         if not isinstance(lc, dict):
             continue
         ref_v = lc.get("line_id") or lc.get("name")
-        found, why = _find_line(
-            groups, ref_v, lc.get("section") if lc.get("line_id") else None
-        )
+        found, why = _find_line(groups, ref_v, lc.get("section"))
         if not found:
             skipped.append(f"line_changes: {why}")
             continue
         g, ln = found
         if lc.get("price") is not None:
-            price = _num(lc["price"])
+            price = _price(lc["price"])
             if price is None:
                 skipped.append(f"line_changes: price '{lc['price']}' is not a number")
             elif price != ln.get("workingPrice"):
@@ -282,6 +312,13 @@ def _update(params, venue, call_api, log):
         if not sec_name:
             skipped.append(f"add_lines: '{al['name']}' needs a section")
             continue
+        price = _price(al.get("price"))
+        if price is None:
+            skipped.append(
+                f"add_lines: '{al['name']}' has no usable price ({al.get('price')!r}) "
+                "— pass a number, 0 if free"
+            )
+            continue
         g = _find_group(groups, sec_name)
         if g is None:
             g = {"name": sec_name, "lines": []}
@@ -291,7 +328,7 @@ def _update(params, venue, call_api, log):
         g["lines"].append(
             {
                 "name": al["name"],
-                "workingPrice": _num(al.get("price")) or 0,
+                "workingPrice": price,
                 "recipeId": al.get("recipe_id"),
                 "stockItemId": al.get("stock_item_id"),
                 "lineOrder": (max(orders) + 1) if orders else 1,
@@ -351,13 +388,29 @@ def _update(params, venue, call_api, log):
 
 def _delete(params, venue, call_api, log):
     menu_id = params.get("menu_id")
-    if not menu_id:
-        return {"error": "op 'delete' needs menu_id"}
-    log(f"deleting menu {menu_id}")
+    name = str(params.get("name") or "").strip()
+    if not menu_id or not name:
+        return {
+            "error": (
+                "op 'delete' needs menu_id AND the menu's name (from get_menus) — "
+                "the name is checked before anything is deleted"
+            )
+        }
+    menu = call_api("loadedhub", "get_menu", {"venue": venue, "menu_id": menu_id})
+    if not isinstance(menu, dict) or _err(menu):
+        return {"error": _err(menu) or f"menu {menu_id} not found at {venue}"}
+    if _lower(menu.get("name")) != _lower(name):
+        return {
+            "error": (
+                f"menu {menu_id} is '{menu.get('name')}', not '{name}' — nothing "
+                "deleted. Check the id with get_menus."
+            )
+        }
+    log(f"deleting menu '{menu.get('name')}' ({menu_id})")
     out = call_api("loadedhub", "delete_menu", {"venue": venue, "menu_id": menu_id})
     if _err(out):
         return {"error": _err(out)}
-    return {"result": "deleted", "menu_id": menu_id}
+    return {"result": "deleted", "menu_id": menu_id, "name": menu.get("name")}
 
 
 # ------------------------------------------------------------------ run ----

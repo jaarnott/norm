@@ -67,3 +67,59 @@ def test_a_create_without_a_name_is_refused_before_any_call():
     out, calls, _ = _run({"yield_unit": "kg"})
     assert "needs a name" in out["error"]
     assert calls == []
+
+
+# ── consolidator review, 1 Oct 2026 ──────────────────────────────────────
+
+
+def test_json_text_is_read_and_numbers_and_flags_coerced():
+    """With no schema the model sent arrays as JSON text; Orbit's schema
+    (additionalProperties false, typed lines) rejects that."""
+    out, calls, _ = _run(
+        {
+            "name": "COMPONENT - Aioli",
+            "yield_quantity": "2",
+            "yield_unit": "kg",
+            "is_counted_in_stocktake": "false",
+            "ingredients": '[{"kind": "item", "name": "Egg yolk", "quantity": "12", "unit": "each"}]',
+            "allergens": '[{"code": "egg", "status": "contains"}]',
+        }
+    )
+    [(_, _, body)] = calls
+    assert body["ingredients"] == [
+        {"kind": "item", "name": "Egg yolk", "quantity": 12.0, "unit": "each"}
+    ]
+    assert body["allergens"] == [{"code": "egg", "status": "contains"}]
+    assert body["yield_quantity"] == 2.0
+    assert body["is_counted_in_stocktake"] is False
+
+
+def test_an_ingredient_edit_must_say_merge_or_replace():
+    """Orbit defaults to replace: sending one changed line deleted the rest."""
+    line = {"kind": "item", "name": "Salt", "quantity": 5, "unit": "g"}
+    out, calls, _ = _run({"recipe_id": "abc", "ingredients": [line]})
+    assert "needs mode" in out["error"] and out["error"].startswith("nothing written")
+    assert calls == []
+    out, calls, _ = _run({"recipe_id": "abc", "ingredients": [], "mode": "Merge"})
+    assert calls[0][2]["mode"] == "merge"
+    # a create has no lines to lose
+    out, calls, _ = _run({"name": "New", "yield_unit": "kg", "ingredients": [line]})
+    assert calls and "mode" not in calls[0][2]
+
+
+def test_bad_lines_are_refused_before_orbit_is_called():
+    out, calls, _ = _run(
+        {
+            "name": "Broken",
+            "ingredients": [{"name": "Salt", "quantity": "a pinch"}],
+            "allergens": [{"code": "egg", "status": "maybe"}],
+        }
+    )
+    assert calls == []
+    for why in (
+        "ingredients[0] needs kind",
+        "ingredients[0] needs a unit",
+        "ingredients[0] needs a numeric quantity",
+        "allergens[0] status must be one of",
+    ):
+        assert why in out["error"]

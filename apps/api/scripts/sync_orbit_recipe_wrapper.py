@@ -40,14 +40,97 @@ CODE = (
 )
 
 
+#: What the model is told (consolidator review, 1 Oct 2026). Orbit's own
+#: description reads as "edit recipes here", but an edit WITH the user is
+#: edit_recipe's job (a card the user saves) — this is the direct write.
+DESCRIPTION = (
+    "Create a NEW recipe in LoadedHub, or write a change to an existing one "
+    "directly. To edit a recipe with the user, use edit_recipe instead — it "
+    "opens the recipe card and the user saves. Ingredients may be given by "
+    "name — stock items, sub-recipes and units are resolved for you. When "
+    "editing an existing recipe's ingredients you MUST pass mode: 'merge' "
+    "changes or adds the lines you send and keeps the rest; 'replace' makes "
+    "your list the whole recipe. Allergen statuses upsert only what you send. "
+    "This is a write — human-approved."
+)
+
+#: Orbit's own input schema for kitchen_record_recipe (from its MCP listing,
+#: 1 Oct 2026). Without it every field reached the model as a string, and
+#: Orbit (additionalProperties false, typed lines) rejected the JSON text.
+FIELD_SCHEMA = {
+    "yield_quantity": {"type": "number"},
+    "is_counted_in_stocktake": {"type": "boolean"},
+    "mode": {"type": "string", "enum": ["replace", "merge"]},
+    "ingredients": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["item", "recipe"],
+                    "description": "'item' for a stock item, 'recipe' for a sub-recipe",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Stock item or sub-recipe name (resolved for you when ref_id is omitted)",
+                },
+                "ref_id": {
+                    "type": "string",
+                    "description": "Stock item id or sub-recipe id, if you already know it",
+                },
+                "line_id": {
+                    "type": "string",
+                    "description": "Existing line id, when editing a specific line",
+                },
+                "quantity": {
+                    "type": "number",
+                    "description": "Quantity in display units of `unit`",
+                },
+                "unit": {
+                    "type": "string",
+                    "description": "Unit name or unit id for the quantity",
+                },
+                "remove": {
+                    "type": "boolean",
+                    "description": "In merge mode, drop this line instead of keeping it",
+                },
+            },
+            "required": ["kind", "unit", "quantity"],
+        },
+    },
+    "allergens": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["contains", "no", "cmw", "mc"],
+                    "description": "contains | no | cmw (can be made without) | mc (may contain)",
+                },
+                "notes": {"type": "string"},
+            },
+            "required": ["code", "status"],
+        },
+    },
+}
+
+MODE_DESCRIPTION = (
+    "How to apply `ingredients`: 'merge' (change/add the lines you send, keep "
+    "the rest) or 'replace' (your list becomes the whole recipe). Required "
+    "when editing an existing recipe's ingredients."
+)
+
+
 def tool_row(endpoint: dict) -> dict:
     drop = {"venue_id"}
     return {
         "action": TOOL,
         "method": "POST",  # a write: the tool loop asks for approval first
         "read_only": False,
-        "description": endpoint.get("description")
-        or "Create or edit a recipe in LoadedHub.",
+        "description": DESCRIPTION,
         "required_fields": [
             f for f in endpoint.get("required_fields") or [] if f not in drop
         ],
@@ -55,15 +138,14 @@ def tool_row(endpoint: dict) -> dict:
             f for f in endpoint.get("optional_fields") or [] if f not in drop
         ],
         "field_descriptions": {
-            k: v
-            for k, v in (endpoint.get("field_descriptions") or {}).items()
-            if k not in drop
+            **{
+                k: v
+                for k, v in (endpoint.get("field_descriptions") or {}).items()
+                if k not in drop
+            },
+            "mode": MODE_DESCRIPTION,
         },
-        **(
-            {"field_schema": endpoint["field_schema"]}
-            if endpoint.get("field_schema")
-            else {}
-        ),
+        "field_schema": FIELD_SCHEMA,
         "consolidator_config": {
             "function_code": CODE.read_text(),
             "max_api_calls": 1,

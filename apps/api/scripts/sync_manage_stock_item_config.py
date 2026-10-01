@@ -75,9 +75,14 @@ TOOL = {
         "names, e.g. {'minimumStockOnHandQuantity': 6}), `variant_changes` "
         "(suppliers[] edits matched by variant_id or supplier_id+stock_code), "
         "`add_suppliers` (new variants — Loaded has no variant-create endpoint); "
-        "the server fetches, merges and writes the whole item, never resend it. "
-        "'set_variant_unit' — variant_id + unit_id. Ids and units come from "
-        "get_stock. This is a write — human-approved."
+        "the server fetches, merges and writes the whole item, never resend it, "
+        "and reads it back to report anything Loaded didn't keep. "
+        "'set_variant_unit' — variant_id + unit_id. New items are GST-rated "
+        "(globalSalesTaxSortOrder 1) unless you pass 0 for an exempt item. "
+        "Changing a unit also needs its paired ratio (units via get_stock view "
+        "'reference', kind 'units'); keep exactly one defaultForSupplier=true "
+        "per supplier — both are checked before anything is written. Ids and "
+        "units come from get_stock. This is a write — human-approved."
     ),
     "required_fields": ["op"],
     "optional_fields": [
@@ -96,9 +101,14 @@ TOOL = {
         "changes": "update: top-level fields to set, Loaded's field names, deltas only.",
         "variant_changes": (
             "update: list of edits to existing suppliers[] entries; each needs "
-            "variant_id OR supplier_id + stock_code, plus the fields to set."
+            "variant_id OR supplier_id + stock_code, plus the fields to set in "
+            "Loaded's names (unitCost, unitId, brandId, defaultForSupplier, "
+            "description). A field a variant doesn't have is skipped."
         ),
-        "add_suppliers": "update: new suppliers[] entries to append (full entry dicts).",
+        "add_suppliers": (
+            "update: new suppliers[] entries to append — each needs supplierId "
+            "and unitId (plus stockCode, unitCost, defaultForSupplier)."
+        ),
         "variant_id": "set_variant_unit: the suppliers[] entry id (36 characters).",
         "unit_id": "set_variant_unit: the new unit id (36 characters).",
     },

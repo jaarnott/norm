@@ -417,11 +417,109 @@ class TestManageMenuCreateDelete:
 
     def test_delete(self):
         api = Api()
-        assert run(WRITE, api, op="delete", menu_id="m-old") == {
+        assert run(WRITE, api, op="delete", menu_id="m-old", name="winter 2024") == {
             "result": "deleted",
             "menu_id": "m-old",
+            "name": "WINTER 2024",
         }
         assert api.deleted == "m-old"
+
+    def test_delete_needs_the_name_and_checks_it(self):
+        """The approval card named only a UUID; now the name must match."""
+        api = Api()
+        assert (
+            "needs menu_id AND the menu's name"
+            in (run(WRITE, api, op="delete", menu_id="m-old")["error"])
+        )
+        assert api.calls == []
+        wrong = run(WRITE, api, op="delete", menu_id="m-dinner", name="WINTER 2024")
+        assert "is 'DINNER MENU 2026', not 'WINTER 2024'" in wrong["error"]
+        assert api.deleted is None
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    def test_section_disambiguates_a_price_change_by_name(self):
+        """section only counted when line_id was ALSO given — so two dishes
+        of the same name could never be told apart."""
+        api = Api()
+        api.menus["m-cocktails"]["groups"][0]["lines"].append(
+            _line(5, "APEROL SPRITZ", 15.0)
+        )
+        out = run(
+            WRITE,
+            api,
+            op="update",
+            menu_id="m-cocktails",
+            line_changes=[{"name": "APEROL SPRITZ", "section": "SPRITZ", "price": 17}],
+        )
+        assert out["changed"] == ["'APEROL SPRITZ' price 16.0 -> 17.0"]
+        groups = {g["name"]: g for g in api.put_body["groups"]}
+        prices = {
+            g: [ln["workingPrice"] for ln in groups[g]["lines"]]
+            for g in ("CLASSICS", "SPRITZ")
+        }
+        assert prices == {"CLASSICS": [20.0, 20.0, 15.0], "SPRITZ": [17.0, 5.0]}
+
+    def test_a_price_with_a_dollar_sign_is_read(self):
+        api = Api()
+        run(
+            WRITE,
+            api,
+            op="create",
+            menu={
+                "name": "BAR",
+                "sections": [
+                    {
+                        "name": "A",
+                        "lines": [
+                            {"name": "NUTS", "price": "$12.50"},
+                            {"name": "WATER", "price": 0},
+                        ],
+                    }
+                ],
+            },
+        )
+        assert [ln["workingPrice"] for ln in api.post_body["groups"][0]["lines"]] == [
+            12.5,
+            0.0,
+        ]
+
+    def test_a_bad_price_never_becomes_a_free_dish(self):
+        api = Api()
+        out = run(
+            WRITE,
+            api,
+            op="create",
+            menu={
+                "name": "BAR",
+                "sections": [
+                    {
+                        "name": "A",
+                        "lines": [
+                            {"name": "NUTS", "price": "twelve"},
+                            {"name": "CHIPS"},
+                        ],
+                    }
+                ],
+            },
+        )
+        assert out["error"].startswith("nothing created")
+        assert "'NUTS' has no usable price" in out["error"]
+        assert "'CHIPS' has no usable price" in out["error"]
+        assert api.post_body is None
+
+        added = run(
+            WRITE,
+            api,
+            op="update",
+            menu_id="m-cocktails",
+            add_lines=[{"section": "SPRITZ", "name": "HUGO", "price": "TBC"}],
+        )
+        assert added["result"] == "no differences — nothing written"
+        assert "'HUGO' has no usable price" in added["skipped"][0]
+        assert api.put_body is None
 
     def test_unknown_op_refused_without_calling(self):
         api = Api()

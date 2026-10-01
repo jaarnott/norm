@@ -86,13 +86,18 @@ WRITE_TOOL = {
         "stock_item_id}] (a missing section is created), `remove_lines` "
         "[line_id | name], `remove_sections` [name]; the server fetches the "
         "menu, merges, writes the whole model back and re-reads to confirm "
-        "added lines — never resend the menu yourself. 'delete' — menu_id. "
-        "Look the menu up with get_menus first. This is a write — human-approved."
+        "added lines — never resend the menu yourself. A dish named on more "
+        "than one section needs `section` to say which. Prices are numbers "
+        "(0 if free; '$12.50' is read) — anything else is refused, never "
+        "saved as $0. 'delete' — menu_id AND the menu's name, checked before "
+        "anything is deleted. Look the menu up with get_menus first. This is a "
+        "write — human-approved."
     ),
     "required_fields": ["op"],
     "optional_fields": [
         "menu",
         "menu_id",
+        "name",
         "changes",
         "line_changes",
         "add_lines",
@@ -103,8 +108,12 @@ WRITE_TOOL = {
         "op": "create | update | delete. No default.",
         "menu": "create: the menu to create.",
         "menu_id": "update / delete: the menu's id (from get_menus).",
+        "name": "delete: the menu's name (from get_menus) — checked against the id before deleting.",
         "changes": "update: {name} — the menu's own fields.",
-        "line_changes": "update: edits to existing lines, matched by line_id or name.",
+        "line_changes": (
+            "update: edits to existing lines, matched by line_id or name (+ "
+            "section when that name is on more than one section)."
+        ),
         "add_lines": "update: new lines; recipe_id / stock_item_id from get_recipes / get_stock.",
         "remove_lines": "update: line ids or names to remove.",
         "remove_sections": "update: section names to remove with their lines.",

@@ -12,6 +12,11 @@ production:
   model — is Loaded's minimumStockOnHandQuantity; it is an alias, not a skip.
 - an id that is not 36 characters is refused before the call: Loaded 400'd
   the one update_variant_unit failure ("5f392d87").
+- a create defaults to GST: without the tax field Loaded filed all four
+  Aug 2026 creates at Mr Murdochs as Exempt (consolidator review, 1 Oct).
+- a variant field Loaded doesn't have is skipped, not counted as a change;
+  a unit needs its ratio; a supplier keeps exactly one default variant;
+  an update is read back and anything Loaded didn't keep is reported.
 """
 
 import copy
@@ -93,7 +98,8 @@ class Api:
         p = dict(params or {})
         self.calls.append((action, p))
         if action == "get_stock_item_full":
-            return copy.deepcopy(FULL_ITEM)
+            # Loaded keeps what was PUT — the read-back sees the write.
+            return copy.deepcopy(self.put_body or FULL_ITEM)
         if action == "update_stock_item_raw":
             self.put_body = p["item"]
             return {"ok": True}
@@ -130,7 +136,9 @@ class TestCreate:
             "result": "created",
             "name": "MAPLE SYRUP 2L",
             "item_id": "new-1",
+            "sales_tax": "GST",
         }
+        assert api.post_body["globalSalesTaxSortOrder"] == 1
         assert api.post_body["suppliers"][0]["stockCode"] == "62404"
         assert api.post_body["itemType"] == "Default"
         assert len(api.calls) == 1
@@ -175,7 +183,9 @@ class TestUpdate:
         assert [a for a, _ in api.calls] == [
             "get_stock_item_full",
             "update_stock_item_raw",
+            "get_stock_item_full",  # read back to confirm what Loaded kept
         ]
+        assert "not_kept_by_loaded" not in out
 
     def test_the_old_descriptions_field_name_is_an_alias(self):
         # update_stock_item told the model {'minimumStockOnHand': 6}; Loaded's
@@ -195,7 +205,7 @@ class TestUpdate:
             op="update",
             item_id="item-1",
             changes='{"defaultSupplierId": "sup-3"}',
-            add_suppliers='[{"supplierId": "sup-3", "stockCode": "172884", "unitCost": 8.88, "defaultForSupplier": true}]',
+            add_suppliers='[{"supplierId": "sup-3", "stockCode": "172884", "unitId": "u-bottle", "unitCost": 8.88, "defaultForSupplier": true}]',
         )
         assert out["result"] == "updated"
         assert out["changed"] == {"defaultSupplierId": {"from": "sup-1", "to": "sup-3"}}
@@ -238,7 +248,9 @@ class TestUpdate:
             api,
             op="update",
             item_id="item-1",
-            add_suppliers=[{"supplierId": "sup-3", "stockCode": "NEW1"}],
+            add_suppliers=[
+                {"supplierId": "sup-3", "stockCode": "NEW1", "unitId": "u-bottle"}
+            ],
         )
         assert out["variants_changed"] == 1
         assert api.put_body["suppliers"][2]["stockCode"] == "NEW1"
@@ -282,3 +294,131 @@ class TestSetVariantUnit:
             "needs variant_id and unit_id"
             in run(Api(), op="set_variant_unit", variant_id=VAR1)["error"]
         )
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    def test_an_explicit_exempt_item_stays_exempt(self):
+        api = Api()
+        out = run(api, op="create", item={**NEW_ITEM, "globalSalesTaxSortOrder": 0})
+        assert api.post_body["globalSalesTaxSortOrder"] == 0
+        assert out["sales_tax"] == "sort order 0"
+
+    def test_create_refuses_a_variant_without_a_unit_or_with_two_defaults(self):
+        api = Api()
+        no_unit = {**NEW_ITEM, "suppliers": [{"supplierId": "sup-1", "stockCode": "1"}]}
+        assert "needs unitId" in run(api, op="create", item=no_unit)["error"]
+        two = dict(NEW_ITEM["suppliers"][0])
+        twice = {**NEW_ITEM, "suppliers": [two, {**two, "stockCode": "62405"}]}
+        assert "2 default variants" in run(api, op="create", item=twice)["error"]
+        assert api.post_body is None
+
+    def test_an_unknown_variant_field_is_skipped_not_counted(self):
+        api = Api()
+        out = run(
+            api,
+            op="update",
+            item_id="item-1",
+            variant_changes=[{"variant_id": VAR2, "colour": "red"}],
+        )
+        assert out["result"] == "no differences — nothing written"
+        assert "no such field" in out["skipped"][f"variant {VAR2}.colour"]
+        assert api.put_body is None
+
+    def test_snake_case_variant_fields_are_aliases(self):
+        api = Api()
+        out = run(
+            api,
+            op="update",
+            item_id="item-1",
+            variant_changes=[{"variant_id": VAR2, "unit_cost": 47.0}],
+        )
+        assert out["result"] == "updated"
+        assert api.put_body["suppliers"][1]["unitCost"] == 47.0
+        assert "unit_cost" not in api.put_body["suppliers"][1]
+
+    def test_a_unit_without_its_ratio_is_refused(self):
+        api = Api()
+        out = run(
+            api, op="update", item_id="item-1", changes={"countingUnitId": "u-each"}
+        )
+        assert "countingUnitId needs countingUnitRatio" in out["error"]
+        assert api.put_body is None
+        ok = run(
+            api,
+            op="update",
+            item_id="item-1",
+            changes={"countingUnitId": "u-each", "countingUnitRatio": 1},
+        )
+        assert ok["result"] == "updated"
+
+    def test_a_supplier_keeps_exactly_one_default_variant(self):
+        api = Api()
+        second = run(
+            api,
+            op="update",
+            item_id="item-1",
+            add_suppliers=[
+                {
+                    "supplierId": "sup-1",
+                    "stockCode": "JB700B",
+                    "unitId": "u-bottle",
+                    "defaultForSupplier": True,
+                }
+            ],
+        )
+        assert "2 default variants" in second["error"]
+        none_left = run(
+            api,
+            op="update",
+            item_id="item-1",
+            variant_changes=[{"variant_id": VAR1, "defaultForSupplier": False}],
+        )
+        assert "no default variant" in none_left["error"]
+        assert api.put_body is None
+        # moving the default within a supplier, in one call, is fine
+        moved = run(
+            api,
+            op="update",
+            item_id="item-1",
+            add_suppliers=[
+                {
+                    "supplierId": "sup-1",
+                    "stockCode": "JB700B",
+                    "unitId": "u-bottle",
+                    "defaultForSupplier": True,
+                }
+            ],
+            variant_changes=[{"variant_id": VAR1, "defaultForSupplier": False}],
+        )
+        assert moved["result"] == "updated"
+
+    def test_what_loaded_did_not_keep_is_reported(self):
+        class Forgetful(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "get_stock_item_full" and self.put_body is not None:
+                    self.calls.append((action, dict(params or {})))
+                    return copy.deepcopy(FULL_ITEM)  # the write didn't stick
+                return super().call_api(connector, action, params)
+
+        api = Forgetful()
+        out = run(
+            api,
+            op="update",
+            item_id="item-1",
+            changes={"minimumStockOnHandQuantity": 9},
+            add_suppliers=[
+                {"supplierId": "sup-3", "stockCode": "NEW1", "unitId": "u-bottle"}
+            ],
+        )
+        assert out["not_kept_by_loaded"] == [
+            "minimumStockOnHandQuantity",
+            "new variant sup-3/NEW1",
+        ]
+        assert out["result"].startswith("updated — but Loaded did not keep")
+        assert [a for a, _ in api.calls] == [
+            "get_stock_item_full",
+            "update_stock_item_raw",
+            "get_stock_item_full",
+        ]
