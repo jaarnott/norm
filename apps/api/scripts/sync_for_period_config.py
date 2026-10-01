@@ -84,7 +84,12 @@ WRAPPED = [
         "get_cogs_detail",
         "start",
         "end",
-        "Cost of goods detail",
+        # Loaded's salesExcludeTax: revenue is ex-GST (matched Loaded's own
+        # figure exactly, La Zeppa 28 Sep 2026), while get_sales and budgets
+        # include GST by default.
+        "Cost of goods detail per product — revenue EXCLUDING GST, cost and "
+        "discounts (get_sales and get_budgets include GST unless asked with "
+        "tax 'exclude'; say which basis you compare on)",
     ),
     # get_completed_stocktakes_for_period retired 23 Sep 2026 with the raw it
     # wrapped: Loaded's /wapi/ host rejects OAuth, so every call 403'd, and
@@ -94,6 +99,27 @@ WRAPPED = [
     # consolidated — get_invoices(kind='received', period=…) replaced it
     # (sync_invoice_receiving_config.py prunes the row). Do not re-add it.
 ]
+
+
+def description_for(returns: str) -> str:
+    """What the model is told. Until 1 Oct 2026 this ended "For a group-wide
+    question pass venue='all'…" — but this wrapper cannot fan out and the
+    agent's tool loop refuses venue='all', so all 11 such cogs calls failed
+    (consolidator review). One venue per call is the truth."""
+    return (
+        f"{returns}, for a period given in plain English. Norm resolves the "
+        "period using this venue's trading day — which is NOT midnight to "
+        "midnight: a hospitality day runs from the venue's start time "
+        "(typically 7:00am) to one second before it the next day, so "
+        "late-night trade after midnight belongs to the evening that started "
+        "it. Do not calculate timestamps yourself. Only pass start and end if "
+        "the user explicitly asked for specific clock times; the result "
+        "always states which window was used — report that window to the "
+        "user alongside the numbers, so the basis of the figures is visible. "
+        "One venue per call: for a group-wide question, call it once per "
+        "venue — each is measured over its own trading day."
+    )
+
 
 PERIOD_DESC = (
     "The period in plain English — 'yesterday', 'last week', 'this month'. "
@@ -187,19 +213,7 @@ def tool_for(
         # read only — allowed_write_actions is empty, so the sandbox refuses any
         # write.
         "method": "GET",
-        "description": (
-            f"{returns}, for a period given in plain English. Norm resolves the "
-            "period using this venue's trading day — which is NOT midnight to "
-            "midnight: a hospitality day runs from the venue's start time "
-            "(typically 7:00am) to one second before it the next day, so "
-            "late-night trade after midnight belongs to the evening that started "
-            "it. Do not calculate timestamps yourself. Only pass start and end if "
-            "the user explicitly asked for specific clock times; the result "
-            "always states which window was used — report that window to the "
-            "user alongside the numbers, so the basis of the figures is visible. "
-            "For a group-wide question pass venue='all' to cover every venue in "
-            "one call, each measured over its own trading day."
-        ),
+        "description": description_for(returns),
         "required_fields": inherited_required,
         "optional_fields": [
             "period",

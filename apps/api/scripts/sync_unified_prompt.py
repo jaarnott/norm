@@ -101,9 +101,9 @@ TOOL_GUIDANCE = {
             "Ask ONCE for the whole period",
         ),
     ],
-    ("loadedhub", "get_cogs_detail_for_period"): [
-        ("Split multi-month periods into monthly calls.", "Split multi-month periods"),
-    ],
+    # get_cogs_detail_for_period carried "Split multi-month periods into
+    # monthly calls." until 1 Oct 2026 — no basis: a 3-month window worked and
+    # one month already overflows the result cap (consolidator review).
     ("loadedhub", "get_stock"): [
         ("Never guess an item id — look it up here first.", "Never guess an item id"),
     ],

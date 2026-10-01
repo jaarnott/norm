@@ -77,11 +77,16 @@ def budgets_tool() -> dict:
             "Daily budgets for a date range, corrected to the day each "
             "budget is FOR (the source dates them one day late) with the "
             "weekday alongside, plus range total, Mon-Sun weekly subtotals "
-            "and any days with no budget set. THE one budget tool — use this "
-            "for every budget question."
+            "(a week the range only partly covers is marked partial) and any "
+            "days with no budget set. Amounts INCLUDE GST, as Loaded stores "
+            "them; pass tax 'exclude' only when the user asks for ex-GST "
+            "figures or you are comparing with an ex-GST figure such as cost "
+            "of goods revenue. THE one budget tool — use this for every "
+            "budget question. Ask ONCE for the whole period — not month by "
+            "month."
         ),
         "required_fields": [],
-        "optional_fields": ["period", "from_date", "to_date"],
+        "optional_fields": ["period", "from_date", "to_date", "tax"],
         "field_descriptions": {
             "period": (
                 "The period in plain English — 'next week', 'this month'. "
@@ -92,7 +97,13 @@ def budgets_tool() -> dict:
             "to_date": (
                 "End date YYYY-MM-DD, inclusive (default: from_date + 6 — one week)"
             ),
+            "tax": (
+                "'include' (default): amounts include GST. 'exclude': each "
+                "day's amount divided by 1 + its sales-tax rate, as Loaded's "
+                "own budget screen does. The result's `tax` says which."
+            ),
         },
+        "field_schema": {"tax": {"type": "string", "enum": ["include", "exclude"]}},
         "read_only": True,
         "consolidator_config": {
             "function_code": FUNCTION_CODE_PATH.read_text(),

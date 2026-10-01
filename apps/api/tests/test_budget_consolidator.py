@@ -159,3 +159,54 @@ class TestPeriodResolution:
     def test_no_period_and_no_from_date_is_refused(self):
         out = run(Api(NOV))
         assert "period" in out["error"]
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    def test_a_failed_read_is_an_error_not_a_zero_budget(self):
+        class Failing(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "get_budgets_raw":
+                    return {"error": "Loaded 502"}
+                return super().call_api(connector, action, params)
+
+        out = run(Failing(NOV), from_date="2026-11-23", to_date="2026-11-29")
+        assert out["error"] == "could not read budgets from Loaded: Loaded 502"
+        assert "total" not in out
+
+    def test_amounts_say_they_include_gst_and_can_exclude_it(self):
+        api = Api(NOV)
+        incl = run(api, from_date="2026-11-23", to_date="2026-11-29")
+        assert incl["tax"] == "included" and incl["total"] == 105000.0
+        assert "INCLUDE GST" in incl["note"]
+        excl = run(api, from_date="2026-11-23", to_date="2026-11-29", tax="exclude")
+        assert excl["tax"] == "excluded"
+        thursday = next(d for d in excl["days"] if d["date"] == "2026-11-26")
+        assert thursday["amount"] == round(22000 / 1.15, 2)
+        assert excl["total"] == round(sum(d["amount"] for d in excl["days"]), 2)
+        assert "tax must be" in run(api, from_date="2026-11-23", tax="gst")["error"]
+
+    def test_excluding_tax_without_a_rate_is_refused(self):
+        api = Api({"2026-11-24": (5000.0, None)})
+        out = run(api, from_date="2026-11-23", to_date="2026-11-23", tax="exclude")
+        assert "carries no sales-tax rate" in out["error"]
+
+    def test_part_weeks_are_marked(self):
+        """'this month' from the 28th showed three days as a whole week."""
+        out = run(Api(NOV), from_date="2026-11-26", to_date="2026-11-30")
+        first, second = out["weeks"]
+        assert first["partial"] and first["covers"] == "2026-11-26..2026-11-29"
+        assert second["covers"] == "2026-11-30..2026-11-30"
+        whole = run(Api(NOV), from_date="2026-11-23", to_date="2026-11-29")
+        assert "partial" not in whole["weeks"][0]
+
+    def test_zero_budget_days_are_listed(self):
+        """Mr Murdochs 10–23 Aug 2026: every day 0, and 'no gaps'."""
+        api = Api({"2026-11-24": (0.0, 0.15), "2026-11-25": (7000.0, 0.15)})
+        out = run(api, from_date="2026-11-23", to_date="2026-11-24")
+        assert out["days_with_zero_budget"] == ["2026-11-23"]
+
+    def test_the_resolvers_reason_reaches_the_model(self):
+        out = run(Api(NOV), period="the vibes of spring")
+        assert "(offline)" in out["error"]

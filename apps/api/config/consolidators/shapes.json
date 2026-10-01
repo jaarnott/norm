@@ -143,7 +143,7 @@
     "posItemCategoryName": "category",
     "posItemGroupName": "group",
     "posItemName": "product",
-    "quantitySold": "quantity",
+    "quantitySold": "quantity|round:2",
     "salesExcludeTax": "revenue|round:2"
    }
   }

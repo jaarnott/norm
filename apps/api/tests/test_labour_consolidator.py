@@ -392,3 +392,47 @@ class TestGates:
     def test_unknown_view_is_refused(self):
         out = run(Api(), view="vibes")
         assert "unknown view" in out["error"]
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    def test_timeclock_splits_worked_from_leave(self):
+        """column_sums added leave in: 294.75 leave hours sat inside one DSC
+        month's 1421.2 'hours'."""
+        out = run(Api(), view="timeclock")
+        s = out["summary"]
+        assert s["column_sums"]["totalHours"] == 25.2  # all four entries
+        assert s["worked_hours"] == 9.2
+        assert s["leave_hours"] == 16.0
+        assert s["leave_entries"] == 2
+        assert s["worked_cost"] == 210.0
+        assert "INCLUDING leave" in s["_note"]
+
+    def test_group_totals_carry_leave_beside_worked_time(self):
+        out = run(Api(), venues="all")
+        assert out["totals"]["leave_hours"] == 32.0
+        assert out["totals"]["actual_hours"] == 18.4  # leave not inside
+
+    def test_staff_name_narrows_every_venue_in_a_group_answer(self):
+        """It was dropped on the venues path — answered for everyone."""
+        out = run(Api(), venues="all", staff_name="evelyn")
+        rows = {r["venue"]: r for r in out["rows"]}
+        assert rows["La Zeppa"]["actual_hours"] == 5.2
+        assert rows["La Zeppa"]["rostered_hours"] == 4.0
+        assert "leave_hours" not in rows["La Zeppa"]
+        assert out["totals"]["actual_hours"] == 10.4
+        assert out["staff_name"] == "evelyn"
+
+    def test_vs_actual_refuses_a_person(self):
+        api = Api()
+        out = run(api, view="vs_actual", staff_name="evelyn")
+        assert "can't be narrowed to one person" in out["error"]
+        assert not any(a == "get_roster_vs_actual" for a, _ in api.seen)
+
+    def test_an_unknown_group_by_is_refused_not_empty(self):
+        api = Api()
+        out = run(api, group_by="role")
+        assert "unknown group_by 'role'" in out["error"]
+        assert not any(a == "get_roster" for a, _ in api.seen)
+        assert run(Api(), group_by="Day")["rows"]  # case-insensitive

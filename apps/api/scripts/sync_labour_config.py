@@ -43,10 +43,14 @@ TOOL = {
         "booked leave split out — leave is never counted as worked time; "
         "group_by staff/day/detail, venues accepts a list or 'all' for "
         "per-venue totals), 'roster' (the full roster, drawn as the "
-        "interactive grid), 'vs_actual' (rostered vs actual per day), "
-        "'timeclock' (clock-in entries), 'staff' (the staff reference "
-        "list — names, roles, rates; no period needed). staff_name "
-        "filters any view to one person."
+        "interactive grid), 'vs_actual' (rostered vs actual per day, venue "
+        "totals), 'timeclock' (clock-in entries; worked and leave hours "
+        "summed separately), 'staff' (the staff reference list — names, "
+        "roles, rates; no period needed). staff_name filters to one person "
+        "in every view except vs_actual, including a venues='all' answer. "
+        "Ask ONCE for the whole period per venue — not month by month. On "
+        "attendance, flag no-shows (rostered, never clocked in), unrostered "
+        "clock-ins, and hours more than 20% over roster."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -84,7 +88,7 @@ TOOL = {
         ),
         "staff_name": (
             "Filter to one person — case-insensitive substring of their "
-            "first or last name."
+            "first or last name. Not for vs_actual (venue totals)."
         ),
         "group_by": (
             "attendance view: 'staff' (default, per-person totals) | 'day' "

@@ -17,10 +17,36 @@
 # compensated at the wrong end (it included yesterday and dropped the range's
 # last day).
 #
+# Budgets INCLUDE tax (GST): Loaded's own budget worksheet takes it off as
+# amount / (1 + salesTax). Since 1 Oct 2026 `tax` 'exclude' does the same,
+# day by day at each day's rate, and every result says which it is —
+# get_cogs_detail_for_period's revenue is ex-GST, and comparing it with a
+# GST-inclusive budget is ~15% off (consolidator review).
+#
+# Also from that review: a failed Loaded read used to return `total: 0` with
+# every day listed as "no budget" — indistinguishable from a venue with no
+# budget, and get_sales' compare=budget reported $0 from it. It is an error
+# now. Weeks the range only partly covers are marked partial, and days set
+# to $0 are listed (Mr Murdochs, 10–23 Aug 2026: every day 0, "no gaps").
+#
 # Requires consolidator_config: {"max_api_calls": 3}
 
 
+_TAX = {
+    "include": "include",
+    "included": "include",
+    "inclusive": "include",
+    "exclude": "exclude",
+    "excluded": "exclude",
+    "exclusive": "exclude",
+}
+
+
 def run(params, call_api, log):
+    tax = _TAX.get(str(params.get("tax") or "include").strip().lower())
+    if tax is None:
+        return {"error": "tax must be 'include' (the default) or 'exclude'"}
+
     def to_date(value, name):
         try:
             return datetime.date.fromisoformat(str(value)[:10])
@@ -43,10 +69,12 @@ def run(params, call_api, log):
             data = resolved.get("data") if isinstance(resolved, dict) else None
             window = data.get("window") if isinstance(data, dict) else None
         if not isinstance(window, dict):
+            why = resolved.get("error") if isinstance(resolved, dict) else None
             return {
                 "error": (
-                    f"could not resolve '{period}' to dates — try a simpler "
-                    "period such as 'next week'"
+                    f"could not resolve '{period}' to dates"
+                    + (f" ({why})" if why else "")
+                    + " — try a simpler period such as 'next week'"
                 )
             }
         frm = to_date(window["start"], "period start")
@@ -89,6 +117,13 @@ def run(params, call_api, log):
             "to_date": (to + datetime.timedelta(days=1)).isoformat(),
         },
     )
+    if isinstance(rows, dict) and rows.get("error"):
+        # Never a $0 budget: an empty answer from a failed read looks exactly
+        # like a venue that set no budget.
+        return {
+            "error": "could not read budgets from Loaded: " + str(rows["error"]),
+            "venue": params.get("venue"),
+        }
     if isinstance(rows, dict):
         rows = rows.get("data") or rows.get("items") or []
 
@@ -110,12 +145,24 @@ def run(params, call_api, log):
         true = dated - datetime.timedelta(days=1)
         if true < frm or true > to:
             continue
+        amount = float(r.get("amount") or 0)
+        rate = r.get("salesTax")
+        if tax == "exclude":
+            if not isinstance(rate, (int, float)) or isinstance(rate, bool):
+                return {
+                    "error": (
+                        f"the budget for {true.isoformat()} carries no sales-tax "
+                        "rate, so tax can't be taken off — ask with tax 'include'"
+                    ),
+                    "venue": params.get("venue"),
+                }
+            amount = round(amount / (1 + rate), 2)
         days.append(
             {
                 "date": true.isoformat(),
                 "day": day_names[true.weekday()],
-                "amount": float(r.get("amount") or 0),
-                "sales_tax_rate": r.get("salesTax"),
+                "amount": amount,
+                "sales_tax_rate": rate,
             }
         )
     days.sort(key=lambda d: d["date"])
@@ -135,6 +182,16 @@ def run(params, call_api, log):
             },
         )
         w["total"] = round(w["total"] + d["amount"], 2)
+    # A week the range only partly covers is a part-week total, not a week's
+    # budget: "this month" from the 28th showed 28–30 Sep's 14,000 as the
+    # week of 28 Sep – 4 Oct.
+    for w in weeks.values():
+        ws = datetime.date.fromisoformat(w["week_start"])
+        we = datetime.date.fromisoformat(w["week_end"])
+        lo, hi = max(ws, frm), min(we, to)
+        if (lo, hi) != (ws, we):
+            w["partial"] = True
+            w["covers"] = lo.isoformat() + ".." + hi.isoformat()
     have = {d["date"] for d in days}
     missing = []
     cursor = frm
@@ -143,16 +200,26 @@ def run(params, call_api, log):
             missing.append(cursor.isoformat())
         cursor += datetime.timedelta(days=1)
 
-    return {
+    result = {
         "venue": params.get("venue"),
         "from": frm.isoformat(),
         "to": to.isoformat(),
+        "tax": "included" if tax == "include" else "excluded",
         "days": days,
         "total": round(sum(d["amount"] for d in days), 2),
         "weeks": [weeks[k] for k in sorted(weeks)],
         "days_without_budget": missing,
         "note": (
             "dates are the day each budget is FOR (source dates corrected; "
-            "weekday included)"
+            "weekday included). Amounts "
+            + (
+                "INCLUDE GST, as Loaded stores them."
+                if tax == "include"
+                else "EXCLUDE GST (each day's amount / (1 + its rate))."
+            )
         ),
     }
+    zero = [d["date"] for d in days if d["amount"] == 0]
+    if zero:
+        result["days_with_zero_budget"] = zero
+    return result

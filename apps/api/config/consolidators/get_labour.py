@@ -68,6 +68,8 @@ _MONTH_SHORT = {
     12: "Dec",
 }
 
+_GROUP_BY = ("staff", "day", "detail")
+
 _TIMECLOCK_FLAGS = {
     "include_inactive": "false",
     "include_only_clockins": "false",
@@ -692,8 +694,12 @@ def _attendance(window, venue, params, call_api, call_api_parallel, log):
     }
 
 
-def _attendance_group(window, venues, call_api, call_api_parallel, log):
-    """Per-venue attendance totals in one call (venues list or 'all')."""
+def _attendance_group(window, venues, staff_name, call_api, call_api_parallel, log):
+    """Per-venue attendance totals in one call (venues list or 'all').
+
+    staff_name narrows every venue's totals to that person — it used to be
+    dropped on this path, so a one-person question across venues answered
+    for everyone (consolidator review, 1 Oct 2026)."""
     start, end = window["start"], window["end"]
     req_start, req_end = _normalise(start), _normalise(end)
     calls = []
@@ -747,11 +753,23 @@ def _attendance_group(window, venues, call_api, call_api_parallel, log):
                 st = shift.get("clockinTime", "")
                 if not st or not in_range(st) or shift.get("datestampDeleted"):
                     continue
+                if not _name_matches(
+                    shift.get("staffMemberFirstName", ""),
+                    shift.get("staffMemberLastName", ""),
+                    staff_name,
+                ):
+                    continue
                 r_h += float(shift.get("totalHours", 0) or 0)
                 r_c += float(shift.get("totalCost", 0) or 0)
         for c in _as_list(clockin_data):
             st = c.get("clockinTime", "")
             if not st or not in_range(st):
+                continue
+            if not _name_matches(
+                c.get("staffMemberFirstName", ""),
+                c.get("staffMemberLastName", ""),
+                staff_name,
+            ):
                 continue
             if _is_leave(c):
                 l_h += float(c.get("totalHours", 0) or 0)
@@ -778,6 +796,11 @@ def _attendance_group(window, venues, call_api, call_api_parallel, log):
         for k in ("rostered_hours", "rostered_cost", "actual_hours", "actual_cost")
     }
     totals["variance"] = round(totals["actual_hours"] - totals["rostered_hours"], 2)
+    # Leave is reported beside worked time, never inside it — the per-venue
+    # rows carried it and the group total quietly didn't.
+    if any(r.get("leave_hours") for r in rows):
+        totals["leave_hours"] = _total("leave_hours")
+        totals["leave_cost"] = _total("leave_cost")
     result = {
         "view": "attendance",
         "window": {
@@ -788,6 +811,8 @@ def _attendance_group(window, venues, call_api, call_api_parallel, log):
         "rows": rows,
         "totals": totals,
     }
+    if staff_name:
+        result["staff_name"] = staff_name
     skipped = [r["venue"] for r in rows if r.get("errors")]
     if skipped:
         result["note"] = (
@@ -834,6 +859,15 @@ def _roster(window, params, call_api, log):
 
 
 def _vs_actual(window, params, call_api, log):
+    if (params.get("staff_name") or "").strip():
+        return {
+            "view": "vs_actual",
+            "window": window,
+            "error": (
+                "vs_actual is the venue's totals per day — it can't be narrowed "
+                "to one person. Use view 'attendance' with staff_name instead."
+            ),
+        }
     args = {
         "start": window["start"],
         "end": window["end"],
@@ -877,6 +911,25 @@ def _timeclock(window, params, call_api, log):
     result = {"view": "timeclock", "window": window}
     summary = _summarise(data)
     if summary:
+        # Loaded returns booked leave as pseudo clock-ins: column_sums adds
+        # them in (294.75 leave hours inside one month's 1421.2 "hours" at
+        # DSC). Worked and leave are split out so neither is misread.
+        worked = [c for c in _as_list(data) if not _is_leave(c)]
+        leave = [c for c in _as_list(data) if _is_leave(c)]
+
+        def _sum(rows, key):
+            return round(sum(float(c.get(key, 0) or 0) for c in rows), 2)
+
+        summary["worked_hours"] = _sum(worked, "totalHours")
+        summary["worked_cost"] = _sum(worked, "totalCost")
+        summary["leave_hours"] = _sum(leave, "totalHours")
+        summary["leave_cost"] = _sum(leave, "totalCost")
+        summary["leave_entries"] = len(leave)
+        summary["_note"] = (
+            "column_sums adds up every numeric column INCLUDING leave entries "
+            "(type 'Leave'). Use worked_hours / leave_hours for time worked "
+            "and leave taken."
+        )
         result["summary"] = summary
     result["data"] = data
     return result
@@ -939,6 +992,15 @@ def run(params, call_api, log, call_api_parallel=None):
         return err
 
     if view == "attendance":
+        group_by = str(params.get("group_by") or "staff").strip().lower()
+        if group_by not in _GROUP_BY:
+            return {
+                "window": window,
+                "error": (
+                    "unknown group_by '" + group_by + "' — use staff, day or detail"
+                ),
+            }
+        params = {**params, "group_by": group_by}
         if params.get("venues"):
             venues, verr = _resolve_venues(params, call_api)
             if verr:
@@ -946,7 +1008,12 @@ def run(params, call_api, log, call_api_parallel=None):
                 return verr
             if len(venues) > 1:
                 return _attendance_group(
-                    window, venues, call_api, call_api_parallel, log
+                    window,
+                    venues,
+                    str(params.get("staff_name") or "").strip(),
+                    call_api,
+                    call_api_parallel,
+                    log,
                 )
             merged = dict(params)
             merged["venue"] = venues[0]
