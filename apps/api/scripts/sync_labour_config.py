@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -30,6 +31,7 @@ FUNCTION_CODE_PATH = (
     / "consolidators"
     / "get_labour.py"
 )
+SHAPES_PATH = FUNCTION_CODE_PATH.parent / "shapes.json"
 
 TOOL = {
     "action": "get_labour",
@@ -106,17 +108,28 @@ TOOL = {
 }
 
 
+def build_tool() -> dict:
+    """The row as installed: TOOL plus its code and its shapes (the response
+    shaping that moved into the tool in Sep 2026 — replacing the row without
+    them would quietly undo that)."""
+    tool = dict(TOOL)
+    tool["consolidator_config"] = {
+        **TOOL["consolidator_config"],
+        "function_code": FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
+        "shapes": json.loads(SHAPES_PATH.read_text(encoding="utf-8"))[
+            "loadedhub.get_labour"
+        ],
+    }
+    return tool
+
+
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.db.config_models import ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
-    tool = dict(TOOL)
-    tool["consolidator_config"] = {
-        **TOOL["consolidator_config"],
-        "function_code": FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
-    }
+    tool = build_tool()
 
     db = _ConfigSessionLocal()
     try:

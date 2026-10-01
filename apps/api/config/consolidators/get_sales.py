@@ -18,6 +18,20 @@
 #     (resolved via norm.list_venues; the engine resolves credentials one
 #     venue per call, so multi-venue is a parallel fan-out here),
 #   - breakdown: total | daily | items | staff | discounts,
+#   - measure: sales (default) | orders — two different things, from two
+#     feeds. Sales (/pos/sales): each bill when it was PAID, after discounts.
+#     Orders (/pos/orders): each order when it was PLACED, at its value as
+#     rung up (before discounts), paid or not — open tabs count. Absorbs
+#     get_pos_orders_for_period (1 Oct 2026),
+#   - tax: include (default) | exclude — Loaded's figures include tax and
+#     carry the tax inside them (invoicesTax), so exclude subtracts it: the
+#     figure Loaded's own reports call sales excluding tax. Budgets are
+#     tax-inclusive too and are divided by 1 + their sales-tax rate, as
+#     Loaded's own budget worksheet does. Amounts with no tax split (order
+#     values, items, staff, discounts) are divided by 1 + the GST rate, as
+#     Loaded's own reports do,
+#   - interval: daily buckets by default; a sub-day interval (e.g.
+#     '00:30:00') gives clock-time buckets attributed to their trading day,
 #   - compare: "budget" and/or "last_year" (total and daily breakdowns) —
 #     joins computed HERE, with last year defined as exactly 364 days back
 #     (52 trading weeks, weekday aligned) so the baseline can never drift
@@ -51,7 +65,12 @@ _CONSUMED = (
     "sort_by",
     "staff_name",
     "interval",
+    "measure",
+    "tax",
 )
+
+_MEASURES = ("sales", "orders")
+_TAX_LABEL = {"include": "included", "exclude": "excluded"}
 
 _DOW_NAMES = {
     0: "Monday",
@@ -98,24 +117,174 @@ def _rows_of(payload):
     return None
 
 
-def _amount_of(row):
+def _num(v):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
+
+def _amount_of(row, tax="include"):
+    """One bucket's sales: money taken, after discounts. Loaded's `invoices`
+    includes tax and `invoicesTax` is the tax inside it, so 'exclude'
+    subtracts it — the figure Loaded's own reports call sales excluding tax."""
     v = row.get("invoices")
     if not isinstance(v, (int, float)):
         v = row.get("amount")
-    return float(v) if isinstance(v, (int, float)) else None
+    if not isinstance(v, (int, float)):
+        return None
+    v = float(v)
+    if tax == "exclude":
+        v -= _num(row.get("invoicesTax"))
+    return v
 
 
-def _sales_total(payload):
-    """Net sales from a get_sales_data payload (sums invoices/amount rows)."""
-    rows = _rows_of(payload) or []
-    total = 0.0
-    seen = False
-    for row in rows:
-        v = _amount_of(row)
-        if v is not None:
-            total += v
-            seen = True
-    return round(total, 2) if seen else None
+def _feed_call(measure, venue, start, end, interval):
+    """One call to the feed a measure reads. Sales come from /pos/sales: each
+    bill when it was PAID, after discounts. Orders come from /pos/orders:
+    each order when it was PLACED, at its value as rung up (before
+    discounts), paid or not. The two differ by design — hourly orders show
+    when orders came in, hourly sales when money was taken."""
+    if measure == "orders":
+        return (
+            "loadedhub",
+            "get_pos_orders",
+            {"venue": venue, "start": start, "end": end, "interval": interval},
+        )
+    return (
+        "loadedhub",
+        "get_sales_data",
+        {
+            "venue": venue,
+            "start_datetime": start,
+            "end_datetime": end,
+            "interval": interval,
+        },
+    )
+
+
+def _zero(measure):
+    return {"orders": 0.0, "value": 0.0} if measure == "orders" else {"sales": 0.0}
+
+
+def _add_figures(acc, row, tax, measure="sales", factor=1.0):
+    """Add one bucket to running figures — sales: the money taken; orders:
+    how many were placed and their value as rung up (`factor` takes tax off
+    it, which the orders feed doesn't split out). Returns acc unchanged when
+    the bucket carries no value."""
+    if measure == "orders":
+        amt = row.get("amount")
+        if not isinstance(amt, (int, float)):
+            return acc
+        acc = dict(acc) if acc else _zero(measure)
+        acc["orders"] += _num(row.get("count"))
+        acc["value"] += float(amt) * factor
+        return acc
+    amt = _amount_of(row, tax)
+    if amt is None:
+        return acc
+    acc = dict(acc) if acc else _zero(measure)
+    acc["sales"] += amt
+    return acc
+
+
+def _figures(payload, tax, measure="sales", factor=1.0):
+    """Summed figures of a feed payload, or None when it has none."""
+    acc = None
+    for row in _rows_of(payload) or []:
+        acc = _add_figures(acc, row, tax, measure, factor)
+    return acc
+
+
+def _merge_figures(a, b):
+    if not a:
+        return b
+    if not b:
+        return a
+    return {k: a[k] + b[k] for k in a}
+
+
+def _primary(measure):
+    """The field a comparison is made on."""
+    return "orders" if measure == "orders" else "actual"
+
+
+def _ly_key(measure):
+    return "last_year_orders" if measure == "orders" else "last_year"
+
+
+def _measure_fields(figs, measure):
+    """Row fields for one measure. sales → `actual`, the money taken.
+    orders → how many orders were placed, their value as rung up and the
+    average order (order_value ÷ orders)."""
+    if measure == "orders":
+        if figs is None:
+            return {"orders": None}
+        orders = int(round(figs["orders"]))
+        value = round(figs["value"], 2)
+        return {
+            "orders": orders,
+            "order_value": value,
+            "average_order": round(value / orders, 2) if orders else None,
+        }
+    return {"actual": None if figs is None else round(figs["sales"], 2)}
+
+
+def _vs(row, measure, compare, pct):
+    """vs_budget / vs_last_year from the row's own fields."""
+    a = row.get(_primary(measure))
+    if not isinstance(a, (int, float)):
+        return
+    if "budget" in compare:
+        b = row.get("budget")
+        if isinstance(b, (int, float)):
+            row["vs_budget"] = round(a - b, 2)
+            if pct:
+                row["vs_budget_pct"] = round((a - b) / b * 100, 1) if b else None
+    if "last_year" in compare:
+        ly = row.get(_ly_key(measure))
+        if isinstance(ly, (int, float)):
+            row["vs_last_year"] = round(a - ly, 2)
+            if pct:
+                row["vs_last_year_pct"] = round((a - ly) / ly * 100, 1) if ly else None
+
+
+def _budget_days(payload, tax):
+    """{date: amount} from a get_budgets result; None when tax can't be
+    removed. Loaded's budgets INCLUDE tax — its own budget worksheet divides
+    each day by 1 + that day's sales-tax rate for the ex-tax figure, and
+    'exclude' does the same."""
+    out = {}
+    days = payload.get("days") if isinstance(payload, dict) else None
+    for d in days or []:
+        amt = d.get("amount")
+        if not isinstance(amt, (int, float)):
+            continue
+        if tax == "exclude":
+            rate = d.get("sales_tax_rate")
+            if not isinstance(rate, (int, float)):
+                return None
+            amt = amt / (1 + rate)
+        out[str(d.get("date"))] = amt
+    return out
+
+
+def _budget_total(payload, tax):
+    if tax == "include":
+        total = payload.get("total") if isinstance(payload, dict) else None
+        return round(float(total), 2) if isinstance(total, (int, float)) else None
+    days = _budget_days(payload, tax)
+    return None if days is None else round(sum(days.values()), 2)
+
+
+def _interval_days(interval):
+    """Whole days in a Loaded interval ('1.00:00:00' → 1, '7.00:00:00' → 7);
+    0 for a sub-day one ('01:00:00', '00:30:00')."""
+    head = str(interval or "1.00:00:00").strip().split(":")[0]
+    try:
+        if "." in head:
+            return int(head.split(".")[0])
+        hours = int(head)
+    except ValueError:
+        return 1
+    return hours // 24
 
 
 def _shift_iso(value, days):
@@ -377,7 +546,17 @@ def _resolve_venues(params, call_api):
 # ── breakdown: total ──────────────────────────────────────────────────────
 
 
-def _breakdown_total(window, venues, compare, call_api, call_api_parallel, log):
+def _breakdown_total(
+    window,
+    venues,
+    compare,
+    measure,
+    tax,
+    call_api,
+    call_api_parallel,
+    log,
+    factors=None,
+):
     days = (
         datetime.date.fromisoformat(str(window["end"])[:10])
         - datetime.date.fromisoformat(str(window["start"])[:10])
@@ -394,18 +573,7 @@ def _breakdown_total(window, venues, compare, call_api, call_api_parallel, log):
     calls = []
     meta = []
     for v in venues:
-        calls.append(
-            (
-                "loadedhub",
-                "get_sales_data",
-                {
-                    "venue": v,
-                    "start_datetime": window["start"],
-                    "end_datetime": window["end"],
-                    "interval": interval,
-                },
-            )
-        )
+        calls.append(_feed_call(measure, v, window["start"], window["end"], interval))
         meta.append((v, "actual"))
         if "budget" in compare:
             calls.append(
@@ -417,18 +585,7 @@ def _breakdown_total(window, venues, compare, call_api, call_api_parallel, log):
             )
             meta.append((v, "budget"))
         if "last_year" in compare:
-            calls.append(
-                (
-                    "loadedhub",
-                    "get_sales_data",
-                    {
-                        "venue": v,
-                        "start_datetime": ly_start,
-                        "end_datetime": ly_end,
-                        "interval": interval,
-                    },
-                )
-            )
+            calls.append(_feed_call(measure, v, ly_start, ly_end, interval))
             meta.append((v, "last_year"))
 
     log(
@@ -440,6 +597,7 @@ def _breakdown_total(window, venues, compare, call_api, call_api_parallel, log):
     )
     results = _call_all(call_api, call_api_parallel, calls)
 
+    pk, lyk = _primary(measure), _ly_key(measure)
     per_venue = {v: {"venue": v} for v in venues}
     for (v, kind), payload in zip(meta, results):
         row = per_venue[v]
@@ -447,24 +605,22 @@ def _breakdown_total(window, venues, compare, call_api, call_api_parallel, log):
             row.setdefault("errors", []).append(kind + ": " + str(payload["error"]))
             continue
         if kind == "budget":
-            total = payload.get("total") if isinstance(payload, dict) else None
-            row["budget"] = (
-                round(float(total), 2) if isinstance(total, (int, float)) else None
-            )
+            row["budget"] = _budget_total(payload, tax)
+            if row["budget"] is None and tax == "exclude":
+                row.setdefault("errors", []).append(
+                    "budget: no sales-tax rate to remove tax with"
+                )
         else:
-            key = "actual" if kind == "actual" else "last_year"
-            row[key] = _sales_total(payload)
+            figs = _figures(payload, tax, measure, (factors or {}).get(v, 1.0))
+            if kind == "actual":
+                row.update(_measure_fields(figs, measure))
+            else:
+                row[lyk] = _measure_fields(figs, measure)[pk]
 
     rows = []
     for v in venues:
         row = per_venue[v]
-        a, b, ly = row.get("actual"), row.get("budget"), row.get("last_year")
-        if a is not None and b is not None:
-            row["vs_budget"] = round(a - b, 2)
-            row["vs_budget_pct"] = round((a - b) / b * 100, 1) if b else None
-        if a is not None and ly is not None:
-            row["vs_last_year"] = round(a - ly, 2)
-            row["vs_last_year_pct"] = round((a - ly) / ly * 100, 1) if ly else None
+        _vs(row, measure, compare, pct=True)
         rows.append(row)
 
     def _total(key):
@@ -478,18 +634,29 @@ def _breakdown_total(window, venues, compare, call_api, call_api_parallel, log):
         ]
         return round(sum(vals), 2) if vals else None
 
-    totals = {"actual": _total("actual")}
+    if measure == "orders":
+        totals = {k: _total(k) for k in ("orders", "order_value")}
+        o, val = totals["orders"], totals["order_value"]
+        totals["average_order"] = round(val / o, 2) if o and val is not None else None
+    else:
+        totals = {"actual": _total("actual")}
     if "budget" in compare:
         totals["budget"] = _total("budget")
-        if totals["actual"] is not None and totals["budget"]:
-            totals["vs_budget"] = round(totals["actual"] - totals["budget"], 2)
+        if totals[pk] is not None and totals["budget"]:
+            totals["vs_budget"] = round(totals[pk] - totals["budget"], 2)
     if "last_year" in compare:
-        totals["last_year"] = _total("last_year")
-        if totals["actual"] is not None and totals["last_year"]:
-            totals["vs_last_year"] = round(totals["actual"] - totals["last_year"], 2)
+        totals[lyk] = _total(lyk)
+        if totals[pk] is not None and totals[lyk]:
+            totals["vs_last_year"] = round(totals[pk] - totals[lyk], 2)
 
     skipped = [r["venue"] for r in rows if r.get("errors")]
-    result = {"window": window, "rows": rows, "totals": totals}
+    result = {
+        "window": window,
+        "measure": measure,
+        "tax": _TAX_LABEL[tax],
+        "rows": rows,
+        "totals": totals,
+    }
     if "last_year" in compare:
         result["last_year_window"] = {
             "start": ly_start,
@@ -507,9 +674,25 @@ def _breakdown_total(window, venues, compare, call_api, call_api_parallel, log):
 
 
 def _breakdown_daily(
-    window, venues, compare, interval, allowed, call_api, call_api_parallel, log
+    window,
+    venues,
+    compare,
+    interval,
+    allowed,
+    measure,
+    tax,
+    call_api,
+    call_api_parallel,
+    log,
+    factors=None,
 ):
+    """One row per bucket. Day-or-longer intervals key by date; a sub-day
+    interval ('00:30:00', '01:00:00') keys by local clock time and gives each
+    bucket its TRADING day — a 1am bucket belongs to the day before."""
     interval = interval or "1.00:00:00"
+    span = _interval_days(interval)
+    sub_day = span == 0
+    day_start_hour = _day_start_hour(window)
     ly_start = _shift_iso(window["start"], -364)
     ly_end = _shift_iso(window["end"], -364)
     b_from, b_to = _budget_range(window)
@@ -517,18 +700,7 @@ def _breakdown_daily(
     calls = []
     meta = []
     for v in venues:
-        calls.append(
-            (
-                "loadedhub",
-                "get_sales_data",
-                {
-                    "venue": v,
-                    "start_datetime": window["start"],
-                    "end_datetime": window["end"],
-                    "interval": interval,
-                },
-            )
-        )
+        calls.append(_feed_call(measure, v, window["start"], window["end"], interval))
         meta.append((v, "actual"))
         if "budget" in compare:
             calls.append(
@@ -540,18 +712,7 @@ def _breakdown_daily(
             )
             meta.append((v, "budget"))
         if "last_year" in compare:
-            calls.append(
-                (
-                    "loadedhub",
-                    "get_sales_data",
-                    {
-                        "venue": v,
-                        "start_datetime": ly_start,
-                        "end_datetime": ly_end,
-                        "interval": interval,
-                    },
-                )
-            )
+            calls.append(_feed_call(measure, v, ly_start, ly_end, interval))
             meta.append((v, "last_year"))
 
     log("Daily fetch: " + str(len(calls)) + " calls")
@@ -565,75 +726,138 @@ def _breakdown_daily(
         except ValueError:
             return False
 
-    actual = {}
+    def _bucket(st):
+        """(key, trading date, clock time) for a bucket's local start time."""
+        date = st[:10]
+        if not sub_day:
+            return date, date, None
+        try:
+            d = datetime.date.fromisoformat(date)
+            hour = int(st[11:13])
+        except ValueError:
+            return None, None, None
+        if hour < day_start_hour:
+            d = d - datetime.timedelta(days=1)
+        return st[:16], d.isoformat(), st[11:16]
+
+    actual = {}  # (venue, key) -> figures
+    info = {}  # (venue, key) -> (trading date, clock time, startTime)
+    ly = {}
     budget_days = {}
-    ly_daily = {}
     errors = {}
     for (v, kind), payload in zip(meta, results):
         if isinstance(payload, dict) and payload.get("error"):
             errors.setdefault(v, []).append(kind + ": " + str(payload["error"]))
             continue
         if kind == "budget":
-            for d in (payload or {}).get("days") or []:
-                if _kept(str(d.get("date"))):
-                    budget_days[(v, d.get("date"))] = d.get("amount")
+            days = _budget_days(payload, tax)
+            if days is None:
+                errors.setdefault(v, []).append(
+                    "budget: no sales-tax rate to remove tax with"
+                )
+                continue
+            for date, amt in days.items():
+                if _kept(date):
+                    budget_days[(v, date)] = amt
             continue
         for row in _rows_of(payload) or []:
-            amt = _amount_of(row)
-            if amt is None:
-                continue
-            date = str(row.get("startTime", ""))[:10]
-            if kind == "actual":
-                if not _kept(date):
-                    continue
-                actual[(v, date)] = round(actual.get((v, date), 0.0) + amt, 2)
-            else:
-                # Key last year's bucket by the CURRENT-year date it aligns
+            st = str(row.get("startTime", ""))
+            if kind != "actual":
+                # Key last year's bucket by the CURRENT-year time it aligns
                 # to (+364 days), so the join is by position in the week.
-                shifted = (
-                    datetime.date.fromisoformat(date) + datetime.timedelta(days=364)
-                ).isoformat()
-                if not _kept(shifted):
+                try:
+                    st = _shift_iso(st, 364)
+                except ValueError:
                     continue
-                ly_daily[(v, shifted)] = round(ly_daily.get((v, shifted), 0.0) + amt, 2)
+            key, date, clock = _bucket(st)
+            if key is None or not _kept(date):
+                continue
+            target = actual if kind == "actual" else ly
+            figs = _add_figures(
+                target.get((v, key)), row, tax, measure, (factors or {}).get(v, 1.0)
+            )
+            if figs is None:
+                continue
+            target[(v, key)] = figs
+            if kind == "actual":
+                info[(v, key)] = (date, clock, st)
 
+    def _budget_for(v, date):
+        # A bucket of several days (interval '7.00:00:00') carries the budget
+        # of every day in it, not just its first.
+        try:
+            d0 = datetime.date.fromisoformat(date)
+        except ValueError:
+            return None
+        vals = [
+            budget_days.get((v, (d0 + datetime.timedelta(days=i)).isoformat()))
+            for i in range(max(span, 1))
+        ]
+        vals = [x for x in vals if isinstance(x, (int, float))]
+        return round(sum(vals), 2) if vals else None
+
+    pk, lyk = _primary(measure), _ly_key(measure)
     rows = []
     for v in venues:
-        for (vv, date), amt in sorted(actual.items()):
-            if vv != v:
-                continue
+        venue_rows = []
+        for vv, key in sorted(k for k in actual if k[0] == v):
+            date, clock, st = info[(v, key)]
             try:
                 dow = _DOW_NAMES.get(datetime.date.fromisoformat(date).weekday(), "")
             except ValueError:
                 dow = ""
-            row = {"venue": v, "date": date, "day": dow, "actual": amt}
+            row = {"venue": v, "date": date, "day": dow}
+            if sub_day:
+                row["time"] = clock
+                row["startTime"] = st
+            row.update(_measure_fields(actual[(v, key)], measure))
             if "budget" in compare:
-                b = budget_days.get((v, date))
-                row["budget"] = b
-                if isinstance(b, (int, float)):
-                    row["vs_budget"] = round(amt - b, 2)
+                row["budget"] = _budget_for(v, date)
             if "last_year" in compare:
-                ly = ly_daily.get((v, date))
-                row["last_year"] = ly
-                if isinstance(ly, (int, float)):
-                    row["vs_last_year"] = round(amt - ly, 2)
-            rows.append(row)
+                figs = ly.get((v, key))
+                row[lyk] = _measure_fields(figs, measure)[pk] if figs else None
+            _vs(row, measure, compare, pct=False)
+            venue_rows.append(row)
+        if sub_day:
+            # Clock-time buckets before opening and after close are empty;
+            # trim them from each end, keep any gap in the middle.
+            def _empty(r):
+                return not r.get(pk) and not r.get(lyk)
 
+            while venue_rows and _empty(venue_rows[0]):
+                venue_rows.pop(0)
+            while venue_rows and _empty(venue_rows[-1]):
+                venue_rows.pop()
+        rows.extend(venue_rows)
+
+    zero = _zero(measure)
     totals = {}
     for v in venues:
-        t = {"actual": round(sum(a for (vv, _), a in actual.items() if vv == v), 2)}
+        figs = None
+        for (vv, _), f in actual.items():
+            if vv == v:
+                figs = _merge_figures(figs, f)
+        t = _measure_fields(figs or zero, measure)
         if "budget" in compare:
-            vals = [b for (vv, _), b in budget_days.items() if vv == v]
             t["budget"] = round(
-                sum(v2 for v2 in vals if isinstance(v2, (int, float))), 2
+                sum(b for (vv, _), b in budget_days.items() if vv == v), 2
             )
         if "last_year" in compare:
-            t["last_year"] = round(
-                sum(a for (vv, _), a in ly_daily.items() if vv == v), 2
-            )
+            ly_figs = None
+            for (vv, _), f in ly.items():
+                if vv == v:
+                    ly_figs = _merge_figures(ly_figs, f)
+            t[lyk] = _measure_fields(ly_figs or zero, measure)[pk]
         totals[v] = t
 
-    result = {"window": window, "rows": rows, "totals": totals}
+    result = {
+        "window": window,
+        "measure": measure,
+        "tax": _TAX_LABEL[tax],
+        "interval": interval,
+        "rows": rows,
+        "totals": totals,
+    }
     if "last_year" in compare:
         result["last_year_window"] = {
             "start": ly_start,
@@ -654,6 +878,8 @@ def _time_window_sales(
     time_windows,
     group_by,
     day_filter,
+    measure,
+    tax,
     call_api,
     call_api_parallel,
     log,
@@ -682,17 +908,14 @@ def _time_window_sales(
     for v in venues:
         for m_start, m_end in _month_chunks(start_date, end_date):
             calls.append(
-                (
-                    "loadedhub",
-                    "get_sales_data",
-                    {
-                        "venue": v,
-                        "start_datetime": m_start.isoformat() + boundary + tz_offset,
-                        "end_datetime": (m_end + datetime.timedelta(days=1)).isoformat()
-                        + boundary
-                        + tz_offset,
-                        "interval": "01:00:00",
-                    },
+                _feed_call(
+                    measure,
+                    v,
+                    m_start.isoformat() + boundary + tz_offset,
+                    (m_end + datetime.timedelta(days=1)).isoformat()
+                    + boundary
+                    + tz_offset,
+                    "01:00:00",
                 )
             )
             call_venues.append(v)
@@ -708,7 +931,10 @@ def _time_window_sales(
             continue
         for row in _rows_of(payload) or []:
             st = str(row.get("startTime", ""))
-            amt = _amount_of(row)
+            if measure == "orders":
+                amt = _num(row.get("count"))
+            else:
+                amt = _amount_of(row, tax)
             if not amt:
                 continue
             try:
@@ -756,6 +982,8 @@ def _time_window_sales(
         row = {"venue": v, "period": bucket_label}
         for lbl in labels:
             row[lbl] = round(agg[(v, bucket_label)].get(lbl, 0), 2)
+            if measure == "orders":
+                row[lbl] = int(row[lbl])
         rows.append(row)
 
     totals = {}
@@ -765,7 +993,17 @@ def _time_window_sales(
             for lbl in labels
         }
 
-    result = {"window": window, "rows": rows, "totals": totals}
+    result = {
+        "window": window,
+        "measure": measure,
+        "tax": _TAX_LABEL[tax],
+        "rows": rows,
+        "totals": totals,
+    }
+    if measure == "orders":
+        result["note_measure"] = (
+            "each window's value is the number of orders placed in it"
+        )
     if errors:
         result["note"] = "some venues had errors: " + json.dumps(errors)
     return result
@@ -782,6 +1020,7 @@ def _breakdown_items(
     call_api,
     call_api_parallel,
     log,
+    factors=None,
 ):
     time_windows = params.get("time_windows")
     if isinstance(time_windows, str) and time_windows:
@@ -916,6 +1155,8 @@ def _breakdown_items(
             qty = item.get("quantity")
             amt = float(amt) if isinstance(amt, (int, float)) else 0.0
             qty = float(qty) if isinstance(qty, (int, float)) else 0.0
+            if factors:
+                amt = amt * factors.get(v, 1.0)
             # Key by name AND group AND category: distinct items can share a
             # name (e.g. "Misc" under Beverage and under Food) and merging
             # by name alone collapses them. group_by='month' adds the month
@@ -964,7 +1205,14 @@ def _breakdown_items(
     totals = {"row_count": len(rows), **raw_totals}
 
     rows, note = _top_with_others(rows, sort_field, top, "item")
-    result = {"window": window, "rows": rows, "totals": totals}
+    result = {
+        "window": window,
+        "rows": rows,
+        "totals": totals,
+        # Loaded prices items before discounts: these add up to MORE than
+        # the total breakdown's sales, by the discounts given.
+        "note_amounts": "item sales are before discounts",
+    }
     if len(venues) > 1:
         result["venues"] = venues
         result["note_venues"] = "rows are merged across the listed venues"
@@ -978,7 +1226,9 @@ def _breakdown_items(
 # ── breakdown: staff ──────────────────────────────────────────────────────
 
 
-def _breakdown_staff(window, venues, params, call_api, call_api_parallel, log):
+def _breakdown_staff(
+    window, venues, params, call_api, call_api_parallel, log, factors=None
+):
     staff_name = str(params.get("staff_name") or "").strip()
     top = params.get("top")
     top = int(top) if top else 0
@@ -1007,6 +1257,8 @@ def _breakdown_staff(window, venues, params, call_api, call_api_parallel, log):
             qty = s.get("quantity")
             amt = float(amt) if isinstance(amt, (int, float)) else 0.0
             qty = float(qty) if isinstance(qty, (int, float)) else 0.0
+            if factors:
+                amt = amt * factors.get(v, 1.0)
             if amt <= 0:
                 continue
             if name not in merged:
@@ -1016,6 +1268,7 @@ def _breakdown_staff(window, venues, params, call_api, call_api_parallel, log):
             if s.get("id"):
                 ids[(v, name)] = str(s["id"])
 
+    raw_sales = round(sum(r["sales"] for r in merged.values()), 2)
     for r in merged.values():
         r["sales"] = round(r["sales"], 2)
     rows = sorted(merged.values(), key=lambda r: -r["sales"])
@@ -1056,7 +1309,7 @@ def _breakdown_staff(window, venues, params, call_api, call_api_parallel, log):
         ]
         item_results = _call_all(call_api, call_api_parallel, item_calls)
         items = {}
-        for payload in item_results:
+        for (v, _), payload in zip(matches, item_results):
             if isinstance(payload, dict) and payload.get("error"):
                 return {"window": window, "error": str(payload["error"])}
             for item in _rows_of(payload) or []:
@@ -1065,6 +1318,8 @@ def _breakdown_staff(window, venues, params, call_api, call_api_parallel, log):
                 qty = item.get("quantity")
                 amt = float(amt) if isinstance(amt, (int, float)) else 0.0
                 qty = float(qty) if isinstance(qty, (int, float)) else 0.0
+                if factors:
+                    amt = amt * factors.get(v, 1.0)
                 if name2 not in items:
                     items[name2] = {"item": name2, "quantity": 0, "sales": 0}
                 items[name2]["sales"] = items[name2]["sales"] + amt
@@ -1125,6 +1380,8 @@ def _breakdown_staff(window, venues, params, call_api, call_api_parallel, log):
                 amt = _amount_of(row)
                 if not amt:
                     continue
+                if factors:
+                    amt = amt * factors.get(v, 1.0)
                 cur = slot_best.get(st)
                 if cur is None or amt > cur[1]:
                     slot_best[st] = (name, amt)
@@ -1141,7 +1398,7 @@ def _breakdown_staff(window, venues, params, call_api, call_api_parallel, log):
         "window": window,
         "rows": shown,
         "totals": {
-            "sales": round(sum(r["sales"] for r in rows), 2),
+            "sales": raw_sales,
             "orders": int(sum(r["orders"] for r in rows)),
             "staff_count": len(rows),
         },
@@ -1162,7 +1419,9 @@ def _breakdown_staff(window, venues, params, call_api, call_api_parallel, log):
 # ── breakdown: discounts ──────────────────────────────────────────────────
 
 
-def _breakdown_discounts(window, venues, call_api, call_api_parallel, log):
+def _breakdown_discounts(
+    window, venues, call_api, call_api_parallel, log, factors=None
+):
     calls = [
         (
             "loadedhub",
@@ -1179,10 +1438,13 @@ def _breakdown_discounts(window, venues, call_api, call_api_parallel, log):
             errors.setdefault(v, []).append(str(payload["error"]))
             continue
         for row in _rows_of(payload) or []:
-            name = str(row.get("label", "Unknown")).strip()
+            # One row per discount TYPE ("20% Member Deal"). This read `label`
+            # until 1 Oct 2026 — a field the feed doesn't have — so every type
+            # merged into one row named "Unknown".
+            name = str(row.get("discountType") or row.get("label") or "Unknown").strip()
             if name not in merged:
                 merged[name] = {
-                    "staff": name,
+                    "discount": name,
                     "discounts_amount": 0,
                     "discounts_count": 0,
                     "discounted_invoices": 0,
@@ -1195,19 +1457,21 @@ def _breakdown_discounts(window, venues, call_api, call_api_parallel, log):
             ):
                 val = row.get(src)
                 if isinstance(val, (int, float)):
+                    # both are money (discountInvoices: the value of the
+                    # bills the discounts were on); the count is a count
+                    if factors and dst != "discounts_count":
+                        val = val * factors.get(v, 1.0)
                     m[dst] = m[dst] + val
+    # Totals from the raw sums, then round the rows (the items pattern).
+    totals = {
+        k: round(sum(m[k] for m in merged.values()), 2)
+        for k in ("discounts_amount", "discounts_count")
+    }
     for m in merged.values():
         for k in ("discounts_amount", "discounts_count", "discounted_invoices"):
             m[k] = round(m[k], 2)
     rows = sorted(merged.values(), key=lambda r: -r["discounts_amount"])
-    result = {
-        "window": window,
-        "rows": rows,
-        "totals": {
-            "discounts_amount": round(sum(r["discounts_amount"] for r in rows), 2),
-            "discounts_count": round(sum(r["discounts_count"] for r in rows), 2),
-        },
-    }
+    result = {"window": window, "rows": rows, "totals": totals}
     if len(venues) > 1:
         result["venues"] = venues
         result["note_venues"] = "rows are merged across the listed venues"
@@ -1216,7 +1480,50 @@ def _breakdown_discounts(window, venues, call_api, call_api_parallel, log):
     return result
 
 
+# ── tax off item / staff / discount amounts ───────────────────────────────
+
+
+def _tax_factors(venues, call_api, call_api_parallel, log):
+    """{venue: 1 / (1 + its GST rate)}, the rates as percentages, and any
+    per-venue errors.
+
+    Item, staff and discount amounts come from Loaded with tax included and
+    no tax split. Loaded's own reports take tax off those at the company's
+    sales-tax rate (SalesTaxHelper.SubtractSalesTax), so this does the same.
+    The company's rates are e.g. [Exempt 0%, GST 15%]; the standard rate is
+    the highest. (Not the effective rate inside the takings: exempt sales
+    pull that down — 12.8% over one La Zeppa week — and it would misstate
+    every taxed item.)"""
+    calls = [("loadedhub", "get_sales_tax_rates", {"venue": v}) for v in venues]
+    log("Sales-tax rate fetch: " + str(len(calls)) + " calls")
+    results = _call_all(call_api, call_api_parallel, calls)
+    factors, rates, errors = {}, {}, {}
+    for v, payload in zip(venues, results):
+        if isinstance(payload, dict) and payload.get("error"):
+            errors[v] = str(payload["error"])
+            continue
+        found = [
+            r.get("rate")
+            for r in (payload if isinstance(payload, list) else _rows_of(payload) or [])
+            if isinstance(r, dict) and isinstance(r.get("rate"), (int, float))
+        ]
+        if found and max(found) > 0:
+            factors[v] = 1 / (1 + max(found))
+            rates[v] = round(max(found) * 100, 2)
+    return factors, rates, errors
+
+
 # ── entry point ───────────────────────────────────────────────────────────
+
+
+def _tax_mode(params):
+    """(mode, error). Figures include tax unless asked otherwise."""
+    t = str(params.get("tax") or "include").strip().lower()
+    if t in ("include", "included", "inclusive", "incl", "with"):
+        return "include", None
+    if t in ("exclude", "excluded", "exclusive", "excl", "ex", "without"):
+        return "exclude", None
+    return None, "tax must be 'include' (the default) or 'exclude'"
 
 
 def run(params, call_api, log, call_api_parallel=None):
@@ -1230,6 +1537,15 @@ def run(params, call_api, log, call_api_parallel=None):
         return err
 
     breakdown = str(params.get("breakdown") or "total").strip().lower()
+    measure = str(params.get("measure") or "sales").strip().lower()
+    if measure not in _MEASURES:
+        return {
+            "window": window,
+            "error": "measure must be 'sales' (money taken) or 'orders' (order count)",
+        }
+    tax, err = _tax_mode(params)
+    if err:
+        return {"window": window, "error": err}
     compare = params.get("compare") or []
     if isinstance(compare, str):
         compare = [c.strip().lower() for c in compare.split(",") if c.strip()]
@@ -1237,15 +1553,130 @@ def run(params, call_api, log, call_api_parallel=None):
     time_windows = params.get("time_windows")
     day_of_week = params.get("day_of_week") or auto_dow
     allowed = _allowed_days(day_of_week)
+    interval = params.get("interval")
 
+    if "budget" in compare and measure == "orders":
+        return {
+            "window": window,
+            "error": (
+                "budgets are money, not orders — compare='budget' works with "
+                "measure 'sales'. For orders, compare='last_year' works."
+            ),
+        }
+    if (
+        "budget" in compare
+        and breakdown == "daily"
+        and interval
+        and _interval_days(interval) == 0
+    ):
+        return {
+            "window": window,
+            "error": (
+                "budgets are set per day — compare='budget' needs a daily (or "
+                "longer) interval. Drop the budget, or the sub-day interval."
+            ),
+        }
+
+    if breakdown not in ("total", "daily", "items", "staff", "discounts"):
+        return {
+            "error": (
+                "unknown breakdown '"
+                + breakdown
+                + "' — use total, daily, items, staff, or discounts"
+            )
+        }
+    if time_windows and compare and breakdown in ("total", "daily"):
+        return {
+            "window": window,
+            "error": (
+                "compare does not combine with time_windows — run them as two calls"
+            ),
+        }
+    if compare and breakdown not in ("total", "daily"):
+        return {
+            "window": window,
+            "error": "compare works with breakdown 'total' or 'daily' only",
+        }
+    if breakdown == "items" and allowed is not None and not time_windows:
+        return {
+            "window": window,
+            "error": (
+                "the item-sales feed cannot filter by day of week over a "
+                "whole window — add time_windows (clock cuts) to slice "
+                "matching days, or drop day_of_week"
+            ),
+        }
+
+    # Tax off amounts the feed doesn't split: order values, items, staff,
+    # discounts. (Sales carry their own recorded tax; counts carry none.)
+    factors = None
+    tax_note = None
+    counts_only = measure == "orders" and time_windows
+    if (
+        tax == "exclude"
+        and not counts_only
+        and (measure == "orders" or breakdown in ("items", "staff", "discounts"))
+    ):
+        factors, rates, tax_errors = _tax_factors(
+            venues, call_api, call_api_parallel, log
+        )
+        missing = [v for v in venues if v not in factors]
+        tax_note = (
+            "Loaded gives these amounts with tax in and no tax split, so tax "
+            "was taken off at the sales-tax rate, as Loaded's own reports do: "
+            + ", ".join(v + " " + str(rates[v]) + "%" for v in venues if v in rates)
+        )
+        if missing:
+            tax_note += (
+                ". NOT removed for "
+                + ", ".join(missing)
+                + " (no sales-tax rate"
+                + (": " + json.dumps(tax_errors) if tax_errors else "")
+                + ") — their amounts still include tax"
+            )
+
+    result = _dispatch(
+        params,
+        window,
+        venues,
+        breakdown,
+        measure,
+        tax,
+        compare,
+        time_windows,
+        day_of_week,
+        allowed,
+        interval,
+        factors,
+        call_api,
+        call_api_parallel,
+        log,
+    )
+    if isinstance(result, dict) and not result.get("error"):
+        result.setdefault("tax", _TAX_LABEL[tax])
+        if tax_note:
+            result["note_tax"] = tax_note
+    return result
+
+
+def _dispatch(
+    params,
+    window,
+    venues,
+    breakdown,
+    measure,
+    tax,
+    compare,
+    time_windows,
+    day_of_week,
+    allowed,
+    interval,
+    factors,
+    call_api,
+    call_api_parallel,
+    log,
+):
     if breakdown in ("total", "daily") and time_windows:
-        if compare:
-            return {
-                "window": window,
-                "error": (
-                    "compare does not combine with time_windows — run them as two calls"
-                ),
-            }
         return _time_window_sales(
             window,
             venues,
@@ -1254,6 +1685,8 @@ def run(params, call_api, log, call_api_parallel=None):
                 params.get("group_by") or ("each" if breakdown == "daily" else "total")
             ),
             day_of_week,
+            measure,
+            tax,
             call_api,
             call_api_parallel,
             log,
@@ -1267,31 +1700,36 @@ def run(params, call_api, log, call_api_parallel=None):
                 window,
                 venues,
                 compare,
-                params.get("interval"),
+                None,
                 allowed,
+                measure,
+                tax,
                 call_api,
                 call_api_parallel,
                 log,
+                factors=factors,
             )
             rows = []
             for v in venues:
                 t = (daily.get("totals") or {}).get(v) or {}
-                row = {"venue": v, "actual": t.get("actual")}
-                a = row["actual"]
-                if "budget" in compare:
-                    row["budget"] = t.get("budget")
-                    if isinstance(a, (int, float)) and t.get("budget"):
-                        row["vs_budget"] = round(a - t["budget"], 2)
-                if "last_year" in compare:
-                    row["last_year"] = t.get("last_year")
-                    if isinstance(a, (int, float)) and t.get("last_year"):
-                        row["vs_last_year"] = round(a - t["last_year"], 2)
+                row = {"venue": v, **t}
+                _vs(row, measure, compare, pct=False)
                 rows.append(row)
-            out = {
-                "window": window,
-                "day_of_week": day_of_week,
-                "rows": rows,
-                "totals": {
+            if measure == "orders":
+                totals = {
+                    k: round(
+                        sum(r[k] for r in rows if isinstance(r.get(k), (int, float))),
+                        2,
+                    )
+                    for k in ("orders", "order_value")
+                }
+                totals["average_order"] = (
+                    round(totals["order_value"] / totals["orders"], 2)
+                    if totals["orders"]
+                    else None
+                )
+            else:
+                totals = {
                     "actual": round(
                         sum(
                             r["actual"]
@@ -1300,7 +1738,14 @@ def run(params, call_api, log, call_api_parallel=None):
                         ),
                         2,
                     )
-                },
+                }
+            out = {
+                "window": window,
+                "measure": measure,
+                "tax": _TAX_LABEL[tax],
+                "day_of_week": day_of_week,
+                "rows": rows,
+                "totals": totals,
             }
             if daily.get("note"):
                 out["note"] = daily["note"]
@@ -1308,61 +1753,48 @@ def run(params, call_api, log, call_api_parallel=None):
                 out["last_year_window"] = daily["last_year_window"]
             return out
         return _breakdown_total(
-            window, venues, compare, call_api, call_api_parallel, log
+            window,
+            venues,
+            compare,
+            measure,
+            tax,
+            call_api,
+            call_api_parallel,
+            log,
+            factors=factors,
         )
     if breakdown == "daily":
         result = _breakdown_daily(
             window,
             venues,
             compare,
-            params.get("interval"),
+            interval,
             allowed,
+            measure,
+            tax,
             call_api,
             call_api_parallel,
             log,
+            factors=factors,
         )
         if day_of_week:
             result["day_of_week"] = day_of_week
         return result
     if breakdown == "items":
-        if compare:
-            return {
-                "window": window,
-                "error": "compare works with breakdown 'total' or 'daily' only",
-            }
-        if allowed is not None and not time_windows:
-            return {
-                "window": window,
-                "error": (
-                    "the item-sales feed cannot filter by day of week over a "
-                    "whole window — add time_windows (clock cuts) to slice "
-                    "matching days, or drop day_of_week"
-                ),
-            }
         return _breakdown_items(
-            window, venues, params, allowed, call_api, call_api_parallel, log
+            window,
+            venues,
+            params,
+            allowed,
+            call_api,
+            call_api_parallel,
+            log,
+            factors=factors,
         )
     if breakdown == "staff":
-        if compare:
-            return {
-                "window": window,
-                "error": "compare works with breakdown 'total' or 'daily' only",
-            }
         return _breakdown_staff(
-            window, venues, params, call_api, call_api_parallel, log
+            window, venues, params, call_api, call_api_parallel, log, factors=factors
         )
-    if breakdown == "discounts":
-        if compare:
-            return {
-                "window": window,
-                "error": "compare works with breakdown 'total' or 'daily' only",
-            }
-        return _breakdown_discounts(window, venues, call_api, call_api_parallel, log)
-
-    return {
-        "error": (
-            "unknown breakdown '"
-            + breakdown
-            + "' — use total, daily, items, staff, or discounts"
-        )
-    }
+    return _breakdown_discounts(
+        window, venues, call_api, call_api_parallel, log, factors=factors
+    )

@@ -14,12 +14,13 @@ import pathlib
 
 from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
 
-CODE = (
+CODE_PATH = (
     pathlib.Path(__file__).resolve().parent.parent
     / "config"
     / "consolidators"
     / "get_sales.py"
-).read_text()
+)
+CODE = CODE_PATH.read_text()
 
 WINDOW = {
     "start": "2026-08-17T07:00:00+12:00",
@@ -121,19 +122,28 @@ class Api:
                 {"itemName": "Burger", "amount": 200.0, "quantity": 10},
             ]
         if action == "get_pos_discounts":
+            # Loaded's real shape: one row per discount TYPE
             return [
                 {
-                    "label": "Alice A",
+                    "discountTypeIdentifier": "d1",
+                    "discountType": "20% Member Deal",
                     "discountsAmount": 100.0,
                     "discountsCount": 4,
                     "discountInvoices": 400.0,
                 },
                 {
-                    "label": "Bob B",
+                    "discountTypeIdentifier": "d2",
+                    "discountType": "Staff Meal",
                     "discountsAmount": 50.0,
                     "discountsCount": 2,
                     "discountInvoices": 150.0,
                 },
+            ]
+        if action == "get_sales_tax_rates":
+            # GET /api/sales-tax, as Loaded returned it for La Zeppa
+            return [
+                {"sortOrder": 0, "label": "Exempt", "rate": 0.0},
+                {"sortOrder": 1, "label": "GST", "rate": 0.15},
             ]
         raise AssertionError(f"unexpected action {action}")
 
@@ -516,7 +526,12 @@ class TestDiscounts:
         out = run(api, breakdown="discounts")
         assert out["totals"]["discounts_amount"] == 150.0
         assert out["totals"]["discounts_count"] == 6
-        assert out["rows"][0]["staff"] == "Alice A"
+        # one row per discount type — this read a `label` field the feed
+        # doesn't have, and merged every type into one "Unknown" row
+        assert [r["discount"] for r in out["rows"]] == [
+            "20% Member Deal",
+            "Staff Meal",
+        ]
 
 
 class TestRecurringPeriods:
@@ -606,3 +621,448 @@ class TestVenueAllRefusal:
         for value in ("all", "All Venues", "*", "group"):
             with pytest.raises(ValueError, match="get_sales"):
                 _resolve_venue_config("loadedhub", {"venue": value}, None)
+
+
+# ── measure and tax (1 Oct 2026) ──────────────────────────────────────────
+#
+# get_pos_orders_for_period folded in as measure='orders', and a tax switch.
+# The buckets below are REAL: La Zeppa, Mon 28 Sep 2026, two-hourly, as
+# Loaded returned them. Invoices less invoicesTax is 1551.93 — exactly
+# Loaded's own COGS "sales excluding tax" for that day.
+
+LZ_28_SEP = [
+    {
+        "startTime": "2026-09-28T13:00:00+13:00",
+        "invoices": 759.0,
+        "invoicesTax": 110.52,
+        "discounts": 305.0,
+        "quantity": 58,
+        "count": 15,
+    },
+    {
+        "startTime": "2026-09-28T15:00:00+13:00",
+        "invoices": 53.5,
+        "invoicesTax": 6.98,
+        "discounts": 0.0,
+        "quantity": 4,
+        "count": 3,
+    },
+    {
+        "startTime": "2026-09-28T17:00:00+13:00",
+        "invoices": 387.0,
+        "invoicesTax": 48.55,
+        "discounts": 0.0,
+        "quantity": 22,
+        "count": 13,
+    },
+    {
+        "startTime": "2026-09-28T19:00:00+13:00",
+        "invoices": 594.0,
+        "invoicesTax": 75.52,
+        "discounts": 209.0,
+        "quantity": 39,
+        "count": 15,
+    },
+]
+
+DAY_WINDOW = {
+    "start": "2026-09-28T07:00:00+13:00",
+    "end": "2026-09-29T06:59:59+13:00",
+    "day_start": "07:00",
+    "trading_aligned": True,
+    "description": "Monday",
+}
+
+
+# The same day from Loaded's ORDERS feed (/pos/orders, two-hourly, real):
+# orders as they were PLACED, valued as rung up before discounts. 46 orders
+# either way, but $2,307.50 ordered against $1,793.50 taken — and lunch
+# orders land at 11:00 where their bills land at 13:00.
+LZ_28_SEP_ORDERS = [
+    {"startTime": "2026-09-28T11:00:00+13:00", "amount": 720.0, "count": 9},
+    {"startTime": "2026-09-28T13:00:00+13:00", "amount": 344.0, "count": 6},
+    {"startTime": "2026-09-28T15:00:00+13:00", "amount": 53.5, "count": 3},
+    {"startTime": "2026-09-28T17:00:00+13:00", "amount": 1190.0, "count": 28},
+]
+
+
+class FeedApi(Api):
+    """Api whose sales and orders feeds are fixed lists of buckets."""
+
+    def __init__(
+        self,
+        buckets,
+        window=DAY_WINDOW,
+        last_year=None,
+        orders=None,
+        orders_last_year=None,
+    ):
+        super().__init__()
+        self.buckets = buckets
+        self.window = window
+        self.last_year = last_year or []
+        self.orders = LZ_28_SEP_ORDERS if orders is None else orders
+        self.orders_last_year = orders_last_year or []
+        self.budget_days = [
+            {"date": "2026-09-28", "amount": 2300.0, "sales_tax_rate": 0.15}
+        ]
+
+    def _for(self, connector, action, params):
+        p = dict(params or {})
+        if action == "resolve_dates":
+            self.seen.append((action, p))
+            return {"window": dict(self.window)}
+        if action == "get_sales_data":
+            self.seen.append((action, p))
+            if str(p.get("start_datetime", "")).startswith("2025"):
+                return [dict(b) for b in self.last_year]
+            return [dict(b) for b in self.buckets]
+        if action == "get_pos_orders":
+            self.seen.append((action, p))
+            if str(p.get("start", "")).startswith("2025"):
+                return [dict(b) for b in self.orders_last_year]
+            return [dict(b) for b in self.orders]
+        if action == "get_budgets":
+            self.seen.append((action, p))
+            days = [dict(d) for d in self.budget_days]
+            return {"days": days, "total": sum(d["amount"] for d in days)}
+        return super()._for(connector, action, params)
+
+
+def run_day(api, **params):
+    return run(api, period="monday", **params)
+
+
+class TestTax:
+    def test_tax_is_included_by_default_and_says_so(self):
+        out = run_day(FeedApi(LZ_28_SEP))
+        assert out["tax"] == "included"
+        assert out["totals"]["actual"] == 1793.5
+
+    def test_exclude_takes_off_the_tax_loaded_recorded(self):
+        out = run_day(FeedApi(LZ_28_SEP), tax="exclude")
+        assert out["tax"] == "excluded"
+        assert out["rows"][0]["actual"] == 1551.93
+
+    def test_an_unknown_tax_value_is_refused_not_guessed(self):
+        out = run_day(FeedApi(LZ_28_SEP), tax="gst")
+        assert "tax must be" in out["error"]
+
+    def test_budgets_are_tax_inclusive_so_exclude_divides_by_the_rate(self):
+        """Loaded's budget worksheet: budgetEx += amount / (1 + salesTax)."""
+        api = FeedApi(LZ_28_SEP)
+        incl = run_day(api, compare="budget")
+        assert incl["rows"][0]["budget"] == 2300.0
+        excl = run_day(api, compare="budget", tax="exclude")
+        assert excl["rows"][0]["budget"] == 2000.0
+        assert excl["rows"][0]["vs_budget"] == round(1551.93 - 2000.0, 2)
+
+    def test_a_budget_without_a_rate_is_flagged_not_left_taxed(self):
+        api = FeedApi(LZ_28_SEP)
+        api.budget_days = [{"date": "2026-09-28", "amount": 2300.0}]
+        out = run_day(api, compare="budget", tax="exclude")
+        row = out["rows"][0]
+        assert row["budget"] is None
+        assert any("tax rate" in e for e in row["errors"])
+
+    def test_daily_budget_ex_tax_too(self):
+        api = FeedApi(LZ_28_SEP)
+        out = run_day(api, breakdown="daily", compare="budget", tax="exclude")
+        assert out["rows"][0]["budget"] == 2000.0
+        assert out["totals"]["La Zeppa"]["budget"] == 2000.0
+
+    def test_items_exclude_uses_the_gst_rate_as_loadeds_reports_do(self):
+        """Not the effective rate inside the takings — exempt sales pull that
+        down (12.8% over one real La Zeppa week)."""
+        api = FeedApi(LZ_28_SEP)
+        out = run_day(api, breakdown="items", tax="exclude")
+        rows = {r["item"]: r for r in out["rows"]}
+        assert rows["Pale Ale"]["sales"] == round(900.0 / 1.15, 2)
+        assert out["tax"] == "excluded"
+        assert "La Zeppa 15.0%" in out["note_tax"]
+
+    def test_item_sales_are_marked_as_before_discounts(self):
+        api = FeedApi(LZ_28_SEP)
+        out = run_day(api, breakdown="items")
+        assert out["note_amounts"] == "item sales are before discounts"
+        assert out["tax"] == "included"
+        # include costs no extra call for a rate
+        assert not any(a == "get_sales_data" for a, _ in api.seen)
+
+    def test_staff_and_discounts_exclude(self):
+        api = FeedApi(LZ_28_SEP)
+        staff = run_day(api, breakdown="staff", tax="exclude")
+        assert staff["rows"][0]["sales"] == round(5000.0 / 1.15, 2)
+        drill = run_day(api, breakdown="staff", staff_name="alice", tax="exclude")
+        assert drill["totals"]["sales"] == round(500.0 / 1.15, 2)
+        disc = run_day(api, breakdown="discounts", tax="exclude")
+        assert disc["totals"]["discounts_amount"] == round(150.0 / 1.15, 2)
+        assert disc["rows"][0]["discounted_invoices"] == round(400.0 / 1.15, 2)
+        # counts are counts — no tax on them
+        assert disc["totals"]["discounts_count"] == 6
+
+    def test_a_venue_without_a_rate_keeps_its_tax_and_says_so(self):
+        api = FeedApi(LZ_28_SEP)
+        real = api._for
+
+        def no_rate(connector, action, params):
+            if action == "get_sales_tax_rates":
+                return {"error": "403"}
+            return real(connector, action, params)
+
+        api._for = no_rate
+        out = run_day(api, breakdown="items", tax="exclude")
+        assert "NOT removed for La Zeppa" in out["note_tax"]
+        assert {r["item"]: r for r in out["rows"]}["Pale Ale"]["sales"] == 900.0
+
+
+class TestOrders:
+    """Orders are what was PLACED (the orders feed), not what was paid."""
+
+    def test_orders_are_placed_orders_from_the_orders_feed(self):
+        api = FeedApi(LZ_28_SEP)
+        out = run_day(api, measure="orders")
+        assert out["measure"] == "orders"
+        assert out["rows"] == [
+            {
+                "venue": "La Zeppa",
+                "orders": 46,
+                "order_value": 2307.5,
+                "average_order": 50.16,
+            }
+        ]
+        assert out["totals"]["orders"] == 46
+        feeds = [a for a, _ in api.seen if a in ("get_pos_orders", "get_sales_data")]
+        assert feeds == ["get_pos_orders"]
+        fetch = next(p for a, p in api.seen if a == "get_pos_orders")
+        assert fetch["start"] == DAY_WINDOW["start"]
+        assert fetch["end"] == DAY_WINDOW["end"]
+
+    def test_orders_and_sales_differ_by_design(self):
+        """Orders are valued as rung up and counted whether or not they are
+        paid; sales are what the bills took, after discounts."""
+        api = FeedApi(LZ_28_SEP)
+        sales = run_day(api)["totals"]["actual"]
+        ordered = run_day(api, measure="orders")["totals"]["order_value"]
+        assert (sales, ordered) == (1793.5, 2307.5)
+
+    def test_orders_ex_tax_divides_the_value_by_the_gst_rate(self):
+        out = run_day(FeedApi(LZ_28_SEP), measure="orders", tax="exclude")
+        row = out["rows"][0]
+        assert row["orders"] == 46
+        assert row["order_value"] == round(2307.5 / 1.15, 2)
+        assert out["tax"] == "excluded"
+        assert "La Zeppa 15.0%" in out["note_tax"]
+
+    def test_orders_against_budget_is_refused(self):
+        out = run_day(FeedApi(LZ_28_SEP), measure="orders", compare="budget")
+        assert "budgets are money" in out["error"]
+
+    def test_orders_against_last_year_compares_counts(self):
+        ly = [{"startTime": "2025-09-29T13:00:00+13:00", "amount": 900.0, "count": 40}]
+        api = FeedApi(LZ_28_SEP, orders_last_year=ly)
+        out = run_day(api, measure="orders", compare="last_year")
+        row = out["rows"][0]
+        assert row["last_year_orders"] == 40
+        assert row["vs_last_year"] == 6
+        assert out["totals"]["last_year_orders"] == 40
+        ly_fetch = [
+            p
+            for a, p in api.seen
+            if a == "get_pos_orders" and str(p["start"]).startswith("2025")
+        ]
+        assert len(ly_fetch) == 1
+
+    def test_unknown_measure_is_refused(self):
+        out = run_day(FeedApi(LZ_28_SEP), measure="covers")
+        assert "measure must be" in out["error"]
+
+    def test_orders_per_time_window_are_counted_when_placed(self):
+        api = FeedApi(LZ_28_SEP)
+        out = run_day(
+            api,
+            measure="orders",
+            tax="exclude",
+            time_windows=[{"start_hour": 11, "end_hour": 14, "label": "lunch"}],
+        )
+        # placed at 11:00 and 13:00 — the bills were paid from 13:00
+        assert out["rows"][0]["lunch"] == 15
+        assert isinstance(out["rows"][0]["lunch"], int)
+        hourly = next(p for a, p in api.seen if a == "get_pos_orders")
+        assert hourly["interval"] == "01:00:00"
+        # counts carry no tax — no rate fetched
+        assert not any(a == "get_sales_tax_rates" for a, _ in api.seen)
+
+
+class TestClockTimeBuckets:
+    """What the dashboards' 'Sales Today (30 min intervals)' and 'Orders by
+    Hour' charts read — they used get_pos_orders_for_period until 1 Oct."""
+
+    HALF_HOURS = [
+        {"startTime": "2026-09-28T07:00:00+13:00", "invoices": 0, "count": 0},
+        {"startTime": "2026-09-28T07:30:00+13:00", "invoices": 0, "count": 0},
+        {
+            "startTime": "2026-09-28T12:00:00+13:00",
+            "invoices": 120.0,
+            "invoicesTax": 15.65,
+            "count": 3,
+            "quantity": 6,
+        },
+        {"startTime": "2026-09-28T12:30:00+13:00", "invoices": 0, "count": 0},
+        {
+            "startTime": "2026-09-28T13:00:00+13:00",
+            "invoices": 80.0,
+            "invoicesTax": 10.43,
+            "count": 2,
+            "quantity": 3,
+        },
+        {
+            "startTime": "2026-09-29T01:00:00+13:00",
+            "invoices": 40.0,
+            "invoicesTax": 5.22,
+            "count": 1,
+            "quantity": 2,
+        },
+        {"startTime": "2026-09-29T01:30:00+13:00", "invoices": 0, "count": 0},
+        {"startTime": "2026-09-29T06:30:00+13:00", "invoices": 0, "count": 0},
+    ]
+
+    def test_buckets_carry_their_trading_day_and_clock_time(self):
+        api = FeedApi(self.HALF_HOURS)
+        out = run_day(api, breakdown="daily", interval="00:30:00")
+        assert (
+            next(p for a, p in api.seen if a == "get_sales_data")["interval"]
+            == "00:30:00"
+        )
+        rows = out["rows"]
+        assert [r["time"] for r in rows] == ["12:00", "12:30", "13:00", "01:00"]
+        # 1am on the 29th is Monday's trade, not Tuesday's
+        assert rows[-1]["date"] == "2026-09-28"
+        assert rows[-1]["day"] == "Monday"
+        assert rows[-1]["startTime"] == "2026-09-29T01:00:00+13:00"
+        assert rows[0]["actual"] == 120.0
+        # the empty slot BETWEEN trade stays, so the timeline is continuous
+        assert rows[1]["actual"] == 0.0
+        assert out["totals"]["La Zeppa"]["actual"] == 240.0
+
+    def test_orders_by_hour_are_by_when_placed(self):
+        placed = [
+            {"startTime": "2026-09-28T07:00:00+13:00", "amount": 0, "count": 0},
+            {"startTime": "2026-09-28T11:00:00+13:00", "amount": 720.0, "count": 9},
+            {"startTime": "2026-09-28T12:00:00+13:00", "amount": 0, "count": 0},
+            {"startTime": "2026-09-28T13:00:00+13:00", "amount": 344.0, "count": 6},
+            {"startTime": "2026-09-29T00:00:00+13:00", "amount": 60.0, "count": 2},
+            {"startTime": "2026-09-29T06:00:00+13:00", "amount": 0, "count": 0},
+        ]
+        api = FeedApi(self.HALF_HOURS, orders=placed)
+        out = run_day(api, breakdown="daily", interval="01:00:00", measure="orders")
+        assert next(p for a, p in api.seen if a == "get_pos_orders")["interval"] == (
+            "01:00:00"
+        )
+        rows = out["rows"]
+        assert [(r["time"], r["orders"]) for r in rows] == [
+            ("11:00", 9),
+            ("12:00", 0),
+            ("13:00", 6),
+            ("00:00", 2),
+        ]
+        assert rows[-1]["date"] == "2026-09-28"  # midnight is Monday's trade
+        assert out["totals"]["La Zeppa"]["orders"] == 17
+        assert out["totals"]["La Zeppa"]["order_value"] == 1124.0
+
+    def test_budget_needs_a_daily_bucket(self):
+        out = run_day(
+            FeedApi(self.HALF_HOURS),
+            breakdown="daily",
+            interval="01:00:00",
+            compare="budget",
+        )
+        assert "per day" in out["error"]
+
+    def test_a_weekly_bucket_carries_the_whole_weeks_budget(self):
+        """It used to carry only its first day's."""
+        api = FeedApi(
+            [{"startTime": "2026-08-17T07:00:00+12:00", "invoices": 20000.0}],
+            window=WINDOW,
+        )
+        api.budget_days = [
+            {"date": "2026-08-17", "amount": 7000.0, "sales_tax_rate": 0.15},
+            {"date": "2026-08-22", "amount": 9000.0, "sales_tax_rate": 0.15},
+        ]
+        out = run(api, breakdown="daily", interval="7.00:00:00", compare="budget")
+        assert out["rows"][0]["budget"] == 16000.0
+        assert out["rows"][0]["vs_budget"] == 4000.0
+
+
+class TestTheShape:
+    """call_api shapes get_sales_data with config/consolidators/shapes.json.
+    Until 1 Oct the shape dropped tax, orders and items, and rounded sales to
+    whole dollars — neither switch could have worked."""
+
+    def test_the_shape_keeps_what_get_sales_reads(self):
+        import json
+
+        from app.connectors.response_transform import apply_response_transform
+
+        shapes = json.loads(
+            (pathlib.Path(CODE_PATH).parent / "shapes.json").read_text()
+        )
+        shape = shapes["loadedhub.get_sales"]["loadedhub.get_sales_data"]
+        raw = [
+            {
+                "startTime": "2026-09-28T00:00:00+00:00",
+                "period": "00:00:00",
+                "invoices": 759.0,
+                "invoicesTax": 110.52,
+                "discounts": 305.0,
+                "surcharges": 0.0,
+                "quantity": 58,
+                "count": 15,
+            }
+        ]
+        row = apply_response_transform(raw, shape, "Pacific/Auckland")[0]
+        assert row == {
+            "startTime": "2026-09-28T13:00:00+13:00",
+            "invoices": 759.0,
+            "invoicesTax": 110.52,
+        }
+
+    def test_the_orders_feed_is_shaped_to_venue_time(self):
+        """Its startTime comes back in UTC; unshaped, every bucket would key
+        by the wrong date and clock time."""
+        import json
+
+        from app.connectors.response_transform import apply_response_transform
+
+        shapes = json.loads(
+            (pathlib.Path(CODE_PATH).parent / "shapes.json").read_text()
+        )
+        shape = shapes["loadedhub.get_sales"]["loadedhub.get_pos_orders"]
+        raw = [
+            {
+                "startTime": "2026-09-27T22:00:00+00:00",
+                "period": "00:00:00",
+                "amount": 720.0,
+                "count": 9,
+            }
+        ]
+        row = apply_response_transform(raw, shape, "Pacific/Auckland")[0]
+        assert row == {
+            "startTime": "2026-09-28T11:00:00+13:00",
+            "amount": 720.0,
+            "count": 9,
+        }
+
+    def test_the_installer_carries_code_and_shapes(self):
+        import importlib.util
+
+        path = pathlib.Path(CODE_PATH).parents[2] / "scripts" / "sync_sales_config.py"
+        spec = importlib.util.spec_from_file_location("sync_sales_config", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        tool = mod.build_tool()
+        cfg = tool["consolidator_config"]
+        assert cfg["function_code"] == CODE
+        assert "loadedhub.get_sales_data" in cfg["shapes"]
+        assert tool["field_schema"]["measure"]["enum"] == ["sales", "orders"]
+        assert tool["field_schema"]["tax"]["enum"] == ["include", "exclude"]

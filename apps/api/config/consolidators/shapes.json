@@ -537,16 +537,25 @@
     "quantity": "quantity"
    }
   },
+  "loadedhub.get_pos_orders": {
+   "enabled": true,
+   "fields": {
+    "amount": "amount",
+    "count": "count",
+    "period": "",
+    "startTime": "startTime|tz"
+   }
+  },
   "loadedhub.get_sales_data": {
    "enabled": true,
    "fields": {
     "count": "",
     "discounts": "",
-    "invoices": "amount|round:0",
-    "invoicesTax": "",
+    "invoices": "invoices",
+    "invoicesTax": "invoicesTax",
     "period": "",
     "quantity": "",
-    "startTime": "startTime|tz|dow",
+    "startTime": "startTime|tz",
     "surcharges": ""
    }
   },

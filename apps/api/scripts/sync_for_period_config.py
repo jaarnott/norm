@@ -64,13 +64,9 @@ WRAPPED = [
     # scripts/sync_sales_config.py) owns every sales cut — totals, daily,
     # items, staff, discounts, clock windows, budget/last-year joins. Do
     # not re-add a sales wrapper here.
-    (
-        "get_pos_orders_for_period",
-        "get_pos_orders",
-        "start",
-        "end",
-        "POS order totals broken down by interval",
-    ),
+    # get_pos_orders_for_period folded into get_sales on 1 Oct 2026 (measure
+    # 'orders', sub-day intervals) — scripts/sync_fold_pos_orders_into_sales.py
+    # removed the row. Do not re-add.
     # The sales family (get_pos_item_sales_for_period,
     # get_staff_orders_for_period, get_staff_item_orders_for_period,
     # get_pos_discounts_for_period) retired 24 Aug 2026: get_sales's

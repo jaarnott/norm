@@ -39,7 +39,7 @@ _CONSOLIDATORS_DIR = (
 _SUPERSEDES: dict[str, dict[str, str]] = {
     "loadedhub": {
         "get_sales_data": "get_sales",
-        "get_pos_orders": "get_pos_orders_for_period",
+        "get_pos_orders": "get_sales",
         "get_received_invoices": "get_received_items_for_period",
         "get_roster": "get_labour",
         "get_roster_vs_actual": "get_labour",
@@ -60,7 +60,6 @@ _SUPERSEDES: dict[str, dict[str, str]] = {
         "create_menu": "manage_menu",
         "update_menu": "manage_menu",
         "delete_menu": "manage_menu",
-        "update_stock_item": "manage_stock_item",
         "update_variant_unit": "manage_stock_item",
         "get_stock_on_hand": "get_stock",
         "get_stock_units": "get_stock",

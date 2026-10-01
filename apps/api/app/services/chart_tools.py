@@ -32,12 +32,51 @@ def sales_today() -> dict:
     return _script("loadedhub", "get_sales", {"period": "today"}, "rows")
 
 
-def pos_orders(interval: str) -> dict:
-    return _script(
-        "loadedhub",
-        "get_pos_orders_for_period",
-        {"period": "today", "interval": interval},
-        "data",
+def _sub_day(interval: str) -> bool:
+    head = str(interval or "").split(":")[0]
+    return "." not in head and head.isdigit() and int(head) < 24
+
+
+def sales_by_interval(interval: str, measure: str = "sales") -> dict:
+    """Today's sales (or orders) — one row per venue, or one per clock-time
+    bucket when the interval is under a day. get_sales absorbed
+    get_pos_orders_for_period on 1 Oct 2026 (measure 'orders')."""
+    params: dict = {"period": "today"}
+    if _sub_day(interval):
+        params.update({"breakdown": "daily", "interval": interval})
+    if measure == "orders":
+        params["measure"] = "orders"
+    return _script("loadedhub", "get_sales", params, "rows")
+
+
+def _from_pos_orders_tool(t, chart_type, s, sp):
+    """A chart already on get_pos_orders_for_period → get_sales.
+
+    A chart that plots `count` is an orders chart: get_sales measure 'orders'
+    reads the same orders feed (orders when placed). One that plots only
+    `amount` is titled as sales ("Sales Today", "Sales Trend") and moves to
+    the money taken — the pos-orders amount was the order value as rung up,
+    which is not sales."""
+    keys = [sp.get("value_key")] + [x.get("key") for x in sp.get("series") or []]
+    measure = "orders" if "count" in keys else "sales"
+    fields = (
+        {"count": "orders", "amount": "order_value"}
+        if measure == "orders"
+        else {"amount": "actual"}
+    )
+    if sp.get("value_key") in fields:
+        sp["value_key"] = fields[sp["value_key"]]
+    if not sp.get("group_by") and sp.get("series"):
+        sp["series"] = [
+            {**x, "key": fields.get(x.get("key"), x.get("key"))} for x in sp["series"]
+        ]
+    interval = (s.get("params") or {}).get("interval") or "1.00:00:00"
+    return (
+        t,
+        chart_type,
+        sales_by_interval(interval, measure),
+        sp,
+        "get_pos_orders_for_period folded into get_sales",
     )
 
 
@@ -95,7 +134,7 @@ def to_tool_chart(title: str, chart_type: str, script: dict | None, spec: dict |
     if action == "get_sales_data" and t.startswith("Sales Last 12 Hours"):
         sp.update(
             {
-                "value_key": "amount",
+                "value_key": "actual",
                 "group_by": "venue",
                 "title": "Sales Today (30 min intervals)",
             }
@@ -103,7 +142,7 @@ def to_tool_chart(title: str, chart_type: str, script: dict | None, spec: dict |
         return (
             "Sales Today (30 min intervals)",
             chart_type,
-            pos_orders("00:30:00"),
+            sales_by_interval("00:30:00"),
             sp,
             "now the trading day so far",
         )
@@ -111,13 +150,13 @@ def to_tool_chart(title: str, chart_type: str, script: dict | None, spec: dict |
         sp.update(
             {
                 "x_axis": {"key": "startTime", "label": "Time", "format": "time"},
-                "series": [{"key": "amount", "label": "Sales ($)", "color": "#4f8a5e"}],
+                "series": [{"key": "actual", "label": "Sales ($)", "color": "#4f8a5e"}],
             }
         )
         return (
             t,
             chart_type,
-            pos_orders("01:00:00"),
+            sales_by_interval("01:00:00"),
             sp,
             "plotted a field its call never returned",
         )
@@ -125,15 +164,15 @@ def to_tool_chart(title: str, chart_type: str, script: dict | None, spec: dict |
         sp.update(
             {
                 "x_axis": {"key": "startTime", "label": "Time", "format": "time"},
-                "series": [{"key": "count", "label": "Orders", "color": "#4f8a5e"}],
+                "series": [{"key": "orders", "label": "Orders", "color": "#4f8a5e"}],
             }
         )
         return (
             "Orders by Hour",
             chart_type,
-            pos_orders("01:00:00"),
+            sales_by_interval("01:00:00", "orders"),
             sp,
-            "items per hour has no source; orders only",
+            "orders by when placed; the orders feed carries no item counts",
         )
     if action == "get_sales_data" and t.startswith("Sales by Venue"):
         sp.update(
@@ -149,14 +188,16 @@ def to_tool_chart(title: str, chart_type: str, script: dict | None, spec: dict |
             sp,
             "plotted a field its call never returned",
         )
+    if action == "get_pos_orders_for_period":
+        return _from_pos_orders_tool(t, chart_type, s, sp)
     if action in ("get_pos_orders", "get_pos_sales") and t.startswith("Orders Today"):
-        sp["value_key"] = "count"
+        sp["value_key"] = "orders"
         sp.pop("prefix", None)
         sp["format"] = "number"
         return (
             t,
             chart_type,
-            pos_orders("1.00:00:00"),
+            sales_by_interval("1.00:00:00", "orders"),
             sp,
             "" if action == "get_pos_orders" else "called an action that doesn't exist",
         )

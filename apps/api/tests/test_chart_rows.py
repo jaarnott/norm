@@ -178,7 +178,6 @@ class TestTheMapping:
             "get_labour",
             "get_hr",
             "get_invoices",
-            "get_pos_orders_for_period",
             "get_purchase_orders",
             "get_budgets",
         }
@@ -187,6 +186,72 @@ class TestTheMapping:
             assert isinstance(out, tuple), title
             new_script = out[2]
             assert new_script["action"] in tools and new_script.get("rows"), title
+
+    def test_pos_orders_charts_move_onto_get_sales(self):
+        """get_pos_orders_for_period folded into get_sales (measure 'orders')
+        on 1 Oct 2026. The four production chart styles, as stored."""
+        from app.services.chart_tools import to_tool_chart
+
+        def pos(interval):
+            return {
+                "connector": "loadedhub",
+                "action": "get_pos_orders_for_period",
+                "params": {"period": "today", "interval": interval},
+                "rows": "data",
+            }
+
+        _, _, script, spec, _ = to_tool_chart(
+            "Orders Today",
+            "kpi",
+            pos("1.00:00:00"),
+            {"value_key": "count", "format": "number"},
+        )
+        assert script == {
+            "connector": "loadedhub",
+            "action": "get_sales",
+            "params": {"period": "today", "measure": "orders"},
+            "rows": "rows",
+        }
+        assert spec["value_key"] == "orders"
+
+        venues = [{"key": "La Zeppa", "label": "La Zeppa"}]
+        _, _, script, spec, _ = to_tool_chart(
+            "Sales Today (30 min intervals)",
+            "stacked_bar",
+            pos("00:30:00"),
+            {
+                "x_axis": {"key": "startTime", "format": "time"},
+                "series": venues,
+                "group_by": "venue",
+                "value_key": "amount",
+            },
+        )
+        assert script["params"] == {
+            "period": "today",
+            "breakdown": "daily",
+            "interval": "00:30:00",
+        }
+        assert spec["value_key"] == "actual"
+        assert spec["series"] == venues  # venue series keys are names
+
+        _, _, script, spec, _ = to_tool_chart(
+            "Sales Trend",
+            "line",
+            pos("01:00:00"),
+            {"x_axis": {"key": "startTime"}, "series": [{"key": "amount"}]},
+        )
+        assert "measure" not in script["params"]
+        assert spec["series"] == [{"key": "actual"}]
+
+        _, _, script, spec, _ = to_tool_chart(
+            "Orders by Hour",
+            "bar",
+            pos("01:00:00"),
+            {"x_axis": {"key": "startTime"}, "series": [{"key": "count"}]},
+        )
+        assert script["params"]["measure"] == "orders"
+        assert script["params"]["interval"] == "01:00:00"
+        assert spec["series"] == [{"key": "orders"}]
 
     def test_a_component_is_left_alone(self):
         from app.services.chart_tools import to_tool_chart

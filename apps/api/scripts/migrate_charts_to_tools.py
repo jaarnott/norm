@@ -53,6 +53,13 @@ def _templates(apply: bool) -> None:
                     c.get("script"),
                     c.get("chart_spec"),
                 )
+                if isinstance(p, tuple) and (p[0], p[1], p[2], p[3]) == (
+                    c.get("title"),
+                    c.get("chart_type"),
+                    c.get("script"),
+                    c.get("chart_spec"),
+                ):
+                    p = None  # already on its tool — a rerun rewrites nothing
                 if isinstance(p, tuple):
                     title, ctype, script, spec, note = p
                     print(
@@ -164,6 +171,13 @@ def main() -> None:
             new_script["venue_id"] = old["venue_id"]
         elif venue_name and venue_name in venues:
             new_script["venue_id"] = venues[venue_name]
+        if (new_title, new_type, new_script, new_spec) == (
+            c["title"],
+            c["chart_type"],
+            old,
+            c["chart_spec"],
+        ):
+            continue  # already on its tool — a rerun rewrites nothing
         changes.append((c, new_title, new_type, new_script, new_spec, note))
         backups.append(
             {

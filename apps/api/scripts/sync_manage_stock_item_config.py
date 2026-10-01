@@ -158,6 +158,7 @@ PROMPT_PATCHES = [
 def main(dry_run: bool = False) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
+    from app.connectors import spec_rows
     from app.db.config_models import AgentConfig, AgentConnectionBinding, ConnectionSpec
     from app.db.engine import _ConfigSessionLocal
 
@@ -172,7 +173,8 @@ def main(dry_run: bool = False) -> None:
         if not spec:
             raise SystemExit("loadedhub ConnectionSpec not found")
         tools = [dict(t) for t in (spec.tools or [])]
-        by_action = {t.get("action"): t for t in tools}
+        # Both lists: since Sep 2026 these endpoints live in spec.endpoints.
+        by_action = {t.get("action"): t for t in spec_rows.rows(spec)}
         for needed in (
             "update_stock_item_raw",
             "get_stock_item_full",
@@ -180,7 +182,8 @@ def main(dry_run: bool = False) -> None:
         ):
             if needed not in by_action:
                 raise SystemExit(
-                    f"{needed} missing — run sync_stock_item_consolidators.py first"
+                    f"{needed} missing — the stock-item endpoints were installed by "
+                    "sync_stock_item_consolidators.py (retired; see git history)"
                 )
 
         # ── 1. Raw backends cloned from the agent-facing HTTP rows ────────
