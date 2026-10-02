@@ -55,10 +55,24 @@ jobs:
             --project ${{ vars.GCP_PROJECT_ID }} \
             --wait
 
+      # --timeout is set on EVERY deploy, not left to drift. It is the
+      # backstop for a chat turn, which streams inside one request: the
+      # platform default of 300s was severing 12.4% of them (13 of 105 in the
+      # fortnight to 1 Oct 2026), and because cpu-throttling is false the
+      # worker carried on afterwards — so the cut hid long turns rather than
+      # bounding them. The real limit is TURN_BUDGET_SECONDS (900) in
+      # apps/api/app/agents/tool_loop.py, which ends a turn with a report;
+      # this only has to be high enough never to fire first.
+      #
+      # It lives here because nothing else applies it. infra/terraform
+      # declares api_timeout_seconds = 1500, but production Terraform is not
+      # applied by this pipeline — which is exactly how the live service sat
+      # at 300 for months while the repo said 1800. Keep the two in step.
       - name: Deploy API to Cloud Run
         run: |
           gcloud run services update norm-api-${{ inputs.environment }} \
             --image $REGISTRY/norm-api:${{ inputs.image_tag }} \
+            --timeout=1500 \
             --region $REGION \
             --project ${{ vars.GCP_PROJECT_ID }} \
             --quiet
