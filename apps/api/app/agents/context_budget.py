@@ -87,15 +87,41 @@ class PromptBreakdown:
         )
 
     @property
+    def actual_total_tokens(self) -> int | None:
+        """Every prompt token the API counted, cached ones included.
+
+        `usage.input_tokens` EXCLUDES anything served from or written to the
+        cache — `cache_read_input_tokens` and `cache_creation_input_tokens` are
+        reported separately. So the whole prompt is the sum of the three, and
+        `input_tokens` alone is only the full-price part.
+        """
+        if self.actual_input_tokens is None:
+            return None
+        return (
+            self.actual_input_tokens
+            + (self.cache_read_tokens or 0)
+            + (self.cache_write_tokens or 0)
+        )
+
+    @property
     def estimate_error(self) -> float | None:
         """Ratio of estimate to truth, or None if not reconciled.
 
         1.0 is perfect; below 1.0 means we under-counted. Worth watching before
         anyone tunes a budget against these numbers.
+
+        Measured against `actual_total_tokens`, NOT `actual_input_tokens`. It
+        used to divide by the latter, so the ratio tracked the CACHE HIT RATE
+        rather than the estimator: on one production thread it read 2.13 on a
+        small call and 0.643 on a large one purely because ~25k of cached tools
+        and system is a big share of a small prompt and a small share of a big
+        one. That looked exactly like a size-dependent estimator error and was
+        read as one (2 Oct 2026).
         """
-        if not self.actual_input_tokens:
+        total = self.actual_total_tokens
+        if not total:
             return None
-        return round(self.total / self.actual_input_tokens, 3)
+        return round(self.total / total, 3)
 
     def as_log_fields(self) -> dict:
         """Flat dict for structlog — one line per turn, greppable."""

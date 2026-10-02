@@ -338,14 +338,33 @@ def _cached_system(system_prompt: str | None):
 # surface quickly rather than stall a 90s workflow behind three backoffs.
 _LLM_MAX_ATTEMPTS = 3
 
-#: Above this estimated prompt size a transient failure is NOT retried.
-#: Retrying re-sends the whole prompt, so near the top of a 200k window three
-#: attempts cost three times over on a call that was already marginal — and
-#: failing fast hands the turn back to the loop, which lands what it has.
-#: Set well clear of the 1 Oct 2026 failure (85k estimated): that call SHOULD
-#: be retried, and is. This guard is for the genuinely enormous prompt, not
-#: the merely large one.
-_RETRY_PROMPT_TOKEN_CEILING = 120_000
+#: Above this prompt size a transient failure is NOT retried. Retrying
+#: re-sends the whole prompt, so near the top of a 200k window three attempts
+#: cost three times over on a call that was already marginal, and failing fast
+#: hands the turn back to the loop to land what it has.
+#:
+#: MEASURED IN ESTIMATE-SPACE, which is nowhere near tokens. `measure_prompt`
+#: is a chars/4 heuristic that undercounts, and worse on bigger prompts:
+#: against the TRUE prompt (input + cache_read + cache_creation) its ratio ran
+#: 0.84 on a 35k prompt down to 0.39 on a 145k one across 29 production calls
+#: on thread c6aad2d5. So 70,000 estimated is somewhere between ~83k and ~180k
+#: real, and sits just above the largest estimate ever observed (64,087, on a
+#: 145,476-token prompt): "bigger than anything we have seen".
+#:
+#: The usable band is narrow — above ~53,000 or the 1 Oct failure stops being
+#: retried, below ~78,000 (200k window x the worst ratio) or the estimate can
+#: never reach it. 80,000 was tried first and was still unreachable.
+#:
+#: It was 120_000 on first write, which could NEVER fire: at the ~0.4 ratio up
+#: there the estimate only reaches 120k on a ~300k prompt, and the API rejects
+#: anything past 200k as too long — a non-transient 400 that is not retried
+#: anyway. A guard that cannot trigger is worse than none, because it reads as
+#: protection.
+#:
+#: The 1 Oct 2026 failure estimated ~53k (110,072 true), so it retries, which
+#: is the point of the fix. Do not compare this against an actual-token figure
+#: without dividing by the ratio first.
+_RETRY_PROMPT_TOKEN_CEILING = 70_000
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:

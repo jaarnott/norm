@@ -284,12 +284,28 @@ class TestRetryLoop:
                 _call()
         assert client.messages.stream.call_count == 1
 
-    def test_a_normal_sized_prompt_still_retries(self, _patched):
-        """Fails if the size guard is set so low it swallows the fix. The 1 Oct
-        failure measured ~85k estimated tokens and MUST be retried."""
+    def test_the_size_guard_can_actually_fire(self, _patched):
+        """Fails if the ceiling drifts somewhere unreachable, or so low it
+        swallows the fix.
+
+        The constant is compared against `measure_prompt`, an ESTIMATE that
+        undercounts — 0.84 of the true prompt at 35k, 0.39 at 145k across 29
+        production calls. Two consequences pinned here:
+
+        - Too high is dead code. At 120_000 (the value first shipped) the
+          estimate only reaches the ceiling on a ~300k prompt, and the API
+          rejects anything over 200k as a non-transient 400. The guard could
+          never trigger while reading as protection.
+        - Too low swallows the fix. The 1 Oct 2026 overload estimated ~53k
+          (110,072 true) and MUST still be retried.
+        """
         from app.interpreter import llm_interpreter
 
-        assert llm_interpreter._RETRY_PROMPT_TOKEN_CEILING > 85_000
+        ceiling = llm_interpreter._RETRY_PROMPT_TOKEN_CEILING
+        assert ceiling > 53_000, "the 1 Oct failure would no longer retry"
+        # 200k window x the worst observed ratio (0.39) is the highest estimate
+        # the API will ever accept; a ceiling above that cannot be reached.
+        assert ceiling < 200_000 * 0.39, "the guard is unreachable — dead code"
 
 
 class TestTheOneShotPathRetriesToo:

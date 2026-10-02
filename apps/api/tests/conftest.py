@@ -113,9 +113,24 @@ _test_app.include_router(_mcp_oauth.router, prefix="/api")
 _engine = create_engine(settings.DATABASE_URL)
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(scope="session", autouse=True)
 def _setup_tables():
-    """Ensure all tables exist before the test suite runs."""
+    """Ensure all tables exist before the test suite runs.
+
+    SESSION scope, deliberately. Left at the default function scope this ran
+    `create_all` plus eleven `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` before
+    EVERY test — ~33,000 DDL statements a run. `ALTER TABLE` takes an ACCESS
+    EXCLUSIVE lock, so two agents running the suite at once on the one local
+    Postgres contended on those locks and the loser failed in SETUP, reported
+    as an ERROR against whichever test was unlucky. Seen 2 Oct 2026 from two
+    sessions at once: a different victim each run, each passing alone and with
+    its own file, one of them a test taking no fixtures at all — which is only
+    reachable through an autouse fixture. Not connection exhaustion: the local
+    app DB sat at 11/100 and the config DB at 25-33/100 throughout.
+
+    The work is idempotent and only needs doing once per run, so nothing is
+    lost by hoisting it.
+    """
     Base.metadata.create_all(bind=_engine)
     ConfigBase.metadata.create_all(bind=_engine)
     # create_all only ADDS TABLES — mirror main._ensure_config_tables' guarded
