@@ -169,8 +169,7 @@ def call_llm(
         anthropic_breaker.record_failure()
         duration_ms = int((time.time() - t0) * 1000)
         if db is not None:
-            _persist_llm_call(
-                db,
+            _persist_llm_call_isolated(
                 thread_id=thread_id,
                 call_type=call_type,
                 model=resolved_model,
@@ -242,6 +241,39 @@ def _persist_llm_call(
     return record.id
 
 
+def _persist_llm_call_isolated(**kwargs) -> None:
+    """Record a FAILED llm call on its own session, so it outlives the turn.
+
+    `_persist_llm_call` only add()s and flush()es — correct on the success path,
+    where the turn commits moments later. On the failure path the exception
+    propagates to the stream worker, the turn's session closes without a commit,
+    and the row is rolled back with it. The effect is that the most interesting
+    calls are the ones that leave no trace: the 1 Oct 2026 Service Foods turn
+    (thread c6aad2d5) burned a 5m23s call and its tokens on an `overloaded_error`
+    and `llm_calls` held nothing at all, so the incident could only be
+    reconstructed from Cloud Run logs.
+
+    Same reasoning as `routers.messages._persist_failed_turn`: a fresh session,
+    because the turn's own may already be poisoned by the error being handled.
+    Telemetry must never be the thing that breaks a turn, so every failure here
+    is swallowed and logged.
+    """
+    from app.db.engine import SessionLocal
+
+    session = SessionLocal()
+    try:
+        _persist_llm_call(session, **kwargs)
+        session.commit()
+    except Exception:  # noqa: BLE001 — never mask the original error
+        logger.warning("could not persist failed llm_call", exc_info=True)
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        session.close()
+
+
 # Anthropic builds the cache key over the prompt prefix in a fixed order:
 # tools → system → messages. Below a model-dependent minimum a breakpoint is
 # silently ignored — 1024 tokens for Sonnet/Opus, 2048 for Haiku. This is set to
@@ -305,6 +337,15 @@ def _cached_system(system_prompt: str | None):
 # retry only helps a genuinely transient blip, and a persistent overload should
 # surface quickly rather than stall a 90s workflow behind three backoffs.
 _LLM_MAX_ATTEMPTS = 3
+
+#: Above this estimated prompt size a transient failure is NOT retried.
+#: Retrying re-sends the whole prompt, so near the top of a 200k window three
+#: attempts cost three times over on a call that was already marginal — and
+#: failing fast hands the turn back to the loop, which lands what it has.
+#: Set well clear of the 1 Oct 2026 failure (85k estimated): that call SHOULD
+#: be retried, and is. This guard is for the genuinely enormous prompt, not
+#: the merely large one.
+_RETRY_PROMPT_TOKEN_CEILING = 120_000
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:
@@ -419,18 +460,36 @@ def call_llm_with_tools(
         # strip with fragments like "I" / " need to".
         thinking_buf: list[str] = []
 
+        # Mutable so the nested flusher can bump the counter the retry below
+        # reports in `stream_restart` — the client drops exactly this many.
+        emitted = {"thinking": 0}
+
         def _flush_thinking() -> None:
             text = "".join(thinking_buf).strip()
             thinking_buf.clear()
             if text:
                 _emit_event({"type": "thinking", "text": text})
+                emitted["thinking"] += 1
 
-        # Retry a transient stream failure — but only while nothing has been
-        # emitted this turn. Once tokens have streamed to the user, restarting
-        # would double them, so a mid-stream blip is re-raised instead.
+        # Retry a transient stream failure, including one that lands AFTER
+        # tokens have streamed.
+        #
+        # This used to be vetoed by `not emitted_any`, because re-streaming
+        # would print the same thinking twice. Sound rule, wrong remedy: on
+        # 1 Oct 2026 an `overloaded_error` arrived 5m23s into a stream and the
+        # veto discarded a 17-minute turn (thread c6aad2d5) to protect a screen
+        # Cloud Run had disconnected six minutes earlier. Instead of declining
+        # to retry, tell the client to throw away what the dead attempt wrote:
+        # `stream_restart` carries how many thinking steps to drop, and the
+        # browser clears the partial bubble. If nobody is attached the event
+        # goes nowhere and the retry is free either way.
+        #
+        # Safe to re-issue because tools do not run until after
+        # `stream.get_final_message()` — a failed attempt has no side effects.
         response = None
         for attempt in range(_LLM_MAX_ATTEMPTS):
             emitted_any = False
+            emitted["thinking"] = 0
             thinking_buf.clear()
             try:
                 with client.messages.stream(
@@ -468,9 +527,15 @@ def call_llm_with_tools(
                     response = stream.get_final_message()
                 break
             except Exception as stream_exc:
+                # A retry re-sends the whole prompt. At the top of the window
+                # that is the dominant cost of the turn, and a prompt that
+                # large is itself a reason the call struggled — so a doomed
+                # call is not billed three times. `breakdown` is measured
+                # before the send precisely so it is available here.
+                too_big_to_retry = breakdown.total >= _RETRY_PROMPT_TOKEN_CEILING
                 if (
-                    not emitted_any
-                    and attempt < _LLM_MAX_ATTEMPTS - 1
+                    attempt < _LLM_MAX_ATTEMPTS - 1
+                    and not too_big_to_retry
                     and _is_transient_llm_error(stream_exc)
                 ):
                     logger.warning(
@@ -478,11 +543,30 @@ def call_llm_with_tools(
                         extra={
                             "thread_id": thread_id,
                             "attempt": attempt + 1,
+                            "emitted": emitted_any,
+                            "drop_thinking": emitted["thinking"],
                             "error": str(stream_exc)[:160],
                         },
                     )
+                    # Tell the client to discard the dead attempt's output
+                    # before anything is re-streamed over the top of it.
+                    if emitted_any:
+                        _emit_event(
+                            {
+                                "type": "stream_restart",
+                                "drop_thinking": emitted["thinking"],
+                            }
+                        )
                     time.sleep(_llm_retry_backoff(attempt))
                     continue
+                if too_big_to_retry and _is_transient_llm_error(stream_exc):
+                    logger.warning(
+                        "llm_transient_not_retried_prompt_too_large",
+                        extra={
+                            "thread_id": thread_id,
+                            "estimated_tokens": breakdown.total,
+                        },
+                    )
                 raise
         duration_ms = int((time.time() - t0) * 1000)
 
@@ -553,8 +637,7 @@ def call_llm_with_tools(
             },
         )
         if db is not None:
-            _persist_llm_call(
-                db,
+            _persist_llm_call_isolated(
                 thread_id=thread_id,
                 call_type=call_type,
                 model=resolved_model,
@@ -565,6 +648,12 @@ def call_llm_with_tools(
                 status="error",
                 error_message=str(exc),
                 duration_ms=duration_ms,
+                # Deliberately no input_tokens: a non-None value makes
+                # _persist_llm_call call record_usage, which would bill an
+                # ESTIMATE as measured usage against the org's quota. The real
+                # figure never arrives on this path. The estimate is already in
+                # the prompt_size_on_error log above, which is the right place
+                # for a guess.
             )
         raise
 

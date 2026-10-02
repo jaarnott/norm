@@ -112,21 +112,54 @@ def _fetch(call_api, call_api_parallel, calls):
 # ---------------------------------------------------------------- items ----
 
 
-def _summarize(item, venue, call_api):
+#: Ids fetched per bulk call. Sized to max_api_calls = 8 WITH A SPARE: detail
+#: 'summary' spends 2 on the lookup lists plus one per item, so 6 would land on
+#: exactly 8 and the next call added to that path would start aborting bulk
+#: reads. 5 leaves one in hand. Measured live at 'summary': 7 calls.
+#: Over this the call PAGES (see _items) instead of failing.
+#:
+#: Size is not the binding constraint: 5 x ~1,470 chars at detail 'full' is
+#: ~7k against max_result_chars of 80k, and even five of the worst measured
+#: item (2,741 chars) is ~14k.
+_BULK_PAGE = 5
+
+#: Below this many rows, group names are small enough to include on an
+#: unfiltered list (747 rows with groups is 121k; without, 61k).
+_GROUPS_FREE_BELOW = 200
+
+
+def _name_maps(venue, call_api):
+    """The two lookup lists a variant's names come from — fetched ONCE.
+
+    `_summarize` used to fetch both per item, which is free for one item and
+    quadratic nonsense for a bulk read: six items at detail 'summary' would be
+    6 + 12 = 18 API calls against a sandbox budget of 8. Hoisted so a page of
+    items costs 2 + N.
+    """
+    unit_names = {}
+    supplier_names = {}
+    units = call_api("loadedhub", "get_stock_units", {"venue": venue})
+    for u in units if isinstance(units, list) else []:
+        unit_names[u.get("id")] = u.get("name")
+    sups = call_api("loadedhub", "get_suppliers", {"venue": venue})
+    for s in sups if isinstance(sups, list) else []:
+        supplier_names[s.get("id")] = s.get("name")
+    return unit_names, supplier_names
+
+
+def _summarize(item, venue, call_api, names=None):
     # The working subset, names over ids: what ordering, pricing and recipe
     # questions actually use — never the whole Loaded object unless asked.
     # Variant unit/supplier names need the two lookup lists (item-level
-    # names ride free on the payload).
+    # names ride free on the payload); `names` passes them in when a caller
+    # already holds them, which a bulk read does.
     raw_variants = item.get("suppliers") or []
     unit_names = {}
     supplier_names = {}
     if raw_variants:
-        units = call_api("loadedhub", "get_stock_units", {"venue": venue})
-        for u in units if isinstance(units, list) else []:
-            unit_names[u.get("id")] = u.get("name")
-        sups = call_api("loadedhub", "get_suppliers", {"venue": venue})
-        for s in sups if isinstance(sups, list) else []:
-            supplier_names[s.get("id")] = s.get("name")
+        unit_names, supplier_names = (
+            names if names is not None else _name_maps(venue, call_api)
+        )
     variants = [
         {
             "variant_id": v.get("id"),
@@ -152,11 +185,85 @@ def _summarize(item, venue, call_api):
     }
 
 
-def _items(params, venue, call_api):
+def _slim(row, with_group):
+    """One catalogue row, as small as it can be and still be useful.
+
+    `get_stock_items_raw` returns {id, groupId, groupName, name} — 162 chars a
+    row, so Bessie & Engineers' 747 items came to 121k and blew
+    max_result_chars (80k). The result was stashed, so the only way to find an
+    id was one name search per item: a ~60-line tender produced 18 of them on
+    1 Oct 2026 and the 22 names that were never searched were reported to the
+    user as "unmatched", which is not the same thing as absent.
+    Dropping groupId alone takes the same list to 61k, which fits.
+    """
+    out = {"id": row.get("id"), "name": row.get("name")}
+    if with_group and row.get("groupName"):
+        out["group"] = row.get("groupName")
+    return out
+
+
+def _items(params, venue, call_api, call_api_parallel=None):
     item_id = params.get("item_id")
+    item_ids = [str(i) for i in (_as_list(params.get("item_ids")) or []) if i]
     query = _lower(params.get("query"))
     detail = _lower(params.get("detail")) or "summary"
     limit = int(params.get("limit") or 25)
+    groups = [g for g in (_as_list(params.get("groups")) or []) if g]
+
+    # A bulk job: a PAGE of ids per call, never one call per id.
+    #
+    # Sized to the sandbox's own API budget (max_api_calls = 8): detail
+    # 'summary' costs 2 lookups + one call per item, 'full' costs one per item.
+    # The budget is deliberately NOT raised for this. It is a runaway guard on
+    # this code, not a connection control — concurrent DB use is bounded by
+    # db_call_semaphore (12 per process) and each worker returns its connection
+    # before the slow Loaded call, so widening it would buy nothing and would
+    # loosen the guard for every other path. It also could not bound fleet
+    # concurrency even in principle: it is per invocation, so a thousand users
+    # asking at once is a thousand budgets.
+    #
+    # Over a page we PAGE rather than fail. Hitting the ceiling used to raise
+    # "Too many API calls (max 8)", which aborts the whole tool call and hands
+    # the model an error instead of data; `remaining` lets it ask for the rest,
+    # and the tool loop runs those calls concurrently, so a 25-item job is
+    # still ONE model iteration — which is what the cost actually is (the 1 Oct
+    # 2026 tender spent four iterations each re-sending a transcript that
+    # reached 85k tokens).
+    if item_ids and not item_id:
+        page, remaining = item_ids[:_BULK_PAGE], item_ids[_BULK_PAGE:]
+        names = None if detail == "full" else _name_maps(venue, call_api)
+        fetched = _fetch(
+            call_api,
+            call_api_parallel,
+            [
+                ("loadedhub", "get_stock_item_full", {"venue": venue, "item_id": i})
+                for i in page
+            ],
+        )
+        items, missing = [], []
+        for iid, got in zip(page, fetched):
+            if not isinstance(got, dict) or got.get("error"):
+                missing.append(iid)
+                continue
+            items.append(
+                got
+                if detail == "full"
+                else _summarize(got, venue, call_api, names=names)
+            )
+        out = {"items": items, "detail": detail, "shown": len(items)}
+        if missing:
+            # Named, not silently dropped: a caller about to write to these ids
+            # needs to know which ones it has no shape for.
+            out["not_found"] = missing
+        if remaining:
+            out["remaining"] = remaining
+            out["note"] = (
+                f"{len(remaining)} ids not fetched — call again with "
+                f"item_ids set to `remaining` (up to {_BULK_PAGE} per call). "
+                "Issue those calls together in one go rather than waiting for "
+                "each answer."
+            )
+        return out
 
     if item_id:
         item = call_api(
@@ -175,10 +282,16 @@ def _items(params, venue, call_api):
         return {"error": err or "stock item list unavailable"}
     if query:
         rows = [r for r in rows if query in _lower(r.get("name"))]
+    if groups:
+        wanted = {_lower(g) for g in groups}
+        rows = [r for r in rows if _lower(r.get("groupName")) in wanted]
     total = len(rows)
     rows = rows[:limit]
+    # Group names are worth their size on a filtered or searched list; on a
+    # whole-catalogue scan they are what pushes it over max_result_chars.
+    with_group = bool(query or groups) or total <= _GROUPS_FREE_BELOW
     out = {
-        "matches": rows,  # slim {id, name} — ask again with item_id for detail
+        "matches": [_slim(r, with_group) for r in rows],
         "total_matches": total,
         "shown": len(rows),
     }
@@ -194,10 +307,19 @@ def _items(params, venue, call_api):
                 item if detail == "full" else _summarize(item, venue, call_api)
             )
             out["detail"] = "full" if detail == "full" else "summary"
-    if not query:
+    if not query and not groups:
         out["note"] = (
-            "this is the full item list — pass query (name substring) or "
-            "item_id instead of scanning it, especially before an update"
+            "the whole item list. For ONE edit, come back with query or "
+            "item_id. For a BULK job (a tender, a price list), match your "
+            "names against this list yourself and then ask once with "
+            "item_ids=[...] — do not search name by name, a search that "
+            "misses looks exactly like an item that isn't here. Narrow with "
+            "groups=[...] if the list is truncated."
+        )
+    if total > len(rows):
+        out["truncated"] = (
+            f"showing {len(rows)} of {total} — raise limit, or narrow with "
+            "groups=[...] / query"
         )
     return out
 
@@ -649,7 +771,7 @@ def run(params, call_api, log, call_api_parallel=None):
             "error": f"Unknown view '{params.get('view')}' — one of {', '.join(_VIEWS)}."
         }
     if view == "items":
-        return _items(params, venue, call_api)
+        return _items(params, venue, call_api, call_api_parallel)
     if view == "on_hand":
         return _on_hand(params, venue, call_api, call_api_parallel, log)
     if view == "reference":

@@ -23,6 +23,21 @@ logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 10
 
+#: Wall-clock ceiling for one turn, checked BETWEEN iterations (never mid-call).
+#:
+#: MAX_ITERATIONS alone bounds nothing in time: ten iterations at up to the
+#: Anthropic client's 600s each is theoretically hours. Until this existed the
+#: only thing that stopped a long turn was Cloud Run severing the request — and
+#: that stopped the user *seeing* it, not the work: `cpu-throttling = false`
+#: keeps the CPU allocated, so the worker ran on. A Service Foods tender turn
+#: ran 997s that way (1 Oct 2026, thread c6aad2d5) and was then destroyed whole
+#: by one transient `overloaded_error`, because nothing had landed.
+#:
+#: 900s covers 117 of the 119 turns seen in 14 days of production (median 98s,
+#: p90 279s). Going over it is not a failure: the turn lands a real answer
+#: saying what remains, the same way MAX_ITERATIONS already does.
+TURN_BUDGET_SECONDS = 900
+
 
 def _human_readable_summary(action: str, connector: str, params: dict | None) -> str:
     """Return a short human-readable description of a tool call."""
@@ -99,6 +114,7 @@ def run_tool_loop(
     config_db: Session | None = None,
     messages_override: list[dict] | None = None,
     max_iterations: int | None = None,
+    turn_budget_seconds: float | None = None,
 ) -> dict:
     """Run the agentic tool loop for a user message.
 
@@ -107,7 +123,8 @@ def run_tool_loop(
     If messages_override is provided, use it instead of building from task history.
     If max_iterations is given, it overrides MAX_ITERATIONS for this run — a
     delegated sub-run gets a lower ceiling so one user turn can't stack two
-    full-length loops.
+    full-length loops. turn_budget_seconds does the same for the wall-clock
+    budget.
     """
     # Build initial messages list from conversation history
     messages = messages_override or _build_messages(task, message, context, db=db)
@@ -122,6 +139,7 @@ def run_tool_loop(
         test_mode=test_mode,
         config_db=config_db,
         max_iterations=max_iterations,
+        turn_budget_seconds=turn_budget_seconds,
     )
 
 
@@ -223,9 +241,12 @@ def _execute_loop(
     test_mode: bool = False,
     config_db: Session | None = None,
     max_iterations: int | None = None,
+    turn_budget_seconds: float | None = None,
 ) -> dict:
-    """Run the agentic loop up to MAX_ITERATIONS (or max_iterations)."""
+    """Run the agentic loop up to MAX_ITERATIONS and TURN_BUDGET_SECONDS."""
     limit = max_iterations or MAX_ITERATIONS
+    budget = turn_budget_seconds or TURN_BUDGET_SECONDS
+    turn_started = time.monotonic()
     from app.interpreter.llm_interpreter import call_llm_with_tools
 
     # Build a lookup from tool name -> tool metadata
@@ -264,7 +285,24 @@ def _execute_loop(
     compacted = False
 
     iteration = start_iteration
+    #: Why the loop stopped, which decides how the turn is wrapped up below.
+    stopped_for = "iterations"
     while iteration <= limit:
+        # Wall-clock budget, checked BETWEEN iterations so a call is never cut
+        # mid-stream — that is the behaviour this replaces. Never on the first
+        # iteration of a run: a turn must always get at least one pass, or a
+        # resumed-but-already-slow turn would land nothing at all.
+        if iteration > start_iteration and time.monotonic() - turn_started >= budget:
+            logger.info(
+                "turn_budget_reached",
+                extra={
+                    "thread_id": task.id,
+                    "iteration": iteration,
+                    "seconds": round(time.monotonic() - turn_started, 1),
+                },
+            )
+            stopped_for = "time"
+            break
         display_blocks_before = len(display_blocks)
         # Set when a display block added THIS iteration came from a tool that
         # opted out of the "display-only early-exit" (suppress_display_early_exit)
@@ -1073,21 +1111,42 @@ def _execute_loop(
                 display_blocks=display_blocks,
             )
 
-    # Max iterations reached — give the LLM one final chance to summarise
+    # The loop is over — either out of tool calls or out of time. Either way the
+    # LLM gets one final, tools-free chance to land a real answer. The two cases
+    # need different wording: "ran out of tool calls" told a user whose turn hit
+    # the clock something false, and the clock case must say what remains,
+    # because continuing is the expected next step rather than an offer.
+    out_of_time = stopped_for == "time"
     _emit_event(
         {
             "type": "thinking",
-            "text": "Reached tool call limit — summarising findings...",
+            "text": (
+                "Reached the time limit for one turn — summarising progress..."
+                if out_of_time
+                else "Reached tool call limit — summarising findings..."
+            ),
         }
     )
     messages.append(
         {
             "role": "user",
             "content": (
-                "You have used all available tool calls for this turn. "
-                "Please present your best answer using the data you have already collected. "
-                "Be specific — include numbers, names, and dates from the tool results. "
-                "End with: 'I can keep researching if you'd like, or we can look at something else.'"
+                (
+                    "You have reached the time limit for a single turn. Stop "
+                    "working and report. Say what you COMPLETED and what is "
+                    "STILL OUTSTANDING — be specific, name the items, numbers "
+                    "and dates from the tool results so far, and do not claim "
+                    "anything was done that was not. Nothing you have not "
+                    "already written has been saved. End with: 'Say continue "
+                    "and I'll pick up from here.'"
+                )
+                if out_of_time
+                else (
+                    "You have used all available tool calls for this turn. "
+                    "Please present your best answer using the data you have already collected. "
+                    "Be specific — include numbers, names, and dates from the tool results. "
+                    "End with: 'I can keep researching if you'd like, or we can look at something else.'"
+                )
             ),
         }
     )
@@ -1107,10 +1166,21 @@ def _execute_loop(
         )
         text = _join_answer(answer_parts, _extract_text(final_response))
     except (anthropic.APIError, ValueError, RuntimeError):
-        logger.exception("Final summary LLM call failed after max iterations")
+        logger.exception(
+            "Final summary LLM call failed after %s",
+            "turn budget" if out_of_time else "max iterations",
+        )
         text = (
-            "I've done some research but ran out of tool calls before finishing. "
-            "Send a follow-up message and I'll continue where I left off."
+            (
+                "I ran out of time for one turn before finishing this. Nothing "
+                "beyond what I've already reported was saved. Say continue and "
+                "I'll pick up from here."
+            )
+            if out_of_time
+            else (
+                "I've done some research but ran out of tool calls before finishing. "
+                "Send a follow-up message and I'll continue where I left off."
+            )
         )
 
     db.add(

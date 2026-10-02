@@ -3,8 +3,15 @@
 Anthropic can answer a streaming request 200 and then send `overloaded_error`
 as the first stream event. The SDK doesn't retry that (the request succeeded),
 so a single overload used to surface as "The workflow could not be completed."
-These pin: which errors count as transient, and that the stream is re-issued
-only while nothing has been emitted (retrying after tokens would double them).
+A mid-stream overload used to be re-raised rather than retried, because
+re-streaming would print the same thinking twice. On 1 Oct 2026 that veto
+discarded a 17-minute turn (prod thread c6aad2d5) to protect a screen Cloud Run
+had disconnected six minutes earlier. The retry now fires either way and emits
+`stream_restart` first, telling the client to throw the dead attempt away.
+
+These pin: which errors count as transient, that a mid-stream failure is
+retried WITH that handshake, and that an enormous prompt is not retried three
+times over.
 """
 
 from types import SimpleNamespace
@@ -106,6 +113,13 @@ def _text_delta(t):
     )
 
 
+def _thinking_delta(t):
+    return SimpleNamespace(
+        type="content_block_delta",
+        delta=SimpleNamespace(type="thinking_delta", thinking=t),
+    )
+
+
 def _block(text):
     b = SimpleNamespace(type="text", text=text)
     b.model_dump = lambda: {"type": "text", "text": text}
@@ -177,20 +191,105 @@ class TestRetryLoop:
                 _call()
         assert client.messages.stream.call_count == 1
 
-    def test_does_not_retry_after_tokens_emitted(self, _patched):
-        # An overload mid-stream, AFTER a token was delivered: retrying would
-        # double the output, so it must propagate instead.
+    def test_retries_a_mid_stream_overload(self, _patched):
+        """Fails if the `emitted_any` veto comes back.
+
+        An overload AFTER tokens have streamed is the expensive case: the 1 Oct
+        2026 turn had been streaming 5m23s and was thrown away whole. Retrying
+        is safe because tools do not run until get_final_message() returns, so
+        a dead attempt has no side effects.
+        """
+
         class _MidStreamCtx(_FakeStreamCtx):
             def __iter__(self):
                 yield _text_delta("par")
                 raise _status_error(529, "overloaded_error")
 
         client = MagicMock()
-        client.messages.stream.side_effect = [_MidStreamCtx()]
+        client.messages.stream.side_effect = [
+            _MidStreamCtx(),
+            _FakeStreamCtx(events=[_text_delta("whole")], final=_final("whole")),
+        ]
+        with patch("anthropic.Anthropic", return_value=client):
+            resp, _ = _call()
+        assert resp.content[0].text == "whole"
+        assert client.messages.stream.call_count == 2
+
+    def test_a_mid_stream_retry_tells_the_client_to_discard(
+        self, monkeypatch, _patched
+    ):
+        """Fails if the retry re-streams over the top of the abandoned attempt.
+
+        Without this event the browser keeps the partial bubble and the user
+        reads the answer twice — which is exactly why the old code refused to
+        retry at all.
+        """
+        events: list[dict] = []
+        monkeypatch.setattr(
+            "app.agents.tool_loop._emit_event", lambda e: events.append(e)
+        )
+
+        class _MidStreamCtx(_FakeStreamCtx):
+            def __iter__(self):
+                yield _thinking_delta("weighing it up")
+                yield SimpleNamespace(type="content_block_stop")
+                yield _text_delta("par")
+                raise _status_error(529, "overloaded_error")
+
+        client = MagicMock()
+        client.messages.stream.side_effect = [
+            _MidStreamCtx(),
+            _FakeStreamCtx(events=[_text_delta("whole")], final=_final("whole")),
+        ]
+        with patch("anthropic.Anthropic", return_value=client):
+            _call()
+        restarts = [e for e in events if e.get("type") == "stream_restart"]
+        assert len(restarts) == 1, f"expected one stream_restart, got {events}"
+        # One thinking block was flushed before the failure, so exactly one
+        # must be dropped — a wrong count orphans or over-deletes steps.
+        assert restarts[0]["drop_thinking"] == 1
+
+    def test_an_enormous_prompt_is_not_retried(self, monkeypatch, _patched):
+        """Fails if a doomed call is billed three times.
+
+        A retry re-sends the whole prompt. Near the top of the window that is
+        the dominant cost of the turn, so past the ceiling it fails fast and
+        lets the loop land what it has.
+        """
+        from app.agents import context_budget
+        from app.interpreter import llm_interpreter
+
+        monkeypatch.setattr(
+            llm_interpreter,
+            "measure_prompt",
+            lambda *a, **k: context_budget.PromptBreakdown(
+                system=llm_interpreter._RETRY_PROMPT_TOKEN_CEILING + 1
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            context_budget,
+            "measure_prompt",
+            lambda *a, **k: context_budget.PromptBreakdown(
+                system=llm_interpreter._RETRY_PROMPT_TOKEN_CEILING + 1
+            ),
+        )
+        client = MagicMock()
+        client.messages.stream.side_effect = [
+            _FakeStreamCtx(raise_exc=_status_error(529, "overloaded_error"))
+            for _ in range(5)
+        ]
         with patch("anthropic.Anthropic", return_value=client):
             with pytest.raises(anthropic.APIStatusError):
                 _call()
         assert client.messages.stream.call_count == 1
+
+    def test_a_normal_sized_prompt_still_retries(self, _patched):
+        """Fails if the size guard is set so low it swallows the fix. The 1 Oct
+        failure measured ~85k estimated tokens and MUST be retried."""
+        from app.interpreter import llm_interpreter
+
+        assert llm_interpreter._RETRY_PROMPT_TOKEN_CEILING > 85_000
 
 
 class TestTheOneShotPathRetriesToo:
@@ -240,3 +339,65 @@ class TestTheOneShotPathRetriesToo:
             with pytest.raises(anthropic.APIStatusError):
                 self._call()
         assert client.messages.create.call_count == 3  # _LLM_MAX_ATTEMPTS
+
+
+class TestAFailedStreamIsRecorded:
+    """The failure path must use the ISOLATED writer, not the turn's session.
+
+    `test_message_persistence` pins what the isolated writer does; this pins
+    that `call_llm_with_tools` actually reaches for it. Calling the helper
+    directly in a test proves nothing about the wiring — reverting the call
+    site to `_persist_llm_call(db, ...)` left that test green.
+    """
+
+    def _run_failing_call(self, monkeypatch, exc):
+        from app.interpreter import llm_interpreter
+
+        isolated: list[dict] = []
+        shared: list[dict] = []
+        monkeypatch.setattr(
+            llm_interpreter,
+            "_persist_llm_call_isolated",
+            lambda **kw: isolated.append(kw),
+        )
+        monkeypatch.setattr(
+            llm_interpreter,
+            "_persist_llm_call",
+            lambda db, **kw: shared.append(kw) or "id",
+        )
+        client = MagicMock()
+        client.messages.stream.side_effect = [_FakeStreamCtx(raise_exc=exc)] * 5
+        with patch("anthropic.Anthropic", return_value=client):
+            with pytest.raises(Exception):
+                call_llm_with_tools(
+                    system_prompt="you are norm",
+                    messages=[{"role": "user", "content": "hi"}],
+                    tools=[],
+                    db=MagicMock(),  # a truthy session; it must NOT be used
+                    thread_id="t-1",
+                    call_type="tool_use",
+                )
+        return isolated, shared
+
+    def test_an_overload_records_an_error_row_off_the_turn_session(
+        self, monkeypatch, _patched
+    ):
+        """Fails if the error row goes back on the turn's session, where the
+        rollback that follows destroys it — the 1 Oct 2026 blind spot."""
+        isolated, shared = self._run_failing_call(
+            monkeypatch, _status_error(529, "overloaded_error")
+        )
+        assert len(isolated) == 1, "the failure was not recorded in isolation"
+        assert isolated[0]["status"] == "error"
+        assert "overloaded" in isolated[0]["error_message"].lower()
+        assert isolated[0]["duration_ms"] is not None
+        assert not shared, "the failure path must not use the turn's session"
+
+    def test_a_bad_request_is_recorded_too(self, monkeypatch, _patched):
+        """Fails if only retryable errors are recorded — a 4xx is the one most
+        worth having in the table, because it means a real bug."""
+        isolated, _ = self._run_failing_call(
+            monkeypatch, _status_error(400, "invalid_request_error")
+        )
+        assert len(isolated) == 1
+        assert isolated[0]["status"] == "error"

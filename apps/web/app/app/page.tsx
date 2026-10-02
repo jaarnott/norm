@@ -506,6 +506,35 @@ export default function Home() {
             flushStreamedText();
             tokenBuffer = '';
             displayedLength = 0;
+          } else if (event.type === 'stream_restart') {
+            // A transient model failure (e.g. `overloaded_error`) mid-stream.
+            // The backend is about to re-issue the SAME call, so everything the
+            // dead attempt wrote has to go — otherwise the retry streams over
+            // the top and the user reads it twice.
+            //
+            // The opposite of stream_cancel above: that one KEEPS the prose
+            // because it is real answer text. This discards it, and never
+            // calls flushStreamedText().
+            stopTypewriter();
+            tokenBuffer = '';
+            displayedLength = 0;
+            const dropThinking = event.drop_thinking ?? 0;
+            setThreads(prev => prev.map(t => {
+              if (t.id !== currentId) return t;
+              const steps = t.thinking_steps || [];
+              return {
+                ...t,
+                // Drop only this attempt's steps, from the end — steps from
+                // earlier iterations of the same turn are still true.
+                thinking_steps: dropThinking > 0
+                  ? steps.slice(0, Math.max(0, steps.length - dropThinking))
+                  : steps,
+                // Remove the in-flight bubble itself. The typewriter holds
+                // partial text as a conversation entry with role 'streaming';
+                // dropping it is what stops the retry reading twice.
+                conversation: (t.conversation || []).filter(m => m.role !== 'streaming'),
+              };
+            }));
           } else if (event.type === 'thinking') {
             // Reasoning — either a summarized thinking block from the model or
             // a tool-status line from the backend. Either way it is not the

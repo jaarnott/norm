@@ -28,12 +28,23 @@ variable "api_memory" {
   default = "512Mi"
 }
 variable "api_timeout_seconds" {
-  # A chat turn streams inside a single request; a delegated cross-venue report
-  # can run for minutes. Cloud Run's 300s default cut those off mid-answer (the
-  # client saw a dropped stream and a false failure). Give the API service ample
-  # headroom — the web service keeps the platform default. Cloud Run max is 3600.
+  # A chat turn streams inside a single request, so Cloud Run's 300s default cut
+  # long turns off mid-answer: the client saw a dropped stream and a false
+  # failure, and 12.4% of chat streams were hitting it (13 of 105 in the
+  # fortnight to 1 Oct 2026).
+  #
+  # This is a BACKSTOP, not the limit. The limit is TURN_BUDGET_SECONDS in
+  # app/agents/tool_loop.py, which stops a turn at 15 minutes and reports what
+  # it got done — a bound that can be enforced gracefully, unlike a severed
+  # socket. Raising this alone would not have bounded anything: the worker is
+  # not cancelled when the request dies (cpu-throttling is false), so the work
+  # ran on regardless and the timeout only hid it.
+  #
+  # Sized so the budget always fires first: 900s budget + the worst observed
+  # single model call (312s over 30 days) + tool fan-out. The web service keeps
+  # the platform default. Cloud Run max is 3600.
   type    = number
-  default = 1800
+  default = 1500
 }
 variable "web_cpu" {
   type    = string

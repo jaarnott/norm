@@ -663,3 +663,176 @@ class TestMinimums:
     def test_query_filters(self):
         out = run(Api(), view="minimums", query="stella")
         assert [r["name"] for r in out["rows"]] == ["STELLA 330ML"]
+
+
+class TestABulkJobReadsInTwoCalls:
+    """One read per name, and one per item, is how a 60-line tender turned into
+    252 tool calls and still didn't finish.
+
+    Thread c6aad2d5 (1 Oct 2026, Service Foods DRY & FROZEN at Bessie &
+    Engineers) spent 18 `query` calls and 83 `item_id detail=full` calls across
+    four iterations, then died. The name->id half was also a correctness bug:
+    only 18 of ~60 names were ever searched, and the 22 that weren't were
+    reported to the user as "unmatched items", which is not the same thing as
+    absent from Loaded.
+    """
+
+    def test_many_ids_come_back_in_one_call(self):
+        """Fails if item_ids is dropped and the model is pushed back to one
+        detail call per item."""
+        api = Api()
+        out = run(api, item_ids=["i-jbb", "i-asahi"])
+        assert [i["name"] for i in out["items"]] == [
+            "JIM BEAM BLACK",
+            "ASAHI SUPER DRY",
+        ]
+        assert out["shown"] == 2
+        assert api.actions().count("get_stock_item_full") == 2
+
+    def test_a_page_stays_inside_the_sandbox_api_budget(self):
+        """Fails if a bulk read can exceed max_api_calls (8) and abort.
+
+        The budget is 8 and is NOT raised for this: it guards consolidator
+        code, while the database is protected by db_call_semaphore and by
+        workers releasing their connection before the HTTP call. Raising it
+        would loosen the guard for every path and bound nothing fleet-wide,
+        being per invocation.
+
+        detail 'summary' is the expensive one: 2 lookup lists + one call per
+        item.
+        """
+        api = Api()
+        run(api, item_ids=["i-jbb", "i-asahi", "i-cumin"] * 4)
+        # Strictly under 8, not equal to it: a page sized to exactly the
+        # ceiling means the next call added to this path starts aborting bulk
+        # reads instead of paging.
+        assert len(api.calls) < 8, (
+            f"a single bulk call made {len(api.calls)} API calls: {api.actions()}"
+        )
+
+    def test_the_lookup_lists_are_fetched_once_not_per_item(self):
+        """Fails if _summarize goes back to fetching units + suppliers inside
+        the loop. Six items would then cost 6 + 12 = 18 calls and blow the
+        budget — the bug that made the first version of this unshippable."""
+        api = Api()
+        run(api, item_ids=["i-jbb", "i-asahi", "i-cumin"])
+        assert api.actions().count("get_stock_units") == 1
+        assert api.actions().count("get_suppliers") == 1
+
+    def test_more_ids_than_a_page_are_handed_back_not_refused(self):
+        """Fails if a long id list errors instead of paging.
+
+        Hitting the sandbox ceiling raises "Too many API calls", which aborts
+        the whole tool call and hands the model an error instead of data.
+        Paging keeps the budget AND the answer.
+        """
+        ids = [f"i-{n}" for n in range(20)]
+        out = run(Api(), item_ids=ids, detail="full")
+        assert "error" not in out
+        assert out["shown"] + len(out.get("not_found") or []) == 5
+        assert out["remaining"] == ids[5:]
+        assert "remaining" in out["note"]
+
+    def test_a_page_that_finishes_the_list_says_nothing_about_remaining(self):
+        """Fails if the model is told to keep paging after the last page —
+        it would loop asking for an empty list."""
+        out = run(Api(), item_ids=["i-jbb", "i-asahi"])
+        assert "remaining" not in out
+
+    def test_full_detail_is_available_in_bulk(self):
+        out = run(Api(), item_ids=["i-jbb"], detail="full")
+        assert out["detail"] == "full"
+        # The complete Loaded object, which is what a variant write needs.
+        assert out["items"][0]["countingUnitId"]
+
+    def test_an_id_with_no_item_is_named_not_silently_dropped(self):
+        """Fails if a missing id vanishes. A caller about to write to these ids
+        has to know which ones it has no shape for."""
+        out = run(Api(), item_ids=["i-jbb", "i-nope"])
+        assert [i["name"] for i in out["items"]] == ["JIM BEAM BLACK"]
+        assert out["not_found"] == ["i-nope"]
+
+    def test_item_id_still_wins_for_a_single_edit(self):
+        """Fails if the bulk path hijacks the single-item path that every
+        one-off edit uses."""
+        out = run(Api(), item_id="i-jbb")
+        assert out["item"]["name"] == "JIM BEAM BLACK"
+        assert "items" not in out
+
+
+class TestTheCatalogueFitsInOneCall:
+    def test_an_unfiltered_list_drops_the_group_ids(self):
+        """Fails if groupId creeps back onto a whole-catalogue scan.
+
+        Measured on Bessie & Engineers (747 items): with groupId + groupName
+        the list is 121,087 chars and blows max_result_chars (80,000), so it is
+        stashed and the only way to find an id is a name search. Without them
+        the same list is 61,219 chars and fits.
+        """
+        out = run(Api(), limit=500)
+        assert out["matches"], "no rows returned"
+        for row in out["matches"]:
+            assert set(row) <= {"id", "name", "group"}
+            assert "groupId" not in row
+
+    def test_a_big_catalogue_sheds_the_group_names_too(self):
+        """Fails if the size branch never fires.
+
+        The fixture venue is tiny, so group names ride free there. A real venue
+        is not: 747 rows carrying groupName is what takes Bessie's catalogue
+        from 61k to 121k and over the 80k ceiling. Above the threshold the
+        group goes too.
+        """
+
+        class _BigApi(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "get_stock_items_raw":
+                    self.calls.append((action, dict(params or {})))
+                    return [
+                        {
+                            "id": f"i-{n}",
+                            "groupId": "g-dry",
+                            "groupName": "Dry Goods",
+                            "name": f"ITEM {n}",
+                        }
+                        for n in range(300)
+                    ]
+                return super().call_api(connector, action, params)
+
+        out = run(_BigApi(), limit=500)
+        assert out["total_matches"] == 300
+        for row in out["matches"]:
+            assert set(row) == {"id", "name"}, f"group rode along on {row}"
+
+    def test_a_filtered_list_keeps_the_group_name(self):
+        """Fails if narrowing loses the group — 'Eggs -> Dairy' was a real
+        decision in that thread, so group has to be available when asked."""
+        out = run(Api(), query="jim beam")
+        assert all(r.get("group") == "Spirits" for r in out["matches"])
+
+    def test_groups_narrows_the_catalogue(self):
+        """Fails if the only way to scan a venue too big for one call
+        disappears."""
+        out = run(Api(), groups=["Spirits"], limit=500)
+        assert out["total_matches"] == 2
+        assert {r["name"] for r in out["matches"]} == {
+            "JIM BEAM BLACK",
+            "JIM BEAM WHITE 37%",
+        }
+
+    def test_a_truncated_list_says_so(self):
+        """Fails if truncation is silent: the model would match names against
+        a partial catalogue and call the rest missing."""
+        out = run(Api(), limit=2)
+        assert out["shown"] == 2
+        assert out["total_matches"] > 2
+        assert "truncated" in out
+        assert "groups=" in out["truncated"]
+
+    def test_the_scan_note_forbids_searching_name_by_name(self):
+        """Fails if the guidance still tells a bulk job to look up one item at
+        a time — the instruction that produced 18 searches for 60 names."""
+        out = run(Api(), limit=500)
+        note = out["note"]
+        assert "item_ids" in note
+        assert "misses" in note

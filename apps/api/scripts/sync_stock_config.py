@@ -42,8 +42,14 @@ TOOL = {
         "THE stock read tool. view picks the cut — 'items' (default): query "
         "(name substring) returns slim {id, name} matches, or item_id returns "
         "ONE item at detail 'summary' (units, minimum, variants with codes and "
-        "costs) or 'full'; always look up the ONE item you need, never scan "
-        "the list. 'on_hand': stock on hand and value for one item_id (Norm "
+        "costs) or 'full'. For ONE edit, look up that one item — don't scan "
+        "the list. For a BULK job (a tender, a supplier price list), do the "
+        "opposite: call once with no query to get the whole catalogue, match "
+        "the printed names against it YOURSELF, then call once more with "
+        "item_ids=[...] for the shape of the ones you matched. Never search "
+        "name by name — a search that misses is indistinguishable from an "
+        "item that isn't there, and you will report real items as missing. "
+        "'on_hand': stock on hand and value for one item_id (Norm "
         "finds its stocktake template) or for a whole template (template = a "
         "title, or 'Food' / 'Beverage' / 'Other Stock'; top rows by value plus "
         "an '(others)' rollup). 'reference': kind = units | suppliers | groups "
@@ -55,7 +61,9 @@ TOOL = {
     "optional_fields": [
         "view",
         "item_id",
+        "item_ids",
         "query",
+        "groups",
         "detail",
         "limit",
         "template",
@@ -72,7 +80,21 @@ TOOL = {
             "Loaded stock item id — items: exactly this item; on_hand: this "
             "item's count; minimums: this item's par level."
         ),
+        "item_ids": (
+            "items: a LIST of stock item ids — their shape in one call, 6 per "
+            "call. Ask for as many as you like: anything past the first 6 "
+            "comes back as `remaining`, and you call again with those. Issue "
+            "those follow-up calls together rather than one at a time. This is "
+            "how a bulk job reads: get the catalogue once, match names "
+            "yourself, then page through the ids you matched."
+        ),
         "query": "Case-insensitive name substring — items, on_hand rows, reference, minimums.",
+        "groups": (
+            "items: a LIST of stock group names to narrow the catalogue (e.g. "
+            "['Dry Goods', 'Meats', 'Dairy']) — use it when an unfiltered list "
+            "comes back truncated. Group names come from view 'reference', "
+            "kind 'groups'."
+        ),
         "detail": "items: 'summary' (default) or 'full' (the complete Loaded object).",
         "limit": (
             "Max rows (items default 25, units 100). Raise it only when a task "
@@ -97,9 +119,20 @@ TOOL = {
     "max_result_chars": 80_000,
     "read_only": True,
     "consolidator_config": {
-        # function_code injected at sync time. Budget: the heaviest path is
-        # on_hand by item — item + groups + templates (3), the stock-on-hand
-        # report (1) and its one serial retry (1). items' name query is 4.
+        # function_code injected at sync time. Budget: the heaviest path is a
+        # bulk read at detail 'summary' — 2 lookup lists + one call per item,
+        # which _BULK_PAGE (6) sizes to exactly this ceiling. on_hand by item
+        # is 5 (item + groups + templates, the report, one serial retry).
+        #
+        # DELIBERATELY STILL 8. This is a runaway guard on consolidator code,
+        # NOT a connection control: concurrent DB use is bounded by
+        # db_call_semaphore (DB_CALL_LIMIT = 12 per process) and each fan-out
+        # worker returns its connection before the slow HTTP call
+        # (release_db_after_render), so raising this would not protect the
+        # database — and it could not bound fleet concurrency even in
+        # principle, being per invocation. It was briefly raised to 56 and then
+        # 30 for a bulk read on 1 Oct 2026; that was the wrong lever, and the
+        # bulk read now pages within 8 instead.
         "max_api_calls": 8,
         "allowed_write_actions": [],
     },

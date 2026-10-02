@@ -16,6 +16,14 @@ Three layers now guarantee persistence, each tested here:
    work.
 3. The /messages endpoints persist the user message + a failure note on ANY
    turn error, via a fresh session, before emitting the error event.
+4. A FAILED llm call records itself the same way. `_persist_llm_call` only
+   add()s and flush()es, which is right on the success path (the turn commits
+   moments later) and wrong on the failure path: the exception propagates, the
+   session closes uncommitted, and the row goes with it. So the most
+   interesting calls left no trace at all — the 1 Oct 2026 Service Foods turn
+   (prod thread c6aad2d5) burned a 5m23s call on an `overloaded_error` and
+   `llm_calls` held nothing, which is why it could only be reconstructed from
+   Cloud Run logs.
 """
 
 import datetime
@@ -355,3 +363,120 @@ class TestEarlyCommit:
             "thread + user message must be committed before the tool loop"
         )
         assert seen_at_loop["messages"] == 1
+
+
+class TestAFailedLlmCallLeavesATrace:
+    """Layer 4: the error row must outlive the turn that died.
+
+    Without this, "how often does this happen and what did it cost" cannot be
+    answered from the database — only from logs, which are not queryable
+    alongside the thread.
+    """
+
+    def test_it_writes_on_its_own_committed_session(
+        self, db_session: Session, admin_user, monkeypatch
+    ):
+        """Fails if the failure path goes back to the turn's own session.
+
+        Durability here comes from two things: a session of its own, and a
+        commit. Neither can be observed end-to-end inside this harness — every
+        test runs in one outer transaction that is rolled back, so a genuinely
+        separate connection could not see the fixture thread and a commit on
+        the shared one is undone anyway. So the session factory is bound to the
+        test connection (as `net_sessions` does for the router's net) and
+        spied: the row must be written through a session that is NOT the
+        caller's, and commit() must be called on it.
+        """
+        from app.db import engine as engine_mod
+        from app.db.models import LlmCall
+        from app.interpreter.llm_interpreter import _persist_llm_call_isolated
+
+        thread = Thread(
+            user_id=admin_user.id,
+            raw_prompt="update the stock codes",
+            intent="procurement.tool_use",
+            domain="procurement",
+            status="processing",
+        )
+        db_session.add(thread)
+        db_session.flush()
+
+        commits: list[int] = []
+        opened: list[Session] = []
+
+        class _SpySession(Session):
+            def commit(self):
+                commits.append(1)
+                super().commit()
+
+        def factory():
+            s = _SpySession(bind=db_session.get_bind())
+            opened.append(s)
+            return s
+
+        monkeypatch.setattr(engine_mod, "SessionLocal", factory)
+
+        _persist_llm_call_isolated(
+            thread_id=thread.id,
+            call_type="tool_use",
+            model="claude-opus-4-8",
+            system_prompt="s",
+            user_prompt="[tool_use call]",
+            raw_response=None,
+            parsed_response=None,
+            status="error",
+            error_message="overloaded_error",
+            duration_ms=323_000,
+        )
+
+        assert opened, "it did not open a session of its own"
+        assert opened[0] is not db_session
+        assert commits, "it never committed — the row dies with the turn"
+
+        row = (
+            db_session.query(LlmCall)
+            .filter(LlmCall.thread_id == thread.id, LlmCall.status == "error")
+            .one()
+        )
+        assert row.error_message == "overloaded_error"
+        assert row.duration_ms == 323_000
+
+    def test_it_never_bills_an_estimate(
+        self, db_session: Session, admin_user, monkeypatch
+    ):
+        """Fails if the failure path starts passing input_tokens.
+
+        A non-None value makes _persist_llm_call call record_usage, which would
+        charge a chars/4 GUESS against the org's quota — the real figure never
+        arrives on this path.
+        """
+        import inspect
+
+        from app.interpreter import llm_interpreter
+
+        src = inspect.getsource(llm_interpreter.call_llm_with_tools)
+        failure_half = src[src.index("except Exception as exc:") :]
+        assert "input_tokens=" not in failure_half, (
+            "the failure path must not pass input_tokens — it would bill an estimate"
+        )
+
+    def test_telemetry_never_breaks_the_turn(self, monkeypatch):
+        """Fails if a telemetry problem can mask the real error. The original
+        exception is what the user and the logs need."""
+        from app.interpreter import llm_interpreter
+
+        def boom(*a, **k):
+            raise RuntimeError("database is on fire")
+
+        monkeypatch.setattr(llm_interpreter, "_persist_llm_call", boom)
+        # Must not raise.
+        llm_interpreter._persist_llm_call_isolated(
+            thread_id="nope",
+            call_type="tool_use",
+            model="m",
+            system_prompt="s",
+            user_prompt="u",
+            raw_response=None,
+            parsed_response=None,
+            status="error",
+        )
