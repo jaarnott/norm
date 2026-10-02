@@ -254,6 +254,73 @@ class TestWhatTheUserIsTold:
         )
         assert "STILL OUTSTANDING" in wrap_up[-1]
 
+    def test_it_never_says_the_work_was_lost(self, db_session, admin_user, monkeypatch):
+        """Fails if the wrap-up claims nothing was saved.
+
+        An approved write tool may already have run — manage_stock_item
+        updating Loaded, in exactly the tender scenario this budget was built
+        for. Telling the model (and so the user) that nothing persisted invites
+        redoing writes that already landed. The earlier wording said "Nothing
+        you have not already written has been saved", which reads as "nothing
+        was saved".
+        """
+        prompts: list[str] = []
+        seq = {"n": 0}
+        clock = _Clock(400)
+
+        def llm(*args, **kwargs):
+            seq["n"] += 1
+            clock.tick()
+            msgs = kwargs.get("messages", args[1] if len(args) > 1 else [])
+            if msgs and isinstance(msgs[-1].get("content"), str):
+                prompts.append(msgs[-1]["content"])
+            if not kwargs.get("tools", args[2] if len(args) > 2 else None):
+                return (
+                    _Response("end_turn", [_Block("text", text="Done some.")]),
+                    None,
+                )
+            return (
+                _Response(
+                    "tool_use",
+                    [
+                        _Block(
+                            "tool_use",
+                            id=f"toolu_{seq['n']}",
+                            name="loadedhub__get_stock",
+                            input={},
+                        )
+                    ],
+                ),
+                None,
+            )
+
+        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm_with_tools", llm)
+        monkeypatch.setattr(tool_loop.time, "monotonic", clock)
+        monkeypatch.setattr(
+            tool_loop, "_execute_tool_call", lambda tc, db, config_db=None: {"rows": []}
+        )
+        thread = _make_thread(
+            db_session,
+            admin_user,
+            domain="procurement",
+            intent="procurement.tool_use",
+            status="processing",
+        )
+        tool_loop.run_tool_loop(
+            "go",
+            thread,
+            db_session,
+            "system prompt",
+            [TOOL],
+            config_db=db_session,
+            turn_budget_seconds=600,
+        )
+        wrap_up = [p for p in prompts if "time limit" in p][-1]
+        assert "has been saved" not in wrap_up
+        assert "STANDS" in wrap_up, (
+            "the prompt must say completed writes stand, so nothing is redone"
+        )
+
 
 def test_the_budget_is_a_sane_default():
     """Fails if the default drifts somewhere it stops covering real turns

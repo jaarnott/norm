@@ -1136,9 +1136,10 @@ def _execute_loop(
                     "working and report. Say what you COMPLETED and what is "
                     "STILL OUTSTANDING — be specific, name the items, numbers "
                     "and dates from the tool results so far, and do not claim "
-                    "anything was done that was not. Nothing you have not "
-                    "already written has been saved. End with: 'Say continue "
-                    "and I'll pick up from here.'"
+                    "anything was done that was not. Anything a write tool "
+                    "already sent STANDS: those changes are made, so list them "
+                    "as done and never suggest redoing them. End with: 'Say "
+                    "continue and I'll pick up from here.'"
                 )
                 if out_of_time
                 else (
@@ -1172,9 +1173,15 @@ def _execute_loop(
         )
         text = (
             (
-                "I ran out of time for one turn before finishing this. Nothing "
-                "beyond what I've already reported was saved. Say continue and "
-                "I'll pick up from here."
+                # Deliberately does NOT say "nothing was saved". A write tool
+                # may already have run — manage_stock_item updates in exactly
+                # the tender scenario this budget was built for — and telling
+                # someone their changes were lost invites them to redo writes
+                # that already landed in Loaded.
+                "I ran out of time for one turn before finishing this. Any "
+                "changes I had already made are saved; I just can't tell you "
+                "here what they were. Say continue and I'll pick up from "
+                "here, or check the thread's tool calls for what ran."
             )
             if out_of_time
             else (

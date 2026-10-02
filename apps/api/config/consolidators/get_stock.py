@@ -128,6 +128,16 @@ _BULK_PAGE = 5
 _GROUPS_FREE_BELOW = 200
 
 
+def _is_absent(err):
+    """True when Loaded said the item does not exist, as opposed to a call that
+    failed. Everything else — timeout, 5xx, auth, no response — is a failure,
+    because reporting one as "missing" is how a transient becomes a wrong
+    decision.
+    """
+    text = _lower(err)
+    return "404" in text or "not found" in text
+
+
 def _name_maps(venue, call_api):
     """The two lookup lists a variant's names come from — fetched ONCE.
 
@@ -240,10 +250,19 @@ def _items(params, venue, call_api, call_api_parallel=None):
                 for i in page
             ],
         )
-        items, missing = [], []
+        # ABSENT and FAILED are kept apart. Lumping them together is the very
+        # mistake this whole path exists to remove: the 1 Oct 2026 tender
+        # reported 22 items as "unmatched" when they had simply never been
+        # looked up. A caller about to write would read a Loaded timeout as
+        # "this item does not exist" and act on it.
+        items, absent, failed = [], [], {}
         for iid, got in zip(page, fetched):
-            if not isinstance(got, dict) or got.get("error"):
-                missing.append(iid)
+            err = got.get("error") if isinstance(got, dict) else "no response"
+            if err or not isinstance(got, dict):
+                if _is_absent(err):
+                    absent.append(iid)
+                else:
+                    failed[iid] = str(err)[:200]
                 continue
             items.append(
                 got
@@ -251,10 +270,15 @@ def _items(params, venue, call_api, call_api_parallel=None):
                 else _summarize(got, venue, call_api, names=names)
             )
         out = {"items": items, "detail": detail, "shown": len(items)}
-        if missing:
-            # Named, not silently dropped: a caller about to write to these ids
-            # needs to know which ones it has no shape for.
-            out["not_found"] = missing
+        if absent:
+            out["not_found"] = absent
+        if failed:
+            out["failed"] = failed
+            out["failed_note"] = (
+                "these ids were NOT read — a call failed. They are not known "
+                "to be missing: ask for them again before concluding anything "
+                "about them, and never treat one as absent."
+            )
         if remaining:
             out["remaining"] = remaining
             out["note"] = (

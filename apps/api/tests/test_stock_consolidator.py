@@ -751,6 +751,32 @@ class TestABulkJobReadsInTwoCalls:
         out = run(Api(), item_ids=["i-jbb", "i-nope"])
         assert [i["name"] for i in out["items"]] == ["JIM BEAM BLACK"]
         assert out["not_found"] == ["i-nope"]
+        assert "failed" not in out, "a real 404 is absent, not a failed call"
+
+    def test_a_failed_call_is_not_reported_as_a_missing_item(self):
+        """Fails if a timeout or 5xx lands in not_found.
+
+        This is the mistake the whole change exists to remove, one layer in: a
+        caller about to write would read "Loaded timed out" as "this item does
+        not exist". The 1 Oct 2026 tender reported 22 items as unmatched that
+        had simply never been looked up.
+        """
+
+        class _FlakyApi(Api):
+            def call_api(self, connector, action, params=None):
+                p = dict(params or {})
+                if action == "get_stock_item_full" and p.get("item_id") == "i-asahi":
+                    self.calls.append((action, p))
+                    return {"error": "HTTP 502 upstream timeout"}
+                return super().call_api(connector, action, params)
+
+        out = run(_FlakyApi(), item_ids=["i-jbb", "i-asahi", "i-nope"])
+        assert [i["name"] for i in out["items"]] == ["JIM BEAM BLACK"]
+        # The genuine 404 is absent; the 502 is a failure, and they do not mix.
+        assert out["not_found"] == ["i-nope"]
+        assert list(out["failed"]) == ["i-asahi"]
+        assert "502" in out["failed"]["i-asahi"]
+        assert "never treat one as absent" in out["failed_note"]
 
     def test_item_id_still_wins_for_a_single_edit(self):
         """Fails if the bulk path hijacks the single-item path that every

@@ -44,9 +44,10 @@ TOOL = {
         "ONE item at detail 'summary' (units, minimum, variants with codes and "
         "costs) or 'full'. For ONE edit, look up that one item — don't scan "
         "the list. For a BULK job (a tender, a supplier price list), do the "
-        "opposite: call once with no query to get the whole catalogue, match "
-        "the printed names against it YOURSELF, then call once more with "
-        "item_ids=[...] for the shape of the ones you matched. Never search "
+        "opposite: call once with no query and limit 1000 for the whole "
+        "catalogue (the default limit of 25 truncates it), match the printed "
+        "names against it YOURSELF, then ask for the shape of the ones you "
+        "matched with item_ids=[...], 5 per call. Never search "
         "name by name — a search that misses is indistinguishable from an "
         "item that isn't there, and you will report real items as missing. "
         "'on_hand': stock on hand and value for one item_id (Norm "
@@ -55,7 +56,13 @@ TOOL = {
         "an '(others)' rollup). 'reference': kind = units | suppliers | groups "
         "| templates, slim rows, filter with query. 'minimums': par levels in "
         "counting units. Before an update, fetch just the item here, then call "
-        "manage_stock_item (op 'update') with only the fields to change."
+        "manage_stock_item (op 'update') with only the fields to change. "
+        # Carried HERE rather than left to sync_unified_prompt's
+        # TOOL_GUIDANCE, which appends it only when the marker is absent:
+        # installing this row whole silently dropped the sentence on 1 Oct
+        # 2026. In the row, an install is self-sufficient and the append is a
+        # no-op.
+        "Never guess an item id — look it up here first."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -81,8 +88,8 @@ TOOL = {
             "item's count; minimums: this item's par level."
         ),
         "item_ids": (
-            "items: a LIST of stock item ids — their shape in one call, 6 per "
-            "call. Ask for as many as you like: anything past the first 6 "
+            "items: a LIST of stock item ids — their shape in one call, 5 per "
+            "call. Ask for as many as you like: anything past the first 5 "
             "comes back as `remaining`, and you call again with those. Issue "
             "those follow-up calls together rather than one at a time. This is "
             "how a bulk job reads: get the catalogue once, match names "
@@ -121,7 +128,7 @@ TOOL = {
     "consolidator_config": {
         # function_code injected at sync time. Budget: the heaviest path is a
         # bulk read at detail 'summary' — 2 lookup lists + one call per item,
-        # which _BULK_PAGE (6) sizes to exactly this ceiling. on_hand by item
+        # which _BULK_PAGE (5) sizes to, with one call spare. on_hand by item
         # is 5 (item + groups + templates, the report, one serial retry).
         #
         # DELIBERATELY STILL 8. This is a runaway guard on consolidator code,
