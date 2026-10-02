@@ -38,6 +38,20 @@ MAX_ITERATIONS = 10
 #: saying what remains, the same way MAX_ITERATIONS already does.
 TURN_BUDGET_SECONDS = 900
 
+#: Most tool calls one model response may run. ONE number, two uses: the width
+#: of the read-only thread pool below, and `keep` for Anthropic's context
+#: editing in llm_interpreter — the newest N tool results that clearing may
+#: never touch. The two are tied on purpose: clearing runs on the request that
+#: carries a round's fresh results, so if a round could fire more calls than
+#: keep, its own answers would be blanked before the model read them. Surplus
+#: calls are answered "not run this round, ask again" — never executed, never
+#: silently dropped (a dropped write is a write that did not happen).
+#:
+#: 8 was already the pool width, so a 16-wide round was executed as 8 then 8;
+#: the cap costs one extra model call on the 7.4% of rounds that exceeded it in
+#: 30 days of production (37 of 497), and bounds the pile Anthropic must keep.
+TOOL_FANOUT_CAP = 8
+
 
 def _human_readable_summary(action: str, connector: str, params: dict | None) -> str:
     """Return a short human-readable description of a tool call."""
@@ -406,8 +420,30 @@ def _execute_loop(
             read_only_blocks: list[tuple] = []
             write_blocks: list[tuple] = []
             unknown_tool_results: dict[str, dict] = {}
+            taken = 0
             for block in response.content:
                 if block.type != "tool_use":
+                    continue
+                if block.name in tool_meta and taken >= TOOL_FANOUT_CAP:
+                    # Over the per-round cap (see TOOL_FANOUT_CAP). Answered,
+                    # not executed, so the model re-issues it next step.
+                    unknown_tool_results[block.id] = {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(
+                            {
+                                "deferred": True,
+                                "message": (
+                                    f"Not run this round: Norm runs at most "
+                                    f"{TOOL_FANOUT_CAP} tool calls per step and this "
+                                    f"was call {taken + 1}. Nothing was executed. "
+                                    "Ask again on your next step."
+                                ),
+                            }
+                        ),
+                        "is_error": True,
+                    }
+                    taken += 1
                     continue
                 if block.name not in tool_meta:
                     # A tool this agent was NOT given this turn. The model can
@@ -440,6 +476,7 @@ def _execute_loop(
                 connector, action = _parse_tool_name(block.name)
                 meta = tool_meta.get(block.name, {})
                 method = meta.get("method", "POST")
+                taken += 1
                 if _is_read_only(method):
                     read_only_blocks.append((block, connector, action, method))
                 else:
@@ -483,7 +520,7 @@ def _execute_loop(
                 # Parallel execution — commit so worker threads see the TC rows
                 db.commit()
                 event_cb = getattr(_thread_local, "event_callback", None)
-                max_workers = min(len(read_only_blocks), 8)
+                max_workers = min(len(read_only_blocks), TOOL_FANOUT_CAP)
 
                 t0 = time.time()
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1634,7 +1671,10 @@ def _build_search_tool_schema() -> dict:
         "name": "norm__search_tool_result",
         "description": (
             "[GET] Search, sort, or find top items in a large tool result. "
-            "Use query for text search, sort_by for numeric sorting, or both."
+            "Use query for text search, sort_by for numeric sorting, or both. "
+            "Also the way back to an older tool result that has been cleared "
+            "from the conversation and shows as a placeholder: pass its "
+            "tool_call_id and the full result is still here."
         ),
         "input_schema": {
             "type": "object",

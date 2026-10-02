@@ -81,7 +81,7 @@ class TestBackoff:
 
 
 class _FakeStreamCtx:
-    """A context manager standing in for client.messages.stream(...).
+    """A context manager standing in for client.beta.messages.stream(...).
 
     Either raises on entry (to simulate an overload before any event) or
     yields a scripted list of events and a final message.
@@ -161,35 +161,35 @@ def _call():
 class TestRetryLoop:
     def test_retries_overload_then_succeeds(self, _patched):
         client = MagicMock()
-        client.messages.stream.side_effect = [
+        client.beta.messages.stream.side_effect = [
             _FakeStreamCtx(raise_exc=_status_error(529, "overloaded_error")),
             _FakeStreamCtx(events=[_text_delta("hello")], final=_final("hello")),
         ]
         with patch("anthropic.Anthropic", return_value=client):
             resp, _ = _call()
         assert resp.content[0].text == "hello"
-        assert client.messages.stream.call_count == 2
+        assert client.beta.messages.stream.call_count == 2
 
     def test_gives_up_after_max_attempts(self, _patched):
         client = MagicMock()
-        client.messages.stream.side_effect = [
+        client.beta.messages.stream.side_effect = [
             _FakeStreamCtx(raise_exc=_status_error(529, "overloaded_error"))
             for _ in range(5)
         ]
         with patch("anthropic.Anthropic", return_value=client):
             with pytest.raises(anthropic.APIStatusError):
                 _call()
-        assert client.messages.stream.call_count == 3  # _LLM_MAX_ATTEMPTS
+        assert client.beta.messages.stream.call_count == 3  # _LLM_MAX_ATTEMPTS
 
     def test_does_not_retry_a_bad_request(self, _patched):
         client = MagicMock()
-        client.messages.stream.side_effect = [
+        client.beta.messages.stream.side_effect = [
             _FakeStreamCtx(raise_exc=_status_error(400, "invalid_request_error"))
         ]
         with patch("anthropic.Anthropic", return_value=client):
             with pytest.raises(anthropic.APIStatusError):
                 _call()
-        assert client.messages.stream.call_count == 1
+        assert client.beta.messages.stream.call_count == 1
 
     def test_retries_a_mid_stream_overload(self, _patched):
         """Fails if the `emitted_any` veto comes back.
@@ -206,14 +206,14 @@ class TestRetryLoop:
                 raise _status_error(529, "overloaded_error")
 
         client = MagicMock()
-        client.messages.stream.side_effect = [
+        client.beta.messages.stream.side_effect = [
             _MidStreamCtx(),
             _FakeStreamCtx(events=[_text_delta("whole")], final=_final("whole")),
         ]
         with patch("anthropic.Anthropic", return_value=client):
             resp, _ = _call()
         assert resp.content[0].text == "whole"
-        assert client.messages.stream.call_count == 2
+        assert client.beta.messages.stream.call_count == 2
 
     def test_a_mid_stream_retry_tells_the_client_to_discard(
         self, monkeypatch, _patched
@@ -237,7 +237,7 @@ class TestRetryLoop:
                 raise _status_error(529, "overloaded_error")
 
         client = MagicMock()
-        client.messages.stream.side_effect = [
+        client.beta.messages.stream.side_effect = [
             _MidStreamCtx(),
             _FakeStreamCtx(events=[_text_delta("whole")], final=_final("whole")),
         ]
@@ -275,14 +275,14 @@ class TestRetryLoop:
             ),
         )
         client = MagicMock()
-        client.messages.stream.side_effect = [
+        client.beta.messages.stream.side_effect = [
             _FakeStreamCtx(raise_exc=_status_error(529, "overloaded_error"))
             for _ in range(5)
         ]
         with patch("anthropic.Anthropic", return_value=client):
             with pytest.raises(anthropic.APIStatusError):
                 _call()
-        assert client.messages.stream.call_count == 1
+        assert client.beta.messages.stream.call_count == 1
 
     def test_the_size_guard_can_actually_fire(self, _patched):
         """Fails if the ceiling drifts somewhere unreachable, or so low it
@@ -382,7 +382,7 @@ class TestAFailedStreamIsRecorded:
             lambda db, **kw: shared.append(kw) or "id",
         )
         client = MagicMock()
-        client.messages.stream.side_effect = [_FakeStreamCtx(raise_exc=exc)] * 5
+        client.beta.messages.stream.side_effect = [_FakeStreamCtx(raise_exc=exc)] * 5
         with patch("anthropic.Anthropic", return_value=client):
             with pytest.raises(Exception):
                 call_llm_with_tools(
@@ -417,3 +417,89 @@ class TestAFailedStreamIsRecorded:
         )
         assert len(isolated) == 1
         assert isolated[0]["status"] == "error"
+
+
+class TestContextEditingAndTheCacheMarker:
+    """Changes 1 and 2 of the context-editing plan, pinned at the request."""
+
+    def _kwargs(self, _patched, messages=None):
+        client = MagicMock()
+        client.beta.messages.stream.side_effect = [
+            _FakeStreamCtx(events=[_text_delta("ok")], final=_final("ok"))
+        ]
+        with patch("anthropic.Anthropic", return_value=client):
+            call_llm_with_tools(
+                system_prompt="you are norm",
+                messages=messages or [{"role": "user", "content": "hi"}],
+                tools=[],
+                db=None,
+            )
+        return client.beta.messages.stream.call_args.kwargs
+
+    def test_the_stream_asks_anthropic_to_clear_old_tool_results(self, _patched):
+        """Fails if context editing is dropped or its values drift from the
+        ones decided against production data (plan: context-editing.md)."""
+        from app.agents.tool_loop import TOOL_FANOUT_CAP
+
+        kw = self._kwargs(_patched)
+        assert "context-management-2025-06-27" in kw["betas"]
+        edit = kw["context_management"]["edits"][0]
+        assert edit["type"] == "clear_tool_uses_20250919"
+        assert edit["trigger"] == {"type": "input_tokens", "value": 50_000}
+        assert edit["clear_at_least"] == {"type": "input_tokens", "value": 10_000}
+        assert edit["keep"] == {"type": "tool_uses", "value": TOOL_FANOUT_CAP}
+
+    def test_keep_can_never_be_below_the_fan_out_cap(self, _patched):
+        """Fails if either side is edited alone. A round can fire up to
+        TOOL_FANOUT_CAP calls; clearing runs on the request carrying those
+        fresh results and spares only the newest `keep`. keep < cap would
+        blank a round's own answers before the model read them."""
+        from app.agents import tool_loop
+        from app.interpreter import llm_interpreter
+
+        keep = llm_interpreter._context_management()["edits"][0]["keep"]["value"]
+        assert keep >= tool_loop.TOOL_FANOUT_CAP
+        assert tool_loop.TOOL_FANOUT_CAP == 8, "the pool width this was sized to"
+
+    def test_the_last_message_block_carries_the_cache_marker(self, _patched):
+        """Fails if the conversation stops being cache-eligible. Only the
+        LAST block is marked (one breakpoint), on a copy — the caller's
+        list is the cache key's basis and must not be mutated."""
+        original = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": [{"type": "text", "text": "a"}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "r1"},
+                    {"type": "tool_result", "tool_use_id": "t2", "content": "r2"},
+                ],
+            },
+        ]
+        kw = self._kwargs(_patched, messages=original)
+        sent = kw["messages"]
+        assert sent[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in sent[-1]["content"][0]
+        assert (
+            "cache_control" not in sent[0].get("content", {})
+            if isinstance(sent[0]["content"], dict)
+            else True
+        )
+        # the caller's objects are untouched
+        assert "cache_control" not in original[-1]["content"][-1]
+        assert original[0]["content"] == "first"
+
+    def test_a_string_message_is_wrapped_so_it_can_be_marked(self, _patched):
+        kw = self._kwargs(_patched, messages=[{"role": "user", "content": "plain"}])
+        last = kw["messages"][-1]["content"]
+        assert last == [
+            {"type": "text", "text": "plain", "cache_control": {"type": "ephemeral"}}
+        ]
+
+    def test_the_search_tool_says_a_cleared_result_is_retrievable(self):
+        """Fails if the hint goes. Anthropic's placeholder is generic — it
+        does not know Norm can fetch the result back by id."""
+        from app.agents.tool_loop import _build_search_tool_schema
+
+        d = _build_search_tool_schema()["description"].lower()
+        assert "cleared" in d and "placeholder" in d and "tool_call_id" in d

@@ -338,6 +338,82 @@ def _cached_system(system_prompt: str | None):
 # surface quickly rather than stall a 90s workflow behind three backoffs.
 _LLM_MAX_ATTEMPTS = 3
 
+# ── Anthropic context editing: old tool results are cleared server-side ──
+#
+# A long turn's requests were growing without bound: tool results pile up
+# inside one turn and every step re-sends all of them (87 kB by step 4 of the
+# 1 Oct 2026 tender turn; 145k tokens at the top). Norm's own clearing
+# (`tool_loop._compact_messages`) ran only after the API had already refused a
+# prompt, and then cleared everything. This asks Anthropic to do it on the way
+# in: once a request passes the trigger, the oldest tool results are replaced
+# with a placeholder in the copy the model reads and is billed for. Norm's own
+# message list is untouched; the full results stay in ToolCall.result_payload
+# and norm__search_tool_result retrieves any of them by id.
+#
+# Values decided 3 Oct 2026 against 30 days of production, documented in
+# ~/.claude/plans/context-editing.md. Their defaults are 100k / keep 3 / none;
+# keep 3 assumes one tool call per step and would blank most of a Norm round's
+# own fresh answers.
+_CONTEXT_EDITING_BETA = "context-management-2025-06-27"
+#: Below this the request is left alone; a small job never clears at all.
+_CLEAR_TRIGGER_INPUT_TOKENS = 50_000
+#: A clear changes the cached prefix and costs one full-price step, so it must
+#: free at least this much to be worth doing — their docs' own advice.
+_CLEAR_AT_LEAST_INPUT_TOKENS = 10_000
+
+
+def _context_management() -> dict:
+    """The clearing config for one call. `keep` is the fan-out cap, by
+    construction — see tool_loop.TOOL_FANOUT_CAP for why they must agree."""
+    from app.agents.tool_loop import TOOL_FANOUT_CAP
+
+    return {
+        "edits": [
+            {
+                "type": "clear_tool_uses_20250919",
+                "trigger": {
+                    "type": "input_tokens",
+                    "value": _CLEAR_TRIGGER_INPUT_TOKENS,
+                },
+                "keep": {"type": "tool_uses", "value": TOOL_FANOUT_CAP},
+                "clear_at_least": {
+                    "type": "input_tokens",
+                    "value": _CLEAR_AT_LEAST_INPUT_TOKENS,
+                },
+            }
+        ]
+    }
+
+
+def _cached_messages(messages: list[dict]) -> list[dict]:
+    """A copy of ``messages`` with one cache breakpoint on the last block.
+
+    The cache discount applies to the part of a request identical, from the
+    top, to the previous one. Tools and system already carry breakpoints; the
+    conversation did not, so within a turn every step re-sent the whole
+    growing history at full price (30% of the 1 Oct tender turn's 2.4M prompt
+    tokens came from cache — the fixed ~25k, never the part that grew). Marking
+    the newest message makes "everything up to the last step" eligible: step
+    N+1 is step N plus a bit. Third of the four breakpoints allowed.
+
+    Never mutates the caller's list — it is reused across iterations and is
+    the basis of the cache key. A last block that is not a plain dict (an SDK
+    object) is left alone rather than guessed at.
+    """
+    if not messages:
+        return messages
+    last = messages[-1]
+    content = last.get("content") if isinstance(last, dict) else None
+    if isinstance(content, str):
+        blocks: list = [{"type": "text", "text": content}]
+    elif isinstance(content, list) and content and isinstance(content[-1], dict):
+        blocks = [*content[:-1], dict(content[-1])]
+    else:
+        return messages
+    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+    return [*messages[:-1], {**last, "content": blocks}]
+
+
 #: Above this prompt size a transient failure is NOT retried. Retrying
 #: re-sends the whole prompt, so near the top of a 200k window three attempts
 #: cost three times over on a call that was already marginal, and failing fast
@@ -506,17 +582,20 @@ def call_llm_with_tools(
         # Safe to re-issue because tools do not run until after
         # `stream.get_final_message()` — a failed attempt has no side effects.
         response = None
+        applied_edits: list = []
         for attempt in range(_LLM_MAX_ATTEMPTS):
             emitted_any = False
             emitted["thinking"] = 0
             thinking_buf.clear()
             try:
-                with client.messages.stream(
+                with client.beta.messages.stream(
                     model=resolved_model,
                     max_tokens=max_tokens,
                     system=_cached_system(system_prompt),
-                    messages=messages,
+                    messages=_cached_messages(messages),
                     tools=_cached_tools(tools),
+                    betas=[_CONTEXT_EDITING_BETA],
+                    context_management=_context_management(),
                     # Adaptive thinking makes reasoning a distinct content-block
                     # type, so the UI no longer has to guess which prose is
                     # "thinking" and which is the answer. `display` must be set
@@ -544,6 +623,8 @@ def call_llm_with_tools(
                     # A truncated turn can end without a closing block event.
                     _flush_thinking()
                     response = stream.get_final_message()
+                cm = getattr(response, "context_management", None)
+                applied_edits = list(getattr(cm, "applied_edits", None) or [])
                 break
             except Exception as stream_exc:
                 # A retry re-sends the whole prompt. At the top of the window
@@ -619,6 +700,15 @@ def call_llm_with_tools(
                 "call_type": call_type,
                 "model": resolved_model,
                 **breakdown.as_log_fields(),
+                # What Anthropic cleared on the way in. Zero on most calls;
+                # the tuning evidence for the trigger / keep / clear_at_least.
+                "ctx_cleared_tool_uses": sum(
+                    int(getattr(e, "cleared_tool_uses", 0) or 0) for e in applied_edits
+                ),
+                "ctx_cleared_tokens": sum(
+                    int(getattr(e, "cleared_input_tokens", 0) or 0)
+                    for e in applied_edits
+                ),
             },
         )
 
