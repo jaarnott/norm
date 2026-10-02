@@ -7,9 +7,17 @@
 # orphaned list_purchase_orders (get_stock_purchase_order, a literal
 # duplicate of the detail tool, is deleted outright).
 #
-# Token rules: list rows are the summary transform's slim fields renamed
-# to snake_case; PO LINES exist only per single order_id, shaped with
-# names. detail='full' hands over the raw Loaded payload.
+# Token rules: list rows are the slim fields the orders dashboard reads
+# (id, orderNumber, supplierName, orderedBy, status, createdAt, subtotal, tax,
+# total, isReceived), kept by this tool's shape (shapes.json); PO LINES exist
+# only per single order_id, shaped with names. detail='full' hands over the
+# raw Loaded payload.
+#
+# Loaded's list holds OPEN orders only — Outstanding, Sent, Acknowledged; a
+# received order leaves it (verified 1 Oct 2026, La Zeppa 49 and DSC 20, none
+# received). Until 1 Oct the shape was missing (the old endpoint transform
+# was never enabled, so the Sep-2026 move skipped it): every row arrived as
+# Loaded's raw 24 fields, lines and all — 34k characters for 49 orders.
 #
 # Requires consolidator_config: {"max_api_calls": 3}
 
@@ -93,17 +101,22 @@ def run(params, call_api, log):
     rows = call_api("loadedhub", "get_purchase_orders_summary", {"venue": venue})
     if not isinstance(rows, list):
         return {"error": (rows or {}).get("error") or "purchase orders unavailable"}
-    # List rows pass through the summary transform's slim fields UNCHANGED
-    # (id, orderNumber, supplierName, status, createdAt, subtotal, tax, total,
-    # isReceived) — the orders dashboard component parses exactly this shape,
-    # and show_orders replays either this result or the raw summary's.
-    out_rows = [
-        r
-        for r in rows
-        if isinstance(r, dict)
-        and (not query or query in str(r.get("supplierName") or "").lower())
-        and (not status or status == str(r.get("status") or "").lower())
-    ]
+    # List rows keep Loaded's own field names (the shape's slim set) — the
+    # orders dashboard component parses exactly this shape, and show_orders
+    # replays either this result or the raw summary's.
+    out_rows = []
+    for r in rows:
+        if not isinstance(r, dict) or r.get("datestampDeleted"):
+            continue
+        # query finds a supplier OR an order number ("PO 1521021")
+        hay = (
+            str(r.get("supplierName") or "") + " " + str(r.get("orderNumber") or "")
+        ).lower()
+        if query and query not in hay:
+            continue
+        if status and status != str(r.get("status") or "").lower():
+            continue
+        out_rows.append({k: v for k, v in r.items() if k != "datestampDeleted"})
     total = len(out_rows)
     out_rows.sort(key=lambda r: str(r.get("createdAt") or ""), reverse=True)
     return {

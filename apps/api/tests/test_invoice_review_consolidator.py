@@ -141,6 +141,28 @@ class TestSingleInvoiceMode:
         assert out["mode"] == "autopilot"  # reported mode stays the caller's
 
 
+class TestReportsTheAppliedMode:
+    """Consolidator review, 1 Oct 2026: the result reported the incoming
+    personal mode — always "unset" for receiving."""
+
+    def test_the_services_mode_is_reported(self):
+        api = Api(response={"cards": [], "mode": "autopilot"})
+        out = run_consolidator(api, mode="unset")
+        assert out["mode"] == "autopilot"
+        assert out["auto_submit"] is True and out["mode_unset"] is False
+        assert "venue's setting" in out["mode_source"]
+
+    def test_a_missing_total_reads_as_a_dash(self):
+        api = Api(
+            response={
+                "cards": [],
+                "skipped": [_verdict(total=None, outcome="review failed")],
+            }
+        )
+        out = run_consolidator(api)
+        assert out["skipped"][0]["total"] == "—"
+
+
 class TestReporting:
     def test_cards_ride_to_fix_invoices_verbatim(self):
         cards = [{"invoice_id": "inv-1", "doc_schema": "replica_v1", "lines": []}]
@@ -340,7 +362,9 @@ class TestPeriodResolution:
         run_consolidator(api, period="last month")
         req = next(p for (_c, a, p) in api.calls if a == "review_invoices")
         assert req["from_date"] == "2026-07-01"
-        assert req["to_date"] == "2026-08-01"
+        # the trading window ends 06:59 on 1 Aug — that day is not July
+        # (it used to be included: consolidator review, 1 Oct 2026)
+        assert req["to_date"] == "2026-07-31"
 
     def test_no_period_keeps_the_sixty_day_default(self):
         api = Api()

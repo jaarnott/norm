@@ -2169,6 +2169,20 @@ def execute_consolidator(
             "error": "consolidator_config must contain function_code — see Settings > Connectors to edit",
         }
 
+    # A run mode arriving IN the tool call is the model's say-so, not the
+    # user's. For the run-mode workflows it is set aside here and may only
+    # LOWER the mode resolved below — passed as an argument it used to beat
+    # the user's choice outright, so mode="autopilot" would have reconciled
+    # and auto-created statements for an approve_all user (consolidator
+    # review, 1 Oct 2026; no call ever did).
+    action = config.get("action")
+    from app.services.workflow_modes import MODE_VENUE_SCOPED, WORKFLOW_KEYS
+
+    governed = action in WORKFLOW_KEYS and action not in MODE_VENUE_SCOPED
+    passed_mode = input_params.get("mode") if governed else None
+    if governed:
+        input_params = {k: v for k, v in input_params.items() if k != "mode"}
+
     # Merge the automated task's persistent configuration (set via
     # norm.update_task_config — e.g. require_valid_po) into params, so
     # task-level knobs reach the consolidator without riding the LLM's tool
@@ -2182,32 +2196,31 @@ def execute_consolidator(
             }
 
     # Inject the caller's per-workflow run mode (approve_all / approve_fixes /
-    # autopilot) resolved from the thread's user. The consolidator reads it
-    # from params like dry_run; "unset" ⇒ the safest behaviour + an ask.
-    action = config.get("action")
-    if action and "mode" not in input_params:
-        from app.services.workflow_modes import WORKFLOW_KEYS, user_mode
+    # autopilot): the task's own setting if it has one, else the thread's
+    # user's. The consolidator reads it from params like dry_run; "unset" ⇒
+    # the safest behaviour + an ask. Receiving is excluded (MODE_VENUE_SCOPED):
+    # it is the VENUE's decision, resolved server-side in review_invoices —
+    # injecting a personal mode as well made it a second, invisible setting.
+    if governed:
+        from app.services import venue_autopilot as VA
+        from app.services.workflow_modes import MODE_IDS, user_mode
 
-        # Receiving is the VENUE's decision now, resolved server-side in
-        # review_invoices. Injecting the triggering user's personal mode as
-        # well made it a second, invisible setting: a venue put on autopilot
-        # would quietly run at whatever rung that person had once chosen, with
-        # no UI showing it and no way to tell why.
-        from app.services.workflow_modes import MODE_VENUE_SCOPED
+        resolved = input_params.get("mode")
+        if resolved not in MODE_IDS:
+            user = None
+            if thread_id:
+                from app.db.models import Thread, User
 
-        if action in WORKFLOW_KEYS and action not in MODE_VENUE_SCOPED and thread_id:
-            from app.db.models import Thread, User
-
-            thread = db.query(Thread).filter(Thread.id == thread_id).first()
-            user = (
-                db.query(User).filter(User.id == thread.user_id).first()
-                if thread and thread.user_id
-                else None
-            )
-            input_params = {
-                **input_params,
-                "mode": (user_mode(user, action) if user else None) or "unset",
-            }
+                thread = db.query(Thread).filter(Thread.id == thread_id).first()
+                user = (
+                    db.query(User).filter(User.id == thread.user_id).first()
+                    if thread and thread.user_id
+                    else None
+                )
+            resolved = (user_mode(user, action) if user else None) or "unset"
+        if resolved in MODE_IDS and passed_mode in MODE_IDS:
+            resolved = VA.at_most(resolved, passed_mode)
+        input_params = {**input_params, "mode": resolved}
 
     from app.connectors.function_executor import execute_function
 
@@ -2372,6 +2385,21 @@ def _set_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict
     mode = params.get("mode", "")
     if workflow not in WORKFLOW_KEYS:
         return {"success": False, "data": {}, "error": f"unknown workflow: {workflow}"}
+    from app.services.workflow_modes import MODE_VENUE_SCOPED
+
+    if workflow in MODE_VENUE_SCOPED:
+        # Nothing reads a personal mode for receiving — writing one here let
+        # the model confirm a change that never took effect (consolidator
+        # review, 1 Oct 2026).
+        return {
+            "success": False,
+            "data": {},
+            "error": (
+                "Receiving invoices is set per venue, not per person — change it "
+                "in Settings → Preferences → Receiving invoices. Nothing was "
+                "changed."
+            ),
+        }
     if mode not in MODE_IDS:
         return {"success": False, "data": {}, "error": f"unknown mode: {mode}"}
     user = _user_for_thread(thread_id, db)

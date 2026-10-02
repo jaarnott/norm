@@ -112,7 +112,13 @@ def execute_connector_tool(
         handler_kind = "CONSOLIDATOR"
 
         def handler(p, db_sess, tid):
-            return execute_consolidator(consolidator_config, p, db_sess, tid)
+            # Carry the action, as the agent loop does: without it
+            # execute_consolidator can't tell which workflow this is, so a run
+            # mode passed by MCP, a chart or an app went straight through —
+            # mode="autopilot" reconciled at autopilot for anyone
+            # (consolidator review, 1 Oct 2026).
+            cfg = {**consolidator_config, "action": action}
+            return execute_consolidator(cfg, p, db_sess, tid)
 
     if handler:
         # Pass venue info through params so the handler can use it: the name for

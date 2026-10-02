@@ -55,6 +55,14 @@ def run(params, call_api, log, call_api_parallel=None):
             return {"error": f"could not resolve '{period}' to dates"}
         from_date = str(window["start"])[:10]
         to_date = str(window["end"])[:10]
+        # A trading window ends in the small hours of the NEXT civil day
+        # (06:59) — that day is not part of the period. Inclusive date
+        # filtering took it in: "last month" also picked up the 1st's drafts
+        # (consolidator review, 1 Oct 2026; get_budgets does the same).
+        if str(window["end"])[11:13] < "12":
+            to_date = (
+                datetime.date.fromisoformat(to_date) - datetime.timedelta(days=1)
+            ).isoformat()
     else:
         to_date = params.get("to_date") or params.get("today")
         from_date = params.get("from_date")
@@ -114,6 +122,8 @@ def run(params, call_api, log, call_api_parallel=None):
         )
 
     def money(value):
+        if value is None:
+            return "—"  # read "$None" on a review-failed row
         try:
             return "$" + format(float(value), ",.2f")
         except Exception:
@@ -171,6 +181,11 @@ def run(params, call_api, log, call_api_parallel=None):
         for v in received + skipped
     ]
 
+    # The mode the SERVICE applied: the venue's setting, lowered by any
+    # ceiling passed here. This reported the incoming personal mode — always
+    # "unset" for receiving — while a 6 Sep run received 50 invoices.
+    applied = result.get("mode") or mode
+
     log(
         "Reviewed "
         + str(len(received_in) + len(skipped_in))
@@ -198,8 +213,13 @@ def run(params, call_api, log, call_api_parallel=None):
         # cards carry structured suggestions inside the working document.
         "fixes": [],
         "fix_invoices": cards,
-        "mode": mode,
-        "mode_unset": mode_unset,
-        "auto_submit": autopilot,
+        "mode": applied,
+        "mode_source": (
+            "the venue's setting (Settings → Preferences → Receiving invoices)"
+            if result.get("mode")
+            else "not reported by the review service"
+        ),
+        "mode_unset": applied == "unset" if result.get("mode") else mode_unset,
+        "auto_submit": applied == "autopilot" if result.get("mode") else autopilot,
         "summary": {"received": len(received_in), "skipped": len(skipped_in)},
     }

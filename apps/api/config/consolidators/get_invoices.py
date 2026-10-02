@@ -27,6 +27,19 @@ _AGG_NOTE = (
 )
 
 
+def _last_day(window):
+    """The window's last CALENDAR day. A trading window ends 06:59 the next
+    morning; that day is not in the period, and date filters are inclusive —
+    "last month" took in the 1st (consolidator review, 1 Oct 2026)."""
+    end = str(window["end"])
+    day = end[:10]
+    if end[11:13] < "12":
+        day = (
+            datetime.date.fromisoformat(day) - datetime.timedelta(days=1)
+        ).isoformat()
+    return day
+
+
 def run(params, call_api, log):
     invoice_id = params.get("invoice_id")
     kind = str(params.get("kind") or "outstanding").strip().lower()
@@ -94,6 +107,7 @@ def run(params, call_api, log):
         return {"error": f"kind must be one of {', '.join(_KINDS)} — got {kind!r}"}
 
     window = None
+    more_available = False
     if kind == "outstanding" and not period and not params.get("from_date"):
         pass  # outstanding drafts: the whole backlog is the natural default
     else:
@@ -155,7 +169,7 @@ def run(params, call_api, log):
             {
                 "venue": venue,
                 "from_date": window["start"][:10],
-                "to_date": window["end"][:10],
+                "to_date": _last_day(window),
             },
         )
         if not isinstance(rows, list):
@@ -182,10 +196,13 @@ def run(params, call_api, log):
         req = {"venue": venue, "status": "NotReceived", "pageSize": 200}
         if window:
             req["from_date"] = window["start"][:10]
-            req["to_date"] = window["end"][:10]
+            req["to_date"] = _last_day(window)
         rows = call_api("loadedhub", "list_stock_invoices", req)
         if not isinstance(rows, list):
             return {"error": (rows or {}).get("error") or "invoice list unavailable"}
+        # One page of 200 is all that is read: say so when it is full rather
+        # than present a capped list as the whole backlog.
+        more_available = len(rows) >= req["pageSize"]
         out_rows = []
         for r in rows:
             if not isinstance(r, dict) or r.get("deletedAt"):
@@ -216,4 +233,10 @@ def run(params, call_api, log):
         out["window"] = {"start": window.get("start"), "end": window.get("end")}
     if kind == "received":
         out["note"] = _AGG_NOTE
+    if kind == "outstanding" and more_available:
+        out["more_available"] = True
+        out["note"] = (
+            "Loaded returned a full page of 200 outstanding invoices — there may "
+            "be more. Narrow with a period or query."
+        )
     return out

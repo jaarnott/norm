@@ -172,7 +172,9 @@ class Api:
 
             return copy.deepcopy(OUTSTANDING)
         if action == "list_received_invoices":
-            assert p["from_date"] == "2026-08-01" and p["to_date"] == "2026-08-08"
+            # the week ends 06:59 on the 8th — the 8th is not in it (it was
+            # queried until the consolidator review, 1 Oct 2026)
+            assert p["from_date"] == "2026-08-01" and p["to_date"] == "2026-08-07"
             import copy
 
             return copy.deepcopy(RECEIVED)
@@ -337,14 +339,34 @@ RECEIVED_FEED = [
 ]
 
 CATALOGUE = [
-    {"id": "i-flour", "name": "FLOUR HIGH GRADE", "groupId": "g-dry", "groupName": "Dry Goods"},
+    {
+        "id": "i-flour",
+        "name": "FLOUR HIGH GRADE",
+        "groupId": "g-dry",
+        "groupName": "Dry Goods",
+    },
     {"id": "i-oil", "name": "OIL CANOLA", "groupId": "g-dry", "groupName": "Dry Goods"},
-    {"id": "i-gin", "name": "GIN LONDON DRY", "groupId": "g-spirits", "groupName": "Spirits"},
+    {
+        "id": "i-gin",
+        "name": "GIN LONDON DRY",
+        "groupId": "g-spirits",
+        "groupName": "Spirits",
+    },
 ]
 
 SUBCATS = [
-    {"id": "g-dry", "categoryId": "c-food", "categoryName": "Food", "name": "Dry Goods"},
-    {"id": "g-spirits", "categoryId": "c-bev", "categoryName": "Beverage", "name": "Spirits"},
+    {
+        "id": "g-dry",
+        "categoryId": "c-food",
+        "categoryName": "Food",
+        "name": "Dry Goods",
+    },
+    {
+        "id": "g-spirits",
+        "categoryId": "c-bev",
+        "categoryName": "Beverage",
+        "name": "Spirits",
+    },
 ]
 
 
@@ -424,3 +446,70 @@ class TestReceivedItemsRollups:
         gin = next(r for r in out["rows"] if r["item_name"] == "GIN LONDON DRY")
         assert gin["quantity_base"] == 4.2  # 6 × 0.7
         assert gin["unit_cost_avg"] == round(45.0 / 0.7, 4)
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    def test_purchase_orders_find_an_order_number_and_skip_deleted(self):
+        class Deleted(Api):
+            def call_api(self, connector, action, params=None):
+                out = super().call_api(connector, action, params)
+                if action == "get_purchase_orders_summary":
+                    out.append(
+                        {
+                            **PO_SUMMARY[0],
+                            "id": "po-x",
+                            "datestampDeleted": "2026-08-09",
+                        }
+                    )
+                return out
+
+        out = run(POS_CODE, Deleted(), query="1520538")
+        assert [r["id"] for r in out["rows"]] == ["po-1"]
+        assert all("datestampDeleted" not in r for r in out["rows"])
+
+    def test_the_purchase_order_shape_keeps_only_what_the_dashboard_reads(self):
+        import json
+
+        from app.connectors.response_transform import apply_response_transform
+
+        shapes = json.loads((_DIR / "shapes.json").read_text())
+        shape = shapes["loadedhub.get_purchase_orders"][
+            "loadedhub.get_purchase_orders_summary"
+        ]
+        raw = [
+            {
+                **PO_SUMMARY[0],
+                "lines": [{"x": 1}],
+                "statusDateTime": "0001-01-01T00:00:00",
+                "notes": "n",
+                "total": 681.800499999986,
+            }
+        ]
+        row = apply_response_transform(raw, shape)[0]
+        assert set(row) == {
+            "id",
+            "orderNumber",
+            "supplierName",
+            "orderedBy",
+            "status",
+            "createdAt",
+            "subtotal",
+            "tax",
+            "total",
+            "isReceived",
+        }
+        assert row["total"] == 681.8
+
+    def test_a_full_page_of_outstanding_invoices_says_there_may_be_more(self):
+        class Full(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "list_stock_invoices":
+                    return [{**OUTSTANDING[0], "id": f"inv-{i}"} for i in range(200)]
+                return super().call_api(connector, action, params)
+
+        out = run(INVOICES_CODE, Full())
+        assert out["more_available"] is True
+        assert "200" in out["note"]
+        assert "more_available" not in run(INVOICES_CODE, Api())

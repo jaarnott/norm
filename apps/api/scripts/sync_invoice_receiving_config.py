@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import json
 import pathlib
 import sys
 
@@ -217,14 +218,16 @@ RECONCILE_CONSOLIDATOR_TOOL = {
     "description": (
         "Reconciles received supplier invoices against their supplier statements. "
         "For every unreconciled received invoice covered by a statement it verifies "
-        "against the attached invoice copy: copy attached, PO number matches "
-        "(strict), invoice date matches, and total incl tax matches within $0.02 — "
-        "then marks passing invoices reconciled on the statement. What is written "
-        "is governed by the caller's run mode (approve_all reports only). Failing "
+        "against the attached invoice copy: copy attached, invoice number matches, "
+        "PO number matches (strict), invoice date matches, and total incl tax "
+        "matches within $0.02 — then marks passing invoices reconciled on the "
+        "statement. Credits are never auto-reconciled (Loaded can't) — they are "
+        "reported for a person. What is written is governed by the user's run "
+        "mode (approve_all reports only) — the result's `mode` says which. Failing "
         "invoices are reported with exact reasons. Suppliers with no covering "
         "statement are reported in needs_statement; statements are only created "
         "when create_missing_statements=true is passed after the user explicitly "
-        "agrees (or in autopilot mode)."
+        "agrees (or in autopilot mode) — never under approve_all."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -250,7 +253,13 @@ RECONCILE_CONSOLIDATOR_TOOL = {
         "suppliers": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Restrict the run to these supplier names",
+            "description": (
+                "Restrict the run to these suppliers — each name EXACTLY as "
+                "Loaded spells it (case and punctuation aside). Never partial: "
+                "'Bidfood' matches neither Bidfood Foodservice nor Bidfood "
+                "Fresh. A name that matches nothing comes back in "
+                "report.unmatched_suppliers with the names it could have meant."
+            ),
         },
     },
     # Audit report the LLM must relay in full — raise the tool-result slim
@@ -301,10 +310,12 @@ CONSOLIDATOR_TOOL = {
         "explanation on the invoice's card, and confidence issues (unreadable "
         "copy, unresolvable unit or supplier, duplicate, totals that don't "
         "reconcile, missing purchase order) flag the invoice for a human. "
-        "What is written is governed by the caller's run mode: approve_all "
-        "receives nothing; approve_fixes receives invoices that are ready "
-        "with nothing to change; autopilot auto-accepts every suggestion "
-        "(each recorded) and receives every invoice with no blocking issues. "
+        "What is written is governed by the VENUE's receiving setting "
+        "(Settings → Preferences → Receiving invoices), not a personal one: "
+        "approve_all receives nothing; approve_fixes receives invoices that "
+        "are ready with nothing to change; autopilot auto-accepts every "
+        "suggestion (each recorded) and receives every invoice with no "
+        "blocking issues. The result's `mode` says which applied. "
         "Flagged invoices are never modified — every issue is reported with "
         "its specific reason. Pass invoice_id to open ONE outstanding invoice "
         "as its Receive Invoice card (id from get_invoices, kind "
@@ -395,18 +406,14 @@ PLAYBOOK = {
     ),
     "instructions": """Goal: review the venue's outstanding supplier invoices. Norm reads each attached invoice copy itself (the replica) and turns every difference from Loaded's draft into a suggested change; blocking confidence issues flag an invoice for the user. What gets received automatically is decided by that review AND the user's run mode — you never decide what gets received.
 
-RUN MODE — DO THIS FIRST, before running the review. This workflow honours a run mode, and you must NOT run the review until it is set:
-0. The current mode is already in your context, under "Run modes" — read it there. There is no tool to fetch it and you do not need one.
-   - If the mode is "unset": DO NOT run the review. Ask the user to choose their default mode and STOP for their answer:
-     • **approve all** — Norm changes nothing without your OK (everything is presented on cards to approve);
-     • **approve fixes** — Norm auto-receives the exact matches; anything needing a fix waits on a card for you;
-     • **autopilot** — Norm applies every suggested change from its own reading of the invoice copy (each change is recorded on the card) and receives every invoice with no blocking issues; anything it can't be confident about still waits for you.
-     When they answer, call set_workflow_mode with workflow="review_and_receive_invoices" and their choice, confirm it briefly, THEN continue to step 1.
-   - If a mode is set: go straight to step 1 (the review runs in that mode automatically). The user can change it any time by asking — call set_workflow_mode.
+RUN MODE — receiving runs at the VENUE's setting, not a personal one. It is already in your context under "Run modes"; there is no tool to read or change it. If the user wants it changed, point them to Settings → Preferences → Receiving invoices — never call set_workflow_mode for receiving (it refuses). The modes:
+   • **approve all** — Norm changes nothing without your OK (everything is presented on cards to approve);
+   • **approve fixes** — Norm auto-receives the exact matches; anything needing a fix waits on a card for you;
+   • **autopilot** — Norm applies every suggested change from its own reading of the invoice copy (each change is recorded on the card) and receives every invoice with no blocking issues; anything it can't be confident about still waits for you.
 
 1. Call review_and_receive_invoices for the venue (default range: last 60 days) — do NOT pass any dry_run or mode param; the run mode alone governs what is written. Before calling it, write at most ONE short status line (e.g. "Reviewing the outstanding invoices…") — the full report comes after the tool returns.
 2. Write a SHORT summary — a few sentences, no audit tables. From the tool's results: how many invoices were reviewed; how many were received automatically (in approve-all mode say "ready to approve" instead — nothing was written); how many await the user on the cards below and why in one line each (e.g. "109738996 — $0 duplicate line to strike", "CN-19980 — duplicate of an already-received invoice"), using the returned reasons — never invent or soften them. Skipped invoices with no card (fetch failures, credit notes) get one bold line each with the tool's reason.
-3. Below your summary there is one compact **Receive Invoice** card per invoice that needs the user. Each card shows its suggested changes (Accept per change), what needs attention, and **Accept & Receive**; it expands to the full invoice. Close with one sentence pointing the user at the cards. If the result's `auto_submit` is true (**autopilot**), say the confident fixes apply automatically and the rest wait on the cards. NEVER claim you have applied or received anything — the user (or autopilot) does that from the cards.
+3. Below your summary there is one compact **Receive Invoice** card per invoice that needs the user. Each card shows its suggested changes (Accept per change), what needs attention, and **Accept & Receive**; it expands to the full invoice. Close with one sentence pointing the user at the cards. The result's `mode` is the mode that actually applied; if it is **autopilot** (`auto_submit` true), say the confident fixes apply automatically and the rest wait on the cards. NEVER claim you have applied or received anything — the user (or autopilot) does that from the cards.
 
 PO VALIDITY — "No valid purchase order" is a blocking validation error by default: autopilot will not receive an invoice whose order reference matches no Loaded purchase order (or references an order that belongs to a different, non-split invoice). If the user says they don't care about PO validity for auto-receiving (e.g. "receive them even without a matching order"), call manage_task with op="set_config", key "require_valid_po" and value false (true restores the default). The check still shows on every card either way.
 
@@ -438,6 +445,8 @@ RUN MODE — DO THIS FIRST, before reconciling. Do NOT run the reconciliation un
    - Invoices that reconciled get the count in the opening line and nothing else. NEVER render a comparison table for one — four ticks under an invoice that is already fine is what buried the invoices that were not.
    - Then `report.statement_differences` — one line each: venue, supplier, statement, statement amount vs reconciled amount, difference. Add ONE line for `report.statements_not_yet_issued` if above zero (statements not issued yet — normal mid-month) and ONE for `report.statements_off_by_rounding` if above zero (differences under a dollar). Never list either.
    - Then `report.needs_statement`: supplier, invoice count, how many would reconcile once a statement exists.
+   - If `report.unmatched_suppliers` is present, say which supplier names matched nothing and ask which supplier the user meant, offering its `did_you_mean` names — never pick one yourself.
+   - If `report.statements_not_created` is present, say plainly that no statement was created and why (the run mode is approve all).
    - Use the tool's values verbatim. Never soften a reason, re-derive a number, or invent a total.
 3. If nothing needs a person — no exceptions, no differences, nothing needing a statement — say so in one sentence and stop. A quiet night is a short report.
 4. If needs_statement is non-empty, ASK THE USER whether Norm should create those statements. Only after the user explicitly says yes, call the tool again with create_missing_statements=true and suppliers set to the confirmed supplier names. Never create statements unprompted. Remind the user that an auto-created statement's number and amount must be updated from the paper statement.
@@ -468,8 +477,11 @@ GET_INVOICES_TOOL = {
     "method": "GET",  # read-only consolidator: auto-executes, nestable
     "description": (
         "THE supplier-invoice lookup. kind='outstanding' (default) lists "
-        "unreceived drafts; kind='received' lists received invoices for a "
-        "period; kind='statements' lists supplier statements. invoice_id "
+        "unreceived drafts (more_available when Loaded's page of 200 is full); "
+        "kind='received' lists received invoices INVOICED in the period (by "
+        "invoice date — get_received_items_for_period counts by date "
+        "RECEIVED, so the two need not tie); kind='statements' lists supplier "
+        "statements. invoice_id "
         "returns ONE invoice with summarized lines ('full' for the raw "
         "payload). Lists return headers only — id, supplier, number, date, "
         "total, PO number — never lines. For 'how much of X did we buy' "
@@ -512,17 +524,18 @@ GET_PURCHASE_ORDERS_TOOL = {
     "action": "get_purchase_orders",
     "method": "GET",
     "description": (
-        "THE purchase-order lookup. Default lists all POs (order number, "
-        "supplier, status, totals — no lines); order_id returns ONE order "
-        "with its lines ('full' for the raw payload); status/query filter "
-        "the list."
+        "THE purchase-order lookup. Default lists OPEN purchase orders — not "
+        "yet received; Loaded's statuses are Outstanding, Sent and "
+        "Acknowledged (order number, supplier, status, totals — no lines). "
+        "order_id returns ONE order with its lines ('full' for the raw "
+        "payload); status/query filter the list."
     ),
     "required_fields": [],
     "optional_fields": ["order_id", "status", "query", "detail", "limit"],
     "field_descriptions": {
         "order_id": "Loaded purchase-order id — returns exactly this order",
-        "status": "Exact status filter (as Loaded reports it)",
-        "query": "Case-insensitive supplier-name substring filter",
+        "status": "Exact status filter: Outstanding, Sent or Acknowledged",
+        "query": "Case-insensitive filter on supplier name or order number",
         "detail": "'summary' (default) or 'full' — single order only",
         "limit": "Max list rows (default 50)",
     },
@@ -563,6 +576,11 @@ def main() -> None:
     get_pos_tool["consolidator_config"] = {
         **GET_PURCHASE_ORDERS_TOOL["consolidator_config"],
         "function_code": GET_POS_CODE_PATH.read_text(encoding="utf-8"),
+        # Its slim list shape (1 Oct 2026); replacing the row without it
+        # would hand the model Loaded's raw 24-field rows again.
+        "shapes": json.loads(
+            (FUNCTION_CODE_PATH.parent / "shapes.json").read_text(encoding="utf-8")
+        )["loadedhub.get_purchase_orders"],
     }
     desired_tools = {
         t["action"]: t

@@ -143,6 +143,33 @@ class TestInternalHandlerDispatch:
         assert res.row_count == 3
         assert res.logs == ["ok"]
 
+    def test_the_consolidator_learns_which_action_it_is(
+        self, db_session, monkeypatch, connector
+    ):
+        """Without the action, execute_consolidator couldn't tell a run-mode
+        workflow, so a mode passed through MCP, a chart or an app was obeyed
+        as given (consolidator review, 1 Oct 2026)."""
+        _spec(
+            db_session,
+            connector,
+            [
+                {
+                    "action": "consolidate",
+                    "method": "GET",
+                    "consolidator_config": {"function_code": "..."},
+                }
+            ],
+        )
+        seen = {}
+        monkeypatch.setattr("app.agents.internal_tools.get_handler", lambda c, a: None)
+        monkeypatch.setattr(
+            "app.agents.internal_tools.execute_consolidator",
+            lambda cfg, p, d, t: seen.update(cfg) or {"success": True, "data": []},
+        )
+        execute_connector_tool(connector, "consolidate", {}, db_session, db_session)
+        assert seen["action"] == "consolidate"
+        assert seen["function_code"] == "..."
+
     def test_handler_exception_becomes_a_failed_result(
         self, db_session, monkeypatch, connector
     ):

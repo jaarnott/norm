@@ -706,7 +706,9 @@ class TestPeriodResolution:
         run_consolidator(api, period="last month")
         stmt = next(p for a, p in api.seen if a == "list_supplier_statements")
         assert stmt["from_iso"].startswith("2026-07-01T00:00:00")
-        assert stmt["to_iso"].startswith("2026-08-01T23:59:59")
+        # the trading window ends 06:59 on 1 Aug — that day is not July (it
+        # used to be included: consolidator review, 1 Oct 2026)
+        assert stmt["to_iso"].startswith("2026-07-31T23:59:59")
 
     def test_no_period_keeps_the_thirty_day_default(self):
         api = Api(statements=[], received=[])
@@ -939,3 +941,58 @@ class TestTheReportTheEmailIsWrittenFrom:
         out = run_consolidator(api_for(make_received()))
         assert out["reconciled"][0]["comparison"]["po_number"]["match"] is True
         assert out["results"] and out["statements"]
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    def _bidfood(self):
+        a = make_received(
+            id="r-a", supplierId="s-a", supplierName="Bidfood Foodservice"
+        )
+        b = make_received(id="r-b", supplierId="s-b", supplierName="Bidfood Fresh")
+        return Api(
+            statements=[
+                make_statement(supplierId="s-a", supplierName="Bidfood Foodservice")
+            ],
+            received=[a, b],
+            pdfs={FILE_ID: make_pdf()},
+        )
+
+    def test_a_partial_name_matches_nothing_and_offers_the_real_names(self):
+        """Never partial: 'Bidfood' must not mean both Bidfood businesses."""
+        api = self._bidfood()
+        result = run_consolidator(api, suppliers=["Bidfood"])
+        assert result["summary"]["reconciled"] == 0
+        assert api.updated == []
+        assert result["report"]["unmatched_suppliers"] == [
+            {
+                "asked": "Bidfood",
+                "did_you_mean": ["Bidfood Foodservice", "Bidfood Fresh"],
+            }
+        ]
+
+    def test_an_exact_name_still_matches_case_and_punctuation_aside(self):
+        api = self._bidfood()
+        result = run_consolidator(api, suppliers=["BIDFOOD FOODSERVICE"])
+        assert "unmatched_suppliers" not in result["report"]
+        assert result["summary"]["reconciled"] == 1
+
+    def test_a_credit_is_not_also_a_total_mismatch(self):
+        """Loaded stores a credit negative, the copy prints it positive."""
+        api = api_for(
+            make_received(creditRequest=True, total=-12.65),
+            pdf=make_pdf(total_incl_tax=12.65),
+        )
+        verdict = sole_fail(run_consolidator(api))
+        assert any("Credit" in r for r in verdict["reasons"])
+        assert not any("Total mismatch" in r for r in verdict["reasons"])
+
+    def test_statements_asked_for_under_approve_all_say_none_were_made(self):
+        orphan = make_received(supplierId="other", supplierName="Orphan Foods")
+        api = Api(statements=[], received=[orphan], pdfs={FILE_ID: make_pdf()})
+        result = run_consolidator(
+            api, create_missing_statements=True, mode="approve_all"
+        )
+        assert api.created == []
+        assert "no statement was created" in result["report"]["statements_not_created"]

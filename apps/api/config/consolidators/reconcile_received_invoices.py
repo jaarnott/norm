@@ -15,12 +15,21 @@
 # (1) copy attached, (2) invoice number on the copy matches (proves the right
 # document is attached), (3) PO number matches (STRICT: both sides must show
 # one), (4) invoice date matches, (5) total incl tax matches (≤ $0.02) — and
-# mark the passing ones reconciled on the statement. Deterministic code decides
-# every write; `dry_run=true` reports without writing. Suppliers with
-# unreconciled invoices but no covering statement are reported in
-# `needs_statement`; statements are only created when the caller passes
+# mark the passing ones reconciled on the statement. A credit is never
+# auto-reconciled (Loaded can't) — it is reported for a person. Deterministic
+# code decides every write, and the run mode decides whether anything is
+# written: approve_all (or unset) reports only. Suppliers with unreconciled
+# invoices but no covering statement are reported in `needs_statement`;
+# statements are only created when the caller passes
 # `create_missing_statements=true` (the playbook requires explicit user
-# consent first).
+# consent first) or the mode is autopilot — never under approve_all.
+#
+# `suppliers` matches a supplier's name EXACTLY (case and punctuation
+# ignored) — never partially: "Bidfood" must not mean both Bidfood
+# Foodservice and Bidfood Fresh. A name that matches nothing is reported in
+# `unmatched_suppliers` with the names it could have meant, so the model asks
+# instead of returning an empty run (20 Jul 2026: "Service Foods" read 0
+# statements beside "Service Foods Auckland").
 
 # No private extraction schema here any more. Reading the copy is
 # norm.invoice_copy_evidence's job: it returns what the RECEIVE flow already
@@ -150,6 +159,14 @@ def run(params, call_api, log, call_api_parallel=None):
             return {"error": f"could not resolve '{period}' to dates"}
         from_date = str(window["start"])[:10]
         to_date = str(window["end"])[:10]
+        # A trading window ends in the small hours of the NEXT civil day
+        # (06:59) — that day is not part of the period. Inclusive date
+        # filtering took it in: "last month" also picked up the 1st's drafts
+        # (consolidator review, 1 Oct 2026; get_budgets does the same).
+        if str(window["end"])[11:13] < "12":
+            to_date = (
+                datetime.date.fromisoformat(to_date) - datetime.timedelta(days=1)
+            ).isoformat()
     else:
         to_date = params.get("to_date") or params.get("today")
         from_date = params.get("from_date")
@@ -173,6 +190,7 @@ def run(params, call_api, log, call_api_parallel=None):
     if isinstance(statements, dict) and statements.get("error"):
         return {"error": "Could not list supplier statements: " + statements["error"]}
     statements = [s for s in statements or [] if not s.get("deletedAt")]
+    statement_suppliers = [s.get("supplierName") for s in statements]
     if supplier_filter:
         statements = [
             s for s in statements if norm(s.get("supplierName")) in supplier_filter
@@ -200,6 +218,29 @@ def run(params, call_api, log, call_api_parallel=None):
         and not inv.get("reconciled")
         and not inv.get("deletedAt")
         and not inv.get("statementId")
+    ]
+
+    # Names asked for that match no supplier here — with what they might have
+    # meant, from names already read (no extra call).
+    known = {}
+    for name in statement_suppliers + [
+        inv.get("supplierName") for inv in received or [] if isinstance(inv, dict)
+    ]:
+        if name and norm(name) not in known:
+            known[norm(name)] = str(name)
+
+    def did_you_mean(asked):
+        a = norm(asked)
+        close = [n for k, n in known.items() if a and (a in k or k in a)]
+        if not close:
+            words = {w for w in str(asked).lower().split() if len(w) >= 4}
+            close = [n for n in known.values() if words & set(str(n).lower().split())]
+        return sorted(close)[:5]
+
+    unmatched_suppliers = [
+        {"asked": s, "did_you_mean": did_you_mean(s)}
+        for s in params.get("suppliers") or []
+        if s and norm(s) not in known
     ]
     if supplier_filter:
         candidates = [
@@ -297,9 +338,12 @@ def run(params, call_api, log, call_api_parallel=None):
             # service being briefly unavailable, and every one of those copies
             # reads. Name what actually happened, and say it will retry.
             if isinstance(pdf, dict) and pdf.get("transient"):
+                # Since 1 Oct 2026 this also covers Norm's database and
+                # Loaded's servers (21 Sep: 36 good copies called unreadable).
                 reasons.append(
-                    "Could not check this invoice — the extraction service was "
-                    "briefly unavailable. The copy is fine; the next run retries it."
+                    "Could not check this invoice right now — a service (Norm, "
+                    "Loaded or the extraction service) was briefly unavailable. "
+                    "The copy is probably fine; the next run retries it."
                 )
                 doc_side("(not checked)")
             else:
@@ -382,8 +426,16 @@ def run(params, call_api, log, call_api_parallel=None):
         else:
             checks["date_match"] = "pass"
 
-        # Check 4 — total incl tax
+        # Check 4 — total incl tax. A credit is negative in Loaded and printed
+        # positive on its copy; compared with the sign, every credit also got a
+        # false "Total mismatch $-12.65 vs $12.65" (22 reports in 30 days).
         loaded_total, pdf_total = dec(inv.get("total")), dec(pdf.get("total_incl_tax"))
+        if (
+            checks.get("credit") == "fail"
+            and loaded_total is not None
+            and pdf_total is not None
+        ):
+            loaded_total, pdf_total = abs(loaded_total), abs(pdf_total)
         if pdf_total is None:
             checks["total_match"] = "fail"
             reasons.append("Could not read the total from the invoice copy")
@@ -621,7 +673,12 @@ def run(params, call_api, log, call_api_parallel=None):
                 )
         else:
             for _, v in passing:
-                v["outcome"] = "needs statement (all checks pass)"
+                v["outcome"] = (
+                    "needs statement (all checks pass) — NOT created: the run "
+                    "mode is approve all, which never writes"
+                    if create_missing and dry_run
+                    else "needs statement (all checks pass)"
+                )
                 needs_statement_rows.append(v)
         for _, v in failing:
             v["outcome"] = "needs statement (fails checks)"
@@ -850,6 +907,14 @@ def run(params, call_api, log, call_api_parallel=None):
         "statements_off_by_rounding": rounding,
         "needs_statement": needs_statement,
     }
+    if unmatched_suppliers:
+        report["unmatched_suppliers"] = unmatched_suppliers
+    if create_missing and dry_run:
+        # Asked for, refused by the mode — the model must not report them made.
+        report["statements_not_created"] = (
+            "create_missing_statements was asked for, but the run mode is approve "
+            "all, which never writes — no statement was created"
+        )
 
     return {
         "venue": venue,

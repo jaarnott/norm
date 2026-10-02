@@ -204,3 +204,20 @@ class TestReviewFixes:
             {"venue": "The Glass Goose", "net_spend": 17.5, "lines": 1},
         ]
         assert sum(v["net_spend"] for v in out["venues"]) == out["summary"]["net_spend"]
+
+
+class TestSupplierNames:
+    """Exact names only; a name that matches nothing offers the real ones."""
+
+    def test_a_partial_name_is_not_a_match_and_offers_the_real_names(self):
+        out = run(Api(), venues="all", suppliers=["City"])
+        assert out["summary"]["net_spend"] == 0
+        assert out["unmatched_suppliers"] == [
+            {"asked": "City", "did_you_mean": ["City Produce"]}
+        ]
+        assert any("ask which one was meant" in w for w in out["warnings"])
+
+    def test_an_exact_name_matches(self):
+        out = run(Api(), venues="all", suppliers=["CITY PRODUCE"])
+        assert "unmatched_suppliers" not in out
+        assert out["summary"]["net_spend"] == 107.5

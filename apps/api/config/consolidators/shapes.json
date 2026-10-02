@@ -421,6 +421,24 @@
    }
   }
  },
+ "loadedhub.get_purchase_orders": {
+  "loadedhub.get_purchase_orders_summary": {
+   "enabled": true,
+   "fields": {
+    "createdAt": "createdAt",
+    "datestampDeleted": "datestampDeleted",
+    "id": "id",
+    "isReceived": "isReceived",
+    "orderNumber": "orderNumber",
+    "orderedBy": "orderedBy",
+    "status": "status",
+    "subtotal": "subtotal|round:2",
+    "supplierName": "supplierName",
+    "tax": "tax|round:2",
+    "total": "total|round:2"
+   }
+  }
+ },
  "loadedhub.get_received_items_for_period": {
   "loadedhub.get_received_invoices": {
    "enabled": true,

@@ -555,7 +555,11 @@ def workflow_modes_guidance(
             from app.services.venue_autopilot import settings_for
 
             mode = (settings_for(venue) or {}).get("mode") or "unset"
-            whose = f"the VENUE's setting for {venue.name}, not a personal one"
+            whose = (
+                f"the VENUE's setting for {venue.name}, not a personal one — it "
+                "is changed in Settings → Preferences → Receiving invoices, "
+                "never with set_workflow_mode"
+            )
         else:
             mode = (user_mode(user, key) if user else None) or "unset"
             whose = "this user's setting"
@@ -577,7 +581,10 @@ def workflow_modes_guidance(
             "workflow yet. Explain the choices, ask the user to pick, save it "
             "with `set_workflow_mode`, then continue."
         )
-    block += " The user can change a mode any time by asking — that is what `set_workflow_mode` is for.\n"
+    block += (
+        " The user can change a personal mode any time by asking — that is what "
+        "`set_workflow_mode` is for; a venue's setting is changed in Settings.\n"
+    )
     return block
 
 

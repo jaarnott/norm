@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -373,9 +374,41 @@ def _error_result(exc: Exception) -> dict:
     from app.interpreter.llm_interpreter import _is_transient_llm_error
 
     out = {"error": str(exc)}
-    if _is_transient_llm_error(exc):
+    if _is_transient_llm_error(exc) or _is_infrastructure_error(exc):
         out["transient"] = True
     return out
+
+
+#: How LoadedInvoiceClient words a failure it raised: "Loaded GET … → 502: …",
+#: "file download → 503", or "… → ConnectError: …" for a network error.
+_LOADED_5XX = re.compile(r"→ (5\d\d)\b")
+_LOADED_NETWORK = re.compile(
+    r"→ (ConnectError|ConnectTimeout|ReadTimeout|WriteTimeout|PoolTimeout|"
+    r"ReadError|WriteError|RemoteProtocolError|TimeoutException)\b"
+)
+
+
+def _is_infrastructure_error(exc: Exception) -> bool:
+    """Norm's database, or Loaded's servers or network, failing — not the
+    document. On 21 Sep 2026 a database blip marked 36 invoices "Could not
+    read the attached invoice copy" across two reconcile runs; every one read
+    fine (consolidator review, 1 Oct 2026). A 4xx from Loaded is NOT one of
+    these: that is a request the retry would repeat."""
+    from sqlalchemy.exc import DBAPIError, OperationalError
+
+    if isinstance(exc, OperationalError):
+        return True
+    if isinstance(exc, DBAPIError) and getattr(exc, "connection_invalidated", False):
+        return True
+    try:
+        import psycopg2
+
+        if isinstance(exc, psycopg2.OperationalError):
+            return True
+    except ImportError:  # pragma: no cover — psycopg2 ships with the API
+        pass
+    text = str(exc)
+    return bool(_LOADED_5XX.search(text) or _LOADED_NETWORK.search(text))
 
 
 def _extract_uncached(

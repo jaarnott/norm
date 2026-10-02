@@ -1876,7 +1876,28 @@ def review_invoice(
                 instructions=extraction_instructions(config_db, lh, detail, aliases),
                 venue_key=venue_id,
             )
-        if not isinstance(extraction, dict) or extraction.get("error"):
+        if isinstance(extraction, dict) and extraction.get("transient"):
+            # Norm, Loaded or the extraction service was briefly down — that
+            # says nothing about the document. It used to be filed as
+            # "unreadable" with a delete-the-draft fix (a venue that let Norm
+            # clear unreadable copies would have deleted good drafts during an
+            # outage). Blocks this run only; nothing to delete; next run retries.
+            data["issues"].append(
+                {
+                    "id": "copy_not_checked",
+                    "code": "copy_not_checked",
+                    "blocking": True,
+                    "line_id": None,
+                    "message": (
+                        "the invoice copy couldn't be checked right now — a "
+                        "service was briefly unavailable ("
+                        + str(extraction.get("error"))
+                        + "). The copy is probably fine; the next review "
+                        "retries it."
+                    ),
+                }
+            )
+        elif not isinstance(extraction, dict) or extraction.get("error"):
             err = (
                 extraction.get("error")
                 if isinstance(extraction, dict)
@@ -2387,7 +2408,7 @@ def review_invoices(
       change (no suggestions at all); anything else becomes a card.
     - ``autopilot``: auto-accept all suggestions, receive when ready.
 
-    Returns ``{"cards", "verdicts", "received", "skipped", "sensei"}`` —
+    Returns ``{"cards", "verdicts", "received", "skipped", "sensei", "mode"}`` —
     cards are full replica_v1 doc payloads (they ride into ``fix_invoices``
     verbatim for the working-document fan-out).
     """
@@ -2429,11 +2450,22 @@ def review_invoices(
         ]
 
     details: dict[str, dict] = {}
+    unfetched: list[dict] = []
     for iid in invoice_ids:
         try:
             details[iid] = lh.invoice(iid)
         except Exception as exc:  # noqa: BLE001 — one bad invoice never sinks the batch
             logger.warning("invoice %s unavailable: %s", iid, exc)
+            # Reported, not dropped: it used to vanish from both received and
+            # skipped, so the count came up short and a bad invoice_id
+            # returned an empty "success" (consolidator review, 1 Oct 2026).
+            unfetched.append(
+                {
+                    "invoice_id": iid,
+                    "outcome": "could not fetch from Loaded",
+                    "reasons": [f"could not fetch this invoice from Loaded: {exc}"],
+                }
+            )
 
     # Once for the whole batch: the account's own record of which names are
     # different businesses, which every alias below is vetted against.
@@ -2628,8 +2660,11 @@ def review_invoices(
         "cards": cards,
         "verdicts": verdicts,
         "received": received,
-        "skipped": skipped,
+        "skipped": skipped + unfetched,
         "sensei": sensei_runs,
+        # The rung actually applied — the venue's setting, lowered by the
+        # caller's ceiling — so the report can say what really governed it.
+        "mode": mode,
     }
 
 

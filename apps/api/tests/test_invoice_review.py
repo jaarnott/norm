@@ -881,6 +881,51 @@ class TestBatchModes:
         monkeypatch.setattr(IR, "invalidate_conflicting_drafts", lambda *a, **k: None)
         return review_invoices(db, None, "v-1", mode=mode)
 
+    def test_an_invoice_loaded_fails_to_return_is_reported_not_dropped(
+        self, monkeypatch
+    ):
+        """It vanished from received AND skipped — the count came up short and
+        a bad invoice_id was an empty success (consolidator review, 1 Oct)."""
+
+        class _Flaky(_BatchLh):
+            def invoice(self, iid):
+                if iid == "inv-bad":
+                    raise RuntimeError("Loaded 502")
+                return super().invoice(iid)
+
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda db, cdb, vid: lh)
+        lh = _Flaky({"inv-1": DETAIL(), "inv-bad": {}})
+        db = _VenueDb({"mode": "approve_all"})
+        monkeypatch.setattr(
+            IR,
+            "extract_invoice_copies_parallel",
+            lambda db, lh_, reqs: [EXTRACTION() for _ in reqs],
+        )
+        monkeypatch.setattr(
+            IR, "extraction_instructions", lambda cdb, lh_, det, al=None: "INSTR"
+        )
+        monkeypatch.setattr(
+            "app.services.spec_dojo.prefetch_replica_reference",
+            lambda db, cdb, vid: REFERENCE(),
+        )
+        out = review_invoices(db, None, "v-1", mode="autopilot")
+        bad = [v for v in out["skipped"] if v["invoice_id"] == "inv-bad"]
+        assert bad and bad[0]["outcome"] == "could not fetch from Loaded"
+        assert "Loaded 502" in bad[0]["reasons"][0]
+
+    def test_the_applied_mode_is_returned(self, monkeypatch):
+        """The venue's rung, lowered by the caller's ceiling — chat reported
+        "unset" over a run that received 50 invoices (6 Sep 2026)."""
+        out = self._run(
+            monkeypatch, {"inv-1": DETAIL()}, [EXTRACTION()], "autopilot", []
+        )
+        assert out["mode"] == "autopilot"
+        db = _VenueDb({"mode": "autopilot"})
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda d, c, v: _BatchLh({}))
+        assert review_invoices(db, None, "v-1", mode="approve_all")["mode"] == (
+            "approve_all"
+        )
+
     def test_autopilot_accepts_and_receives_despite_diffs(self, monkeypatch):
         # "Trust the replica now": a qty diff never blocks autopilot — it is
         # auto-accepted (recorded) and the REPLICA's value is received.

@@ -381,6 +381,7 @@ def run(params, call_api, log, call_api_parallel=None):
     by_name = bool(params.get("query") or params.get("group"))
     flat = []
     venues_read = []
+    supplier_names = {}  # normalised -> as Loaded spells it, every venue read
     for i, v in enumerate(targets):
         invoices, catalogue, units = results[i * per : i * per + 3]
         subcats = results[i * per + 3] if per == 4 else None
@@ -406,6 +407,10 @@ def run(params, call_api, log, call_api_parallel=None):
                     return {"error": why, "window": window}
                 venue_errors[v] = why
                 continue
+        for inv in invoices if isinstance(invoices, list) else []:
+            name = inv.get("supplierName") if isinstance(inv, dict) else None
+            if name:
+                supplier_names.setdefault(norm(name), str(name))
         rows, notes = _flatten(
             invoices if isinstance(invoices, list) else [],
             catalogue,
@@ -464,11 +469,37 @@ def run(params, call_api, log, call_api_parallel=None):
         )
         return rows[:limit] + [others]
 
+    # `suppliers` matches a name EXACTLY (case and punctuation aside), never
+    # partially — "Bidfood" must not mean both Bidfood Foodservice and
+    # Bidfood Fresh. A name that matches nothing says so, with the names it
+    # could have meant, instead of an empty answer (consolidator review).
+    unmatched = []
+    for asked in params.get("suppliers") or []:
+        a = norm(asked)
+        if not asked or a in supplier_names:
+            continue
+        close = [n for k, n in supplier_names.items() if a and (a in k or k in a)]
+        if not close:
+            words = {w for w in str(asked).lower().split() if len(w) >= 4}
+            close = [
+                n for n in supplier_names.values() if words & set(n.lower().split())
+            ]
+        unmatched.append({"asked": asked, "did_you_mean": sorted(close)[:5]})
+    if unmatched:
+        warnings.append(
+            "No supplier is named exactly "
+            + ", ".join(repr(u["asked"]) for u in unmatched)
+            + " in this period — ask which one was meant (see unmatched_suppliers); "
+            "never assume."
+        )
+
     result = {
         "window": window,
         "group_by": group_by,
         "warnings": warnings,
     }
+    if unmatched:
+        result["unmatched_suppliers"] = unmatched
     if multi:
         # The group answer carries its own per-venue totals, so "and by
         # venue?" is answered without another fetch — from the FILTERED
