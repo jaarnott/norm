@@ -27,6 +27,20 @@ def run(params, call_api, log, call_api_parallel):
     reported as the API error it is. The item-minimums call is best-effort: if it
     fails we warn and fall back to usage-only (par levels not enforced), rather
     than abort.
+
+    Consolidator review (1 Oct 2026):
+
+    * The result is ``{items, warnings, ...}``, not a bare list. Every warning
+      used to go to log() only — the model never saw that par levels were off,
+      that deliveries were left out of usage, or that a received-invoices
+      outage had understated usage — so a degraded answer read like a clean one.
+    * A NEGATIVE stock on hand inflated the order by its size: Bessie, 20 Aug,
+      HAZELNUTS on hand −398.4, forecast 96.2, ordered 494.5. A negative count
+      is broken data, not stock owed; it counts as 0 and the line is flagged.
+    * A failed or zero budget silently became "order par levels only" —
+      indistinguishable from a real forecast. It is refused now, like missing
+      sales already was, since the forecast is usage scaled by the budget.
+    * Deleted items (isItemDeleted) are skipped.
     """
     venue = params["venue"]
     template_id = params["template_id"]
@@ -58,9 +72,15 @@ def run(params, call_api, log, call_api_parallel):
     # the executor-injected four_weeks_ago_iso/today_iso are CIVIL midnight
     # in a fixed timezone, which splits trading sessions. Falls back to the
     # injected values if the resolver is unavailable.
+    warnings = []
     hist = _resolve("last 4 weeks")
     hist_start = (hist or {}).get("start") or params["four_weeks_ago_iso"]
     hist_end = (hist or {}).get("end") or params["today_iso"]
+    if not hist:
+        warnings.append(
+            "the venue calendar couldn't resolve 'last 4 weeks', so usage was "
+            "measured midnight to midnight rather than on trading days"
+        )
 
     def api_error(result):
         """call_api / call_api_parallel hand back {"error": ...} on failure.
@@ -190,6 +210,12 @@ def run(params, call_api, log, call_api_parallel):
             log(
                 f"WARNING: received invoices unavailable ({api_error(received)}) — usage will be understated"
             )
+            warnings.append(
+                "received invoices couldn't be read from Loaded ("
+                + str(api_error(received))
+                + ") — deliveries are missing from usage, so usage and the "
+                "forecast are UNDERSTATED"
+            )
         received = []
 
     # Build the minimum-stock (par) lookup, keyed by item id, in COUNTING units.
@@ -219,11 +245,21 @@ def run(params, call_api, log, call_api_parallel):
             f"WARNING: item minimums unavailable ({api_error(item_mins_raw)}) — "
             "par levels will not be enforced this run"
         )
+        warnings.append(
+            "par levels (minimum stock) couldn't be read from Loaded — they were "
+            "NOT enforced this run; only the usage forecast drove the orders"
+        )
 
     log(
         f"Current stock: {len(stock_now)} items, 4w ago: {len(stock_4w)} items, "
         f"Invoices: {len(received)}, Items with a par level: {len(min_on_hand)}"
     )
+
+    # A deleted item still on a stocktake report is not something to order.
+    deleted = [i for i in stock_now if i.get("isItemDeleted") is True]
+    if deleted:
+        stock_now = [i for i in stock_now if i.get("isItemDeleted") is not True]
+        warnings.append(f"{len(deleted)} deleted item(s) on this template were skipped")
 
     if not stock_now:
         # Reachable only when LoadedHub genuinely returns an empty report.
@@ -293,6 +329,13 @@ def run(params, call_api, log, call_api_parallel):
                 qty = -abs(qty)
             unit_ratio = float(line.get("unitRatio", 0) or 0)
             target = counting.get(item_id)
+            if item_id not in counting and not any(
+                i.get("stockItemID") == item_id for i in stock_now
+            ):
+                # Not on this template (a beverage on a Food check): nothing
+                # to convert and nothing missing — 198 such lines were being
+                # reported as "no usable unit ratio" on La Zeppa's Food check.
+                continue
             if unit_ratio <= 0 or not target:
                 # No way to make it comparable with on-hand. Leave it out and
                 # say so, rather than guessing a ratio of 1 and ordering from
@@ -323,13 +366,26 @@ def run(params, call_api, log, call_api_parallel):
             "different type from the item's counting unit (e.g. grams vs each) "
             "and were left out of usage"
         )
+        warnings.append(
+            f"{incompatible} received line(s) were in a unit of a different type "
+            "from the item's counting unit (e.g. grams vs each) and were left "
+            "out of usage"
+        )
     if unconverted:
         log(
             f"WARNING: {unconverted} received line(s) had no usable unit ratio "
             "and were left out of usage"
         )
+        warnings.append(
+            f"{unconverted} received line(s) had no usable unit ratio and were "
+            "left out of usage"
+        )
 
     # Build 4-week-ago stock lookup
+    # Build 4-week-ago stock lookup. Usage keeps the RAW counts, negative or
+    # not: clamping them here inflated usage whenever the opening count was
+    # negative too (checked on La Zeppa's Food template, 2 Oct 2026). Only the
+    # ORDER treats a negative count as 0 — see below.
     stock_4w_lookup = {}
     for item in stock_4w:
         item_id = item.get("stockItemID", "")
@@ -361,6 +417,18 @@ def run(params, call_api, log, call_api_parallel):
 
     # Total budget for the forecast window — the consolidator precomputes it
     # (the list fallback covers the raw shape, defensively).
+    if isinstance(budgets, dict) and budgets.get("error"):
+        return {
+            "error": (
+                "Couldn't read the budget for "
+                + str(params["today"])
+                + " to "
+                + str(order_until)
+                + " from Loaded, so the forecast can't be calculated (it scales "
+                "usage by the budget). Loaded said: " + str(budgets["error"])
+            ),
+            "items_checked": len(stock_now),
+        }
     total_budget = 0
     if isinstance(budgets, dict):
         total_budget = float(budgets.get("total") or 0)
@@ -368,6 +436,21 @@ def run(params, call_api, log, call_api_parallel):
         for b in budgets:
             total_budget += float(b.get("amount", 0) or 0)
     log(f"Total budget (forecast period): ${total_budget:,.0f}")
+    if total_budget <= 0:
+        # It used to carry on and order par levels only, with nothing to say
+        # the usage forecast had been zeroed — that reads as a real answer.
+        return {
+            "error": (
+                "No budget is set in Loaded for "
+                + str(params["today"])
+                + " to "
+                + str(order_until)
+                + ", and the forecast scales usage by the budget — so it can't "
+                "be calculated. Set budgets for those days in Loaded, or pick a "
+                "period that has them."
+            ),
+            "items_checked": len(stock_now),
+        }
 
     # Calculate per-item requirements. Each item's order is the greater of two
     # drivers:
@@ -377,10 +460,12 @@ def run(params, call_api, log, call_api_parallel):
     # its par level, which is why the old `usage <= 0: continue` short-circuit is
     # gone.
     results = []
+    negative = 0
     for item in stock_now:
         item_id = item.get("stockItemID", "")
         item_name = item.get("itemName", "Unknown")
-        on_hand = float(item.get("quantityOnHand", 0) or 0)
+        counted = float(item.get("quantityOnHand", 0) or 0)
+        on_hand = max(0.0, counted)
         usage = usage_by_item.get(item_id, 0)
 
         forecast = 0.0
@@ -397,21 +482,41 @@ def run(params, call_api, log, call_api_parallel):
         if order_qty <= 0:
             continue
 
-        results.append(
-            {
-                "itemName": item_name,
-                "currentStock": round(on_hand, 1),
-                "usageLast4Weeks": round(usage, 1) if usage > 0 else 0,
-                "forecastUsage": round(forecast, 1),
-                "minimumStock": round(min_level, 1),
-                "orderQty": round(order_qty, 1),
-                # Which rule set the quantity, so the agent can explain the line.
-                "orderDriver": "minimum" if min_order > usage_order else "usage",
-                "unit": item.get("countingUnitName", ""),
-                "category": item.get("Category", ""),
-            }
-        )
+        row = {
+            "itemName": item_name,
+            "currentStock": round(counted, 1),
+            "usageLast4Weeks": round(usage, 1) if usage > 0 else 0,
+            "forecastUsage": round(forecast, 1),
+            "minimumStock": round(min_level, 1),
+            "orderQty": round(order_qty, 1),
+            # Which rule set the quantity, so the agent can explain the line.
+            "orderDriver": "minimum" if min_order > usage_order else "usage",
+            "unit": item.get("countingUnitName", ""),
+            "category": item.get("Category", ""),
+        }
+        if counted < 0:
+            negative += 1
+            row["note"] = (
+                f"stock on hand is NEGATIVE in Loaded ({round(counted, 1)}) — "
+                "counted as 0 for this order, and this item's usage and "
+                "forecast are unreliable until the count is fixed"
+            )
+        results.append(row)
 
+    if negative:
+        warnings.append(
+            f"{negative} item(s) have NEGATIVE stock on hand in Loaded — counted "
+            "as 0 (see each line's note); their counts need checking"
+        )
     results.sort(key=lambda x: x["orderQty"], reverse=True)
     log(f"RESULT: {len(results)} items need reordering out of {len(stock_now)} total")
-    return results
+    return {
+        "template_id": template_id,
+        "order_until": order_until,
+        "history": {"start": hist_start, "end": hist_end},
+        "sales_last_4_weeks": round(total_sales, 2),
+        "budget_for_period": round(total_budget, 2),
+        "items_checked": len(stock_now),
+        "items": results,
+        "warnings": warnings,
+    }

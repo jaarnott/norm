@@ -862,3 +862,58 @@ class TestTheCatalogueFitsInOneCall:
         note = out["note"]
         assert "item_ids" in note
         assert "misses" in note
+
+
+class TestReviewFixes:
+    """Consolidator review: a failed lookup is a LoadedHub failure, never
+    "not found"; "false" is false; one MATCH opens an item, not limit=1; a
+    list sent as text is still a list."""
+
+    class Failing(Api):
+        def __init__(self, fail):
+            super().__init__()
+            self.fail = set(fail)
+
+        def call_api(self, connector, action, params=None):
+            if action in self.fail:
+                self.calls.append((action, dict(params or {})))
+                return {"error": "HTTP 502 Bad Gateway"}
+            return super().call_api(connector, action, params)
+
+    def test_a_failed_templates_read_is_not_a_missing_template(self):
+        out = run(
+            self.Failing({"get_stocktake_templates"}), view="on_hand", template="Food"
+        )
+        assert "LoadedHub failure, not a missing record" in out["error"]
+        assert "No stocktake template" not in out["error"]
+
+    def test_a_failed_item_or_groups_read_is_not_a_missing_item(self):
+        for action in (
+            "get_stock_item_full",
+            "get_stock_item_groups",
+            "get_stocktake_templates",
+        ):
+            out = run(self.Failing({action}), view="on_hand", item_id="i-jbb")
+            assert "LoadedHub failure" in out["error"], (action, out)
+        # a real 404 still reads as not found
+        out = run(Api(), view="on_hand", item_id="i-nope")
+        assert "not found" in out["error"]
+
+    def test_include_deleted_false_as_text_is_false(self):
+        as_text = run(Api(), view="reference", kind="units", include_deleted="false")
+        plain = run(Api(), view="reference", kind="units")
+        assert as_text == plain
+
+    def test_limit_one_does_not_open_an_arbitrary_match(self):
+        api = Api()
+        out = run(api, query="jim beam", limit=1)
+        assert out["total_matches"] >= 2 and out["shown"] == 1
+        assert "item" not in out
+        assert "get_stock_item_full" not in api.actions()
+
+    def test_item_ids_sent_as_text_are_still_a_bulk_read(self):
+        api = Api()
+        out = run(api, item_ids='["i-jbb", "i-asahi"]', detail="full")
+        assert [i["id"] for i in out["items"]] == ["i-jbb", "i-asahi"]
+        out = run(Api(), item_ids="i-jbb, i-asahi", detail="full")
+        assert len(out["items"]) == 2

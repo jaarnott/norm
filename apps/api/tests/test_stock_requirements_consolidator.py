@@ -150,8 +150,8 @@ class TestHappyPath:
     def test_calculates_order_quantities(self):
         api = Api()
         out = run_fn(api)
-        assert isinstance(out, list) and len(out) == 1
-        row = out[0]
+        assert len(out["items"]) == 1
+        row = out["items"][0]
         assert row["itemName"] == "Jim Beam 700ml"
         # used 6 (10 opening - 4 closing); 6 per $100k sales, budget $200k -> 12
         assert row["usageLast4Weeks"] == 6.0
@@ -165,7 +165,7 @@ class TestHappyPath:
         """We deliberately do NOT add LoadedHub's 20% forecast buffer."""
         out = run_fn(Api())
         # A buffered order would be 1.2 * 12 - 4 = 10.4; the bare forecast is 8.0.
-        assert out[0]["orderQty"] == 8.0
+        assert out["items"][0]["orderQty"] == 8.0
 
 
 class TestMinimumEnforcement:
@@ -197,10 +197,10 @@ class TestMinimumEnforcement:
             ],
         )
         out = run_fn(api)
-        assert len(out) == 1
-        assert out[0]["orderQty"] == 6.0  # 10 par - 4 on hand
-        assert out[0]["orderDriver"] == "minimum"
-        assert out[0]["minimumStock"] == 10.0
+        assert len(out["items"]) == 1
+        assert out["items"][0]["orderQty"] == 6.0  # 10 par - 4 on hand
+        assert out["items"][0]["orderDriver"] == "minimum"
+        assert out["items"][0]["minimumStock"] == 10.0
 
     def test_minimum_is_converted_from_its_own_unit(self):
         """Min '1' in a 24-pack unit for an item counted in Each == 24 Each."""
@@ -222,8 +222,8 @@ class TestMinimumEnforcement:
             ],
         )
         out = run_fn(api)
-        assert out[0]["minimumStock"] == 24.0
-        assert out[0]["orderQty"] == 19.0  # 24 par - 5 on hand
+        assert out["items"][0]["minimumStock"] == 24.0
+        assert out["items"][0]["orderQty"] == 19.0  # 24 par - 5 on hand
 
     def test_at_or_above_par_with_no_usage_is_not_ordered(self):
         api = Api(
@@ -248,7 +248,7 @@ class TestMinimumEnforcement:
                 }
             ],
         )
-        assert run_fn(api) == []
+        assert run_fn(api)["items"] == []
 
     def test_usage_wins_when_it_exceeds_the_par_shortfall(self):
         # Default stock: usage order = 8. Par shortfall only 2 -> usage drives it.
@@ -258,14 +258,14 @@ class TestMinimumEnforcement:
             ]
         )
         out = run_fn(api)
-        assert out[0]["orderQty"] == 8.0
-        assert out[0]["orderDriver"] == "usage"
+        assert out["items"][0]["orderQty"] == 8.0
+        assert out["items"][0]["orderDriver"] == "usage"
 
     def test_minimums_call_failure_degrades_to_usage_only(self):
         api = Api(minimums=API_ERROR)
         out = run_fn(api)
-        assert isinstance(out, list)
-        assert out[0]["orderQty"] == 8.0  # usage forecast still works
+        assert "items" in out
+        assert out["items"][0]["orderQty"] == 8.0  # usage forecast still works
         assert any("par levels will not be enforced" in m for m in api.logs)
 
 
@@ -314,7 +314,7 @@ class TestReceivedDeliveries:
     def test_a_delivery_counts_toward_usage(self):
         # 10 opening + 6 received - 4 closing = 12 used; x2 budget/sales = 24.
         api = Api(stock_now=_now(), received=[_invoice(_line(6))])
-        row = run_fn(api)[0]
+        row = run_fn(api)["items"][0]
         assert row["usageLast4Weeks"] == 12.0
         assert row["orderQty"] == 20.0  # 24 forecast - 4 on hand (was 8)
 
@@ -323,7 +323,7 @@ class TestReceivedDeliveries:
         8.4 straight onto a bottle count is the trap a field-name-only fix
         walks into."""
         case = _line(1, unit_ratio=8.4, unit_name="12 x 700ml")
-        row = run_fn(Api(stock_now=_now(), received=[_invoice(case)]))[0]
+        row = run_fn(Api(stock_now=_now(), received=[_invoice(case)]))["items"][0]
         assert row["usageLast4Weeks"] == 18.0  # 10 + 12 - 4, not 10 + 8.4 - 4
 
     def test_a_restocked_item_is_no_longer_dropped(self):
@@ -334,17 +334,17 @@ class TestReceivedDeliveries:
             stock_4w={"lines": [{"stockItemID": "i1", "quantityOnHand": 2.0}]},
             received=[_invoice(_line(12))],
         )
-        row = run_fn(api)[0]
+        row = run_fn(api)["items"][0]
         assert row["usageLast4Weeks"] == 6.0  # 2 + 12 - 8
 
     def test_a_credit_request_subtracts(self):
         received = [_invoice(_line(12)), _invoice(_line(2), credit=True)]
-        row = run_fn(Api(stock_now=_now(), received=received))[0]
+        row = run_fn(Api(stock_now=_now(), received=received))["items"][0]
         assert row["usageLast4Weeks"] == 16.0  # 10 + (12 - 2) - 4
 
     def test_a_credit_already_negative_is_not_negated_twice(self):
         received = [_invoice(_line(12)), _invoice(_line(-2), credit=True)]
-        row = run_fn(Api(stock_now=_now(), received=received))[0]
+        row = run_fn(Api(stock_now=_now(), received=received))["items"][0]
         assert row["usageLast4Weeks"] == 16.0
 
     def test_a_different_unit_type_is_left_out_not_mis_converted(self):
@@ -367,7 +367,7 @@ class TestReceivedDeliveries:
             },
             received=[_invoice(_line(3, unit_ratio=0.3, unit_name="300 Grams"))],
         )
-        row = run_fn(api)[0]
+        row = run_fn(api)["items"][0]
         assert row["usageLast4Weeks"] == 6.0  # 10 - 4; not 10 + 0.9 - 4
         assert any("different type" in m for m in api.logs)
 
@@ -375,12 +375,12 @@ class TestReceivedDeliveries:
         """Received and counted in the very same unit is trivially
         comparable, even if the unit list is unavailable."""
         api = Api(stock_now=_now(), received=[_invoice(_line(6))], units=[])
-        assert run_fn(api)[0]["usageLast4Weeks"] == 12.0
+        assert run_fn(api)["items"][0]["usageLast4Weeks"] == 12.0
 
     def test_a_line_without_ratios_is_left_out_and_said_so(self):
         """Guessing a ratio of 1 would order from a number in the wrong unit."""
         api = Api(stock_now=_now(ratio=0), received=[_invoice(_line(6))])
-        row = run_fn(api)[0]
+        row = run_fn(api)["items"][0]
         assert row["usageLast4Weeks"] == 6.0  # delivery excluded, not guessed
         assert any("no usable unit ratio" in m for m in api.logs)
 
@@ -405,8 +405,8 @@ class TestStockOnHandFailure:
         out = run_fn(api)
 
         assert api.retries == 1, "should retry exactly once"
-        assert isinstance(out, list), "a successful retry should produce results"
-        assert out[0]["orderQty"] == 8.0
+        assert "items" in out, "a successful retry should produce results"
+        assert out["items"][0]["orderQty"] == 8.0
 
     def test_both_stock_calls_failing_retries_each(self):
         api = Api(stock_now=API_ERROR, stock_4w=API_ERROR, retry_stock=API_ERROR)
@@ -428,7 +428,7 @@ class TestDegradedInputs:
         """Usage is understated without invoices, but a forecast is still useful."""
         api = Api(received=API_ERROR)
         out = run_fn(api)
-        assert isinstance(out, list)
+        assert "items" in out
         assert any("received invoices unavailable" in m for m in api.logs)
 
     def test_no_sales_data_still_reports_clearly(self):
@@ -456,7 +456,7 @@ class TestPeriodResolution:
             }
         }
         out = run_fn(api)
-        assert isinstance(out, list)
+        assert "items" in out
         recv = next(p for a, p in api.seen if a == "get_received_invoices")
         assert recv["from"] == "2026-06-19T07:00:00+12:00"
         assert recv["to"] == "2026-07-17T06:59:59+12:00"
@@ -464,7 +464,7 @@ class TestPeriodResolution:
     def test_resolver_outage_falls_back_to_injected_window(self):
         api = Api()  # resolver returns an error by default
         out = run_fn(api)
-        assert isinstance(out, list)
+        assert "items" in out
         recv = next(p for a, p in api.seen if a == "get_received_invoices")
         assert recv["from"] == PARAMS["four_weeks_ago_iso"]
 
@@ -482,6 +482,92 @@ class TestPeriodResolution:
         ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
         exec(FUNCTION_CODE, ns)
         out = ns["run"](params, api.call_api, api.log, api.call_api_parallel)
-        assert isinstance(out, list)
+        assert "items" in out
         budg = next(p for a, p in api.seen if a == "get_budgets")
         assert budg["to_date"] == "2026-08-03"
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    def test_negative_stock_counts_as_zero_and_is_flagged(self):
+        """Bessie, 20 Aug: HAZELNUTS on hand −398.4, forecast 96.2, ordered
+        494.5 — the negative count was added to the order."""
+        now = {
+            "lines": [
+                {
+                    "stockItemID": "i1",
+                    "itemName": "HAZELNUTS",
+                    "quantityOnHand": -398.4,
+                    "countingUnitName": "kg",
+                    "Category": "Dry",
+                }
+            ]
+        }
+        out = run_fn(
+            Api(
+                stock_now=now,
+                stock_4w={"lines": [{"stockItemID": "i1", "quantityOnHand": 10.0}]},
+            )
+        )
+        row = out["items"][0]
+        # usage keeps the raw counts (10 + 0 - -398.4 = 408.4 → forecast 816.8);
+        # only the ORDER treats the negative count as 0
+        assert row["forecastUsage"] == 816.8
+        assert row["orderQty"] == 816.8  # not 816.8 + 398.4, as it was
+        assert row["currentStock"] == -398.4  # the real figure, shown
+        assert "NEGATIVE" in row["note"] and "unreliable" in row["note"]
+        assert any("NEGATIVE stock" in w for w in out["warnings"])
+
+    def test_deleted_items_are_skipped(self):
+        now = {
+            "lines": [
+                {**STOCK_NOW["lines"][0]},
+                {
+                    "stockItemID": "gone",
+                    "itemName": "OLD GIN",
+                    "quantityOnHand": 0.0,
+                    "isItemDeleted": True,
+                },
+            ]
+        }
+        mins = [{"id": "gone", "minQty": 5, "minUnitRatio": 1, "countingUnitRatio": 1}]
+        out = run_fn(Api(stock_now=now, minimums=mins))
+        assert [r["itemName"] for r in out["items"]] == ["Jim Beam 700ml"]
+        assert any("1 deleted item" in w for w in out["warnings"])
+
+    def test_a_failed_budget_is_refused_not_zeroed(self):
+        out = run_fn(Api(budgets={"error": "could not read budgets from Loaded: 502"}))
+        assert "Couldn't read the budget" in out["error"]
+        assert "items" not in out
+
+    def test_no_budget_is_refused_rather_than_ordering_par_only(self):
+        out = run_fn(Api(budgets={"days": [], "total": 0}))
+        assert "No budget is set" in out["error"]
+
+    def test_degraded_inputs_reach_the_model_as_warnings(self):
+        out = run_fn(Api(minimums=API_ERROR, received=API_ERROR))
+        joined = " ".join(out["warnings"])
+        assert "NOT enforced" in joined
+        assert "UNDERSTATED" in joined
+        # the resolver is offline in this fake: the history fell back
+        assert "midnight to midnight" in joined
+
+    def test_the_result_says_what_it_was_built_from(self):
+        out = run_fn(Api())
+        assert out["sales_last_4_weeks"] == 100000.0
+        assert out["budget_for_period"] == 200000.0
+        assert out["order_until"] == PARAMS["order_until_date"]
+        assert out["items_checked"] == 1
+
+    def test_deliveries_of_items_off_this_template_are_not_a_warning(self):
+        """198 such lines read as "no usable unit ratio" on La Zeppa's Food
+        check (2 Oct 2026) — they were beverages, not bad data."""
+        other = {
+            "creditRequest": False,
+            "lines": [
+                {"StockItemId": "beer-1", "quantityReceived": 24, "unitRatio": 1}
+            ],
+        }
+        out = run_fn(Api(received=[other]))
+        assert not any("unit ratio" in w for w in out["warnings"])

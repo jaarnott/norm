@@ -57,19 +57,25 @@ READ_TOOL = {
         "matches, or recipe_id for ONE recipe — detail 'summary' (ingredient "
         "lines in display units with names, yield, current version_id, cost "
         "per yield unit at Live prices, notes as plain text) or 'full' (the "
-        "raw Loaded object). include_cost adds Live cost to search matches. "
-        "Always look up the ONE recipe you need (query or recipe_id) rather "
-        "than scanning the whole list."
+        "raw Loaded object). include_cost adds Live cost to search matches; "
+        "if Loaded's cost lookup fails the result says so in cost_error — it "
+        "does not mean the recipe has no cost. Always look up the ONE recipe "
+        "you need (query or recipe_id) rather than scanning the whole list."
     ),
     "required_fields": [],
     "optional_fields": ["recipe_id", "query", "detail", "limit", "include_cost"],
     "field_descriptions": {
-        "recipe_id": "Loaded recipe id — returns exactly this recipe",
+        "recipe_id": (
+            "Loaded recipe id (36 characters) — returns exactly this recipe. A "
+            "shorter id pasted from a report is matched as a prefix when it "
+            "fits exactly one recipe."
+        ),
         "query": "Case-insensitive name substring to search for",
         "detail": "'summary' (default) or 'full' (raw Loaded payload)",
         "limit": "Max matches returned (default 25 with a query; a bare call lists all)",
         "include_cost": "true → decorate search matches with Live cost per yield unit",
     },
+    "field_schema": {"include_cost": {"type": "boolean"}},
     # The list-them-all path (~434 slim {id, name} rows) must survive the
     # tool-result slimmer.
     "max_result_chars": 80_000,
@@ -301,7 +307,9 @@ def main(dry_run: bool = False) -> None:
                 if "get_recipe_details" in desc or "get_all_recipes" in desc:
                     t["description"] = _swap_tokens(desc)
                     cb_touched = True
-                    changed.append("patched kitchen_loadedhub_update_recipe description")
+                    changed.append(
+                        "patched kitchen_loadedhub_update_recipe description"
+                    )
                 fd = dict(t.get("field_descriptions") or {})
                 for k, v in fd.items():
                     if "get_all_recipes" in str(v) or "get_recipe_details" in str(v):

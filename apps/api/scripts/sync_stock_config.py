@@ -123,6 +123,14 @@ TOOL = {
     },
     # A full-catalogue listing (~1,000 slim {id, name} rows) must survive the
     # tool-result slimmer when explicitly requested via limit.
+    # Typed, so the model sends true/false rather than text: bool("false")
+    # is True, and include_deleted used to read every "false" as yes.
+    "field_schema": {
+        "include_deleted": {"type": "boolean"},
+        "limit": {"type": "integer"},
+        "item_ids": {"type": "array", "items": {"type": "string"}},
+        "groups": {"type": "array", "items": {"type": "string"}},
+    },
     "max_result_chars": 80_000,
     "read_only": True,
     "consolidator_config": {

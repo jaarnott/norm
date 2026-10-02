@@ -76,6 +76,29 @@ def _as_list(v, key=None):
     return []
 
 
+def _list_arg(v):
+    """A list argument as the model may send it: a list, JSON text of one, or
+    comma-separated text. The row had no field_schema, so item_ids / groups
+    reached the model typed as strings — and _as_list() turns a string into [],
+    which silently skipped the bulk read (consolidator review, 2 Oct 2026)."""
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str) and v.strip():
+        text = v.strip()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+                return parsed if isinstance(parsed, list) else [parsed]
+            except ValueError:
+                pass
+        return [
+            part.strip().strip("'\"")
+            for part in text.strip("[]").split(",")
+            if part.strip()
+        ]
+    return []
+
+
 def _lower(s):
     return str(s or "").strip().lower()
 
@@ -126,6 +149,21 @@ _BULK_PAGE = 5
 #: Below this many rows, group names are small enough to include on an
 #: unfiltered list (747 rows with groups is 121k; without, 61k).
 _GROUPS_FREE_BELOW = 200
+
+
+def _flag(value):
+    """A yes/no argument. Fields without a schema reach the model as strings,
+    and bool("false") is True."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
+
+
+def _loaded_failed(what, raw):
+    """The message for a lookup Loaded failed to answer — never "not found".
+    (Consolidator review, 1 Oct 2026: a failed templates/groups/item read was
+    reported as the thing not existing.)"""
+    return f"Couldn't read {what} from LoadedHub ({_api_error(raw) or raw}) — this is a LoadedHub failure, not a missing record; try again."
 
 
 def _is_absent(err):
@@ -214,11 +252,11 @@ def _slim(row, with_group):
 
 def _items(params, venue, call_api, call_api_parallel=None):
     item_id = params.get("item_id")
-    item_ids = [str(i) for i in (_as_list(params.get("item_ids")) or []) if i]
+    item_ids = [str(i) for i in _list_arg(params.get("item_ids")) if i]
     query = _lower(params.get("query"))
     detail = _lower(params.get("detail")) or "summary"
     limit = int(params.get("limit") or 25)
-    groups = [g for g in (_as_list(params.get("groups")) or []) if g]
+    groups = [g for g in _list_arg(params.get("groups")) if g]
 
     # A bulk job: a PAGE of ids per call, never one call per id.
     #
@@ -319,8 +357,9 @@ def _items(params, venue, call_api, call_api_parallel=None):
         "total_matches": total,
         "shown": len(rows),
     }
-    if len(rows) == 1 and query:
-        # An unambiguous name hit: save the model a round trip.
+    if total == 1 and query:
+        # An unambiguous name hit: save the model a round trip. ONE MATCH,
+        # not one shown — limit=1 used to open an arbitrary first match.
         item = call_api(
             "loadedhub",
             "get_stock_item_full",
@@ -411,10 +450,10 @@ def _resolve_template(params, venue, call_api):
             "for a whole category. view='reference', kind='templates' lists "
             "this venue's templates."
         )
-    templates = _as_list(
-        call_api("loadedhub", "get_stocktake_templates", {"venue": venue}),
-        "templates",
-    )
+    raw_templates = call_api("loadedhub", "get_stocktake_templates", {"venue": venue})
+    if _api_error(raw_templates):
+        return None, _loaded_failed("the stocktake templates", raw_templates)
+    templates = _as_list(raw_templates, "templates")
     if template_id:
         t = _find(templates, "id", template_id)
         if t:
@@ -425,10 +464,10 @@ def _resolve_template(params, venue, call_api):
             return cand, None
     category = _CATEGORY_WORDS.get(wanted)
     if category:
-        groups = _as_list(
-            call_api("loadedhub", "get_stock_item_groups", {"venue": venue}),
-            "groups",
-        )
+        raw_groups = call_api("loadedhub", "get_stock_item_groups", {"venue": venue})
+        if _api_error(raw_groups):
+            return None, _loaded_failed("the stock groups", raw_groups)
+        groups = _as_list(raw_groups, "groups")
         category_id = None
         for g in groups:
             if isinstance(g, dict) and _lower(g.get("categoryName")) == _lower(
@@ -521,8 +560,20 @@ def _on_hand(params, venue, call_api, call_api_parallel, log):
         )
         if isinstance(item, list):
             item = item[0] if item else {}
+        if (
+            isinstance(item, dict)
+            and item.get("error")
+            and not _is_absent(item["error"])
+        ):
+            return {"error": _loaded_failed(f"stock item {item_id}", item)}
         if not isinstance(item, dict) or not item or item.get("error"):
             return {"error": f"Stock item {item_id} not found at {venue}."}
+        for what, raw in (
+            ("the stock groups", groups),
+            ("the stocktake templates", templates),
+        ):
+            if _api_error(raw):
+                return {"error": _loaded_failed(what, raw)}
         name = item.get("name") or item.get("itemName") or item_id
         group_id = item.get("groupId")
         group = _find(_as_list(groups, "groups"), "id", group_id)
@@ -611,7 +662,7 @@ def _reference(params, venue, call_api, call_api_parallel):
     if kind not in _KINDS:
         return {"error": f"kind must be one of {', '.join(_KINDS)}."}
     query = _lower(params.get("query"))
-    include_deleted = bool(params.get("include_deleted"))
+    include_deleted = _flag(params.get("include_deleted"))
     limit = int(params.get("limit") or (100 if kind == "units" else 500))
 
     if kind == "units":

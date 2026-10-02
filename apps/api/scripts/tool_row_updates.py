@@ -32,6 +32,7 @@ class RowUpdate:
     code: str | None = None  # consolidator_config.function_code
     shapes: dict | None = None  # consolidator_config.shapes
     config: dict = field(default_factory=dict)  # other consolidator_config keys
+    drop: tuple = ()  # top-level keys to remove (dead leftovers)
 
 
 def load_script(name: str):
@@ -53,7 +54,7 @@ def shapes_of(tool_key: str) -> dict:
 
 
 def merged(live: dict, update: RowUpdate) -> dict:
-    row = {**live, **update.fields}
+    row = {k: v for k, v in {**live, **update.fields}.items() if k not in update.drop}
     cc = dict(live.get("consolidator_config") or {})
     if update.code is not None:
         cc["function_code"] = update.code
@@ -119,7 +120,9 @@ def apply_row_updates(
             if live is None:
                 raise SystemExit(f"{u.connector}.{u.action} is not a tool row")
             row = merged(live, u)
-            diff = [k for k in row if row.get(k) != live.get(k)]
+            diff = [k for k in row if row.get(k) != live.get(k)] + [
+                f"-{k}" for k in u.drop if k in live
+            ]
             if "consolidator_config" in diff:
                 cc_old = live.get("consolidator_config") or {}
                 cc_new = row["consolidator_config"]

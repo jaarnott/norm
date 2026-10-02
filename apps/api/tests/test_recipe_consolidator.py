@@ -233,10 +233,63 @@ class TestOneRecipe:
         assert out["recipe"]["notes"].startswith("<p>")
 
     def test_unknown_recipe_errors(self):
-        out = run(CODE, Api(), recipe_id="r-nope")
+        out = run(CODE, Api(), recipe_id="00000000-0000-4000-8000-000000000000")
         assert out == {"error": "not found"}
 
     def test_cost_failure_never_breaks_the_read(self):
         out = run(CODE, Api(cost_error=True), recipe_id="r-1")
         assert out["recipe"]["name"] == "COCKTAIL - WINTER SOUR"
         assert "cost" not in out
+
+
+class TestReviewFixes:
+    """Consolidator review, 1 Oct 2026."""
+
+    def test_a_short_id_is_matched_as_a_prefix(self):
+        """All 8 production errors were 8-character ids pasted from a report;
+        Loaded answered each with a bare 400."""
+        full = "f1dd7fda-1111-4222-8333-444455556666"
+
+        class WithFullIds(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "get_all_recipes":
+                    return [{"id": full, "name": "CAESAR SALAD", "deletedAt": None}]
+                if action == "get_recipe_details":
+                    self.calls.append((action, dict(params or {})))
+                    return {**RAW_RECIPE, "id": full, "name": "CAESAR SALAD"}
+                return super().call_api(connector, action, params)
+
+        api = WithFullIds()
+        out = run(CODE, api, recipe_id="f1dd7fda")
+        assert out["recipe"]["name"] == "CAESAR SALAD"
+        details = [p for a, p in api.calls if a == "get_recipe_details"]
+        assert details[0]["recipe_id"] == full
+
+    def test_an_ambiguous_or_unknown_short_id_is_refused_with_matches(self):
+        out = run(CODE, Api(), recipe_id="r-")
+        assert "matches 3 recipes" in out["error"]
+        assert {m["id"] for m in out["matches"]} == {"r-1", "r-2", "r-3"}
+        none = run(CODE, Api(), recipe_id="f1dd7fda")
+        assert "matches no recipe" in none["error"]
+
+    def test_a_failed_cost_lookup_is_reported_not_silent(self):
+        out = run(CODE, Api(cost_error=True), recipe_id="r-1")
+        assert "cost" not in out
+        assert "cost lookup failed" in out["cost_error"]
+
+    def test_include_cost_false_as_text_is_false(self):
+        api = Api()
+        run(CODE, api, query="cocktail", include_cost="false")
+        assert not any(a == "get_recipe_costs_raw" for a, _ in api.calls)
+
+    def test_one_name_hit_fetches_its_cost_once(self):
+        api = Api()
+        out = run(CODE, api, query="winter sour", include_cost=True)
+        assert out["recipe"]["name"] == "COCKTAIL - WINTER SOUR"
+        assert [a for a, _ in api.calls].count("get_recipe_costs_raw") == 1
+
+    def test_limit_one_does_not_open_an_arbitrary_match(self):
+        api = Api()
+        out = run(CODE, api, query="cocktail", limit=1)
+        assert out["total_matches"] == 2 and out["shown"] == 1
+        assert "recipe" not in out

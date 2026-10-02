@@ -23,6 +23,19 @@
 # real invoice-derived costs; Forecast returns zeros (verified live 21 Aug
 # 2026). Loaded computes the recipe cost server-side, so no line math here.
 #
+# Consolidator review (1 Oct 2026):
+#   - an id shorter than Loaded's 36 characters (all 8 production errors were
+#     8-character ids from a pasted report, e.g. "f1dd7fda") is matched as a
+#     prefix against the recipe list, or refused with what to pass instead —
+#     it was sent to Loaded and came back a bare 400;
+#   - a failed cost lookup is reported (`cost_error`) instead of reading as
+#     "this recipe has no cost";
+#   - one name hit with include_cost no longer fetches the cost twice;
+#   - include_cost "false" is false (fields without a schema reach the model
+#     as strings, and bool("false") is True);
+#   - the one-hit shortcut fires on ONE MATCH, not on limit=1 (which used to
+#     open an arbitrary first match).
+#
 # Requires consolidator_config: {"max_api_calls": 6}
 
 _ENTITIES = {
@@ -73,13 +86,20 @@ def _strip_html(text):
     return cleaned
 
 
+def _flag(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
+
+
 def run(params, call_api, log):
-    recipe_id = params.get("recipe_id")
+    recipe_id = str(params.get("recipe_id") or "").strip() or None
     query = str(params.get("query") or "").strip().lower()
     detail = str(params.get("detail") or "summary").strip().lower()
     limit_param = params.get("limit")
-    include_cost = bool(params.get("include_cost"))
+    include_cost = _flag(params.get("include_cost"))
     venue = params.get("venue")
+    cost_errors = []
 
     def now_string():
         # isoformat, not strftime — strftime lazily imports `time`, which the
@@ -98,7 +118,9 @@ def run(params, call_api, log):
         q += "&priceType=Live"
         resp = call_api("loadedhub", "get_recipe_costs_raw", {"venue": venue, "q": q})
         if not isinstance(resp, dict) or resp.get("error"):
-            log(f"cost lookup failed: {(resp or {}).get('error')}")
+            why = (resp or {}).get("error") if isinstance(resp, dict) else resp
+            log(f"cost lookup failed: {why}")
+            cost_errors.append(f"Loaded's cost lookup failed: {why}")
             return {}
         costs = {}
         for rid, entries in (resp.get("recipeCosts") or {}).items():
@@ -137,7 +159,10 @@ def run(params, call_api, log):
             "prep_recipe": r.get("prepRecipe"),
             "counted_in_stocktake": r.get("isCountedInStocktake"),
             "version_id": cv.get("id"),
-            "yield": {"quantity": cv.get("yieldQuantity"), "unit": cv.get("yieldUnitName")},
+            "yield": {
+                "quantity": cv.get("yieldQuantity"),
+                "unit": cv.get("yieldUnitName"),
+            },
             "lines": lines,
             "versions_count": len(r.get("versions") or []),
         }
@@ -147,10 +172,46 @@ def run(params, call_api, log):
         return out
 
     def one_recipe(rid):
-        r = call_api("loadedhub", "get_recipe_details", {"venue": venue, "recipe_id": rid})
+        r = call_api(
+            "loadedhub", "get_recipe_details", {"venue": venue, "recipe_id": rid}
+        )
         if not isinstance(r, dict) or r.get("error"):
             return None, {"error": (r or {}).get("error") or f"recipe {rid} not found"}
         return r, None
+
+    if recipe_id and len(recipe_id) != 36:
+        # Loaded wants the full id; a short one (pasted from a report) 400s.
+        listed = call_api("loadedhub", "get_all_recipes", {"venue": venue})
+        if not isinstance(listed, list):
+            return {
+                "error": (listed or {}).get("error")
+                if isinstance(listed, dict)
+                else "recipe list unavailable"
+            }
+        hits = [
+            r
+            for r in listed
+            if not r.get("deletedAt")
+            and str(r.get("id") or "").lower().startswith(recipe_id.lower())
+        ]
+        if len(hits) != 1:
+            return {
+                "error": (
+                    f"'{recipe_id}' is not a full recipe id (Loaded's are 36 "
+                    "characters) and "
+                    + (
+                        "matches no recipe"
+                        if not hits
+                        else f"matches {len(hits)} recipes"
+                    )
+                    + " — pass the full id, or query by name."
+                ),
+                "matches": [
+                    {"id": r.get("id"), "name": r.get("name")} for r in hits[:10]
+                ],
+            }
+        log(f"short id {recipe_id} -> {hits[0].get('id')}")
+        recipe_id = hits[0].get("id")
 
     if recipe_id:
         r, err = one_recipe(recipe_id)
@@ -163,6 +224,8 @@ def run(params, call_api, log):
             out = {"recipe": summarize(r), "detail": "summary"}
         if costs.get(recipe_id):
             out["cost"] = costs[recipe_id]
+        if cost_errors:
+            out["cost_error"] = cost_errors[0]
         return out
 
     rows = call_api("loadedhub", "get_all_recipes", {"venue": venue})
@@ -179,6 +242,7 @@ def run(params, call_api, log):
     matches = [{"id": r.get("id"), "name": r.get("name")} for r in rows]
     out = {"matches": matches, "total_matches": total, "shown": len(matches)}
 
+    costs = None
     if include_cost and matches:
         capped = matches[:50]
         if len(matches) > 50:
@@ -190,18 +254,22 @@ def run(params, call_api, log):
                 m["cost"] = c["cost"]
                 m["cost_unit"] = c["unit"]
 
-    if len(rows) == 1 and query:
+    if total == 1 and query:
         # An unambiguous name hit: save the model a round trip.
-        r, err = one_recipe(rows[0].get("id"))
+        rid = rows[0].get("id")
+        r, err = one_recipe(rid)
         if not err:
             out["recipe"] = r if detail == "full" else summarize(r)
             out["detail"] = "full" if detail == "full" else "summary"
-            costs = fetch_costs([rows[0].get("id")])
-            if costs.get(rows[0].get("id")):
-                out["cost"] = costs[rows[0].get("id")]
+            if costs is None:  # not already fetched by the decoration above
+                costs = fetch_costs([rid])
+            if costs.get(rid):
+                out["cost"] = costs[rid]
     elif not query:
         out["note"] = (
             "this is the full recipe list — pass query (name substring) or "
             "recipe_id instead of scanning it"
         )
+    if cost_errors:
+        out["cost_error"] = cost_errors[0]
     return out
