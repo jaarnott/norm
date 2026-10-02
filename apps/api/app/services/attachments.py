@@ -257,6 +257,52 @@ def build_content_block(
     return {"type": "text", "text": f"[Attachment: {name}]\n{_truncate(text)}"}
 
 
+def _sniff_ext(data: bytes) -> str:
+    """An extension for bytes that came with a generic content type (BambooHR
+    serves some files as application/octet-stream and never names them)."""
+    if data[:4] == b"%PDF":
+        return ".pdf"
+    if data[:2] == b"PK":
+        for marker, ext in ((b"word/", ".docx"), (b"xl/", ".xlsx"), (b"ppt/", ".pptx")):
+            if marker in data:
+                return ext
+    return ""
+
+
+def model_ready_block(block: dict) -> dict:
+    """A tool's ``_document`` block, made safe to hand to the model.
+
+    A consolidator returns a file as the outside system sent it — BambooHR's
+    download_file gives a Word CV as ``wordprocessingml.document`` — but the
+    model reads only PDFs and png/jpeg/gif/webp images natively. Anything else
+    in a document block makes the NEXT model call fail, and the whole turn
+    with it (1 of 13 recent CVs was a .docx, Oct 2026). And a consolidator
+    can't fix it itself: its sandbox can't import this module. So the bytes
+    go through build_content_block exactly like a chat attachment: Office and
+    text files become text, images are shrunk to fit, and a file that can't
+    be read becomes a sentence saying so rather than a broken request.
+
+    A block that is already text (norm.get_attachment builds its own) or not
+    base64 is returned unchanged.
+    """
+    source = block.get("source") if isinstance(block, dict) else None
+    if not isinstance(source, dict) or source.get("type") != "base64":
+        return block
+    media = source.get("media_type")
+    name = "attached file"
+    try:
+        data = base64.b64decode(source.get("data") or "")
+        if _kind(media, None)[0] == "unknown":
+            name += _sniff_ext(data)
+        return build_content_block(data, media, name)
+    except Exception as exc:  # noqa: BLE001 — an unreadable file must not sink the turn
+        logger.warning("tool document unreadable (type=%s): %s", media, exc)
+        return {
+            "type": "text",
+            "text": f"[The attached file ({media or 'unknown type'}) couldn't be read: {exc}]",
+        }
+
+
 def link_chat_attachments(
     attachment_ids: list[str], thread_id: str, user_id: str | None, db
 ) -> list[dict]:

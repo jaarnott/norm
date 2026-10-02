@@ -14,6 +14,7 @@ import logging
 import math
 import threading
 import time
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -429,14 +430,21 @@ def execute_function(
             venue_lookup.pop("venue_id", None)
         config_row = _resolve_venue_config(connector, venue_lookup, use_db)
         if not config_row:
-            config_row = (
-                use_db.query(Connection)
-                .filter(
-                    Connection.connector_name == connector,
-                    Connection.enabled == "true",
-                )
-                .first()
+            from app.services.caller_scope import venue_query
+
+            fallback = use_db.query(Connection).filter(
+                Connection.connector_name == connector,
+                Connection.enabled == "true",
             )
+            # Never another organisation's login (caller_scope, Oct 2026).
+            scoped = venue_query(use_db)
+            if scoped is not None:
+                from app.db.models import Venue as _Venue
+
+                fallback = fallback.filter(
+                    Connection.venue_id.in_(scoped.with_entities(_Venue.id))
+                )
+            config_row = fallback.first()
 
         credentials = config_row.config if config_row else {}
         venue_id = config_row.venue_id if config_row else None
@@ -545,7 +553,14 @@ def execute_function(
 
         t0_parallel = time.time()
         with ThreadPoolExecutor(max_workers=min(len(calls), 20)) as pool:
-            futures = list(pool.map(_worker, calls))
+            # Each worker runs in a copy of this context, so it keeps the
+            # caller's organisation (caller_scope) — a bare thread starts with
+            # none. Copied HERE, in the calling thread, one per call: a context
+            # can only be entered by one thread at a time.
+            contexts = [contextvars.copy_context() for _ in calls]
+            futures = list(
+                pool.map(lambda cc: cc[0].run(_worker, cc[1]), zip(contexts, calls))
+            )
         total_ms = int((time.time() - t0_parallel) * 1000)
 
         results = []
@@ -748,7 +763,10 @@ def execute_function(
 
         t0_batch = time.time()
         with ThreadPoolExecutor(max_workers=min(len(pending), 10)) as pool:
-            for i, parsed in pool.map(_worker, pending):
+            contexts = [contextvars.copy_context() for _ in pending]
+            for i, parsed in pool.map(
+                lambda cr: cr[0].run(_worker, cr[1]), zip(contexts, pending)
+            ):
                 results[i] = parsed
         log(
             f"Parallel extraction: {len(pending)} documents in "

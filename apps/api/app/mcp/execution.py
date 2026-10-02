@@ -17,6 +17,8 @@ Two things this layer is responsible for that the executor is not:
 
 from __future__ import annotations
 
+import html
+import json
 import logging
 import time
 
@@ -173,6 +175,24 @@ class NormMcpContext(McpContext):
 
         params = dict(arguments)
         venue_name = params.pop("venue", None)
+        if isinstance(venue_name, str):
+            # Some clients send the name HTML-escaped — "Freeman &amp; Grey" —
+            # which matched no venue and was refused as venue_denied.
+            venue_name = html.unescape(venue_name)
+
+        # `venues` (get_sales / get_labour fan-outs) was passed straight
+        # through: 'all' made the tool list every venue in the database and a
+        # name reached any organisation's venue (Oct 2026). Each name is now
+        # authorised exactly as `venue` is, and 'all' means this principal's
+        # venues.
+        if "venues" in params:
+            try:
+                params["venues"] = self._authorised_venues(params["venues"])
+            except VenueResolutionError as exc:
+                self._audit(
+                    tool.name, tool.access, arguments, False, error_code="venue_denied"
+                )
+                return error_result(str(exc), code="VALIDATION_ERROR")
 
         # Group-wide question, group-wide answer. Handled before venue
         # resolution because "all" is not a venue to authorize — it means every
@@ -502,6 +522,51 @@ class NormMcpContext(McpContext):
         """
         venue_ids = self.principal.venue_ids if self.principal else ()
         return venue_ids[0] if len(venue_ids) == 1 else None
+
+    def _authorised_venues(self, value) -> list[str]:
+        """A `venues` argument as the names of venues this principal may use.
+
+        'all' is every venue the principal consented to that it can still
+        access; a list (or JSON / comma text) must name only such venues."""
+        from app.db.models import Venue
+
+        def name_of(venue_id: str) -> str:
+            v = self.db.query(Venue).filter(Venue.id == venue_id).first()
+            return v.name if v else venue_id
+
+        if isinstance(value, str):
+            text = html.unescape(value).strip()
+            if text.lower() == "all":
+                names = []
+                for name in self._venue_names():
+                    try:
+                        names.append(
+                            name_of(resolve_mcp_venue(self.principal, name, self.db))
+                        )
+                    except VenueResolutionError:
+                        continue
+                if not names:
+                    raise VenueResolutionError(
+                        "You do not have access to any venues in this organization."
+                    )
+                return names
+            if text.startswith("["):
+                try:
+                    value = json.loads(text)
+                except ValueError:
+                    value = [text]
+            else:
+                value = [p for p in (x.strip() for x in text.split(",")) if p]
+        if not isinstance(value, list) or not value:
+            raise VenueResolutionError("venues must be 'all' or a list of venue names.")
+        return [
+            name_of(
+                resolve_mcp_venue(
+                    self.principal, html.unescape(str(item)).strip(), self.db
+                )
+            )
+            for item in value
+        ]
 
     def _resolve_venue_for(self, tool: McpTool, venue_name: str | None) -> str | None:
         """Resolve and authorize the venue for a tool call.

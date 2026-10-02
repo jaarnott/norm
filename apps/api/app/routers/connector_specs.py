@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.services import caller_scope
 from app.db.engine import get_db, get_config_db, get_config_db_rw, SessionLocal
 from app.db.models import ConnectionSpec, Connection, User
 from app.auth.dependencies import get_current_user, require_permission
@@ -788,7 +789,12 @@ async def test_consolidator(
     from app.agents.internal_tools import execute_consolidator
 
     try:
-        result = execute_consolidator(body.consolidator_config, body.params, db, None)
+        # As the signed-in admin's organisation (caller_scope), so a test of
+        # venues='all' lists their venues, not every venue in the database.
+        with caller_scope.use(caller_scope.for_user(db, user)):
+            result = execute_consolidator(
+                body.consolidator_config, body.params, db, None
+            )
         # Cap large step results to prevent browser parse failures
         if isinstance(result.get("data"), dict):
             for step_id, step_data in result["data"].items():
@@ -893,9 +899,10 @@ Return ONLY valid JSON, no markdown fences."""
         )
 
         try:
-            test_result = execute_consolidator(
-                consolidator_config, body.test_params, db, None
-            )
+            with caller_scope.use(caller_scope.for_user(db, user)):
+                test_result = execute_consolidator(
+                    consolidator_config, body.test_params, db, None
+                )
         except Exception as exc:
             log.error(
                 "Auto-build attempt %d — execute_consolidator raised: %s", attempt, exc
@@ -1310,12 +1317,13 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                                     execute_consolidator,
                                 )
 
-                                test_result = execute_consolidator(
-                                    block.input.get("consolidator_config", {}),
-                                    block.input.get("params", {}),
-                                    db,
-                                    None,
-                                )
+                                with caller_scope.use(caller_scope.for_user(db, user)):
+                                    test_result = execute_consolidator(
+                                        block.input.get("consolidator_config", {}),
+                                        block.input.get("params", {}),
+                                        db,
+                                        None,
+                                    )
                                 duration_ms = int((_time.time() - t0) * 1000)
                                 log.info(
                                     "Consolidator chat: test_consolidator completed in %dms",

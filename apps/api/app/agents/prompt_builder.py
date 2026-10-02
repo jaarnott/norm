@@ -693,7 +693,19 @@ def build_tool_definitions(
     from app.services.venue_service import get_user_venues
     from app.db.models import Connection
 
-    user_venues = get_user_venues(db)
+    # The user's venues — it listed every venue in the database, so the venue
+    # enum and the venue guidance named other organisations' venues (Oct
+    # 2026). A platform admin, and a system call with no user, still see all.
+    _viewer = None
+    if user_id:
+        from app.db.models import User as _User
+
+        _viewer = db.query(_User).filter(_User.id == user_id).first()
+    user_venues = (
+        get_user_venues(db)
+        if _viewer is None or getattr(_viewer, "role", None) == "admin"
+        else get_user_venues(db, user_id)
+    )
 
     # Inject automated tasks guidance if those tools are available.
     # Inside an existing task's conversation the advice inverts: the task

@@ -360,7 +360,7 @@
     "breaks[].breakEnd": "breakEnd|tz|dow",
     "breaks[].breakStart": "breakStart|tz|dow",
     "breaks[].createdAt": "",
-    "breaks[].deletedAt": "",
+    "breaks[].deletedAt": "deletedAt",
     "breaks[].id": "",
     "breaks[].paid": "paid",
     "breaks[].shiftId": "",

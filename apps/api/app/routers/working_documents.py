@@ -30,6 +30,11 @@ async def list_documents(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    from app.db.models import Thread
+
+    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    if thread is None or not (_is_admin(user) or thread.user_id == user.id):
+        raise HTTPException(status_code=404, detail="Thread not found")
     docs = (
         db.query(WorkingDocument).filter(WorkingDocument.thread_id == thread_id).all()
     )
@@ -44,6 +49,7 @@ async def get_document(
     user: User = Depends(get_current_user),
 ):
     doc = _find_doc(db, thread_id, doc_id)
+    _check_doc_access(db, user, doc)
     return _doc_to_dict(doc)
 
 
@@ -89,6 +95,7 @@ async def patch_document(
     user: User = Depends(get_current_user),
 ):
     doc = _find_doc(db, thread_id, doc_id)
+    _check_doc_access(db, user, doc)
 
     # Optimistic concurrency check
     if doc.version != body.version:
@@ -160,6 +167,7 @@ async def submit_document(
     user: User = Depends(get_current_user),
 ):
     doc = _find_doc(db, thread_id, doc_id)
+    _check_doc_access(db, user, doc)
 
     if not doc.pending_ops:
         return {"status": "no_changes", "message": "No pending changes to submit."}
@@ -188,6 +196,7 @@ async def retry_sync(
     user: User = Depends(get_current_user),
 ):
     doc = _find_doc(db, thread_id, doc_id)
+    _check_doc_access(db, user, doc)
     if doc.sync_status != "error":
         raise HTTPException(status_code=400, detail="Document is not in error state")
 
@@ -211,6 +220,40 @@ class FromConnectorRequest(BaseModel):
     params: dict = {}
     doc_type: str = "generic"
     venue_id: str | None = None
+    #: The conversation a chat card loads into. Its edits are recorded as
+    #: ToolCalls, which belong to a thread — without one they can't save.
+    thread_id: str | None = None
+
+
+#: The built-ins a page may load through this route — read-only, and the only
+#: ones a page names (pageRegistry.ts). It ran ANY built-in for any signed-in
+#: user, writes included (Oct 2026); /connectors/{name}/execute closed the
+#: same door in Sep 2026 (_UI_CALLABLE_HANDLERS).
+_PAGE_LOADABLE_HANDLERS = {("norm", "list_automated_tasks")}
+
+
+def _is_admin(user) -> bool:
+    return getattr(user, "role", None) == "admin"
+
+
+def _check_doc_access(db: Session, user, doc: WorkingDocument) -> None:
+    """A working document is its venue's, or its conversation's. Every route
+    found a document by id alone and let any signed-in user read it, patch it
+    — and a patch syncs, i.e. writes to the venue's Loaded (Oct 2026)."""
+    from app.db.models import Thread
+    from app.services.venue_service import user_can_access_venue
+
+    if _is_admin(user):
+        return
+    if doc.venue_id:
+        if user_can_access_venue(db, user.id, doc.venue_id):
+            return
+        raise HTTPException(status_code=404, detail="Working document not found")
+    if doc.thread_id:
+        thread = db.query(Thread).filter(Thread.id == doc.thread_id).first()
+        if thread is not None and thread.user_id == user.id:
+            return
+        raise HTTPException(status_code=404, detail="Working document not found")
 
 
 @router.post("/working-documents/from-connector")
@@ -224,14 +267,36 @@ async def create_from_connector(
 
     This enables the working document edit/sync pattern for functional pages
     that load data directly without going through the LLM agent.
+
+    A READ, for a venue the user may access (Oct 2026): it ran any endpoint —
+    writes included — and any built-in, for any signed-in user, and without a
+    venue it used whichever venue's login came first.
     """
-    # Execute the connector tool to fetch data
     from app.agents.internal_tools import get_handler
+    from app.db.models import Thread
+    from app.services import caller_scope
+    from app.services.venue_service import user_can_access_venue
+
+    if body.venue_id and not (
+        _is_admin(user) or user_can_access_venue(db, user.id, body.venue_id)
+    ):
+        raise HTTPException(403, "You don't have access to that venue")
+    thread_id = None
+    if body.thread_id:
+        thread = db.query(Thread).filter(Thread.id == body.thread_id).first()
+        if thread is None or not (_is_admin(user) or thread.user_id == user.id):
+            raise HTTPException(404, "Thread not found")
+        thread_id = thread.id
 
     handler = get_handler(body.connector_name, body.action)
 
     if handler:
-        result = handler(body.params, db, None)
+        if (body.connector_name, body.action) not in _PAGE_LOADABLE_HANDLERS:
+            raise HTTPException(
+                403, f"{body.connector_name}.{body.action} can't be loaded by a page"
+            )
+        with caller_scope.use(caller_scope.for_user(db, user)):
+            result = handler(body.params, db, None)
         data = result.get("data", result)
     else:
         # External connector — use spec executor
@@ -253,13 +318,20 @@ async def create_from_connector(
                 break
         if not tool_def:
             raise HTTPException(404, f"Tool not found: {body.action}")
+        if str(tool_def.get("method") or "GET").upper() != "GET":
+            raise HTTPException(403, f"{body.action} is not a read")
 
         config_query = db.query(Connection).filter(
             Connection.connector_name == body.connector_name,
             Connection.enabled == "true",
         )
+        # The venue's own login — or, with no venue, only a connection that
+        # belongs to no venue (an org-wide one such as BambooHR). It used to
+        # take whichever venue's login came first.
         if body.venue_id:
             config_query = config_query.filter(Connection.venue_id == body.venue_id)
+        else:
+            config_query = config_query.filter(Connection.venue_id.is_(None))
         config_row = config_query.first()
         if not config_row:
             raise HTTPException(
@@ -294,7 +366,7 @@ async def create_from_connector(
 
     # Create working document
     doc = WorkingDocument(
-        thread_id=None,
+        thread_id=thread_id,
         doc_type=body.doc_type,
         connector_name=body.connector_name,
         venue_id=body.venue_id,
@@ -321,6 +393,7 @@ async def get_standalone_document(
     doc = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Working document not found")
+    _check_doc_access(db, user, doc)
     return _doc_to_dict(doc)
 
 
@@ -335,6 +408,7 @@ async def patch_standalone_document(
     doc = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Working document not found")
+    _check_doc_access(db, user, doc)
 
     if doc.version != body.version:
         raise HTTPException(

@@ -22,10 +22,30 @@
 #   - get_applications could only filter by job, one page of 50. The query row
 #     passes status, name search and page.
 #
-# Reading a CV stays with get_applicant_resume — an internal handler, not a raw
-# row: it fetches the file and hands the model the PDF itself as a document
-# block, which a consolidator cannot return. The application view gives its
-# file id.
+# And, from the consolidator review (1 Oct 2026, fixed 2 Oct):
+#   - venue names: Norm says "The Glass Goose", BambooHR "Glass Goose", and
+#     "Mr Murdoch's" vs "Mr Murdochs" — a plain substring check found 0 staff.
+#     Names now compare after dropping case, punctuation and a leading "The"
+#     ("&" reads as "and");
+#     still a whole-name match, never a partial one (similar names must not
+#     collide). No match lists BambooHR's own venue names.
+#   - a BambooHR failure was read as an answer: a failed statuses lookup said
+#     "no such status", and the 28 Sep 401 made the agent fall back to another
+#     app without saying so. Every failure now says it is BambooHR's, and a
+#     refused key says an admin must re-enter it.
+#   - "kitchen" found 1 person: the directory's division (Kitchen, Front of
+#     House, Management) is now searched and shown.
+#   - a job's candidates are BambooHR's ACTIVE ones unless asked (Head Chef: 5
+#     of 50); that default is now explicit in `filters`.
+#   - rows carry job_id; limit is capped at 100.
+#
+# The CV reader folded in (2 Oct 2026): application_id with cv true returns
+# the application AND the CV itself as a document block (`_document`, which
+# the tool loop lifts out of the stored result and attaches for the model —
+# a Word CV is converted to text there). It was the separate
+# get_applicant_resume tool, which cost a second tool call per candidate.
+#
+# BambooHR is the group's hiring system (Norm Hiring is switched off).
 #
 # Requires consolidator_config: {"max_api_calls": 3}
 
@@ -40,6 +60,7 @@ _STATUS_GROUPS = {
     "hired": "HIRED",
 }
 _JOB_STATUSES = ("open", "on hold", "filled", "draft", "canceled", "all")
+_MAX_LIMIT = 100
 
 
 def _lower(s):
@@ -50,6 +71,71 @@ def _err(r):
     if isinstance(r, dict) and r.get("error"):
         return str(r["error"])
     return None
+
+
+def _plain(text):
+    """An error message without the HTML page some failures carry."""
+    out, in_tag = [], False
+    for ch in str(text or ""):
+        if ch == "<":
+            in_tag = True
+        elif ch == ">":
+            in_tag = False
+            out.append(" ")
+        elif not in_tag:
+            out.append(ch)
+    return " ".join("".join(out).split())[:200]
+
+
+def _failed(what, r):
+    """The error for a BambooHR read that failed — never an empty answer."""
+    e = _err(r) or "an unexpected response"
+    if "401" in e or "403" in e:
+        return (
+            f"BambooHR refused Norm's API key reading {what} ({_plain(e)}). An admin "
+            "needs to re-enter the BambooHR key in Norm's connection settings. Tell "
+            "the user that — don't answer from another system instead."
+        )
+    return (
+        f"Couldn't read {what} from BambooHR ({_plain(e)}) — this is a BambooHR "
+        "failure, not missing data; try again."
+    )
+
+
+def _venue_key(name):
+    """'The Glass Goose' and 'Glass Goose', "Mr Murdoch's" and 'Mr Murdochs'
+    compare equal: case, punctuation and a leading 'The' are dropped. A whole
+    name still has to match — 'Bidfood Fresh' never matches 'Bidfood'."""
+    kept = "".join(
+        ch if ch.isalnum() else (" and " if ch == "&" else " " if ch in " -/,." else "")
+        for ch in str(name or "").lower()
+    )
+    words = kept.split()
+    if words and words[0] == "the":
+        words = words[1:]
+    return " ".join(words)
+
+
+def _int(v, default):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _limit(params, default=50):
+    return max(1, min(_int(params.get("limit"), default), _MAX_LIMIT))
+
+
+def _flag(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
+
+
+def _no_venue(loc, names):
+    names = sorted(n for n in names if n)
+    return f"No venue called '{loc}' in BambooHR. Its venues: " + ", ".join(names) + "."
 
 
 def _label(v):
@@ -95,8 +181,10 @@ def _employees(params, call_api):
     eid = params.get("employee_id")
     if eid:
         e = call_api("bamboohr", "get_employee_detail", {"employee_id": str(eid)})
+        if _err(e) and "404" in _err(e):
+            return {"error": f"No employee {eid} in BambooHR."}
         if not isinstance(e, dict) or _err(e):
-            return {"error": _err(e) or f"employee {eid} not found"}
+            return {"error": _failed(f"employee {eid}", e)}
         out = {"view": "employees", "employee_id": str(eid)}
         for k in _DETAIL_KEEP:
             v = e.get(k)
@@ -107,20 +195,26 @@ def _employees(params, call_api):
     d = call_api("bamboohr", "get_employee_directory", {})
     staff = d.get("employees") if isinstance(d, dict) else None
     if not isinstance(staff, list):
-        return {"error": _err(d) or "the BambooHR directory came back empty"}
+        return {"error": _failed("the staff directory", d)}
     query = _lower(params.get("query"))
-    loc = _lower(params.get("location"))
+    loc = _venue_key(params.get("location"))
     rows = []
     for p in staff:
         if not isinstance(p, dict):
             continue
         name = p.get("displayName") or _person(p) or ""
         hay = " ".join(
-            _lower(x) for x in (name, p.get("preferredName"), p.get("jobTitle"))
+            _lower(x)
+            for x in (
+                name,
+                p.get("preferredName"),
+                p.get("jobTitle"),
+                p.get("division"),
+            )
         )
         if query and query not in hay:
             continue
-        if loc and loc not in _lower(p.get("location")):
+        if loc and loc != _venue_key(p.get("location")):
             continue
         rows.append(
             {
@@ -129,17 +223,28 @@ def _employees(params, call_api):
                 "preferred": p.get("preferredName"),
                 "job_title": p.get("jobTitle"),
                 "venue": p.get("location"),
+                "division": p.get("division"),
                 "company": p.get("department"),
                 "work_email": p.get("workEmail"),
                 "mobile": p.get("mobilePhone"),
             }
         )
+    if loc and not rows:
+        return {
+            "view": "employees",
+            "current_staff": 0,
+            "employees": [],
+            "note": _no_venue(
+                params.get("location"),
+                {p.get("location") for p in staff if isinstance(p, dict)},
+            ),
+        }
     rows.sort(key=lambda r: (_lower(r["venue"]), _lower(r["name"])))
     by_venue = {}
     for r in rows:
         key = r["venue"] or "—"
         by_venue[key] = by_venue.get(key, 0) + 1
-    limit = int(params.get("limit") or 50)
+    limit = _limit(params)
     out = {
         "view": "employees",
         "current_staff": len(rows),
@@ -154,15 +259,20 @@ def _employees(params, call_api):
 # ----------------------------------------------------------------- jobs ----
 
 
+def _job_venue(j):
+    location = j.get("location") or {}
+    return (location.get("address") or {}).get("name") or location.get("label")
+
+
 def _jobs(params, call_api):
-    jobs = call_api("bamboohr", "get_jobs", {})
-    if not isinstance(jobs, list):
-        return {"error": _err(jobs) or "BambooHR returned no jobs"}
     status = _lower(params.get("status")) or "open"
     if status not in _JOB_STATUSES:
         return {"error": f"job status must be one of {', '.join(_JOB_STATUSES)}"}
+    jobs = call_api("bamboohr", "get_jobs", {})
+    if not isinstance(jobs, list):
+        return {"error": _failed("jobs", jobs)}
     query = _lower(params.get("query"))
-    loc = _lower(params.get("location"))
+    loc = _venue_key(params.get("location"))
     counts = {}
     rows = []
     for j in jobs:
@@ -173,11 +283,16 @@ def _jobs(params, call_api):
         if status != "all" and _lower(st) != status:
             continue
         title = _label(j.get("title")) or ""
-        location = j.get("location") or {}
-        venue = (location.get("address") or {}).get("name") or location.get("label")
+        venue = _job_venue(j)
         if query and query not in _lower(title):
             continue
-        if loc and loc not in _lower(venue) and loc not in _lower(title):
+        # A job's venue is its location, or the whole venue name leading its
+        # title ("Mr Murdoch's - Bar Team - Part Time").
+        if (
+            loc
+            and loc != _venue_key(venue)
+            and not (_venue_key(title) + " ").startswith(loc + " ")
+        ):
             continue
         rows.append(
             {
@@ -195,7 +310,24 @@ def _jobs(params, call_api):
             }
         )
     rows.sort(key=lambda r: r["posted"] or "", reverse=True)
-    limit = int(params.get("limit") or 50)
+    if (
+        loc
+        and not rows
+        and not any(
+            loc == _venue_key(_job_venue(j)) for j in jobs if isinstance(j, dict)
+        )
+    ):
+        return {
+            "view": "jobs",
+            "status": status,
+            "jobs": [],
+            "total": 0,
+            "note": _no_venue(
+                params.get("location"),
+                {_job_venue(j) for j in jobs if isinstance(j, dict)},
+            ),
+        }
+    limit = _limit(params)
     return {
         "view": "jobs",
         "status": status,
@@ -208,10 +340,12 @@ def _jobs(params, call_api):
 # --------------------------------------------------------- applications ----
 
 
-def _application(aid, call_api):
+def _application(aid, call_api, log, cv=False):
     d = call_api("bamboohr", "get_application_details", {"application_id": str(aid)})
+    if _err(d) and "404" in _err(d):
+        return {"error": f"No application {aid} in BambooHR."}
     if not isinstance(d, dict) or _err(d):
-        return {"error": _err(d) or f"application {aid} not found"}
+        return {"error": _failed(f"application {aid}", d)}
     a = d.get("applicant") or {}
     job = d.get("job") or {}
     st = d.get("status") or {}
@@ -240,6 +374,7 @@ def _application(aid, call_api):
             "linkedin": a.get("linkedinUrl"),
         },
         "job": _label(job.get("title")),
+        "job_id": job.get("id"),
         "hiring_lead": _person(job.get("hiringLead")),
         "desired_salary": d.get("desiredSalary"),
         "questions": qa,
@@ -250,13 +385,34 @@ def _application(aid, call_api):
             "also_considered_for": d.get("alsoConsideredForCount"),
         },
     }
-    if d.get("resumeFileId"):
-        out["resume"] = {
-            "file_id": d.get("resumeFileId"),
-            "note": "read the CV with get_applicant_resume(file_id)",
-        }
     if d.get("coverLetterFileId"):
         out["cover_letter_file_id"] = d.get("coverLetterFileId")
+    file_id = d.get("resumeFileId")
+    if not cv:
+        out["cv"] = (
+            "on file — pass cv true with this application_id to read it"
+            if file_id
+            else "none on file"
+        )
+        return out
+    if not file_id:
+        out["cv"] = "none on file"
+        return out
+    f = call_api("bamboohr", "download_file", {"file_id": str(file_id)})
+    if not isinstance(f, dict) or not f.get("content_base64"):
+        out["cv"] = _failed(f"the CV (file {file_id})", f)
+        return out
+    media = (f.get("content_type") or "application/pdf").split(";")[0].strip()
+    log(f"CV {file_id}: {media}, {f.get('size_bytes')} bytes")
+    out["cv"] = {
+        "file_id": file_id,
+        "content_type": media,
+        "size_bytes": f.get("size_bytes"),
+    }
+    out["_document"] = {
+        "type": "image" if media.startswith("image/") else "document",
+        "source": {"type": "base64", "media_type": media, "data": f["content_base64"]},
+    }
     return out
 
 
@@ -266,7 +422,9 @@ def _status_filter(status, call_api):
     if group:
         return {"status_group": group}, None
     statuses = call_api("bamboohr", "get_applicant_statuses", {})
-    for s in statuses if isinstance(statuses, list) else []:
+    if not isinstance(statuses, list):
+        return None, _failed("the application statuses", statuses)
+    for s in statuses:
         if isinstance(s, dict) and status in (
             _lower(s.get("name")),
             _lower(s.get("translatedName")),
@@ -274,9 +432,7 @@ def _status_filter(status, call_api):
         ):
             return {"status_id": str(s.get("id"))}, None
     names = sorted(
-        s.get("name")
-        for s in (statuses if isinstance(statuses, list) else [])
-        if isinstance(s, dict) and s.get("enabled")
+        s.get("name") for s in statuses if isinstance(s, dict) and s.get("enabled")
     )
     return None, (
         f"No application status '{status}'. Use active, new, hired, inactive or "
@@ -284,16 +440,21 @@ def _status_filter(status, call_api):
     )
 
 
-def _applications(params, call_api):
+def _applications(params, call_api, log):
     aid = params.get("application_id")
     if aid:
-        return _application(aid, call_api)
+        return _application(aid, call_api, log, cv=_flag(params.get("cv")))
+    if _flag(params.get("cv")):
+        return {"error": "cv needs an application_id — the CV of one application."}
 
-    q = {"page": int(params.get("page") or 1)}
+    q = {"page": max(1, _int(params.get("page"), 1))}
     if params.get("job_id"):
         q["job_id"] = str(params["job_id"])
     status = _lower(params.get("status"))
-    if not status and not params.get("job_id") and not params.get("query"):
+    # BambooHR's own default is active candidates only — said out loud here,
+    # so `filters` shows it (a job read 5 of its 50 candidates without saying).
+    defaulted = not status and not params.get("query")
+    if defaulted:
         status = "active"
     if status:
         extra, serr = _status_filter(status, call_api)
@@ -313,7 +474,7 @@ def _applications(params, call_api):
     page = call_api("bamboohr", "get_applications_query", q)
     apps = page.get("applications") if isinstance(page, dict) else None
     if not isinstance(apps, list):
-        return {"error": _err(page) or "BambooHR returned no applications"}
+        return {"error": _failed("applications", page)}
     rows = [
         {
             "id": a.get("id"),
@@ -322,6 +483,7 @@ def _applications(params, call_api):
             "name": _person(a.get("applicant")),
             "email": (a.get("applicant") or {}).get("email"),
             "job": _label((a.get("job") or {}).get("title")),
+            "job_id": (a.get("job") or {}).get("id"),
             "rating": a.get("rating"),
         }
         for a in apps
@@ -335,8 +497,13 @@ def _applications(params, call_api):
         "shown": len(rows),
         "more": not page.get("paginationComplete", True),
     }
+    notes = []
+    if defaulted:
+        notes.append("active candidates only — status 'all' for everyone")
     if out["more"]:
-        out["note"] = f"more applications — ask for page {q['page'] + 1}"
+        notes.append(f"more applications — ask for page {q['page'] + 1}")
+    if notes:
+        out["note"] = "; ".join(notes)
     return out
 
 
@@ -356,4 +523,4 @@ def run(params, call_api, log):
         return _employees(params, call_api)
     if view == "jobs":
         return _jobs(params, call_api)
-    return _applications(params, call_api)
+    return _applications(params, call_api, log)

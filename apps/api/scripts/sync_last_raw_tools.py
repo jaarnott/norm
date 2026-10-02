@@ -13,8 +13,8 @@ raw rows were still claimed:
 - BambooHR claimed six raw reads, two of which never worked (list_employees
   was page 1 of 1,504 with 245 of 250 gone; get_employee returned only an id).
   `bamboohr.get_hr` replaces them: views employees / jobs / applications.
-  `get_applicant_resume` stays — it is an internal handler that hands the
-  model the CV itself, not a raw row.
+  (`get_applicant_resume` stayed beside it until 2 Oct 2026, when the CV
+  folded into get_hr as `cv` — scripts/sync_hr_fixes.py.)
 
 Two stages, because the App Map claims live in scripts/sync_marketplace_catalog.py:
 
@@ -108,16 +108,23 @@ HR_TOOL = {
     "action": "get_hr",
     "method": "GET",  # read-only consolidator: auto-executes
     "read_only": True,
+    # 2 Oct 2026 (scripts/sync_hr_fixes.py): covers every venue, division,
+    # the active-only default said out loud, the CV folded in (cv true), and a
+    # refused key reported rather than worked around.
     "description": (
-        "BambooHR. view 'employees' (default): current staff with job title "
-        "and venue — filter by query (name or role) or location (venue); "
+        "BambooHR — the group's HR and hiring system; covers every venue "
+        "(filter with location). view 'employees' (default): current staff "
+        "with job title, venue and division (Kitchen, Front of House, "
+        "Management) — filter by query (name, role or division) or location; "
         "employee_id for one person's HR record. view 'jobs': open roles with "
         "applicant counts (status 'all', 'filled', 'on hold' for others). view "
-        "'applications': candidates newest first — by job_id, status ('new', "
-        "'active', 'hired', or a stage like 'Reviewed') or query (a name); "
-        "application_id for one application in full, including the CV's file "
-        "id for get_applicant_resume. Hiring questions: jobs first, then that "
-        "job's applications."
+        "'applications': candidates newest first — by job_id (its active "
+        "candidates unless status 'all'), status ('new', 'active', 'hired', or "
+        "a stage like 'Reviewed') or query (a name); application_id for one "
+        "application in full, and with cv true the applicant's CV too, for you "
+        "to read. Hiring questions: jobs first, then that job's applications. "
+        "If BambooHR refuses Norm's key, tell the user an admin needs to "
+        "re-enter it — don't answer from another system instead."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -130,26 +137,37 @@ HR_TOOL = {
         "application_id",
         "page",
         "limit",
+        "cv",
     ],
     "field_descriptions": {
         "view": "'employees' | 'jobs' | 'applications'.",
-        "query": "employees: name or job title; jobs: title; applications: applicant name.",
-        "location": "employees / jobs: venue name, e.g. 'La Zeppa'.",
+        "query": (
+            "employees: name, job title or division (e.g. 'kitchen'); jobs: "
+            "title; applications: applicant name."
+        ),
+        "location": (
+            "employees / jobs: the venue's whole name, e.g. 'La Zeppa' — case, "
+            "punctuation and a leading 'The' don't matter. No match lists "
+            "BambooHR's venue names."
+        ),
         "employee_id": "employees: one person's record.",
         "status": "jobs: open (default) | on hold | filled | all. applications: new | active | hired | inactive | all, or a stage name.",
-        "job_id": "applications: one job's candidates.",
+        "job_id": "applications: one job's candidates — its active ones unless status 'all'.",
         "application_id": "applications: one application in full.",
+        "cv": "With application_id: true also returns the applicant's CV for you to read.",
         "page": "applications: page number (50 per page).",
-        "limit": "employees / jobs: max rows (default 50).",
+        "limit": "employees / jobs: max rows (default 50, at most 100).",
     },
     "field_schema": {
         "view": {"type": "string", "enum": ["employees", "jobs", "applications"]},
         "page": {"type": "integer"},
         "limit": {"type": "integer"},
+        "cv": {"type": "boolean"},
     },
     "max_result_chars": 30_000,
     "consolidator_config": {
-        # applications with a stage name: statuses (1) + query (1).
+        # applications with a stage name: statuses (1) + query (1);
+        # one application with its CV: details (1) + download (1).
         "max_api_calls": 3,
         "allowed_write_actions": [],
     },
@@ -243,12 +261,11 @@ SKILLS = {
 - Call `get_hr` with view 'jobs' (open roles, with applicant counts). If the user named a role or venue, pass it as `query` or `location`.
 
 ### Step 2: Get the candidates
-- Call `get_hr` with view 'applications' and the job_id. Add `status` ('new', 'active', or a stage like 'Reviewed') if the user asked for a stage; 50 per page — ask for `page` 2 when `more` is true.
+- Call `get_hr` with view 'applications' and the job_id. That gives the job's active candidates; pass `status` 'all' to include everyone, or a stage ('new', or one like 'Reviewed') if the user asked for one. 50 per page — ask for `page` 2 when `more` is true.
 - Today's date is already in your context — use it for a "recent" cutoff.
 
 ### Step 3: Review each candidate
-- Call `get_hr` with application_id for their full application (questions, availability, desired pay).
-- Call `get_applicant_resume` with the application's resume file_id to read their CV.
+- Call `get_hr` with the candidate's application_id and `cv` true — one call returns their full application (questions, availability, desired pay) and their CV to read.
 - Make these calls in parallel for multiple candidates.
 
 ### Step 4: Summarise

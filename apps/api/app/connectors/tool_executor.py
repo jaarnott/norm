@@ -41,6 +41,37 @@ def execute_connector_tool(
     thread_id: str | None = None,
     strict_venue: bool = False,
 ) -> ToolResult:
+    """Run under the caller's organisation (caller_scope): the venue this call
+    was authorised for — MCP, charts and apps check it before calling — or
+    else its thread's user. See _execute_connector_tool for the rest."""
+    from app.services import caller_scope
+
+    scope = caller_scope.for_venue(db, venue_id) or caller_scope.for_thread(
+        db, thread_id
+    )
+    with caller_scope.use(scope):
+        return _execute_connector_tool(
+            connector_name,
+            action,
+            params,
+            db,
+            config_db,
+            venue_id=venue_id,
+            thread_id=thread_id,
+            strict_venue=strict_venue,
+        )
+
+
+def _execute_connector_tool(
+    connector_name: str,
+    action: str,
+    params: dict,
+    db: Session,
+    config_db: Session,
+    venue_id: str | None = None,
+    thread_id: str | None = None,
+    strict_venue: bool = False,
+) -> ToolResult:
     """Execute a connector tool end-to-end, matching the LLM tool loop path.
 
     Steps:

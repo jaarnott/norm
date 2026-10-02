@@ -550,16 +550,7 @@ def _execute_loop(
                     )
 
                 # Check for document content block (e.g., resume PDF)
-                doc_block = None
-                if (
-                    isinstance(tc.result_payload, dict)
-                    and "_document" in tc.result_payload
-                ):
-                    doc_block = tc.result_payload.pop("_document")
-                    from sqlalchemy.orm.attributes import flag_modified
-
-                    flag_modified(tc, "result_payload")
-                    db.flush()
+                doc_block = _lift_document(tc, result, db)
 
                 tool_def = _find_tool_def(connector, action, db, config_db=config_db)
                 summary_fields = tool_def.get("summary_fields") if tool_def else None
@@ -1235,10 +1226,49 @@ def _execute_tool_call_in_thread(tc_id: str, event_callback) -> tuple[str, dict]
         thread_config_db.close()
 
 
+def _lift_document(tc: ToolCall, result: dict, db: Session) -> dict | None:
+    """Take a tool's file (``_document``) off its result, ready to attach.
+
+    It comes off BOTH copies. After a parallel batch ``tc`` is re-read from the
+    database, so ``result["data"]`` is a different object from
+    ``tc.result_payload`` — popping only the stored copy left the whole base64
+    file in the text the model was given (two CVs read in parallel, as the
+    candidate_review skill asks). And the file goes through the attachment
+    converter, so a Word CV reaches the model as text instead of failing the
+    next request (Oct 2026).
+    """
+    from app.services.attachments import model_ready_block
+
+    doc_block = None
+    if isinstance(tc.result_payload, dict) and "_document" in tc.result_payload:
+        doc_block = tc.result_payload.pop("_document")
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(tc, "result_payload")
+        db.flush()
+    data = result.get("data") if isinstance(result, dict) else None
+    if isinstance(data, dict) and "_document" in data:
+        stray = data.pop("_document")
+        doc_block = doc_block or stray
+    return model_ready_block(doc_block) if doc_block else None
+
+
 def _execute_tool_call(
     tc: ToolCall, db: Session, config_db: Session | None = None
 ) -> dict:
-    """Execute a tool call against the connector spec and record the result."""
+    """Execute a tool call against the connector spec and record the result.
+
+    It runs as its thread's organisation (caller_scope): the built-ins and the
+    consolidator engine underneath look venues up within it."""
+    from app.services import caller_scope
+
+    with caller_scope.use(caller_scope.for_thread(db, tc.thread_id)):
+        return _execute_tool_call_scoped(tc, db, config_db)
+
+
+def _execute_tool_call_scoped(
+    tc: ToolCall, db: Session, config_db: Session | None = None
+) -> dict:
     from app.db.models import ConnectionSpec
     from app.connectors.spec_executor import execute_spec
 
@@ -1414,6 +1444,13 @@ def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
             "for a group-wide sales comparison."
         )
 
+    if venue_id:
+        from app.db.models import Venue
+        from app.services.caller_scope import allows
+
+        # Another organisation's venue id is no venue at all (caller_scope).
+        if not allows(db.query(Venue).filter(Venue.id == venue_id).first()):
+            venue_id = None
     if venue_name and not venue_id:
         venue_id = resolve_venue_id(venue_name, db)
 

@@ -369,10 +369,11 @@ def _update_application(params: dict, db: Session, thread_id: str | None) -> dic
 # ---------------------------------------------------------------------------
 
 
-# bamboohr.get_applicant_resume is a consolidator since Sep 2026
-# (config/consolidators/get_applicant_resume.py, over the download_file
-# endpoint): a built-in may only work on Norm itself — anything reaching an
-# outside system is a consolidator (docs/tool-architecture-strategy.md).
+# The BambooHR CV reader was a built-in until Sep 2026, then a consolidator
+# (get_applicant_resume), and since 2 Oct 2026 is part of get_hr (`cv` true,
+# over the download_file endpoint): a built-in may only work on Norm itself —
+# anything reaching an outside system is a consolidator
+# (docs/tool-architecture-strategy.md).
 
 
 @register("norm", "get_attachment")
@@ -1714,10 +1715,28 @@ Return ONLY valid JSON — no markdown, no explanation:
 
 @register("norm", "list_automated_tasks")
 def _list_automated_tasks(params: dict, db: Session, thread_id: str | None) -> dict:
-    """List automated tasks, optionally filtered by agent or status."""
-    from app.db.models import AutomatedTask
+    """List automated tasks, optionally filtered by agent or status.
+
+    Only the caller's organisation's tasks (caller_scope): it listed every
+    task in the database, and the Tasks pages load it for any signed-in user
+    (Oct 2026). A task is the organisation's by its venue or its creator."""
+    from sqlalchemy import or_
+
+    from app.db.models import AutomatedTask, OrganizationMembership, Venue
+    from app.services.caller_scope import current, venue_query
 
     query = db.query(AutomatedTask)
+    scope = current()
+    if scope is not None and not scope.unrestricted:
+        members = db.query(OrganizationMembership.user_id).filter(
+            OrganizationMembership.organization_id == scope.org_id
+        )
+        query = query.filter(
+            or_(
+                AutomatedTask.venue_id.in_(venue_query(db).with_entities(Venue.id)),
+                AutomatedTask.created_by.in_(members),
+            )
+        )
     agent_slug = params.get("agent_slug")
     status = params.get("status")
     if agent_slug:
@@ -2047,10 +2066,12 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
     if not venue:
         return {"success": False, "data": {}, "error": "venue is required"}
 
-    from app.db.models import Venue
+    from app.services.caller_scope import find_venue
 
-    venue_obj = db.query(Venue).filter(Venue.name.ilike(f"%{venue}%")).first()
-    venue_id = venue_obj.id if venue_obj else None
+    venue_obj, venue_err = find_venue(db, name=venue, venue_id=params.get("venue_id"))
+    if venue_obj is None:
+        return {"success": False, "data": {}, "error": venue_err}
+    venue_id = venue_obj.id
 
     items = params.get("items", [])
     if not isinstance(items, list):
@@ -2233,13 +2254,15 @@ def execute_consolidator(
     # tool params; otherwise fall back to the thread's active venue.
     data = result.get("data")
     if isinstance(data, dict) and not data.get("venue_id"):
-        from app.db.models import Thread, Venue
+        from app.db.models import Thread
+
+        from app.services.caller_scope import find_venue
 
         venue_id = None
         venue_name = input_params.get("venue")
-        if venue_name:
-            venue_obj = (
-                db.query(Venue).filter(Venue.name.ilike(f"%{venue_name}%")).first()
+        if venue_name or input_params.get("venue_id"):
+            venue_obj, _ = find_venue(
+                db, name=venue_name, venue_id=input_params.get("venue_id")
             )
             venue_id = venue_obj.id if venue_obj else None
         if not venue_id and thread_id:
@@ -2327,6 +2350,24 @@ def _get_supplier_invoice_specs(
         return {"success": True, "data": {"specs": []}}
 
 
+def _scoped_venue_id(params: dict, db: Session) -> tuple[str | None, str | None]:
+    """The venue a handler acts on: its ``venue_id`` if that is the caller's
+    venue, else the venue it names — the whole name, among the caller's
+    venues. These handlers used ``Venue.name.ilike('%name%').first()``: the
+    first venue in ANY organisation whose name contained the text, trusted
+    for invoice receiving and split-order writes (Oct 2026)."""
+    from app.services.caller_scope import current, find_venue
+
+    if not params.get("venue_id") and not params.get("venue"):
+        return None, "venue not found"
+    if params.get("venue_id") and current() is None:
+        # A system context (the invoice review's own worker passes the id it
+        # is working on): nobody to check the id against — trusted, as before.
+        return str(params["venue_id"]), None
+    v, err = find_venue(db, name=params.get("venue"), venue_id=params.get("venue_id"))
+    return (v.id, None) if v else (None, err)
+
+
 @register("norm", "list_venues")
 def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
     """The venues a connector fan-out can cover: name + connection state.
@@ -2349,9 +2390,25 @@ def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
         )
         .all()
     }
+    from app.services.caller_scope import venue_query
+
+    # The caller's organisation's venues — it listed every venue in the
+    # database, so a venues='all' fan-out would have read another
+    # organisation's venues too (Oct 2026). Who is calling comes from
+    # caller_scope, set where the call came in.
+    q = venue_query(db)
+    if q is None:
+        return {
+            "success": False,
+            "data": {},
+            "error": (
+                "Norm couldn't tell which organisation is asking, so it can't "
+                "list 'all' venues — name the venues instead."
+            ),
+        }
     venues = [
         {"id": v.id, "name": v.name, "connected": v.id in connected}
-        for v in db.query(Venue).order_by(Venue.name).all()
+        for v in q.order_by(Venue.name).all()
     ]
     return {
         "success": True,
@@ -2433,21 +2490,15 @@ def _match_stock_items_tool(params: dict, db: Session, thread_id: str | None) ->
         _extraction_cache_put,
     )
     from app.db.engine import _ConfigSessionLocal
-    from app.db.models import Venue
     from app.services.item_match import suggest_item_matches
 
     lines = params.get("lines")
     if not isinstance(lines, list) or not lines:
         return {"success": True, "data": {"suggestions": {}}}
 
-    venue_id = params.get("venue_id")
-    if not venue_id and params.get("venue"):
-        venue_obj = (
-            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
-        )
-        venue_id = venue_obj.id if venue_obj else None
+    venue_id, venue_err = _scoped_venue_id(params, db)
     if not venue_id:
-        return {"success": False, "data": {}, "error": "venue not found"}
+        return {"success": False, "data": {}, "error": venue_err}
 
     supplier_name = params.get("supplier_name") or None
     cache_key = _extraction_cache_key(
@@ -2519,21 +2570,15 @@ def _match_supplier_tool(params: dict, db: Session, thread_id: str | None) -> di
         _extraction_cache_put,
     )
     from app.db.engine import _ConfigSessionLocal
-    from app.db.models import Venue
     from app.services.item_match import suggest_supplier_match
 
     name = str(params.get("supplier_name") or "").strip()
     if not name:
         return {"success": True, "data": {"match": None}}
 
-    venue_id = params.get("venue_id")
-    if not venue_id and params.get("venue"):
-        venue_obj = (
-            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
-        )
-        venue_id = venue_obj.id if venue_obj else None
+    venue_id, venue_err = _scoped_venue_id(params, db)
     if not venue_id:
-        return {"success": False, "data": {}, "error": "venue not found"}
+        return {"success": False, "data": {}, "error": venue_err}
 
     cache_key = _extraction_cache_key(
         "norm", "match_supplier", {"venue_id": venue_id, "supplier_name": name}, {}, ""
@@ -2568,7 +2613,6 @@ def _sensei_train_supplier(params: dict, db: Session, thread_id: str | None) -> 
     Params: ``venue``/``venue_id`` + ``invoice_id`` + ``supplier_name``.
     """
     from app.db.engine import _ConfigSessionLocal
-    from app.db.models import Venue
     from app.services import spec_dojo
 
     def _out(status: str, **extra) -> dict:
@@ -2579,14 +2623,9 @@ def _sensei_train_supplier(params: dict, db: Session, thread_id: str | None) -> 
     if not name or not invoice_id:
         return _out("skipped", reason="supplier_name and invoice_id required")
 
-    venue_id = params.get("venue_id")
-    if not venue_id and params.get("venue"):
-        venue_obj = (
-            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
-        )
-        venue_id = venue_obj.id if venue_obj else None
+    venue_id, venue_err = _scoped_venue_id(params, db)
     if not venue_id:
-        return _out("skipped", reason="venue not found")
+        return _out("skipped", reason=venue_err)
 
     try:
         wcdb = _ConfigSessionLocal()
@@ -2689,17 +2728,11 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
     ``require_valid_po``.
     """
     from app.db.engine import _ConfigSessionLocal
-    from app.db.models import Venue
     from app.services.invoice_review import review_invoices
 
-    venue_id = params.get("venue_id")
-    if not venue_id and params.get("venue"):
-        venue_obj = (
-            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
-        )
-        venue_id = venue_obj.id if venue_obj else None
+    venue_id, venue_err = _scoped_venue_id(params, db)
     if not venue_id:
-        return {"success": False, "error": "venue not found"}
+        return {"success": False, "error": venue_err}
 
     invoice_ids = params.get("invoice_ids")
     if invoice_ids is not None and not isinstance(invoice_ids, list):
@@ -2745,18 +2778,12 @@ def _invoice_copy_evidence(params: dict, db: Session, thread_id: str | None) -> 
     ``_source`` (stored | extracted), or ``error``.
     """
     from app.db.engine import _ConfigSessionLocal
-    from app.db.models import Venue
     from app.services.invoice_evidence import copy_headers
     from app.services.received_invoice import LoadedInvoiceClient
 
-    venue_id = params.get("venue_id")
-    if not venue_id and params.get("venue"):
-        venue_obj = (
-            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
-        )
-        venue_id = venue_obj.id if venue_obj else None
+    venue_id, venue_err = _scoped_venue_id(params, db)
     if not venue_id:
-        return {"success": False, "error": "venue not found"}
+        return {"success": False, "error": venue_err}
 
     invoices = params.get("invoices")
     if not isinstance(invoices, list):
@@ -2789,18 +2816,12 @@ def _record_split_order(params: dict, db: Session, thread_id: str | None) -> dic
     ``{id, order_number, sibling_reference}``.
     """
     from app.db.engine import _ConfigSessionLocal
-    from app.db.models import Venue
     from app.services.invoice_evidence import record_split
     from app.services.received_invoice import LoadedInvoiceClient
 
-    venue_id = params.get("venue_id")
-    if not venue_id and params.get("venue"):
-        venue_obj = (
-            db.query(Venue).filter(Venue.name.ilike(f"%{params['venue']}%")).first()
-        )
-        venue_id = venue_obj.id if venue_obj else None
+    venue_id, venue_err = _scoped_venue_id(params, db)
     if not venue_id:
-        return {"success": False, "error": "venue not found"}
+        return {"success": False, "error": venue_err}
 
     invoices = params.get("invoices")
     if not isinstance(invoices, list):

@@ -83,3 +83,106 @@ def test_a_result_without_a_document_is_unchanged(db_session, monkeypatch):
     tc = _tool_call(db_session)
     _execute_tool_call(tc, db_session, config_db=db_session)
     assert tc.result_payload == {"x": 1}
+
+
+# ---------------------------------------------------------------------------
+# A consolidator's file, made model-ready (Oct 2026). BambooHR hands back a
+# Word CV as wordprocessingml; the model reads only PDFs and common images, so
+# attaching it as-is failed the NEXT model call and lost the whole turn.
+
+_WORD = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _b64(data: bytes) -> str:
+    import base64
+
+    return base64.b64encode(data).decode()
+
+
+def _docx(text: str) -> bytes:
+    import io
+
+    import docx
+
+    d = docx.Document()
+    d.add_paragraph(text)
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+def _doc(media_type, data):
+    return {
+        "type": "document",
+        "source": {"type": "base64", "media_type": media_type, "data": _b64(data)},
+    }
+
+
+class TestModelReadyBlock:
+    def test_a_word_cv_becomes_text(self):
+        from app.services.attachments import model_ready_block
+
+        out = model_ready_block(_doc(_WORD, _docx("Head chef, 8 years, Auckland")))
+        assert out["type"] == "text"
+        assert "Head chef, 8 years, Auckland" in out["text"]
+
+    def test_a_pdf_stays_a_document(self):
+        from app.services.attachments import model_ready_block
+
+        out = model_ready_block(_doc("application/pdf", b"%PDF-1.4 x"))
+        assert out["type"] == "document"
+        assert out["source"]["media_type"] == "application/pdf"
+
+    def test_a_generic_type_is_sniffed_from_the_bytes(self):
+        from app.services.attachments import model_ready_block
+
+        pdf = model_ready_block(_doc("application/octet-stream", b"%PDF-1.4 x"))
+        assert pdf["type"] == "document"
+        assert pdf["source"]["media_type"] == "application/pdf"
+        word = model_ready_block(_doc("application/octet-stream", _docx("Barista")))
+        assert word["type"] == "text" and "Barista" in word["text"]
+
+    def test_an_unreadable_file_becomes_a_sentence_not_a_broken_request(self):
+        from app.services.attachments import model_ready_block
+
+        out = model_ready_block(_doc("application/zip", b"\x00\x01\x02"))
+        assert out["type"] == "text" and "couldn't be read" in out["text"]
+
+    def test_a_text_block_passes_through(self):
+        from app.services.attachments import model_ready_block
+
+        block = {"type": "text", "text": "[Attachment: notes.txt]\nhi"}
+        assert model_ready_block(block) is block
+
+
+class TestLiftDocument:
+    def test_both_copies_lose_the_file_after_a_parallel_batch(self, db_session):
+        """After a parallel batch, tc was re-read from the DB, so the result the
+        loop serialises for the model is a DIFFERENT dict — the file has to come
+        off it too, or its base64 lands in the model's text."""
+        from app.agents.tool_loop import _lift_document
+
+        tc = _tool_call(db_session)
+        tc.result_payload = {"name": "Glenn", "_document": dict(BLOCK)}
+        result = {"success": True, "data": {"name": "Glenn", "_document": dict(BLOCK)}}
+        doc = _lift_document(tc, result, db_session)
+        assert doc["type"] == "document"
+        assert doc["source"]["media_type"] == "application/pdf"
+        assert "_document" not in tc.result_payload
+        assert "_document" not in result["data"]
+
+    def test_the_single_call_path_shares_one_dict(self, db_session):
+        from app.agents.tool_loop import _lift_document
+
+        tc = _tool_call(db_session)
+        tc.result_payload = {"name": "Glenn", "_document": dict(BLOCK)}
+        result = {"success": True, "data": tc.result_payload}
+        assert _lift_document(tc, result, db_session)["type"] == "document"
+        assert "_document" not in result["data"]
+
+    def test_no_file_no_block(self, db_session):
+        from app.agents.tool_loop import _lift_document
+
+        tc = _tool_call(db_session)
+        tc.result_payload = {"x": 1}
+        assert _lift_document(tc, {"data": {"x": 1}}, db_session) is None

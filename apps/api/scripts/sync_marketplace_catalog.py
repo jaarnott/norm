@@ -465,13 +465,12 @@ APPS = [
         name="BambooHR",
         member="hr",
         icon="🎋",
-        description="Jobs, applications and employees from BambooHR.",
+        description="Jobs, applications, CVs and employees — BambooHR is the group's hiring system.",
         tools=[
-            # get_hr replaced six raw reads (Sep 2026, sync_last_raw_tools.py);
-            # get_applicant_resume is an internal handler that hands the model
-            # the CV itself.
+            # get_hr replaced six raw reads (Sep 2026, sync_last_raw_tools.py)
+            # and took in the CV reader, get_applicant_resume, as `cv` (2 Oct
+            # 2026, sync_hr_fixes.py).
             "bamboohr.get_hr",
-            "bamboohr.get_applicant_resume",
         ],
         components=[
             _c(

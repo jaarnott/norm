@@ -1,15 +1,16 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
-import { extractShifts, extractRosterMeta, venueWeekDays, dateKey, buildStaffRows, DAY_NAMES, calcHours, roleColor, formatWithOffset, OPEN_ROW_ID } from './roster/shared';
+import { extractShifts, extractRosterMeta, venueWeekDays, dateKey, buildStaffRows, DAY_NAMES, calcHours, roleColor, OPEN_ROW_ID } from './roster/shared';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { computeWarnings, summarise } from './roster/warnings';
 import type { LeaveRecord, UnavailabilityRecord } from './roster/warnings';
 import { venueTimePrefs, formatClock, venueOffset, formatInTz, wallClockToInstant } from '../../lib/rosterTime';
+import type { VenueTimePrefs } from '../../lib/rosterTime';
 import WeekGrid from './roster/WeekGrid';
 import DayTimeline from './roster/DayTimeline';
 import ShiftModal from './roster/ShiftModal';
@@ -26,6 +27,27 @@ interface VenueOption {
   day_start_time?: string | null;
 }
 
+/**
+ * The venue's trading week as Loaded's roster query wants it: Monday's day
+ * start to just before the next Monday's, written in the venue's own clock.
+ * Midnight to midnight also caught the tail of the previous trading week
+ * (which runs to 7am Monday), so Loaded returned both rosters and the card
+ * showed — and edited — last week's (Oct 2026).
+ */
+function tradingWeek(monday: Date, prefs: VenueTimePrefs) {
+  const day = (d: Date, add: number) => { const x = new Date(d); x.setDate(d.getDate() + add); return x; };
+  const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const at = (d: Date, mins: number, secs: string) => {
+    const key = dateKey(d);
+    return `${key}T${hhmm(mins)}:${secs}${venueOffset(wallClockToInstant(key, mins, prefs.timeZone), prefs)}`;
+  };
+  const start = prefs.dayStartMinutes;
+  return {
+    start_datetime: at(monday, start, '00'),
+    end_datetime: start > 0 ? at(day(monday, 7), start - 1, '59') : at(day(monday, 6), 23 * 60 + 59, '59'),
+  };
+}
+
 export default function RosterEditor({ data, props, onAction, threadId }: DisplayBlockProps) {
   // Detect working document mode
   const initialDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
@@ -34,6 +56,9 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
 
   const [docData, setDocData] = useState<Record<string, unknown> | null>(initialDocId ? null : data);
   const [venues, setVenues] = useState<VenueOption[]>([]);
+  // Set once the venue list has answered (or failed), so a load that needs the
+  // venue's timezone doesn't run on the defaults first.
+  const [venuesLoaded, setVenuesLoaded] = useState(false);
   // The venue's whole staff roll and role list, so you can roster someone who
   // isn't on this week yet. Empty when embedded (no session to fetch with), in
   // which case we fall back to whoever is already on the roster.
@@ -98,7 +123,8 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
           setVenues(d.venues);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setVenuesLoaded(true));
   }, [props?.embedded]);
 
   useEffect(() => {
@@ -136,11 +162,6 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     const monday = new Date(now);
     monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
     monday.setHours(0, 0, 0, 0);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    sunday.setHours(23, 59, 59, 0);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const fmt = (d: Date) => formatWithOffset(d, venueOffset(d, timePrefs));
 
     try {
       const res = await apiFetch('/api/working-documents/from-connector', {
@@ -148,9 +169,12 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         body: JSON.stringify({
           connector_name: connectorName,
           action: 'get_roster',
-          params: { start_datetime: fmt(monday), end_datetime: fmt(sunday), venue_id: venueId },
+          params: { ...tradingWeek(monday, timePrefs), venue_id: venueId },
           doc_type: 'roster',
           venue_id: venueId,
+          // A chat card's document belongs to its conversation: each saved
+          // edit is recorded there, and can't be recorded without one.
+          thread_id: threadId || undefined,
         }),
       });
       if (res.ok) {
@@ -166,7 +190,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         }
       }
     } catch (e) { console.error('Venue change failed:', e); }
-  }, []);
+  }, [persistVenue, setActiveVenue, connectorName, threadId]);
 
   // Fallback: update from props data (non-working-document mode)
   useEffect(() => {
@@ -271,20 +295,18 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
     const venueId = selectedVenue || (props?.activeVenueId as string);
     if (!venueId) return;
     setLoadingWeek(true);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    sunday.setHours(23, 59, 59, 0);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const fmt = (d: Date) => formatWithOffset(d, venueOffset(d, timePrefs));
     try {
       const res = await apiFetch('/api/working-documents/from-connector', {
         method: 'POST',
         body: JSON.stringify({
           connector_name: connectorName,
           action: 'get_roster',
-          params: { start_datetime: fmt(monday), end_datetime: fmt(sunday), venue_id: venueId },
+          params: { ...tradingWeek(monday, timePrefs), venue_id: venueId },
           doc_type: 'roster',
           venue_id: venueId,
+          // A chat card's document belongs to its conversation: each saved
+          // edit is recorded there, and can't be recorded without one.
+          thread_id: threadId || undefined,
         }),
       });
       if (res.ok) {
@@ -300,7 +322,23 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       }
     } catch { /* ignore */ }
     setLoadingWeek(false);
-  }, [selectedVenue, props?.activeVenueId]);
+  }, [selectedVenue, props?.activeVenueId, timePrefs, connectorName, threadId]);
+
+  // In a conversation the card arrives with the agent's copy of the roster.
+  // That copy is trimmed for the model — no shift ids, rates or pay rules — so
+  // nothing on it could be saved: a click on a shift did nothing. Load the same
+  // week the way the Roster page does, as a working document with every field,
+  // and every edit then saves through it (Oct 2026). Not when embedded: an MCP
+  // host has no session to load with, and its card stays read-only.
+  const upgraded = useRef(false);
+  useEffect(() => {
+    if (upgraded.current || workingDocId || props?.embedded) return;
+    if (!activeVenueId || !venuesLoaded || days.length === 0) return;
+    upgraded.current = true;
+    const monday = new Date(days[0]);
+    monday.setHours(0, 0, 0, 0);
+    loadWeek(monday);
+  }, [workingDocId, props?.embedded, activeVenueId, venuesLoaded, days, loadWeek]);
 
   // Navigate weeks
   const goWeek = useCallback((direction: number) => {

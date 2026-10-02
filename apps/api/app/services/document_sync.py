@@ -54,9 +54,43 @@ def _get_mapping(op_type: str, doc: WorkingDocument, db: Session) -> dict | None
     }
 
 
+def _current_shift(doc: WorkingDocument, shift_id: str) -> dict:
+    """The shift an op names, as the document holds it now — after the op
+    itself was applied (the PATCH applies before the sync runs)."""
+    data = doc.data
+    shifts: list = []
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        if "rosteredShifts" in data[0]:
+            # Every roster in the document — a window that touches two weeks
+            # returns both.
+            for roster in data:
+                if isinstance(roster, dict):
+                    shifts.extend(roster.get("rosteredShifts") or [])
+        else:
+            shifts = data
+    elif isinstance(data, dict):
+        shifts = data.get("rosteredShifts") or []
+    for s in shifts:
+        if isinstance(s, dict) and s.get("id") == shift_id:
+            return s
+    return {}
+
+
 def _build_params(op: dict, doc: WorkingDocument, mapping: dict) -> dict:
-    """Build tool params from an operation using the configured field mapping."""
+    """Build tool params from an operation using the configured field mapping.
+
+    A roster op on an existing shift is filled in from the shift as the
+    document holds it. Loaded's shift writes are read-modify-write — a PUT
+    replaces the whole shift, and a delete is a PUT that stamps
+    datestampDeleted — but the card sends a delete as the shift id alone. So
+    the delete carried no datestamp (refused as missing a required field) and,
+    had it gone, would have blanked the shift's times and roster (Oct 2026).
+    """
     fields = op.get("fields", op.get("data", {}))
+    id_field = mapping.get("id_field")
+    entity_id = op.get(id_field, op.get("shift_id")) if id_field else None
+    if entity_id and doc.doc_type == "roster":
+        fields = {**_current_shift(doc, entity_id), **(fields or {})}
     ref = doc.external_ref or {}
     params: dict = {}
 
@@ -71,7 +105,6 @@ def _build_params(op: dict, doc: WorkingDocument, mapping: dict) -> dict:
             params[tool_param] = ref.get(ref_key, "")
 
     # Apply id_field: pull the entity ID from the op root (e.g., shift_id)
-    id_field = mapping.get("id_field")
     if id_field:
         params[id_field] = op.get(id_field, op.get("shift_id", ""))
 
@@ -105,6 +138,22 @@ def sync_document(doc_id: str, db: Session, config_db: Session | None = None) ->
         db.commit()
         return
 
+    if doc.thread_id is None and any(
+        _get_mapping(op.get("op", ""), doc, db) for op in doc.pending_ops
+    ):
+        # Every write is recorded as a ToolCall, and a ToolCall belongs to a
+        # thread (tool_calls.thread_id is NOT NULL) — so a document opened
+        # outside a conversation (the Roster page) failed here on a database
+        # error, every time. Say so plainly instead. The chat roster card ties
+        # its document to its thread, so its edits do save.
+        doc.sync_status = "error"
+        doc.sync_error = (
+            "Edits made outside a conversation can't be saved yet — open the "
+            "roster from a chat to edit it."
+        )
+        db.commit()
+        return
+
     doc.sync_status = "syncing"
     db.commit()
 
@@ -126,6 +175,13 @@ def sync_document(doc_id: str, db: Session, config_db: Session | None = None) ->
                 continue
 
             params = _build_params(op, doc, mapping)
+            # The document's venue picks the login. Without it the credential
+            # lookup had no venue, found no venue-less Loaded connection and
+            # fell back to whichever venue's login came first — a roster edit
+            # written under the wrong venue's token (Oct 2026). venue_id is
+            # stripped before the request renders; it only selects the login.
+            if getattr(doc, "venue_id", None):
+                params["venue_id"] = doc.venue_id
 
             tc = ToolCall(
                 id=str(uuid.uuid4()),

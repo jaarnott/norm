@@ -255,6 +255,36 @@ def _resolve_date_placeholders(params: dict, venue=None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _chart_venue_ids(db: Session, user, connector: str, venue_id: str | None) -> list:
+    """The venues a chart reads: the one asked for — if this user may access
+    it — or, for "all venues", every connected venue in the user's
+    organisation. It took every connected venue in the DATABASE, and trusted
+    whatever venue a filter sent (Oct 2026)."""
+    from app.db.models import Connection, Venue
+    from app.services import caller_scope
+    from app.services.venue_service import user_can_access_venue
+
+    if venue_id:
+        if getattr(user, "role", None) != "admin" and not user_can_access_venue(
+            db, user.id, venue_id
+        ):
+            raise HTTPException(403, "You don't have access to that venue")
+        return [venue_id]
+    q = db.query(Connection.venue_id).filter(
+        Connection.connector_name == connector,
+        Connection.enabled == "true",
+    )
+    with caller_scope.use(caller_scope.for_user(db, user)):
+        scoped = caller_scope.venue_query(db)
+    if scoped is None:
+        raise HTTPException(403, "Norm couldn't tell which organisation you're in")
+    q = q.filter(
+        (Connection.venue_id.in_(scoped.with_entities(Venue.id)))
+        | Connection.venue_id.is_(None)
+    )
+    return [vc.venue_id for vc in q.all()] or [None]
+
+
 @router.post("")
 async def create_report(
     body: CreateReportBody,
@@ -681,20 +711,7 @@ async def refresh_report(
             else:
                 venue_id = script.get("venue_id") or report.venue_id
             # Determine which venues to query
-            if venue_id:
-                venue_ids = [venue_id]
-            else:
-                from app.db.models import Connection
-
-                venue_configs = (
-                    db.query(Connection.venue_id)
-                    .filter(
-                        Connection.connector_name == script["connector"],
-                        Connection.enabled == "true",
-                    )
-                    .all()
-                )
-                venue_ids = [vc.venue_id for vc in venue_configs] or [None]
+            venue_ids = _chart_venue_ids(db, user, script["connector"], venue_id)
 
             aggregated_rows: list[dict] = []
             chart_debug: dict = {
@@ -847,20 +864,7 @@ def refresh_single_chart(
     else:
         venue_id = script.get("venue_id") or (report.venue_id if report else None)
 
-    if venue_id:
-        venue_ids = [venue_id]
-    else:
-        from app.db.models import Connection
-
-        venue_configs = (
-            db.query(Connection.venue_id)
-            .filter(
-                Connection.connector_name == script["connector"],
-                Connection.enabled == "true",
-            )
-            .all()
-        )
-        venue_ids = [vc.venue_id for vc in venue_configs] or [None]
+    venue_ids = _chart_venue_ids(db, user, script["connector"], venue_id)
 
     # Execute venues sequentially — charts are already parallel at the request level
     # so we don't need nested ThreadPoolExecutors that exhaust DB connections
@@ -1119,20 +1123,7 @@ async def test_chart_script(
     )
 
     # Determine venues to test against
-    if venue_id:
-        venue_ids = [venue_id]
-    else:
-        from app.db.models import Connection
-
-        venue_configs = (
-            db.query(Connection.venue_id)
-            .filter(
-                Connection.connector_name == script["connector"],
-                Connection.enabled == "true",
-            )
-            .all()
-        )
-        venue_ids = [vc.venue_id for vc in venue_configs] or [None]
+    venue_ids = _chart_venue_ids(db, user, script["connector"], venue_id)
 
     # Execute per venue and aggregate
     venue_results: list[dict] = []
