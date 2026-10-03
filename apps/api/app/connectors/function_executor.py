@@ -6,6 +6,7 @@ except through `call_api`.
 """
 
 import ast
+import copy
 import datetime
 import decimal
 import hashlib
@@ -147,7 +148,49 @@ def _reject_unsafe_source(function_code: str) -> None:
             )
 
 
+class PreviewReady(BaseException):
+    """A preview run reached the tool's ``preview(...)``: stop before writing.
+
+    A BaseException so a consolidator's own ``except Exception`` can't swallow
+    it and carry on into the write.
+    """
+
+
+class PreviewChanged(BaseException):
+    """The approved run found live data that no longer matches its preview."""
+
+    def __init__(self, card):
+        super().__init__("changed since it was approved")
+        self.card = card
+
+
+def fingerprint(value: Any) -> str:
+    """A short, stable hash of what a preview showed (or the data under it)."""
+    material = json.dumps(value, sort_keys=True, default=str)
+    return hashlib.sha256(material.encode()).hexdigest()[:16]
+
+
+def _no_preview(card=None, basis=None):
+    """Outside an approval — MCP, apps, charts, an auto-approved write — a
+    tool's ``preview(...)`` does nothing and the run carries on. Pass the card
+    as a function (``preview(lambda: _card(...))``) and the reads it needs
+    happen only when someone will see it."""
+    return None
+
+
+def _evaluated(value):
+    return value() if callable(value) else value
+
+
+def _not_previewing() -> bool:
+    return False
+
+
 _SAFE_BUILTINS = {
+    # Approval previews (services/previews.py). Defaults here, overridden in
+    # the namespace by a preview run and by an approved run.
+    "preview": _no_preview,
+    "previewing": _not_previewing,
     # Types
     "True": True,
     "False": False,
@@ -240,8 +283,22 @@ def execute_function(
             the way around its own app's declared reach. Still counted against
             max_api_calls.
 
+    Approval previews (services/previews.py) use three more option keys:
+        preview: True runs the function WITHOUT writing. Every write it
+            attempts is recorded and answered with {"not_sent": True}; when it
+            calls ``preview(card, basis=None)`` the run stops there and the
+            card is returned. ``previewing()`` is True, so a tool can fetch
+            what only the card needs (names for ids).
+        _preview_memo: {"lock", "reads"} shared by a batch of previews, so
+            the same read (a venue's unit list) is fetched once, not per row.
+        expect_fingerprint: on the approved run, ``preview(...)`` checks the
+            live data still gives the fingerprint the person approved, and
+            stops before writing if it doesn't.
+
     Returns:
         {"success": bool, "data": Any, "_logs": list[str], "error": str | None}
+        plus, in preview mode, "preview" ({card, fingerprint}) when the tool
+        previewed itself and "preview_writes" (the writes it would have sent).
     """
     from app.db.models import ConnectionSpec, Connection, Venue
     from app.connectors.spec_executor import execute_spec
@@ -260,6 +317,11 @@ def execute_function(
     # Nesting depth for consolidator-to-consolidator calls (see the dispatch
     # in _do_api_call): absent = a top-level run.
     depth = int(options.get("_depth") or 0)
+    preview_mode = bool(options.get("preview"))
+    expected_fingerprint = options.get("expect_fingerprint")
+    read_memo = options.get("_preview_memo") if preview_mode else None
+    recorded_writes: list[dict] = []
+    captured: dict = {}
 
     logs: list[str] = []
     api_call_count = 0
@@ -302,6 +364,69 @@ def execute_function(
             _spec_cache[connector] = spec
             return spec
 
+    def _tool_def(connector: str, action: str) -> tuple[Any, dict]:
+        spec = _get_spec(connector)
+        if not spec:
+            raise ValueError(f"Connector not found: {connector}")
+        for t in spec_rows.rows(spec):
+            if isinstance(t, dict) and t.get("action") == action:
+                return spec, t
+        raise ValueError(f"Tool not found: {connector}.{action}")
+
+    def _is_write(tool_def: dict) -> bool:
+        """A non-GET endpoint, or a tool labelled as writing or drafting —
+        send_report_email and manage_task are GET-declared writers."""
+        method = str(tool_def.get("method", "GET")).upper()
+        return method != "GET" or spec_rows.effect(tool_def) in ("write", "draft")
+
+    def _check_write_declared(connector: str, action: str, tool_def: dict) -> None:
+        # Write actions are deny-by-default: a consolidator may only call a
+        # write when consolidator_config.allowed_write_actions names it — a
+        # non-GET endpoint, or a tool labelled as writing (send_report_email
+        # is GET-declared, and used to pass as a read).
+        method = str(tool_def.get("method", "GET")).upper()
+        if _is_write(tool_def) and not (
+            action in allowed_write_actions
+            or f"{connector}.{action}" in allowed_write_actions
+        ):
+            raise PermissionError(
+                f"Write action {connector}.{action} ({method}) is not declared in "
+                "consolidator_config.allowed_write_actions"
+            )
+
+    def _api_call(
+        connector: str,
+        action: str,
+        api_params: dict,
+        use_db: Session,
+        disposable_db: bool = False,
+    ) -> tuple[Any, int]:
+        """_do_api_call, except in a preview run: a write is recorded and not
+        sent, and a read is shared with the rest of the batch."""
+        if not preview_mode:
+            return _do_api_call(connector, action, api_params, use_db, disposable_db)
+        _, tool_def = _tool_def(connector, action)
+        if _is_write(tool_def):
+            _check_write_declared(connector, action, tool_def)
+            recorded_writes.append(
+                {"connector": connector, "action": action, "params": api_params}
+            )
+            log(f"preview: {connector}.{action} not sent")
+            return {"not_sent": True}, 0
+        if read_memo is None:
+            return _do_api_call(connector, action, api_params, use_db, disposable_db)
+        key = fingerprint([connector, action, api_params])
+        with read_memo["lock"]:
+            hit = read_memo["reads"].get(key)
+        if hit is not None:
+            return copy.deepcopy(hit), 0
+        payload, call_ms = _do_api_call(
+            connector, action, api_params, use_db, disposable_db
+        )
+        with read_memo["lock"]:
+            read_memo["reads"][key] = copy.deepcopy(payload)
+        return payload, call_ms
+
     def _do_api_call(
         connector: str,
         action: str,
@@ -316,29 +441,8 @@ def execute_function(
         during the slow HTTP round-trip. The sequential path shares the run
         session and must not.
         """
-        spec = _get_spec(connector)
-        if not spec:
-            raise ValueError(f"Connector not found: {connector}")
-
-        tool_def = None
-        for t in spec_rows.rows(spec):
-            if isinstance(t, dict) and t.get("action") == action:
-                tool_def = t
-                break
-        if not tool_def:
-            raise ValueError(f"Tool not found: {connector}.{action}")
-
-        # Write actions are deny-by-default: a consolidator may only call a
-        # non-GET tool when consolidator_config.allowed_write_actions names it.
-        method = str(tool_def.get("method", "GET")).upper()
-        if method != "GET" and not (
-            action in allowed_write_actions
-            or f"{connector}.{action}" in allowed_write_actions
-        ):
-            raise PermissionError(
-                f"Write action {connector}.{action} ({method}) is not declared in "
-                "consolidator_config.allowed_write_actions"
-            )
+        spec, tool_def = _tool_def(connector, action)
+        _check_write_declared(connector, action, tool_def)
 
         # In-process handlers run here, not over HTTP. Mirrors step 3 of
         # tool_executor.execute_connector_tool, which warns that without this
@@ -513,7 +617,7 @@ def execute_function(
         api_params = dict(api_params or {})
 
         try:
-            payload, call_ms = _do_api_call(connector, action, api_params, db)
+            payload, call_ms = _api_call(connector, action, api_params, db)
             log(f"API: {connector}.{action} → {_describe_data(payload)} ({call_ms}ms)")
             return payload
         except Exception as exc:
@@ -542,7 +646,7 @@ def execute_function(
             api_params = dict(api_params or {})
             worker_db = SessionLocal()
             try:
-                payload, call_ms = _do_api_call(
+                payload, call_ms = _api_call(
                     connector, action, api_params, worker_db, disposable_db=True
                 )
                 return payload, call_ms, None
@@ -859,6 +963,28 @@ def execute_function(
             # ambiguous for anything written tomorrow. `store` is only present
             # when the caller supplied a door for it.
             namespace["store"] = storage_override
+        if preview_mode:
+
+            def preview(card=None, basis=None):
+                card, basis = _evaluated(card), _evaluated(basis)
+                captured["card"] = card
+                captured["fingerprint"] = fingerprint(card if basis is None else basis)
+                raise PreviewReady()
+
+            namespace["preview"] = preview
+            namespace["previewing"] = lambda: True
+        elif expected_fingerprint:
+
+            def preview(card=None, basis=None):  # type: ignore[misc]
+                card, basis = _evaluated(card), _evaluated(basis)
+                if (
+                    fingerprint(card if basis is None else basis)
+                    != expected_fingerprint
+                ):
+                    raise PreviewChanged(card)
+                return None
+
+            namespace["preview"] = preview
         # Refuse the source BEFORE running it. At exec time rather than at
         # save time, so logic stored before this guard existed is covered too.
         _reject_unsafe_source(function_code)
@@ -898,10 +1024,33 @@ def execute_function(
 
         log(f"Completed in {duration_ms}ms ({api_call_count} API calls)")
 
-        return {
+        out = {
             "success": True,
             "data": result_data,
             "_logs": logs,
+        }
+        if preview_mode:
+            out["preview_writes"] = recorded_writes
+        return out
+
+    except PreviewReady:
+        log(f"Previewed in {int((time.time() - t0) * 1000)}ms — nothing written")
+        return {
+            "success": True,
+            "data": None,
+            "_logs": logs,
+            "preview": dict(captured),
+            "preview_writes": recorded_writes,
+        }
+
+    except PreviewChanged as changed:
+        log("Stopped before writing: the live data changed since it was approved")
+        return {
+            "success": False,
+            "data": None,
+            "_logs": logs,
+            "error": "changed since it was approved — nothing was written",
+            "changed": changed.card,
         }
 
     except Exception as exc:

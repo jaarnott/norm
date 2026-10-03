@@ -465,6 +465,10 @@ class ToolCall(Base):
     slimmed_content = Column(
         Text, nullable=True
     )  # What the LLM actually saw (after slim/truncation)
+    # A write waiting for approval: what it will change, as the person saw it
+    # (services/previews.py). Its fingerprint lets the approved run notice the
+    # live data moved since.
+    preview = Column(JSON, nullable=True)
     duration_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 

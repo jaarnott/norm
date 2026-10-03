@@ -47,6 +47,49 @@ def registered_actions() -> set[tuple[str, str]]:
     return set(_REGISTRY)
 
 
+#: (connector, action) -> previewer for a built-in WRITE: what it would change,
+#: read from live data, writing nothing (services/previews.py). Returns
+#: {"preview": card, "basis"?: data the change depends on, "run_params"?: the
+#: exact params to run once approved}, {"done": result} when there is nothing
+#: to change, or {"error": why it can't run}.
+InternalPreviewer = Callable[[dict, Session, str | None], dict]
+
+_PREVIEWERS: dict[tuple[str, str], InternalPreviewer] = {}
+
+
+def previews(connector_name: str, action: str):
+    """Decorator to register a built-in write's preview."""
+
+    def decorator(fn: InternalPreviewer) -> InternalPreviewer:
+        _PREVIEWERS[(connector_name, action)] = fn
+        return fn
+
+    return decorator
+
+
+def get_previewer(connector_name: str, action: str) -> InternalPreviewer | None:
+    return _PREVIEWERS.get((connector_name, action))
+
+
+def _addresses(value) -> list[str]:
+    if isinstance(value, str):
+        return [a.strip() for a in value.split(",") if a.strip()]
+    if isinstance(value, list):
+        return [str(a).strip() for a in value if str(a).strip()]
+    return []
+
+
+def _opening(text: str | None, limit: int = 280) -> str:
+    """The first few lines of an email or report, as plain text."""
+    import re
+
+    plain = re.sub(r"<[^>]+>", " ", text or "")
+    plain = html.unescape(plain)
+    plain = re.sub(r"[#*_`>|]+", " ", plain)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return plain if len(plain) <= limit else plain[: limit - 1].rstrip() + "…"
+
+
 # ---------------------------------------------------------------------------
 # HR Criteria Handlers
 # ---------------------------------------------------------------------------
@@ -463,6 +506,37 @@ def _gmail_send_email(params: dict, db: Session, thread_id: str | None) -> dict:
     )
 
 
+def _email_preview(params: dict, account: str) -> dict:
+    to = _addresses(params.get("to"))
+    subject = html.unescape(params.get("subject") or "")
+    if not to or not subject:
+        return {"error": "to and subject are required"}
+    changes = [{"field": "To", "after": ", ".join(to)}]
+    for key, label in (("cc", "Cc"), ("bcc", "Bcc")):
+        extra = _addresses(params.get(key))
+        if extra:
+            changes.append({"field": label, "after": ", ".join(extra)})
+    changes.append({"field": "Subject", "after": subject})
+    return {
+        "preview": {
+            "title": f"Send an email from your {account}",
+            "target": subject,
+            "changes": changes,
+            "note": _opening(params.get("body_html")),
+        }
+    }
+
+
+@previews("gmail", "send_email")
+def _gmail_send_email_preview(params: dict, db: Session, thread_id: str | None):
+    return _email_preview(params, "Gmail")
+
+
+@previews("microsoft_outlook", "send_email")
+def _outlook_send_email_preview(params: dict, db: Session, thread_id: str | None):
+    return _email_preview(params, "Outlook")
+
+
 @register("microsoft_outlook", "send_email")
 def _outlook_send_email(params: dict, db: Session, thread_id: str | None) -> dict:
     """Send an email from the user's connected Outlook account."""
@@ -501,12 +575,64 @@ def _outlook_send_email(params: dict, db: Session, thread_id: str | None) -> dic
     )
 
 
+def _report_source_message(params: dict, db: Session, thread_id: str):
+    """The message a report email without content_markdown sends.
+
+    The last assistant message — as it was when the email was proposed. Once
+    the email waits for approval, the newest message is the one carrying the
+    approval card, so the preview pins the message it showed by id.
+    """
+    from app.db.models import Message
+
+    pinned = params.get("content_message_id")
+    query = db.query(Message).filter(
+        Message.thread_id == thread_id, Message.role == "assistant"
+    )
+    if pinned:
+        return query.filter(Message.id == pinned).first()
+    return query.order_by(Message.created_at.desc()).first()
+
+
+@previews("norm_email", "send_report_email")
+def _send_report_email_preview(params: dict, db: Session, thread_id: str | None):
+    to = _addresses(params.get("to"))
+    if not to:
+        return {"error": "to is required"}
+    subject = params.get("subject") or "Report from Norm"
+    content = params.get("content_markdown")
+    run_params = None
+    if not content and thread_id:
+        source = _report_source_message(params, db, thread_id)
+        if source is not None:
+            content = source.content
+            run_params = {**params, "content_message_id": source.id}
+    if not content:
+        return {
+            "error": "No content to send — provide content_markdown or ensure "
+            "thread has an assistant message"
+        }
+    out = {
+        "preview": {
+            "title": "Email a report",
+            "target": subject,
+            "changes": [
+                {"field": "To", "after": ", ".join(to)},
+                {"field": "Subject", "after": subject},
+            ],
+            "note": _opening(content),
+        }
+    }
+    if run_params:
+        out["run_params"] = run_params
+    return out
+
+
 @register("norm_email", "send_report_email")
 def _send_report_email(params: dict, db: Session, thread_id: str | None) -> dict:
     """Send a formatted report email with the agent's response content."""
     from app.services.email_service import send_system_email
     from app.services.email_content_builder import build_report_html
-    from app.db.models import Message, EmailLog
+    from app.db.models import EmailLog
     from app.config import settings
 
     to = params.get("to", "")
@@ -517,20 +643,16 @@ def _send_report_email(params: dict, db: Session, thread_id: str | None) -> dict
     if not to:
         return {"success": False, "data": {}, "error": "to is required"}
 
-    # Get content: either from content_markdown param or from last assistant message
+    # Get content: the content_markdown param, or the message the approval
+    # preview pinned, or (unpreviewed) the last assistant message.
     content_markdown = params.get("content_markdown")
     display_blocks = None
 
     if not content_markdown and thread_id:
-        last_msg = (
-            db.query(Message)
-            .filter(Message.thread_id == thread_id, Message.role == "assistant")
-            .order_by(Message.created_at.desc())
-            .first()
-        )
-        if last_msg:
-            content_markdown = last_msg.content
-            display_blocks = last_msg.display_blocks
+        source = _report_source_message(params, db, thread_id)
+        if source:
+            content_markdown = source.content
+            display_blocks = source.display_blocks
 
     if not content_markdown:
         return {
@@ -1751,43 +1873,57 @@ def _list_automated_tasks(params: dict, db: Session, thread_id: str | None) -> d
     }
 
 
-@register("norm", "update_automated_task")
-def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Update an automated task's fields."""
+#: The fields manage_task's update may change, as the approval card names them.
+_TASK_FIELDS = {
+    "title": "Name",
+    "description": "Description",
+    "prompt": "Instructions",
+    "schedule_type": "Schedule",
+    "schedule_config": "Schedule details",
+    "status": "Status",
+}
+
+
+def _task_to_update(params: dict, db: Session, thread_id: str | None):
+    """(task, None) for the task an update names, or (None, why not).
+
+    A task_id must belong to the caller's organisation: until Oct 2026 any
+    conversation could change any organisation's task by id.
+    """
     from app.db.models import AutomatedTask
-    from app.services.task_scheduler import apply_schedule
+    from app.services.thread_access import can_manage_task
 
     atask_id = params.get("task_id")
     if atask_id:
         task = db.query(AutomatedTask).filter(AutomatedTask.id == atask_id).first()
-    else:
-        # Inside a task's own conversation, resolve implicitly — the same way
-        # update_task_config does. The asymmetry (config updatable without an
-        # id, prompt not) is how a live task ended up with an updated config
-        # and a permanently stale prompt: the model took the reachable path.
-        task = _get_automated_task_for_conversation(thread_id, db)
-        if not task:
-            return {
-                "success": False,
-                "data": {},
-                "error": "task_id is required (this conversation does not "
-                "belong to an automated task)",
-            }
-    if not task:
-        return {
-            "success": False,
-            "data": {},
-            "error": f"Automated task not found: {atask_id}",
-        }
+        if task is None or not can_manage_task(
+            db, task, _user_for_thread(thread_id, db)
+        ):
+            return None, f"Automated task not found: {atask_id}"
+        return task, None
+    # Inside a task's own conversation, resolve implicitly — the same way
+    # update_task_config does. The asymmetry (config updatable without an
+    # id, prompt not) is how a live task ended up with an updated config
+    # and a permanently stale prompt: the model took the reachable path.
+    task = _get_automated_task_for_conversation(thread_id, db)
+    if task is None:
+        return None, (
+            "task_id is required (this conversation does not belong to an "
+            "automated task)"
+        )
+    return task, None
 
-    for field in (
-        "title",
-        "description",
-        "prompt",
-        "schedule_type",
-        "schedule_config",
-        "status",
-    ):
+
+@register("norm", "update_automated_task")
+def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Update an automated task's fields."""
+    from app.services.task_scheduler import apply_schedule
+
+    task, why = _task_to_update(params, db, thread_id)
+    if task is None:
+        return {"success": False, "data": {}, "error": why}
+
+    for field in _TASK_FIELDS:
         if field in params:
             setattr(task, field, params[field])
 
@@ -2431,6 +2567,49 @@ def _get_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict
     }
 
 
+@previews("norm", "set_workflow_mode")
+def _set_workflow_mode_preview(params: dict, db: Session, thread_id: str | None):
+    from app.services.workflow_modes import (
+        MODE_IDS,
+        MODE_VENUE_SCOPED,
+        MODES,
+        WORKFLOWS,
+        user_mode,
+    )
+
+    workflow = params.get("workflow", "")
+    mode = params.get("mode", "")
+    named = {w["key"]: w["label"] for w in WORKFLOWS}
+    if workflow not in named:
+        return {"error": f"unknown workflow: {workflow}"}
+    if workflow in MODE_VENUE_SCOPED:
+        # The handler refuses this too; say so before asking anyone.
+        return {"error": _set_workflow_mode(params, db, thread_id)["error"]}
+    if mode not in MODE_IDS:
+        return {"error": f"unknown mode: {mode}"}
+    user = _user_for_thread(thread_id, db)
+    if not user:
+        return {"error": "no user for this conversation"}
+    labels = {m["id"]: m["label"] for m in MODES}
+    current = user_mode(user, workflow)
+    if current == mode:
+        return {"done": {"workflow": workflow, "mode": mode, "result": "already set"}}
+    return {
+        "preview": {
+            "title": "Change how much Norm does on its own",
+            "target": named[workflow],
+            "changes": [
+                {
+                    "field": "Mode",
+                    "before": labels.get(current, "Not set (Norm asks)"),
+                    "after": labels[mode],
+                }
+            ],
+            "note": next(m["description"] for m in MODES if m["id"] == mode),
+        }
+    }
+
+
 @register("norm", "set_workflow_mode")
 def _set_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict:
     """Set the caller's run mode for a workflow."""
@@ -2912,6 +3091,75 @@ _TASK_OPS = {
     "set_config": _update_task_config,
     "set_override": _set_override,
 }
+
+
+@previews("norm", "manage_task")
+def _manage_task_preview(params: dict, db: Session, thread_id: str | None) -> dict:
+    op = str(params.get("op") or "").strip().lower()
+    if op not in _TASK_OPS:
+        return {"error": _manage_task(params, db, thread_id)["error"]}
+    if op == "create":
+        intent = str(params.get("intent") or "").strip()
+        if not intent:
+            return {"error": "intent and agent_slug are required"}
+        changes = [{"field": "What it will do", "after": intent}]
+        if params.get("schedule"):
+            changes.append({"field": "When", "after": params["schedule"]})
+        return {
+            "preview": {
+                "title": "Schedule a new task",
+                "target": intent if len(intent) <= 80 else intent[:79] + "…",
+                "changes": changes,
+                "note": "Norm writes the task's full instructions from this "
+                "conversation when it creates it.",
+            }
+        }
+    if op == "update":
+        task, why = _task_to_update(params, db, thread_id)
+        if task is None:
+            return {"error": why}
+        changes = [
+            {"field": label, "before": getattr(task, f), "after": params[f]}
+            for f, label in _TASK_FIELDS.items()
+            if f in params and params[f] != getattr(task, f)
+        ]
+        if not changes:
+            return {"done": {**_automated_task_to_dict(task), "result": "no change"}}
+        return {
+            "preview": {
+                "title": "Change a scheduled task",
+                "target": task.title,
+                "changes": changes,
+            }
+        }
+    task = _get_automated_task_for_conversation(thread_id, db)
+    if task is None:
+        return {"error": "No automated task found for this conversation"}
+    if op == "set_config":
+        key = params.get("key", "")
+        if not key:
+            return {"error": "key is required"}
+        before = (task.task_config or {}).get(key)
+        after = params.get("value")
+        if before == after:
+            return {"done": {"task_config": task.task_config or {}}}
+        return {
+            "preview": {
+                "title": "Change a scheduled task's setting",
+                "target": task.title,
+                "changes": [{"field": key, "before": before, "after": after}],
+            }
+        }
+    instruction = params.get("instruction", "")
+    if not instruction:
+        return {"error": "instruction is required"}
+    return {
+        "preview": {
+            "title": "Give a scheduled task a one-off instruction",
+            "target": task.title,
+            "changes": [{"field": "Next run only", "after": instruction}],
+        }
+    }
 
 
 @register("norm", "manage_task")

@@ -1182,7 +1182,39 @@ def check_approval_labels(
                     "Reorder approval.levels in scripts/sync_approval_labels.py.",
                 )
             )
+        if not levels and policy.get("default", "ask") == "ask":
+            missing = _preview_missing(key, row)
+            if missing:
+                issues.append(ConfigIssue("error", key, missing[0], missing[1]))
     return issues
+
+
+def _preview_missing(key: str, row: dict) -> tuple[str, str] | None:
+    """(problem, fix) when a write that asks can't show what it changes.
+
+    Its card would fall back to listing the values it sends, with nothing to
+    compare them to (services/previews.py).
+    """
+    from app.agents.internal_tools import get_handler, get_previewer
+
+    connector, _, action = key.partition(".")
+    code = (row.get("consolidator_config") or {}).get("function_code")
+    if get_handler(connector, action) is not None:
+        if get_previewer(connector, action) is None:
+            return (
+                "asks for approval but has no preview, so its card can only "
+                "list the values it sends",
+                "Register a @previews function beside its handler in "
+                "app/agents/internal_tools.py.",
+            )
+    elif code and "preview(" not in code:
+        return (
+            "asks for approval but never calls preview(...), so its card can "
+            "only list the writes it would send",
+            "Call preview(card) just before its write — see "
+            "config/consolidators/README.md.",
+        )
+    return None
 
 
 def validate_config(db=None, config_db=None) -> dict:

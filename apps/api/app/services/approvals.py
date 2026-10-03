@@ -169,24 +169,35 @@ def decide(
     user: User,
     approve: bool,
     notes: str | None = None,
+    tool_call_ids: list[str] | None = None,
 ) -> None:
     """Record the decision on every pending call. Call ``claim`` first.
 
-    Approving marks each call ``approved`` — except one aimed at a venue the
-    approver can't access, which is declined with the reason so the model can
-    tell the user. Rejecting marks them all ``rejected``. The card (and any copy
-    of it in a task conversation) shows the outcome, and an Approval row records
-    who decided.
+    Approving marks each call ``approved`` — except one the person left
+    unticked (``tool_call_ids`` names the ticked ones; None means all), and one
+    aimed at a venue the approver can't access, which is declined with the
+    reason so the model can tell the user. Rejecting marks them all
+    ``rejected``. The card (and any copy of it in a task conversation) shows
+    the outcome per row, and an Approval row records who decided.
     """
     from app.services.venue_service import user_can_access_venue
 
     is_admin = getattr(user, "role", None) == "admin"
+    ticked = set(tool_call_ids) if tool_call_ids is not None else None
     calls = _pending_calls(db, thread)
     for tc in calls:
         if tc.status != "pending_approval":
             continue
         if not approve:
             tc.status = "rejected"
+            if notes:
+                tc.error_message = f"Declined by {user.email}: {notes}"
+            continue
+        if ticked is not None and tc.id not in ticked:
+            tc.status = "rejected"
+            tc.error_message = (
+                f"Not done: {user.email} approved the others but left this one out."
+            )
             continue
         venue_id, name = _venue_of_call(db, tc)
         if (
@@ -203,12 +214,24 @@ def decide(
         tc.status = "approved"
 
     set_card_status(
-        db, thread, [tc.id for tc in calls], "approved" if approve else "rejected"
+        db,
+        thread,
+        [tc.id for tc in calls],
+        "approved"
+        if approve and any(tc.status == "approved" for tc in calls)
+        else "rejected",
+        call_status={tc.id: tc.status for tc in calls},
     )
+    action = "tool_calls_approved" if approve else "tool_calls_rejected"
+    if approve and ticked is not None and any(tc.status == "rejected" for tc in calls):
+        approved_some = any(tc.status == "approved" for tc in calls)
+        action = (
+            "tool_calls_partly_approved" if approved_some else "tool_calls_rejected"
+        )
     db.add(
         Approval(
             thread_id=thread.id,
-            action="tool_calls_approved" if approve else "tool_calls_rejected",
+            action=action,
             performed_by=user.email,
             user_id=user.id,
             notes=notes or None,
@@ -272,15 +295,13 @@ def _task_conversation_id(db: Session, thread: Thread) -> str | None:
     return task.conversation_thread_id if task else None
 
 
-def set_card_status(
-    db: Session, thread: Thread, tool_call_ids: list[str], status: str
+def _update_cards(
+    db: Session, thread: Thread, tool_call_ids: list[str], change, only_pending: bool
 ) -> list[Message]:
-    """Set the status of the pending card(s) naming these calls.
+    """Apply ``change(data)`` to each approval card naming these calls.
 
-    Only cards still ``pending`` that name one of ``tool_call_ids`` change — an
-    earlier, superseded card keeps saying so. Looks in the thread and, for a
-    scheduled run, in the task conversation it was copied into. Returns the
-    messages whose card changed.
+    Looks in the thread and, for a scheduled run, in the task conversation it
+    was copied into. Returns the messages whose card changed.
     """
     wanted = set(tool_call_ids or [])
     if not wanted:
@@ -301,11 +322,11 @@ def set_card_status(
             if block.get("component") != "tool_approval":
                 continue
             data = block.get("data") or {}
-            if data.get("status", "pending") != "pending":
+            if only_pending and data.get("status", "pending") != "pending":
                 continue
             ids = {c.get("id") for c in data.get("tool_calls") or []}
             if ids & wanted:
-                data["status"] = status
+                change(data)
                 block["data"] = data
                 touched = True
         if touched:
@@ -313,6 +334,43 @@ def set_card_status(
             flag_modified(msg, "display_blocks")
             changed.append(msg)
     return changed
+
+
+def set_card_status(
+    db: Session,
+    thread: Thread,
+    tool_call_ids: list[str],
+    status: str,
+    call_status: dict[str, str] | None = None,
+) -> list[Message]:
+    """Set the status of the pending card(s) naming these calls, and of each row.
+
+    Only cards still ``pending`` change — an earlier, superseded card keeps
+    saying so.
+    """
+
+    def change(data: dict) -> None:
+        data["status"] = status
+        for entry in data.get("tool_calls") or []:
+            entry["status"] = (call_status or {}).get(entry.get("id"), status)
+
+    return _update_cards(db, thread, tool_call_ids, change, only_pending=True)
+
+
+def set_call_outcomes(db: Session, thread: Thread, outcomes: dict[str, dict]) -> None:
+    """After the approved calls ran: what happened to each row of the card.
+
+    ``outcomes`` maps a call id to {"outcome": done | failed | changed,
+    "note": str | None}. The card said "Approved" for the whole set; a row whose
+    write then failed, or found its data changed, says so.
+    """
+
+    def change(data: dict) -> None:
+        for entry in data.get("tool_calls") or []:
+            if entry.get("id") in outcomes:
+                entry.update(outcomes[entry["id"]])
+
+    _update_cards(db, thread, list(outcomes), change, only_pending=False)
 
 
 def post_outcome_to_task_conversation(db: Session, thread: Thread) -> None:

@@ -79,6 +79,17 @@ def can_access(db: Session, thread: Thread, user: User) -> bool:
     return False
 
 
+def can_manage_task(db: Session, task, user: User | None) -> bool:
+    """A scheduled task is its creator's organisation's: the same people who
+    may open its threads may change it."""
+    if user is None:
+        return False
+    if getattr(user, "role", None) == "admin" or task.created_by == user.id:
+        return True
+    mine = _org_of(db, user.id)
+    return mine is not None and mine == _org_of(db, task.created_by)
+
+
 def thread_for(db: Session, thread_id: str | None, user: User) -> Thread | None:
     """The thread if ``user`` may open it, else None (missing or not theirs)."""
     if not thread_id:

@@ -333,13 +333,28 @@ def _thread_for_decision(db: Session, thread_id: str, user: User) -> Thread:
 @router.post("/threads/{thread_id}/approve")
 async def approve(
     thread_id: str,
+    body: dict | None = None,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
+    """Approve the proposed changes — all of them, or the ones ticked.
+
+    ``tool_call_ids`` names the rows the person ticked on the card; the rest
+    are declined, and the model is told which.
+    """
     raw_thread = _thread_for_decision(db, thread_id, user)
     if raw_thread.status == "awaiting_tool_approval":
-        return _approve_tool_calls(db, raw_thread, user, config_db=config_db)
+        ticked = (body or {}).get("tool_call_ids") if isinstance(body, dict) else None
+        if ticked is not None and not (
+            isinstance(ticked, list) and all(isinstance(i, str) for i in ticked)
+        ):
+            raise HTTPException(
+                status_code=422, detail="tool_call_ids must be a list of ids"
+            )
+        return _approve_tool_calls(
+            db, raw_thread, user, config_db=config_db, tool_call_ids=ticked
+        )
 
     thread, domain = _find(db, thread_id)
     if not thread:
@@ -497,6 +512,7 @@ def _decide_tool_calls(
     approve: bool,
     config_db: Session | None = None,
     notes: str | None = None,
+    tool_call_ids: list[str] | None = None,
 ) -> dict:
     """Decide a suspended turn's pending writes, then resume the loop.
 
@@ -515,7 +531,9 @@ def _decide_tool_calls(
         raise HTTPException(
             status_code=409, detail="These changes have already been decided."
         )
-    approvals.decide(db, thread, user, approve=approve, notes=notes)
+    approvals.decide(
+        db, thread, user, approve=approve, notes=notes, tool_call_ids=tool_call_ids
+    )
 
     system_prompt, anthropic_tools = build_tool_definitions(
         _suspended_domain(thread), db, user_id=user.id, config_db=config_db
@@ -528,10 +546,21 @@ def _decide_tool_calls(
 
 
 def _approve_tool_calls(
-    db: Session, thread: Thread, user: User, config_db: Session | None = None
+    db: Session,
+    thread: Thread,
+    user: User,
+    config_db: Session | None = None,
+    tool_call_ids: list[str] | None = None,
 ) -> dict:
-    """Approve pending write tool calls and resume the agentic loop."""
-    return _decide_tool_calls(db, thread, user, approve=True, config_db=config_db)
+    """Approve pending write tool calls (all, or the ticked ones) and resume."""
+    return _decide_tool_calls(
+        db,
+        thread,
+        user,
+        approve=True,
+        config_db=config_db,
+        tool_call_ids=tool_call_ids,
+    )
 
 
 def _suspended_domain(thread: Thread) -> str:

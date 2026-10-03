@@ -45,6 +45,11 @@
 # The tool's method is PUT so the agent loop's human-approval gate holds; the
 # raw writes are declared in allowed_write_actions.
 #
+# Approval preview (Oct 2026, services/previews.py): just before each write
+# the tool calls preview(...) with every dish, price and section it changes,
+# before → after. In a preview run it stops there; on the approved run it
+# checks the menu still holds what the person saw.
+#
 # Requires consolidator_config:
 #   {"max_api_calls": 3, "allowed_write_actions": ["create_menu", "update_menu",
 #    "delete_menu"]}
@@ -94,6 +99,11 @@ def _num(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _money(v):
+    n = _num(v)
+    return "—" if n is None else "$" + format(n, ".2f")
 
 
 def _price(v):
@@ -154,6 +164,21 @@ def _create(params, venue, call_api, log):
         # on it is worse than asking again.
         return {"error": "nothing created — " + "; ".join(bad)}
     body = {"name": name, "groups": groups}
+    preview(
+        lambda: {
+            "title": "Create a menu",
+            "target": name,
+            "venue": venue,
+            "changes": [
+                {
+                    "field": f"{ln['name']} ({g['name']})",
+                    "after": _money(ln["workingPrice"]),
+                }
+                for g in groups
+                for ln in g["lines"]
+            ],
+        }
+    )
     log(f"creating menu '{name}' with {len(groups)} section(s)")
     out = call_api("loadedhub", "create_menu", {"venue": venue, "menu": body})
     if _err(out):
@@ -240,6 +265,7 @@ def _update(params, venue, call_api, log):
 
     changed = []
     skipped = []
+    rows = []  # the same changes, before → after, for the approval card
 
     new_name = (
         parsed["changes"].get("name") if isinstance(parsed["changes"], dict) else None
@@ -249,6 +275,9 @@ def _update(params, venue, call_api, log):
             skipped.append(f"changes.{k}: only 'name' can be changed here")
     if new_name and new_name != menu.get("name"):
         changed.append(f"renamed '{menu.get('name')}' -> '{new_name}'")
+        rows.append(
+            {"field": "Menu name", "before": menu.get("name"), "after": new_name}
+        )
         menu["name"] = new_name
 
     for ref in parsed["remove_lines"]:
@@ -261,6 +290,13 @@ def _update(params, venue, call_api, log):
         g, ln = found
         g["lines"].remove(ln)
         changed.append(f"removed '{ln.get('name')}' from '{g.get('name')}'")
+        rows.append(
+            {
+                "field": f"{ln.get('name')} ({g.get('name')})",
+                "before": _money(ln.get("workingPrice")),
+                "after": "Removed",
+            }
+        )
 
     for lc in parsed["line_changes"]:
         if not isinstance(lc, dict):
@@ -279,9 +315,23 @@ def _update(params, venue, call_api, log):
                 changed.append(
                     f"'{ln.get('name')}' price {ln.get('workingPrice')} -> {price}"
                 )
+                rows.append(
+                    {
+                        "field": f"{ln.get('name')} · price",
+                        "before": _money(ln.get("workingPrice")),
+                        "after": _money(price),
+                    }
+                )
                 ln["workingPrice"] = price
         if lc.get("new_name") and lc["new_name"] != ln.get("name"):
             changed.append(f"renamed line '{ln.get('name')}' -> '{lc['new_name']}'")
+            rows.append(
+                {
+                    "field": f"{ln.get('name')} · name",
+                    "before": ln.get("name"),
+                    "after": lc["new_name"],
+                }
+            )
             ln["name"] = lc["new_name"]
         if lc.get("move_to"):
             target = _find_group(groups, lc["move_to"])
@@ -291,6 +341,13 @@ def _update(params, venue, call_api, log):
                 g["lines"].remove(ln)
                 target["lines"].append(ln)
                 changed.append(f"moved '{ln.get('name')}' to '{target.get('name')}'")
+                rows.append(
+                    {
+                        "field": f"{ln.get('name')} · section",
+                        "before": g.get("name"),
+                        "after": target.get("name"),
+                    }
+                )
 
     # Sections go last, so a line moved out of one first survives.
     for sec in parsed["remove_sections"]:
@@ -301,6 +358,13 @@ def _update(params, venue, call_api, log):
         groups.remove(g)
         changed.append(
             f"removed section '{g.get('name')}' ({len(g.get('lines') or [])} lines)"
+        )
+        rows.append(
+            {
+                "field": f"Section {g.get('name')}",
+                "before": f"{len(g.get('lines') or [])} dishes",
+                "after": "Removed, with its dishes",
+            }
         )
 
     added = []
@@ -324,6 +388,7 @@ def _update(params, venue, call_api, log):
             g = {"name": sec_name, "lines": []}
             groups.append(g)
             changed.append(f"added section '{sec_name}'")
+            rows.append({"field": f"Section {sec_name}", "after": "New section"})
         orders = [x.get("lineOrder") or 0 for x in g["lines"]]
         g["lines"].append(
             {
@@ -338,6 +403,9 @@ def _update(params, venue, call_api, log):
         )
         added.append((sec_name, al["name"]))
         changed.append(f"added '{al['name']}' to '{sec_name}'")
+        rows.append(
+            {"field": f"{al['name']} ({sec_name})", "after": _money(price) + " (new)"}
+        )
 
     if not changed:
         return {
@@ -348,6 +416,16 @@ def _update(params, venue, call_api, log):
         }
 
     menu["groups"] = groups
+    preview(
+        {
+            "title": "Change a menu",
+            "target": menu.get("name"),
+            "venue": venue,
+            "changes": rows,
+            "warnings": [f"Not changed — {why}" for why in skipped],
+        },
+        basis={"menu_id": menu_id, "changed": changed},
+    )
     log(f"updating menu '{menu.get('name')}': {len(changed)} change(s)")
     out = call_api(
         "loadedhub", "update_menu", {"venue": venue, "menu_id": menu_id, "menu": menu}
@@ -406,6 +484,23 @@ def _delete(params, venue, call_api, log):
                 "deleted. Check the id with get_menus."
             )
         }
+    sections = [g for g in (menu.get("groups") or []) if isinstance(g, dict)]
+    dishes = sum(len(g.get("lines") or []) for g in sections)
+    preview(
+        {
+            "title": "Delete a menu",
+            "target": menu.get("name"),
+            "venue": venue,
+            "changes": [
+                {
+                    "field": "Menu",
+                    "before": f"{len(sections)} sections, {dishes} dishes",
+                    "after": "Deleted",
+                }
+            ],
+        },
+        basis={"menu_id": menu_id, "name": menu.get("name"), "dishes": dishes},
+    )
     log(f"deleting menu '{menu.get('name')}' ({menu_id})")
     out = call_api("loadedhub", "delete_menu", {"venue": venue, "menu_id": menu_id})
     if _err(out):

@@ -183,6 +183,8 @@ def resume_tool_loop(
     # Every tool_use in the suspended turn needs an answer: the calls that
     # already ran (saved at suspension), then each pending one below.
     tool_results_content = list(state.get("done_results") or [])
+    #: What happened to each approved row, for the card.
+    outcomes: dict[str, dict] = {}
 
     for tc_id in pending_ids:
         tc = db.query(ToolCall).filter(ToolCall.id == tc_id).first()
@@ -222,6 +224,7 @@ def resume_tool_loop(
             else:
                 # Execute the approved write tool (transform applied inside _execute_tool_call)
                 result = _execute_tool_call(tc, db, config_db=config_db)
+            outcomes[tc.id] = _card_outcome(tc, result)
             tool_results_content.append(
                 {
                     "type": "tool_result",
@@ -252,6 +255,10 @@ def resume_tool_loop(
     # Inject results into conversation
     if tool_results_content:
         messages.append({"role": "user", "content": tool_results_content})
+    if outcomes:
+        from app.services import approvals
+
+        approvals.set_call_outcomes(db, task, outcomes)
 
     # Clear pending state and reset status
     task.pending_tool_call_ids = None
@@ -900,8 +907,9 @@ def _execute_loop(
                             }
                         )
 
-            # --- Phase E: Process write blocks (unchanged logic) ---
+            # --- Phase E: Process write blocks ---
             write_tool_results: dict[str, dict] = {}
+            asks: list[tuple] = []
             for block, connector, action, method in write_blocks:
                 if test_mode:
                     tc = ToolCall(
@@ -1029,7 +1037,19 @@ def _execute_loop(
                         "content": json.dumps(result),
                     }
                 else:
-                    # Standard approval flow (no working document)
+                    # Asks first: previewed below, all together.
+                    asks.append((block, connector, action, method, tool_def))
+
+            # --- Phase E2: Preview the writes that ask, then ask ---
+            # Each previews itself from live data, writing nothing
+            # (services/previews.py). One that would fail, or would change
+            # nothing, is settled here and never reaches the card.
+            outcomes = _preview_asks(asks, task, db) if asks else {}
+            for block, connector, action, method, tool_def in asks:
+                outcome = outcomes[block.id]
+                if outcome.kind != "card":
+                    result = outcome.result or {}
+                    data = result.get("data")
                     tc = ToolCall(
                         id=block.id,
                         thread_id=task.id,
@@ -1040,31 +1060,67 @@ def _execute_loop(
                         action=action,
                         method=method,
                         input_params=block.input,
-                        status="pending_approval",
+                        status="executed" if outcome.kind == "done" else "failed",
+                        result_payload=data,
+                        error_message=result.get("error"),
+                        venue_id=data.get("venue_id")
+                        if isinstance(data, dict)
+                        else None,
                     )
                     db.add(tc)
                     db.flush()
-                    pending_writes.append(tc)
-
-                    if tool_def and tool_def.get("display_component"):
-                        display_blocks.append(
-                            {
-                                "component": tool_def["display_component"],
-                                "data": block.input or {},
-                                "props": tool_def.get("display_props") or {},
-                            }
-                        )
-
                     write_tool_results[block.id] = {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps(
-                            {
-                                "status": "pending_approval",
-                                "message": "This write operation requires user approval before execution.",
-                            }
+                        "content": _slim_tool_result(
+                            result, tc.id, search_available=search_available
                         ),
                     }
+                    thinking_steps.append(
+                        _ts_step(
+                            f"{action.replace('_', ' ')}: nothing to change"
+                            if outcome.kind == "done"
+                            else f"{action.replace('_', ' ')} can't run as asked"
+                        )
+                    )
+                    continue
+
+                tc = ToolCall(
+                    id=block.id,
+                    thread_id=task.id,
+                    llm_call_id=llm_call_id,
+                    iteration=iteration,
+                    tool_name=block.name,
+                    connector_name=connector,
+                    action=action,
+                    method=method,
+                    input_params=outcome.run_params or block.input,
+                    status="pending_approval",
+                    preview=outcome.card,
+                )
+                db.add(tc)
+                db.flush()
+                pending_writes.append(tc)
+
+                if tool_def and tool_def.get("display_component"):
+                    display_blocks.append(
+                        {
+                            "component": tool_def["display_component"],
+                            "data": block.input or {},
+                            "props": tool_def.get("display_props") or {},
+                        }
+                    )
+
+                write_tool_results[block.id] = {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(
+                        {
+                            "status": "pending_approval",
+                            "message": "This write operation requires user approval before execution.",
+                        }
+                    ),
+                }
 
             # --- Phase F: Assemble tool_results in original block order ---
             tool_results = []
@@ -1118,18 +1174,26 @@ def _execute_loop(
                 task.pending_tool_call_ids = [tc.id for tc in pending_writes]
                 task.status = "awaiting_tool_approval"
 
-                # Build structured approval display block
+                # One card for every write in the turn: each row is the
+                # write's own preview — what changes, before → after.
                 tool_call_summaries = []
                 for tc in pending_writes:
+                    shown = tc.preview or {}
                     tool_call_summaries.append(
                         {
                             "id": tc.id,
                             "action": tc.action,
                             "connector_name": tc.connector_name,
                             "method": tc.method,
-                            "summary": _human_readable_summary(
-                                tc.action, tc.connector_name, tc.input_params
+                            "summary": (
+                                f"{shown['title']}: {shown['target']}"
+                                if shown.get("title") and shown.get("target")
+                                else _human_readable_summary(
+                                    tc.action, tc.connector_name, tc.input_params
+                                )
                             ),
+                            "preview": shown or None,
+                            # Technical details, shown to platform admins only.
                             "input_params": tc.input_params,
                         }
                     )
@@ -1146,9 +1210,11 @@ def _execute_loop(
                     }
                 )
 
+                # What Norm said about why goes above the card, in its own
+                # words; the list is only for a turn that said nothing.
                 summaries = [s["summary"] for s in tool_call_summaries]
-                approval_text = "I'd like to:\n\n" + "\n".join(
-                    f"- {s}" for s in summaries
+                approval_text = _join_answer(answer_parts, "") or (
+                    "I'd like to:\n\n" + "\n".join(f"- {s}" for s in summaries)
                 )
 
                 db.add(
@@ -1353,6 +1419,94 @@ def _execute_loop(
 # ---------------------------------------------------------------------------
 
 
+def _card_outcome(tc: ToolCall, result: dict) -> dict:
+    """One approved row's outcome as its card shows it: done, failed, or
+    changed (and so not run)."""
+    data = result.get("data") if isinstance(result, dict) else None
+    if isinstance(data, dict) and data.get("reason") == "changed_since_preview":
+        # The model is told to propose it again; the person is told why not.
+        return {
+            "outcome": "changed",
+            "outcome_note": "This changed after you approved it, so nothing was "
+            "written. Norm will show you the current values.",
+        }
+    error = (result or {}).get("error") or (
+        data.get("error") if isinstance(data, dict) else None
+    )
+    if tc.status == "failed" or error:
+        return {
+            "outcome": "failed",
+            "outcome_note": str(error or tc.error_message)[:300],
+        }
+    return {"outcome": "done", "outcome_note": None}
+
+
+def _preview_asks(asks: list[tuple], task: Thread, db: Session) -> dict:
+    """block id -> previews.Outcome for each write that asks first.
+
+    A built-in previews on this session (a database read). Consolidators reach
+    outside systems, so several run in parallel, each on its own session, and
+    share their reads — a batch of 37 stock items fetches the venue's unit
+    list once, not 37 times.
+    """
+    import contextvars
+
+    from app.db.engine import SessionLocal
+    from app.services import previews
+
+    memo = previews.new_memo()
+    out: dict = {}
+    sandboxed = [a for a in asks if previews.runs_in_sandbox(a[1], a[2], a[4])]
+    parallel = sandboxed if len(sandboxed) > 1 else []
+    for block, connector, action, _method, tool_def in asks:
+        if any(block is a[0] for a in parallel):
+            continue
+        out[block.id] = previews.preview_call(
+            connector, action, block.input or {}, tool_def, db, task.id, memo
+        )
+    if not parallel:
+        return out
+
+    def work(ask):
+        block, connector, action, _method, tool_def = ask
+        worker_db = SessionLocal()
+        try:
+            outcome = previews.preview_call(
+                connector, action, block.input or {}, tool_def, worker_db, task.id, memo
+            )
+            worker_db.commit()
+            return block.id, outcome
+        finally:
+            worker_db.close()
+
+    with ThreadPoolExecutor(max_workers=min(len(parallel), 8)) as pool:
+        contexts = [contextvars.copy_context() for _ in parallel]
+        for block_id, outcome in pool.map(
+            lambda ca: ca[0].run(work, ca[1]), zip(contexts, parallel)
+        ):
+            out[block_id] = outcome
+    return out
+
+
+def _not_run_changed(tc: ToolCall, card: dict | None, db: Session) -> dict:
+    """The approved call found its data changed since the preview: say so, write
+    nothing, and let the model propose it again with the current values."""
+    target = (card or {}).get("target") or (tc.preview or {}).get("target")
+    note = (
+        f"Not done — {target or 'this'} changed after it was approved, so nothing "
+        "was written. Propose it again so the person sees the current values."
+    )
+    tc.status = "failed"
+    tc.error_message = note
+    tc.result_payload = {
+        "not_run": True,
+        "reason": "changed_since_preview",
+        "now": card,
+    }
+    db.flush()
+    return {"success": False, "data": tc.result_payload, "error": note}
+
+
 def _execute_tool_call_in_thread(tc_id: str, event_callback) -> tuple[str, dict]:
     """Execute a tool call in a worker thread with its own DB session.
 
@@ -1464,24 +1618,50 @@ def _execute_tool_call_scoped(
         db.flush()
         return {"error": tc.error_message}
 
+    from app.services import previews
+
     # Check for consolidator config on the tool definition
     if not handler and tool_def and tool_def.get("consolidator_config"):
         from app.agents.internal_tools import execute_consolidator
 
         def handler(params, db_sess, tid):
             # Carry the tool's action name into the consolidator config so
-            # execute_consolidator can resolve the per-workflow run mode.
+            # execute_consolidator can resolve the per-workflow run mode — and
+            # what the person approved, which the consolidator checks against
+            # live data just before it writes.
             cfg = {
                 **tool_def["consolidator_config"],
                 "action": tool_def.get("action"),
             }
+            expected = previews.expected_fingerprint(tc)
+            if expected:
+                cfg["expect_fingerprint"] = expected
             return execute_consolidator(cfg, params, db_sess, tid)
+
+    elif handler and tc.preview:
+        # A built-in's approved run: still what the person saw?
+        now = previews.changed_since(tc, db)
+        if now is not None:
+            return _not_run_changed(tc, now, db)
 
     if handler or (spec is not None and spec.execution_mode == "internal"):
         t0 = time.time()
         try:
             result = handler(tc.input_params or {}, db, tc.thread_id)
             tc.duration_ms = int((time.time() - t0) * 1000)
+            if "changed" in result:
+                shown = tc.preview or {}
+                return _not_run_changed(
+                    tc,
+                    previews.normalise(
+                        result["changed"],
+                        title=shown.get("title") or tc.action,
+                        venue=shown.get("venue"),
+                        source="tool",
+                        fp=None,
+                    ),
+                    db,
+                )
             payload = result.get("data")
             # Set venue_id from handler result if available (for display block props)
             if (

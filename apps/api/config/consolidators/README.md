@@ -72,3 +72,37 @@ Sandbox constraints (enforced by `function_executor.py`): no imports —
 injected; API access only via `call_api`/`call_api_parallel`, capped by
 `consolidator_config.max_api_calls` (default 20, hard max 200); non-GET actions
 must be declared in `consolidator_config.allowed_write_actions` (deny by default).
+
+## A write shows what it will change: `preview(card)`
+
+A write tool that asks for approval previews itself first (Oct 2026,
+`app/services/previews.py`). The tool loop runs it in **preview mode**: every
+write it attempts is recorded and answered with `{"not_sent": True}`, and reads
+are shared across a batch of previews. Just before its write, the tool calls
+
+```python
+preview(lambda: {
+    "title": "Update a stock item",          # what kind of change
+    "target": item["name"],                   # which thing
+    "venue": venue,
+    "changes": [{"field": "Unit cost", "before": "$16.50", "after": "$17.95"}],
+    "warnings": ["…"],                        # optional
+    "note": "…",                              # optional
+}, basis={...})                               # optional: what the change depends on
+```
+
+- In preview mode the run **stops there** and the card goes to the person.
+- On the approved run it checks the live data still gives the same
+  fingerprint (of `basis` if given, else the card) and stops before writing if
+  it doesn't — Norm then proposes it again with the current values.
+- Anywhere else (MCP, apps, an auto-approved run) it does nothing; pass the
+  card as a `lambda` and the reads it needs happen only when it is shown.
+- `previewing()` is True in preview mode — fetch display-only data (unit and
+  supplier names for ids) behind it, so the real run doesn't pay for it.
+- Name things as people read them: names not ids, `$12.50` not `12.5`.
+- A run that reaches no write and no `preview(...)` is complete: its result
+  is returned without asking anyone ("no differences — nothing written"); a
+  run that returns `{"error": …}` goes straight back to the model.
+
+`validate_config` reports a claimed write that asks but never calls
+`preview(...)`: its card can only list the writes it would send.

@@ -712,7 +712,7 @@ export default function Home() {
     setSelectedThreadId(null);
   }, []);
 
-  const handleAction = useCallback(async (threadId: string, action: string) => {
+  const handleAction = useCallback(async (threadId: string, action: string, body?: Record<string, unknown>) => {
     // Reload just re-fetches the thread detail
     if (action === 'reload') {
       try {
@@ -741,6 +741,7 @@ export default function Home() {
     try {
       const res = await apiFetch(`/api/threads/${threadId}/${action}`, {
         method: 'POST',
+        ...(body ? { body: JSON.stringify(body) } : {}),
       });
       if (!res.ok) {
         console.error('Action error:', res.status, await res.text());
@@ -781,7 +782,9 @@ export default function Home() {
       // the run's own (hidden) thread, not the task conversation it was copied
       // into — deciding on the conversation used to run nothing at all.
       const cardThread = (action.params?.thread_id as string | undefined) || threadId;
-      await handleAction(cardThread, targetAction);
+      // The ticked rows (approve) or the reason (decline), when the card sent one.
+      const { thread_id: _card, ...decision } = action.params ?? {};
+      await handleAction(cardThread, targetAction, Object.keys(decision).length ? decision : undefined);
       if (cardThread !== threadId) await handleAction(threadId, 'reload');
       return { ok: true };
     }

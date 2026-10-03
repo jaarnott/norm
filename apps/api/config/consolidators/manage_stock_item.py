@@ -45,6 +45,13 @@
 # The tool's method stays PUT so the agent loop's human-approval gate holds;
 # the raw writes are declared in allowed_write_actions.
 #
+# Approval preview (Oct 2026, services/previews.py): just before each write
+# the tool calls preview(...) with what it is about to change — field by
+# field, before → after, supplier and unit ids shown as names. In a preview
+# run that is where it stops; on the approved run it is where it checks the
+# item still holds the values the person saw. The names cost two reads, made
+# only while previewing.
+#
 # Requires consolidator_config:
 #   {"max_api_calls": 3, "allowed_write_actions": ["create_stock_item_raw",
 #    "update_stock_item_raw", "update_variant_unit_raw"]}
@@ -89,6 +96,31 @@ _CREATE_REQUIRED = (
     "orderingUnitRatio",
 )
 
+#: How the approval card names Loaded's fields.
+_LABELS = {
+    "name": "Name",
+    "minimumStockOnHandQuantity": "Minimum on hand",
+    "minimumStockOnHandUnitId": "Minimum on hand unit",
+    "countingUnitId": "Counting unit",
+    "countingUnitRatio": "Counting unit size",
+    "orderingUnitId": "Ordering unit",
+    "orderingUnitRatio": "Ordering unit size",
+    "defaultSupplierId": "Default supplier",
+    "globalSalesTaxSortOrder": "Sales tax",
+    "supplierId": "Supplier",
+    "stockCode": "Stock code",
+    "unitId": "Unit",
+    "unitCost": "Unit cost",
+    "defaultForSupplier": "Default for supplier",
+}
+_UNIT_FIELDS = (
+    "countingUnitId",
+    "orderingUnitId",
+    "minimumStockOnHandUnitId",
+    "unitId",
+)
+_SUPPLIER_FIELDS = ("defaultSupplierId", "supplierId")
+
 
 def _parse(value):
     """A dict/list as given; a JSON string decoded; anything else -> None."""
@@ -123,6 +155,59 @@ def _err(result):
     if isinstance(result, dict) and result.get("error"):
         return str(result["error"])
     return None
+
+
+# -------------------------------------------------------------- preview ----
+
+
+def _names(venue, call_api):
+    """{unit id: name}, {supplier id: name} — only while previewing; the card
+    is the only thing that needs them."""
+    if not previewing():
+        return {}, {}
+    units, suppliers = {}, {}
+    for u in _lst(call_api("loadedhub", "get_stock_units", {"venue": venue})) or []:
+        if isinstance(u, dict):
+            units[u.get("id")] = u.get("name")
+    for x in _lst(call_api("loadedhub", "get_suppliers", {"venue": venue})) or []:
+        if isinstance(x, dict):
+            suppliers[x.get("id")] = x.get("name")
+    return units, suppliers
+
+
+def _label(key):
+    if key in _LABELS:
+        return _LABELS[key]
+    words = ""
+    for ch in str(key):
+        words += (" " + ch.lower()) if ch.isupper() else ch
+    words = words.replace("_", " ").strip()
+    return words[:1].upper() + words[1:]
+
+
+def _shown(field, value, names):
+    units, suppliers = names
+    if field in _UNIT_FIELDS:
+        return units.get(value) or value
+    if field in _SUPPLIER_FIELDS:
+        return suppliers.get(value) or value
+    if (
+        field == "unitCost"
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
+        return "$" + format(value, ".2f")
+    if field == "globalSalesTaxSortOrder":
+        return (
+            "GST" if value == _GST_SORT_ORDER else ("Exempt" if value == 0 else value)
+        )
+    return value
+
+
+def _variant_name(v, names):
+    supplier = names[1].get(v.get("supplierId")) or "Supplier"
+    code = v.get("stockCode")
+    return f"{supplier} {code}" if code else supplier
 
 
 def _bad_variant(entry):
@@ -200,6 +285,7 @@ def _create(params, venue, call_api, log):
     ] + _default_problems({}, _defaults_by_supplier(suppliers))
     if problems:
         return {"error": "nothing written — " + "; ".join(problems)}
+    preview(lambda: _create_card(item, venue, call_api))
     log(f"creating stock item '{item.get('name')}'")
     out = call_api("loadedhub", "create_stock_item_raw", {"venue": venue, "item": item})
     if _err(out):
@@ -294,6 +380,7 @@ def _update(params, venue, call_api, log):
     defaults_before = _defaults_by_supplier(variants)
     variants_changed = 0
     variant_edits = []  # (variant, field, value) to check after the write
+    variant_before = []  # (variant as it was, field, old value) for the card
     for vc in variant_changes:
         if not isinstance(vc, dict):
             continue
@@ -325,6 +412,7 @@ def _update(params, venue, call_api, log):
                 )
                 continue
             if target.get(field) != value:
+                variant_before.append((dict(target), field, target.get(field)))
                 target[field] = value
                 variants_changed += 1
                 variant_edits.append((target.get("id"), field, value))
@@ -344,6 +432,25 @@ def _update(params, venue, call_api, log):
             "skipped": skipped,
         }
 
+    preview(
+        lambda: _update_card(
+            item,
+            changed,
+            variant_before,
+            variant_edits,
+            add_suppliers,
+            skipped,
+            venue,
+            call_api,
+        ),
+        basis={
+            "item_id": item_id,
+            "changed": changed,
+            "variants": [[vid, f, v] for vid, f, v in variant_edits],
+            "variants_before": [[b.get("id"), f, old] for b, f, old in variant_before],
+            "add": add_suppliers,
+        },
+    )
     log(
         f"updating {item.get('name')}: {sorted(changed)} + {variants_changed} variant change(s)"
     )
@@ -414,6 +521,7 @@ def _set_variant_unit(params, venue, call_api, log):
                 "(the summary lists each variant_id; units under view 'reference')"
             )
         }
+    preview(lambda: _variant_unit_card(variant_id, unit_id, venue, call_api))
     log(f"variant {variant_id} -> unit {unit_id}")
     out = call_api(
         "loadedhub",
@@ -423,6 +531,97 @@ def _set_variant_unit(params, venue, call_api, log):
     if _err(out):
         return {"error": _err(out)}
     return {"result": "updated", "variant_id": variant_id, "unit_id": unit_id}
+
+
+# ------------------------------------------------------------ the cards ----
+
+
+def _create_card(item, venue, call_api):
+    names = _names(venue, call_api)
+    changes = [{"field": "Name", "after": item.get("name")}]
+    for field in ("countingUnitId", "orderingUnitId", "globalSalesTaxSortOrder"):
+        if item.get(field) is not None:
+            changes.append(
+                {"field": _label(field), "after": _shown(field, item[field], names)}
+            )
+    for v in item.get("suppliers") or []:
+        if isinstance(v, dict):
+            cost = _shown("unitCost", v.get("unitCost"), names)
+            unit = _shown("unitId", v.get("unitId"), names)
+            changes.append(
+                {
+                    "field": "Supplier · " + _variant_name(v, names),
+                    "after": f"{cost} per {unit}"
+                    + (" (default)" if v.get("defaultForSupplier") else ""),
+                }
+            )
+    return {
+        "title": "Create a stock item",
+        "target": item.get("name"),
+        "venue": venue,
+        "changes": changes,
+    }
+
+
+def _update_card(
+    item,
+    changed,
+    variant_before,
+    variant_edits,
+    add_suppliers,
+    skipped,
+    venue,
+    call_api,
+):
+    names = _names(venue, call_api)
+    changes = [
+        {
+            "field": _label(field),
+            "before": _shown(field, ch["from"], names),
+            "after": _shown(field, ch["to"], names),
+        }
+        for field, ch in changed.items()
+    ]
+    for (before, field, old), (_vid, _f, new) in zip(variant_before, variant_edits):
+        changes.append(
+            {
+                "field": _variant_name(before, names) + " · " + _label(field),
+                "before": _shown(field, old, names),
+                "after": _shown(field, new, names),
+            }
+        )
+    for v in add_suppliers:
+        changes.append(
+            {
+                "field": "New supplier variant · " + _variant_name(v, names),
+                "after": f"{_shown('unitCost', v.get('unitCost'), names)} per "
+                f"{_shown('unitId', v.get('unitId'), names)}"
+                + (" (default)" if v.get("defaultForSupplier") else ""),
+            }
+        )
+    warnings = [f"Not changed — {k}: {why}" for k, why in sorted(skipped.items())]
+    for v in add_suppliers:
+        if v.get("unitCost") in (0, 0.0):
+            warnings.append(
+                f"{_variant_name(v, names)} is added at a unit cost of $0.00"
+            )
+    return {
+        "title": "Update a stock item",
+        "target": item.get("name"),
+        "venue": venue,
+        "changes": changes,
+        "warnings": warnings,
+    }
+
+
+def _variant_unit_card(variant_id, unit_id, venue, call_api):
+    names = _names(venue, call_api)
+    return {
+        "title": "Change a supplier variant's unit",
+        "target": "variant " + str(variant_id)[:8],
+        "venue": venue,
+        "changes": [{"field": "Unit", "after": _shown("unitId", unit_id, names)}],
+    }
 
 
 # ------------------------------------------------------------------ run ----

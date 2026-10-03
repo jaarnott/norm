@@ -148,7 +148,8 @@ def tool_row(endpoint: dict) -> dict:
         "field_schema": FIELD_SCHEMA,
         "consolidator_config": {
             "function_code": CODE.read_text(),
-            "max_api_calls": 1,
+            # An edit reads the recipe for its approval preview, then writes.
+            "max_api_calls": 2,
             "allowed_write_actions": [f"{CONNECTOR}.{ENDPOINT}"],
         },
     }
