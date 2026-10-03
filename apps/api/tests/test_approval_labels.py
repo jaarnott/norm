@@ -60,6 +60,9 @@ class TestGate:
             ("GET", "c", "a", "run"),
             ("PUT", "c", "a", "ask"),
             ("POST", "norm", "remember", "auto"),
+            # Anthropic's memory tool (the notebook) has no config row and is
+            # declared GET by _ensure_memory_tool: it must never ask.
+            ("GET", "norm", "memory", "run"),
         ],
     )
     def test_an_unlabelled_tool_keeps_the_old_rule(
