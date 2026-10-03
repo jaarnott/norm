@@ -264,7 +264,11 @@ RECONCILE_CONSOLIDATOR_TOOL = {
     },
     # Audit report the LLM must relay in full — raise the tool-result slim
     # threshold (clamped by HARD_MAX_TOOL_RESULT_CHARS in tool_loop.py).
-    "max_result_chars": 100_000,
+    # 40k (was 100k). The model's copy is the `report` only — the card bodies
+    # are stripped by llm_omit below — and the report's repeated per-invoice
+    # sentence and match flags are hoisted/compacted in the consolidator, so a
+    # 33-invoice "could not read" group is ~8 kB, not 27 (review, 3 Oct 2026).
+    "max_result_chars": 40_000,
     "consolidator_config": {
         # function_code injected from RECONCILE_FUNCTION_CODE_PATH at sync time
         "max_api_calls": 120,

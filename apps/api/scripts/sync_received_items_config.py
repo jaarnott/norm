@@ -73,21 +73,23 @@ TOOL = {
     "action": ACTION,
     "method": "GET",  # consolidator dispatch; reads only, writes nothing ever
     "description": (
-        "Stock ITEMS received over a period, aggregated: quantity in the item's "
-        "base unit, spend, and per-base-unit price movement (first/last/min/max "
-        "and % change). Quantities are converted using each line's unit ratio, so "
-        "a 6x1L and a 1L are summed correctly, and prices are normalised per base "
-        "unit so a pack-size change is not reported as a price rise. Item names "
-        "are resolved from the stock catalogue — the received feed carries only "
-        "ids and the supplier's own line text. Takes a period in plain English. "
-        "group_by 'group'/'super_group' rolls spend up to stock groups or "
-        "Loaded's three categories; item_id/query/group narrow to one item or "
-        "family. For a group-wide question pass venues='all' (or a list): ONE "
-        "call returns one merged ranking across venues, with each row's "
-        "per-venue split and per-venue totals — never fetch venue by venue and "
-        "merge yourself. THE tool for 'how much of X did we buy over N months' "
-        "— never page invoices and sum lines yourself. Ask ONCE for the whole "
-        "period per venue — not month by month."
+        "What stock we received over a period — spend and quantity by item, or "
+        "the purchase-by-purchase history of one item. Takes a period in plain "
+        "English. group_by picks the mode and the shape: 'item' (default) — one "
+        "row per stock item with quantity in its base unit, spend, invoice and "
+        "supplier counts, top rows by spend; 'history' — one row per invoice "
+        "line for ONE item or supplier (date, supplier, invoice number, "
+        "quantity, unit, unit cost, spend), the answer to 'what did we pay for X "
+        "each time' — it REQUIRES item_id, query or suppliers; 'item_supplier' — "
+        "one row per item per supplier with that supplier's unit-cost "
+        "average/min/max/last, the answer to 'are we paying different prices'; "
+        "'group' / 'super_group' — spend rolled up to stock groups or Loaded's "
+        "three categories. Quantities use each line's unit ratio, so a 6x1L and "
+        "a 1L sum correctly. For a group-wide question pass venues='all' (or a "
+        "list): ONE call, one merged ranking, each row carrying its per-venue "
+        "split plus per-venue totals — never fetch venue by venue and merge "
+        "yourself. THE tool for 'how much of X did we buy over N months' — never "
+        "page invoices and sum lines yourself. Ask ONCE for the whole period."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -115,12 +117,13 @@ TOOL = {
         ),
         "end": "Window end, with the same rule as start.",
         "group_by": (
-            "item (default) — one row per stock item; item_supplier — keeps the "
-            "supplier split so the same item bought from two suppliers stays "
-            "separate; line — every received line, unaggregated; group — one "
-            "row per stock group (e.g. Dry Goods) with spend and top items; "
-            "super_group — one row per Loaded category (Beverage/Food/Other "
-            "Stock)."
+            "The mode, which sets the shape. item (default) — one row per stock "
+            "item: name, code, base unit, quantity, spend, invoice and supplier "
+            "counts, credits (+ a per-venue split across venues). history — one "
+            "row per invoice line for ONE item or supplier; needs item_id, query "
+            "or suppliers. item_supplier — one row per item per supplier with "
+            "unit cost avg/min/max/last. group — one row per stock group with "
+            "spend and top items. super_group — one row per Loaded category."
         ),
         "item_id": "Restrict to one stock item id — 'how much of X did we buy'",
         "query": "Restrict to items whose catalogue name contains this text",
@@ -139,8 +142,8 @@ TOOL = {
     "field_schema": {
         "group_by": {
             "type": "string",
-            "enum": ["item", "item_supplier", "line", "group", "super_group"],
-            "description": "Row shape (default item)",
+            "enum": ["item", "history", "item_supplier", "group", "super_group"],
+            "description": "The mode; it sets the row shape (default item)",
         },
         "suppliers": {
             "type": "array",
@@ -151,6 +154,10 @@ TOOL = {
         "venues": {
             "description": "'all', or a list of venue names — one merged answer"
         },
+        "limit": {
+            "type": "integer",
+            "description": "Max rows (default 25); the rest roll into '(others)'",
+        },
         "confirmed_by_user": {
             "type": "boolean",
             "description": (
@@ -159,10 +166,11 @@ TOOL = {
             ),
         },
     },
-    # A venue-month can be a few hundred item rows. The summary answers the
-    # headline without reading them, but when the rows ARE relayed they must not
-    # be silently truncated mid-table (clamped by HARD_MAX_TOOL_RESULT_CHARS).
-    "max_result_chars": 100_000,
+    # 40k (was 100k). An item row is ~110 chars now and a history row ~200, so
+    # 25 rows is ~5 kB and the 86-row report that produced the half-finished
+    # table in Sep 2026 is ~18 kB with venue splits. 100k existed to let 130
+    # full-fat rows through, which was never a sensible thing to hand a model.
+    "max_result_chars": 40_000,
     "consolidator_config": {
         # function_code injected from FUNCTION_CODE_PATH at sync time
         # 6 venues x (invoices, catalogue, units[, groups]) + dates + venue list.

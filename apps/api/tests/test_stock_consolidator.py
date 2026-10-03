@@ -917,3 +917,50 @@ class TestReviewFixes:
         assert [i["id"] for i in out["items"]] == ["i-jbb", "i-asahi"]
         out = run(Api(), item_ids="i-jbb, i-asahi", detail="full")
         assert len(out["items"]) == 2
+
+
+class TestACatalogueTooBigForOneAnswerDegradesToGroups:
+    """La Zeppa (1,110 items) is 90 kB even lean, over the 80k cap, and on
+    2 Oct 2026 the model got a 637-byte "too large, go and search" stub — the
+    Bessie failure recurring one venue up. Over the line the tool now returns
+    the group breakdown (~1 kB) and says how to ask, instead of a stub."""
+
+    def _api(self, n):
+        class _Api(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "get_stock_items_raw":
+                    self.calls.append((action, dict(params or {})))
+                    groups = ["Dry Goods", "Meats", "Spirits", "Packaging"]
+                    return [
+                        {
+                            "id": f"{i:08x}-0000-4000-8000-{i:012x}",
+                            "groupId": "g",
+                            "groupName": groups[i % 4],
+                            "name": f"CATALOGUE ITEM NUMBER {i} WITH A LONGISH NAME",
+                        }
+                        for i in range(n)
+                    ]
+                return super().call_api(connector, action, params)
+
+        return _Api()
+
+    def test_over_the_line_it_returns_groups_not_a_stub(self):
+        out = run(self._api(1_200), limit=2000)
+        assert "matches" not in out
+        assert out["too_many_items"] == 1_200
+        assert {g["group"] for g in out["groups"]} == {
+            "Dry Goods",
+            "Meats",
+            "Spirits",
+            "Packaging",
+        }
+        assert sum(g["items"] for g in out["groups"]) == 1_200
+        assert "groups=" in out["note"]
+
+    def test_narrowed_by_group_it_lists_as_normal(self):
+        out = run(self._api(1_200), groups=["Meats"], limit=2000)
+        assert out["total_matches"] == 300 and len(out["matches"]) == 300
+
+    def test_under_the_line_it_lists_as_normal(self):
+        out = run(self._api(500), limit=2000)
+        assert len(out["matches"]) == 500 and "too_many_items" not in out

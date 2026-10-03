@@ -77,8 +77,9 @@ READ_TOOL = {
     },
     "field_schema": {"include_cost": {"type": "boolean"}},
     # The list-them-all path (~434 slim {id, name} rows) must survive the
-    # tool-result slimmer.
-    "max_result_chars": 80_000,
+    # tool-result slimmer. 40k: the largest response in 30 days was 18 kB
+    # (Glass Goose, limit 200), and 434 slim rows is ~40 kB (review, 3 Oct 2026).
+    "max_result_chars": 40_000,
     "read_only": True,
     "consolidator_config": {
         "function_code": (_DIR / "get_recipes.py").read_text(),

@@ -903,8 +903,10 @@ class TestTheReportTheEmailIsWrittenFrom:
         see that Loaded's side exists and the copy's does not."""
         out = run_consolidator(api_for(make_received(fileId=None), pdf=None))
         comp = out["report"]["exceptions"][0]["invoices"][0]["comparison"]
-        assert comp["total_incl_tax"]["loaded"]
-        assert "no copy" in str(comp["total_incl_tax"]["document"]).lower()
+        # Loaded's side per field; the copy's side once, because it is the
+        # same sentinel on every field.
+        assert comp["loaded"]["total_incl_tax"]
+        assert "no copy" in str(comp["document"]).lower()
 
     def test_a_rounding_difference_is_counted_not_listed(self):
         """A cent across a month of invoices is rounding. The old report put
@@ -996,3 +998,49 @@ class TestReviewFixes:
         )
         assert api.created == []
         assert "no statement was created" in result["report"]["statements_not_created"]
+
+
+class TestARepeatedCauseIsSaidOnce:
+    """33 invoices with the same unreadable copy must not say so 33 times.
+
+    On the 22 Sep 2026 La Zeppa run one exception group — "Invoice copy could
+    not be read", 33 invoices — was 27 kB of a 31 kB report: a 377-char
+    sentence and a 329-char comparison of None/False flags on every invoice,
+    for a model that summarised the whole group in one line. The sentence now
+    lives on the group; the per-invoice comparison keeps Loaded's side and the
+    copy's side and drops the flags. A mismatch keeps everything, because
+    there the comparison IS the evidence.
+    """
+
+    def _many_no_copy(self, n):
+        received = [
+            make_received(id=f"inv-{i}", invoiceNumber=str(100000 + i), fileId=None)
+            for i in range(n)
+        ]
+        return Api(statements=[make_statement()], received=received, pdfs={})
+
+    def test_the_sentence_appears_once_and_the_group_is_small(self):
+        import json
+
+        out = run_consolidator(self._many_no_copy(33))
+        group = out["report"]["exceptions"][0]
+        assert group["cause"] == "no_copy" and len(group["invoices"]) == 33
+        assert group["detail"], "the shared sentence moved to the group"
+        assert all("detail" not in i for i in group["invoices"])
+        blob = json.dumps(group)
+        assert blob.count(group["detail"]) == 1
+        assert len(blob) < 10_000, f"33 no-copy invoices came to {len(blob):,} chars"
+
+    def test_a_lone_invoice_keeps_its_own_detail(self):
+        """One invoice has nothing to share with — the per-invoice contract
+        pinned by test_every_exception_carries_what_the_email_needs holds."""
+        out = run_consolidator(self._many_no_copy(1))
+        entry = out["report"]["exceptions"][0]["invoices"][0]
+        assert "detail" in entry
+
+    def test_a_generic_comparison_keeps_both_sides_without_flags(self):
+        out = run_consolidator(self._many_no_copy(2))
+        comp = out["report"]["exceptions"][0]["invoices"][0]["comparison"]
+        assert comp["loaded"]["total_incl_tax"]
+        assert "no copy" in str(comp["document"]).lower()
+        assert "match" not in str(comp)

@@ -833,9 +833,40 @@ def run(params, call_api, log, call_api_parallel=None):
             )
         return (v.get("reasons") or [""])[0]
 
+    # Causes where the comparison is the evidence: one field disagreed and
+    # the reader needs to see which, and that the others agreed.
+    _MISMATCH = {
+        "po_missing_in_loaded",
+        "po_mismatch",
+        "invoice_number_mismatch",
+        "date_mismatch",
+        "total_mismatch",
+    }
+
+    def compact(comp):
+        # Loaded's side per field, and the copy's side ONCE when it is the
+        # same sentinel on every field ("(no copy attached)", "(unreadable)")
+        # — which on a generic failure it always is. The match flags go too:
+        # None/False on every field. Nested per-field form with both sides
+        # only when the copy's values actually differ. 33 invoices of the
+        # full nested form were 11 kB on the 22 Sep 2026 La Zeppa run.
+        fields = {f: c for f, c in (comp or {}).items() if isinstance(c, dict)}
+        documents = {str(c.get("document")) for c in fields.values()}
+        if fields and len(documents) == 1:
+            return {
+                "loaded": {f: c.get("loaded") for f, c in fields.items()},
+                # `next` is not a sandbox builtin (function_executor._SAFE_BUILTINS).
+                "document": list(fields.values())[0].get("document"),
+            }
+        return {
+            f: {"loaded": c.get("loaded"), "document": c.get("document")}
+            for f, c in fields.items()
+        }
+
     by_cause = {}
     for v in not_reconciled + needs_statement_rows:
         c = cause_of(v)
+        comp = v.get("comparison") or {}
         by_cause.setdefault(c, []).append(
             {
                 "venue": venue,
@@ -848,15 +879,28 @@ def run(params, call_api, log, call_api_parallel=None):
                 # the old report unreadable — eight of them on the 29 Aug run —
                 # but on a failure this is the part that shows what disagreed,
                 # and stripping it left the report long AND useless. Measured:
-                # +3,873 chars for all 11 failures across six venues.
-                "comparison": v.get("comparison") or {},
+                # +3,873 chars for all 11 failures across six venues. Full for
+                # a mismatch; Loaded-side/copy-side only for a generic cause.
+                "comparison": comp if c in _MISMATCH else compact(comp),
             }
         )
-    exceptions = [
-        {"cause": c, "title": title, "hint": hint, "invoices": by_cause[c]}
-        for c, title, hint in _CAUSES
-        if c in by_cause
-    ]
+    exceptions = []
+    for c, title, hint in _CAUSES:
+        if c not in by_cause:
+            continue
+        invoices = by_cause[c]
+        group = {"cause": c, "title": title, "hint": hint}
+        # When every invoice in a group says the same thing — "could not read
+        # the attached invoice copy", 33 times, 12 kB on the 22 Sep run — say
+        # it once, at the group. A per-invoice detail stays wherever it differs
+        # (a mismatch names its own two values).
+        details = {i.get("detail") for i in invoices}
+        if len(invoices) > 1 and len(details) == 1 and c not in _MISMATCH:
+            group["detail"] = invoices[0].get("detail")
+            for i in invoices:
+                i.pop("detail", None)
+        group["invoices"] = invoices
+        exceptions.append(group)
 
     # A statement that has not been issued yet reads as "$0.00 vs reconciled",
     # which is not a discrepancy — it is the month in progress. La Zeppa on

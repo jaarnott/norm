@@ -149,6 +149,10 @@ _BULK_PAGE = 5
 #: Below this many rows, group names are small enough to include on an
 #: unfiltered list (747 rows with groups is 121k; without, 61k).
 _GROUPS_FREE_BELOW = 200
+#: The most an unfiltered catalogue may be before it degrades to a group
+#: breakdown. Under the 80k max_result_chars with room for the envelope; 747
+#: items lean is 61k and fits, 1,110 is 90k and does not.
+_LIST_CHARS_CAP = 72_000
 
 
 def _flag(value):
@@ -352,8 +356,31 @@ def _items(params, venue, call_api, call_api_parallel=None):
     # Group names are worth their size on a filtered or searched list; on a
     # whole-catalogue scan they are what pushes it over max_result_chars.
     with_group = bool(query or groups) or total <= _GROUPS_FREE_BELOW
+    matches = [_slim(r, with_group) for r in rows]
+    if not query and not groups and len(json.dumps(matches)) > _LIST_CHARS_CAP:
+        # The lean catalogue does not fit this venue. Degrade into the filter
+        # that exists instead of into a "too large, go and search" stub —
+        # which is what La Zeppa (1,110 items, 90 kB even at {id, name}) got on
+        # 2 Oct 2026, the Bessie failure recurring one venue up. The group
+        # breakdown is ~1 kB and tells the model exactly how to ask.
+        counts = {}
+        for r in rows:
+            g = r.get("groupName") or "(no group)"
+            counts[g] = counts.get(g, 0) + 1
+        return {
+            "too_many_items": total,
+            "groups": [
+                {"group": g, "items": c}
+                for g, c in sorted(counts.items(), key=lambda kv: -kv[1])
+            ],
+            "note": (
+                f"{total} items is more than fits in one answer. Ask again with "
+                "groups=[...] naming the stock groups you need (for a food tender: "
+                "the food groups), or with query for one item."
+            ),
+        }
     out = {
-        "matches": [_slim(r, with_group) for r in rows],
+        "matches": matches,
         "total_matches": total,
         "shown": len(rows),
     }

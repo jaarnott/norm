@@ -142,7 +142,6 @@ class TestQuantitiesAreMadeComparable:
         # 12 x 1L + 12 x 6L = 84 litres, NOT 24 of something.
         assert row["quantity_base"] == 84.0
         assert row["base_unit"] == "L"
-        assert row["units_seen"] == ["1 Litre", "6x1L"]
 
     def test_a_line_with_no_ratio_is_excluded_and_declared(self):
         api = Api(
@@ -154,7 +153,12 @@ class TestQuantitiesAreMadeComparable:
 
 
 class TestPriceMovementIsPerBaseUnit:
-    """A pack-size change is not a price rise."""
+    """A pack-size change is not a price rise.
+
+    These figures live on `item_supplier` rows now — the supplier comparison
+    is the question they answer. The `item` row carries none of them: across
+    118 production calls in 90 days they were used once (3 Oct 2026 review).
+    """
 
     def test_same_price_in_a_bigger_box_is_not_a_price_change(self):
         api = Api(
@@ -170,10 +174,9 @@ class TestPriceMovementIsPerBaseUnit:
                 ),
             ]
         )
-        row = run_consolidator(api)["rows"][0]
-        assert row["unit_cost_first"] == 4.6
+        row = run_consolidator(api, group_by="item_supplier")["rows"][0]
+        assert (row["unit_cost_min"], row["unit_cost_max"]) == (4.6, 4.6)
         assert row["unit_cost_last"] == 4.6
-        assert row["price_change_pct"] == 0.0
 
     def test_a_real_rise_is_reported(self):
         api = Api(
@@ -192,9 +195,9 @@ class TestPriceMovementIsPerBaseUnit:
                 ),
             ]
         )
-        row = run_consolidator(api)["rows"][0]
-        assert row["price_change_pct"] == 25.0
+        row = run_consolidator(api, group_by="item_supplier")["rows"][0]
         assert (row["unit_cost_min"], row["unit_cost_max"]) == (4.0, 5.0)
+        assert row["unit_cost_last"] == 5.0
 
     def test_first_and_last_follow_date_not_arrival_order(self):
         api = Api(
@@ -213,8 +216,8 @@ class TestPriceMovementIsPerBaseUnit:
                 ),
             ]
         )
-        row = run_consolidator(api)["rows"][0]
-        assert (row["unit_cost_first"], row["unit_cost_last"]) == (4.0, 5.0)
+        row = run_consolidator(api, group_by="item_supplier")["rows"][0]
+        assert row["unit_cost_last"] == 5.0  # by date, not arrival order
 
     def test_a_credit_does_not_set_the_last_price(self):
         """A credit carries the ORIGINAL price with a negative quantity —
@@ -242,9 +245,8 @@ class TestPriceMovementIsPerBaseUnit:
                 ),
             ]
         )
-        row = run_consolidator(api)["rows"][0]
+        row = run_consolidator(api, group_by="item_supplier")["rows"][0]
         assert row["unit_cost_last"] == 6.0
-        assert row["price_change_pct"] == 50.0
 
 
 class TestItemNamesAreResolved:
@@ -306,7 +308,11 @@ class TestItemNamesAreResolved:
         api = Api([invoice("i1", "Bidfood", "2026-08-02", lines)])
         run_consolidator(api)
         assert (
-            sum(1 for c in api.calls if c[1] in ("get_stock_items", "get_stock_items_raw"))
+            sum(
+                1
+                for c in api.calls
+                if c[1] in ("get_stock_items", "get_stock_items_raw")
+            )
             == 1
         )
 
@@ -347,7 +353,7 @@ class TestGrouping:
                 ),
             ]
         )
-        out = run_consolidator(api, group_by="line")
+        out = run_consolidator(api, group_by="history", item_id=MILK)
         assert len(out["rows"]) == 2
         assert out["summary"]["distinct_items"] == 1
 
@@ -485,7 +491,7 @@ class TestArithmeticIsExact:
                 )
             ]
         )
-        row = run_consolidator(api, group_by="line")["rows"][0]
+        row = run_consolidator(api, group_by="history", item_id=MILK)["rows"][0]
         assert row["spend"] == 12.02
 
 
@@ -521,3 +527,95 @@ class TestSummary:
             ]
         )
         assert run_consolidator(api)["rows"][0]["item_name"] == "MALFY GIN ROSA"
+
+
+class TestModesReturnPurposeFitShapes:
+    """One mode per question people asked (3 Oct 2026 review: 211 calls, 11
+    conversations, 90 days). No `detail` switch: the shape follows the mode,
+    and across venues it follows the scope."""
+
+    def _api(self):
+        return Api(
+            [
+                invoice(
+                    "i1",
+                    "Bidfood",
+                    "2026-08-02",
+                    [line(MILK, "1 Litre", 1.0, 10, 4.00)],
+                ),
+                invoice(
+                    "i2",
+                    "Service Foods",
+                    "2026-08-09",
+                    [line(MILK, "1 Litre", 1.0, 5, 4.20)],
+                ),
+            ]
+        )
+
+    def test_an_item_row_is_the_four_column_table_and_nothing_else(self):
+        """Fails if the lists or price fields creep back onto `item`. Every
+        reply built Item · Value · Qty · Unit; the rest was weight — 576
+        chars a row, 55% of it field names."""
+        row = run_consolidator(self._api())["rows"][0]
+        assert set(row) == {
+            "item_name",
+            "item_code",
+            "base_unit",
+            "quantity_base",
+            "spend",
+            "invoice_count",
+            "supplier_count",
+            "credit_amount",
+            "item_id",
+        }
+        assert row["supplier_count"] == 2 and row["invoice_count"] == 2
+
+    def test_history_needs_a_filter_and_says_which(self):
+        """Fails if a whole period of every line can be asked for again — the
+        two largest responses in 90 days (450 kB, 266 kB) were exactly that."""
+        api = self._api()
+        out = run_consolidator(api, group_by="history")
+        assert (
+            "item_id" in out["error"]
+            and "query" in out["error"]
+            and "suppliers" in out["error"]
+        )
+        assert not any(a == "get_received_invoices" for _, a in api.calls), (
+            "refused before fetching"
+        )
+
+    def test_a_history_row_is_a_purchase_line_without_the_ids(self):
+        rows = run_consolidator(self._api(), group_by="history", query="milk")["rows"]
+        assert [r["date"] for r in rows] == ["2026-08-02", "2026-08-09"]
+        assert set(rows[0]) == {
+            "date",
+            "supplier_name",
+            "invoice_number",
+            "item_name",
+            "item_code",
+            "quantity",
+            "unit_name",
+            "unit_cost",
+            "quantity_base",
+            "base_unit",
+            "cost_per_base_unit",
+            "spend",
+            "is_credit",
+        }
+        assert (
+            rows[1]["supplier_name"] == "Service Foods" and rows[1]["unit_cost"] == 4.2
+        )
+
+    def test_line_is_still_accepted_as_the_old_name(self):
+        out = run_consolidator(self._api(), group_by="line", query="milk")
+        assert out["group_by"] == "history" and len(out["rows"]) == 2
+
+    def test_item_supplier_is_the_price_comparison(self):
+        rows = run_consolidator(self._api(), group_by="item_supplier")["rows"]
+        assert {r["supplier_name"] for r in rows} == {"Bidfood", "Service Foods"}
+        assert {
+            "unit_cost_avg",
+            "unit_cost_min",
+            "unit_cost_max",
+            "unit_cost_last",
+        } <= set(rows[0])

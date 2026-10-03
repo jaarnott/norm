@@ -54,8 +54,16 @@
 #    Grouping on supplier text would split one item across every wording its
 #    suppliers use, so names are resolved from the catalogue in ONE bulk call.
 
-_GROUPINGS = ("item", "item_supplier", "line", "group", "super_group")
-_LINE_CAP = 2000
+# Modes, each answering one question people actually asked (3 Oct 2026
+# review of 211 calls / 11 conversations / 90 days — see
+# ~/.claude/plans/context-editing.md). "line" is accepted as the old name for
+# "history" so a model that learned it is not refused.
+_GROUPINGS = ("item", "item_supplier", "history", "line", "group", "super_group")
+# history rows are one per invoice line and REQUIRE a narrowing filter; with
+# one, "lamb rump since March" is 27 rows. 500 is generous. The old 2,000 with
+# no filter required produced the two largest responses in 90 days: 861 and
+# 509 lines, 450 kB and 266 kB, for a whole month of one venue.
+_LINE_CAP = 500
 # Aggregated modes cap at the top rows by spend, with an "(others)" rollup —
 # a 3-month "what did we buy" answer is ~25 rows and a total, never 1,000.
 _ROW_CAP = 25
@@ -282,6 +290,8 @@ def run(params, call_api, log, call_api_parallel=None):
             return None
 
     group_by = (params.get("group_by") or "item").strip().lower()
+    if group_by == "line":
+        group_by = "history"
     if group_by not in _GROUPINGS:
         return {
             "error": (
@@ -289,6 +299,19 @@ def run(params, call_api, log, call_api_parallel=None):
                 + ", ".join(_GROUPINGS)
                 + " — got "
                 + repr(params.get("group_by"))
+            )
+        }
+
+    if group_by == "history" and not (
+        params.get("item_id") or params.get("query") or params.get("suppliers")
+    ):
+        # Refused before any fetch. Every purchase line of a venue for a period
+        # is never the question; it is the pile that buried the 1 Oct turns.
+        return {
+            "error": (
+                "history lists every purchase line, so it needs to be narrowed: "
+                "pass item_id (one item), query (an item name) or suppliers (a "
+                "supplier name). For totals by item use group_by 'item'."
             )
         }
 
@@ -590,20 +613,37 @@ def run(params, call_api, log, call_api_parallel=None):
         result["rows"] = cap_rows(rows, label_key)
         return result
 
-    if group_by == "line":
-        rows = [
-            {
-                **r,
+    if group_by == "history":
+        # One row per invoice line: what people read when they ask "what did
+        # we pay for X, each time". Every reply in 90 days named the supplier
+        # and the unit cost; half quoted the invoice number. Not carried: four
+        # internal ids (150 chars of hex no reply used), `named`, `unit_ratio`,
+        # and the group/category trio — half of the old 22-field row.
+        def history_row(r):
+            row = {
+                "date": r["date"],
+                "supplier_name": r["supplier_name"],
+                "invoice_number": r["invoice_number"],
+                "item_name": r["item_name"],
+                "item_code": r["item_code"],
                 "quantity": round(r["quantity"], 4),
+                "unit_name": r["unit_name"],
+                "unit_cost": r["unit_cost"],
                 "quantity_base": (
                     round(r["quantity_base"], 4)
                     if r["quantity_base"] is not None
                     else None
                 ),
+                "base_unit": r["base_unit"],
+                "cost_per_base_unit": r["cost_per_base_unit"],
                 "spend": round(r["spend"], 2),
+                "is_credit": r["is_credit"],
             }
-            for r in flat
-        ]
+            if multi:
+                row["venue"] = r["venue"]
+            return row
+
+        rows = [history_row(r) for r in flat]
         rows.sort(key=lambda r: (r["date"], r["item_name"]))
         if len(rows) > _LINE_CAP:
             log(
@@ -618,7 +658,7 @@ def run(params, call_api, log, call_api_parallel=None):
                 + str(_LINE_CAP)
                 + " of "
                 + str(len(rows))
-                + " lines. Narrow the period, or use group_by=item."
+                + " lines. Narrow the period, or use group_by=item for totals."
             )
             rows = rows[:_LINE_CAP]
         result["summary"] = {
@@ -654,7 +694,6 @@ def run(params, call_api, log, call_api_parallel=None):
                 "credit_amount": 0.0,
                 "_invoices": set(),
                 "_suppliers": set(),
-                "_units": set(),
                 "_prices": [],
                 "_venues": {},
             }
@@ -672,8 +711,6 @@ def run(params, call_api, log, call_api_parallel=None):
         bucket["_invoices"].add(row["invoice_id"])
         if row["supplier_name"]:
             bucket["_suppliers"].add(row["supplier_name"])
-        if row["unit_name"]:
-            bucket["_units"].add(row["unit_name"])
         # Price observations come from actual RECEIPTS only. A credit carries
         # the original price with a negative quantity; letting it set "last
         # price" would report a change that never happened on an order.
@@ -686,50 +723,50 @@ def run(params, call_api, log, call_api_parallel=None):
         if bucket["base_unit"] is None:
             bucket["base_unit"] = row["base_unit"]
 
+    # `item`: what did we buy, top N by spend — the table every reply built
+    # was Item · Value · Qty · Unit, and across 118 production calls the
+    # supplier list was used once, unit cost once, price change never, the
+    # per-row units never. Those are gone from this row. The per-venue split
+    # stays whenever the call spans venues: "how much cabbage across the group,
+    # and per venue?" is exactly what it is for.
+    # `item_supplier`: who we buy X from, at what price — a comparison, so it
+    # carries the price figures.
     rows = []
     for bucket in buckets.values():
         prices = sorted(bucket.pop("_prices"), key=lambda p: p[0])
         invoices_seen = bucket.pop("_invoices")
         suppliers_seen = bucket.pop("_suppliers")
-        units_seen = bucket.pop("_units")
         by_venue = bucket.pop("_venues")
+        row = {
+            "item_name": bucket["item_name"],
+            "item_code": bucket["item_code"],
+            "base_unit": bucket["base_unit"],
+            "quantity_base": round(bucket["quantity_base"], 4),
+            "spend": round(bucket["spend"], 2),
+            "invoice_count": len(invoices_seen),
+            "supplier_count": len(suppliers_seen),
+            "credit_amount": round(bucket["credit_amount"], 2),
+        }
+        if not multi:
+            # The id is what a follow-up needs (history for this item, or a
+            # write); across venues an id belongs to ONE venue's catalogue.
+            row["item_id"] = bucket["item_id"]
         if multi:
-            bucket["venues"] = _venue_split(by_venue, with_quantity=True)
-        bucket["quantity_base"] = round(bucket["quantity_base"], 4)
-        bucket["spend"] = round(bucket["spend"], 2)
-        bucket["credit_amount"] = round(bucket["credit_amount"], 2)
-        if multi:
-            bucket.pop("item_id")  # an id belongs to ONE venue's catalogue
-        bucket["invoice_count"] = len(invoices_seen)
-        bucket["supplier_count"] = len(suppliers_seen)
-        bucket["suppliers"] = sorted(suppliers_seen)
-        bucket["units_seen"] = sorted(units_seen)
-        if prices:
+            row["venues"] = _venue_split(by_venue, with_quantity=True)
+        if group_by == "item_supplier":
+            row["supplier_name"] = bucket.get("supplier_name")
+            row["supplier_id"] = bucket.get("supplier_id")
             values = [p[1] for p in prices]
-            first, last = values[0], values[-1]
-            bucket["unit_cost_first"] = first
-            bucket["unit_cost_last"] = last
-            bucket["unit_cost_min"] = min(values)
-            bucket["unit_cost_max"] = max(values)
-            bucket["unit_cost_avg"] = round(sum(values) / len(values), 4)
-            bucket["price_change_pct"] = (
-                round((last - first) / first * 100, 1) if first else None
+            row["unit_cost_avg"] = (
+                round(sum(values) / len(values), 4) if values else None
             )
-        else:
-            for field in (
-                "unit_cost_first",
-                "unit_cost_last",
-                "unit_cost_min",
-                "unit_cost_max",
-                "unit_cost_avg",
-                "price_change_pct",
-            ):
-                bucket[field] = None
-        rows.append(bucket)
+            row["unit_cost_min"] = min(values) if values else None
+            row["unit_cost_max"] = max(values) if values else None
+            row["unit_cost_last"] = values[-1] if values else None
+        rows.append(row)
 
     rows.sort(key=lambda r: r["spend"], reverse=True)
 
-    moved = [r for r in rows if r.get("price_change_pct")]
     result["summary"] = {
         "rows": len(rows),
         "lines": len(flat),
@@ -741,13 +778,10 @@ def run(params, call_api, log, call_api_parallel=None):
         "credit_amount": round(
             sum(r["spend"] for r in flat if r["is_credit"] or r["quantity"] < 0), 2
         ),
-        "items_with_price_change": len(moved),
-        # Deliberately not "totals": summing a unit cost is meaningless, so only
-        # the columns where a sum means something are added up here.
         "_note": (
             "net_spend is quantity x unit cost summed over every line, credits "
-            "included (they subtract). Unit costs are per base unit and are "
-            "never summed."
+            "included (they subtract). For what each purchase cost, use "
+            "group_by 'history' with an item."
         ),
     }
     result["rows"] = cap_rows(rows, "item_name")
