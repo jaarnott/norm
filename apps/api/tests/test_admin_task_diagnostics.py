@@ -50,12 +50,16 @@ class TestAuth:
 
 
 class TestPayload:
-    def test_reports_schedule_and_owner_run_modes(
+    def test_reports_schedule_and_owner_approval_preferences(
         self, client, db_session, admin_user, admin_headers
     ):
-        # The owner's run mode decides whether the consolidators write anything;
-        # no other endpoint exposes another user's preference.
-        admin_user.workflow_modes = {"reconcile_received_invoices": "autopilot"}
+        # The owner's preferences decide whether the consolidators write
+        # anything, and which writes run unattended; no other endpoint exposes
+        # another person's preference.
+        admin_user.approval_preferences = {
+            "loadedhub.reconcile_received_invoices": {"level": "autopilot"},
+            "norm_email.send_report_email": {"always": True},
+        }
         task = _make_task(db_session, admin_user)
 
         resp = client.get(
@@ -68,29 +72,27 @@ class TestPayload:
         assert body["task"]["schedule_type"] == "daily"
         assert body["task"]["schedule_config"] == {"hour": 8, "minute": 0}
         assert body["owner"]["email"] == admin_user.email
-        assert body["owner"]["workflow_modes"] == {
-            "reconcile_received_invoices": "autopilot"
-        }
-        modes = body["derived"]["effective_run_modes"]
-        assert modes["reconcile_received_invoices"]["effective"] == "autopilot"
+        assert body["owner"]["approval_preferences"] == admin_user.approval_preferences
+        levels = body["derived"]["effective_levels"]
+        assert levels["loadedhub.reconcile_received_invoices"] == "autopilot"
+        assert body["derived"]["always_allowed"] == ["norm_email.send_report_email"]
         assert body["derived"]["is_scheduled"] is True
 
-    def test_unset_mode_falls_back_to_the_read_only_default(
+    def test_a_level_never_chosen_is_the_one_that_writes_nothing(
         self, client, db_session, admin_user, admin_headers
     ):
-        # The "runs every morning but nothing happens" case: no stored mode, so
-        # the consolidator runs read-only.
-        admin_user.workflow_modes = None
+        # The "runs every morning but nothing happens" case: no stored level,
+        # so the consolidator runs read-only.
+        admin_user.approval_preferences = None
         task = _make_task(db_session, admin_user)
 
         body = client.get(
             f"/api/admin/automated-tasks/{task.id}/diagnostics", headers=admin_headers
         ).json()
-        modes = body["derived"]["effective_run_modes"]["reconcile_received_invoices"]
-        assert modes["stored"] is None
-        assert (
-            modes["effective"] == body["derived"]["default_run_mode"] == "approve_all"
-        )
+        level = body["derived"]["effective_levels"][
+            "loadedhub.reconcile_received_invoices"
+        ]
+        assert level == body["derived"]["default_level"] == "approve_all"
 
     def test_email_tool_flag_tracks_the_tool_filter(
         self, client, db_session, admin_user, admin_headers

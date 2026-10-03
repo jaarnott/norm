@@ -16,8 +16,9 @@ keeps the rest of the live row, backs it up, and runs validate_config):
 What changes for people once the code that reads these is deployed:
 - ``norm_email.send_report_email`` and ``norm.manage_task`` ask first (they ran
   without a card).
-- ``norm.set_workflow_mode`` asks first, and can never be switched to
-  "always allow" — Norm must not raise its own autonomy silently.
+- ``norm.set_approval_preference`` (was set_workflow_mode) asks first, and
+  can never be switched to "always allow" — Norm must not raise its own
+  autonomy silently.
 - A "Test" run of a scheduled task simulates every write, and runs the invoice
   tools at "Ask me" (report only).
 
@@ -97,8 +98,8 @@ WRITES = {
     "gmail.send_email": _ask("send emails from your Gmail"),
     "norm_email.send_report_email": _ask("email reports"),
     "norm.manage_task": _ask("change scheduled tasks"),
-    "norm.set_workflow_mode": _ask(
-        "change how much Norm does on its own", allow_auto=False
+    "norm.set_approval_preference": _ask(
+        "change what Norm may do without asking you", allow_auto=False
     ),
     "norm.remember": _auto("remember what you tell it"),
     "loadedhub.review_and_receive_invoices": {

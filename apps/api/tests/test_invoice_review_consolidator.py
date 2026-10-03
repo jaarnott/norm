@@ -150,7 +150,8 @@ class TestReportsTheAppliedMode:
         out = run_consolidator(api, mode="unset")
         assert out["mode"] == "autopilot"
         assert out["auto_submit"] is True and out["mode_unset"] is False
-        assert "venue's setting" in out["mode_source"]
+        # The person's own setting since Oct 2026 (it was the venue's).
+        assert "person's own setting" in out["mode_source"]
 
     def test_a_missing_total_reads_as_a_dash(self):
         api = Api(

@@ -1299,7 +1299,7 @@ def fold_remedies_into_blockers(
 def apply_open_gates(
     db, config_db, venue_id: str, invoice_id: str, data: dict, settings: dict
 ) -> list[str]:
-    """Do the creates this venue has authorised, and only those.
+    """Do the creates the person has authorised, and only those.
 
     Every blocker carries the gate that governs it; a ticked gate means Norm
     may clear that blocker on its own. Anything unticked stays blocking, which
@@ -1762,6 +1762,7 @@ def review_invoice(
     extraction: dict | None = None,
     reference: dict | None = None,
     require_valid_po: bool | None = None,
+    settings: dict | None = None,
     allow_sensei: bool = False,
     totals_ask=None,
     pairing_ask=None,
@@ -1772,26 +1773,19 @@ def review_invoice(
     working documents (and decides about receiving). ``detail`` /
     ``extraction`` / ``reference`` let the batch path inject prefetched work.
 
-    ``require_valid_po`` None means: derive it from the venue's
-    ``receive_without_po`` gate — so the card tells the same story autopilot
-    acts on. The interactive card used to force False ("a human is looking"),
-    which filed the missing-PO blocker under worth-knowing and hid what
-    autopilot would actually do (user report, 18 Aug 2026: it should read as
-    blocked-from-auto-receive naming the toggle).
+    ``require_valid_po`` None means: derive it from the ``receive_without_po``
+    switch in ``settings`` — the viewer's receiving policy
+    (approvals.receiving_settings) — so the card tells the same story
+    autopilot acts on. The interactive card used to force False ("a human is
+    looking"), which filed the missing-PO blocker under worth-knowing and hid
+    what autopilot would actually do (user report, 18 Aug 2026: it should read
+    as blocked-from-auto-receive naming the toggle). No settings — a background
+    review — requires an order.
     """
     if require_valid_po is None:
-        require_valid_po = True  # the batch default; harness runs pass db=None
-        if db is not None:
-            try:
-                from app.db.models import Venue
-                from app.services import venue_autopilot as _VAmod
+        from app.services import venue_autopilot as _VAmod
 
-                venue = db.query(Venue).filter(Venue.id == venue_id).first()
-                require_valid_po = not _VAmod.settings_for(venue)[
-                    _VAmod.RECEIVE_WITHOUT_PO
-                ]
-            except Exception:  # noqa: BLE001 — policy lookup must never sink a review
-                pass
+        require_valid_po = not _VAmod.settings_from(settings)[_VAmod.RECEIVE_WITHOUT_PO]
     if lh is None:
         lh = LoadedInvoiceClient(db, config_db, venue_id)
     if detail is None:
@@ -2397,6 +2391,7 @@ def review_invoices(
     mode: str = "approve_all",
     max_sensei: int = 0,
     require_valid_po: bool = True,
+    settings: dict | None = None,
 ) -> dict:
     """Review a batch of invoices; under ``mode="autopilot"`` auto-accept
     every suggestion (recorded, actor ``norm``) and receive the ones with no
@@ -2415,19 +2410,17 @@ def review_invoices(
     from app.services import venue_autopilot as VA
     from app.services.spec_dojo import prefetch_replica_reference
 
-    # The VENUE decides how far Norm may go; the caller's `mode` is a ceiling
-    # it can lower but never raise. Reviewing a single invoice passes
-    # `approve_all` for exactly this reason — opening one in the card must
-    # never write to Loaded — and a chat request cannot talk a venue onto a
-    # rung it was never put on.
-    from app.db.models import Venue
-
-    venue = db.query(Venue).filter(Venue.id == venue_id).first()
-    settings = VA.settings_for(venue)
+    # ``settings`` is the PERSON's receiving policy
+    # (approvals.receiving_settings); none given is the safest one. The
+    # caller's `mode` is a ceiling it can lower but never raise. Reviewing a
+    # single invoice passes `approve_all` for exactly this reason — opening one
+    # in the card must never write to Loaded — and a chat request cannot talk
+    # anyone onto a rung they never chose.
+    settings = VA.settings_from(settings)
     mode = VA.at_most(settings["mode"], mode)
     settings["mode"] = mode
     if settings[VA.RECEIVE_WITHOUT_PO]:
-        # The venue has said a missing order is not a reason to stop. The
+        # The person has said a missing order is not a reason to stop. The
         # per-task override stays honoured for anyone who set it.
         require_valid_po = False
 
@@ -2556,7 +2549,7 @@ def review_invoices(
         gated: list[str] = []
         if mode == "autopilot":
             auto_accept_all(data, actor="norm")
-            # Then the gates: create the units/items/brands this venue has
+            # Then the gates: create the units/items/brands the person has
             # authorised, and leave every other blocker standing so the
             # invoice parks with its reason on it.
             gated = apply_open_gates(db, config_db, venue_id, iid, data, settings)

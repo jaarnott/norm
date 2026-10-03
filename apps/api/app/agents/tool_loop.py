@@ -317,6 +317,13 @@ def _execute_loop(
     from app.services import approvals
 
     _rows: dict[tuple[str, str], dict | None] = {}
+    # Whose approval preferences apply: the conversation's owner — the person
+    # asking, or a scheduled task's creator.
+    from app.db.models import User
+
+    person = (
+        db.query(User).filter(User.id == task.user_id).first() if task.user_id else None
+    )
 
     def _tool_row(connector: str, action: str) -> dict | None:
         key = (connector, action)
@@ -560,7 +567,9 @@ def _execute_loop(
                 if block.name != "memory":
                     taken += 1
                 row = _tool_row(connector, action)
-                runs_now = approvals.gate(row, method, connector, action) == "run"
+                runs_now = (
+                    approvals.gate(row, method, connector, action, person) == "run"
+                )
                 # A non-GET row with a working document drafts from its inputs
                 # in the write branch below, however it is labelled.
                 if runs_now and not (
@@ -1011,8 +1020,12 @@ def _execute_loop(
                             }
                         ),
                     }
-                elif approvals.gate(tool_def, method, connector, action) == "auto":
-                    # Auto-approved internal write (memory): execute immediately,
+                elif (
+                    approvals.gate(tool_def, method, connector, action, person)
+                    == "auto"
+                ):
+                    # A write that doesn't ask — one Norm always does (memory),
+                    # or one this person always allows: execute immediately,
                     # no approval card, no suspension. Same execution path as a
                     # read-only tool, but kept in the write branch so it runs on
                     # the main db session rather than the parallel read batch.
@@ -1031,10 +1044,20 @@ def _execute_loop(
                     db.add(tc)
                     db.flush()
                     result = _execute_tool_call(tc, db, config_db=config_db)
+                    key = f"{connector}.{action}"
+                    if approvals.always_allowed(person, key, tool_def):
+                        # The person's say-so, not the tool's default: on the
+                        # record, and in the result so Norm tells them.
+                        approvals.record_always_allowed(db, task, person, tc)
+                        result = {
+                            **result,
+                            "approval": "Ran without a card: this person always "
+                            "allows it (Settings → Preferences). Say what you did.",
+                        }
                     write_tool_results[block.id] = {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps(result),
+                        "content": json.dumps(result, default=str),
                     }
                 else:
                     # Asks first: previewed below, all together.
@@ -1179,6 +1202,7 @@ def _execute_loop(
                 tool_call_summaries = []
                 for tc in pending_writes:
                     shown = tc.preview or {}
+                    policy = spec_rows.approval(_tool_row(tc.connector_name, tc.action))
                     tool_call_summaries.append(
                         {
                             "id": tc.id,
@@ -1193,6 +1217,14 @@ def _execute_loop(
                                 )
                             ),
                             "preview": shown or None,
+                            # For "Always allow Norm to {label} without
+                            # asking" — offered only where the tool allows it.
+                            "approval": {
+                                "key": f"{tc.connector_name}.{tc.action}",
+                                "label": policy.get("label"),
+                                "allow_auto": bool(policy.get("allow_auto"))
+                                and not policy.get("levels"),
+                            },
                             # Technical details, shown to platform admins only.
                             "input_params": tc.input_params,
                         }

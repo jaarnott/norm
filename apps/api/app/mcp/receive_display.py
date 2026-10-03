@@ -203,13 +203,17 @@ def _attach_suggestions(
     if data.get("doc_schema") == DOC_SCHEMA and data.get("reviewed_at"):
         return
     try:
+        from app.services.approvals import receiving_settings_for_thread
+
         fresh = review_invoice(
             db,
             config_db,
             venue_id,
             str(data.get("invoice_id") or ""),
-            # PO policy derives from the venue's receive_without_po gate, so
-            # the card tells the story autopilot acts on (18 Aug 2026).
+            # PO policy derives from the receive_without_po switch of the
+            # draft's owner, so the card tells the story autopilot acts on
+            # (18 Aug 2026).
+            settings=receiving_settings_for_thread(db, data.get("thread_id")),
         )
         keep = {
             k: data[k]

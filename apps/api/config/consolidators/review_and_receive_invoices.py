@@ -17,7 +17,8 @@
 # Requires consolidator_config:
 #   {"max_api_calls": 10, "allowed_write_actions": ["review_invoices"]}
 #
-# Run modes (injected by execute_consolidator from the user's workflow mode):
+# Run modes (injected by execute_consolidator from the PERSON's level —
+# Settings → Preferences, services/approvals.py — lowered by any task setting):
 #   approve_all / unset → review + cards only, never writes ("dry run")
 #   approve_fixes       → the service receives READY invoices with NOTHING to
 #                         change; anything with a suggestion waits on a card
@@ -93,9 +94,9 @@ def run(params, call_api, log, call_api_parallel=None):
     else:
         request["from_date"] = from_date
         request["to_date"] = to_date
-        # Pass the mode through, including "unset". Substituting approve_all
-        # here looked like a safe default and was really an override: the
-        # server resolves the VENUE's setting and treats this as a ceiling, so
+        # Pass the mode through. Substituting approve_all here looked like a
+        # safe default and was really an override: the server resolves the
+        # person's setting and treats this as a ceiling, so
         # a hard-coded approve_all pinned every venue to it — the ladder could
         # be set to autopilot and never once take effect. The single-invoice
         # branch above still passes approve_all deliberately, which is a real
@@ -181,9 +182,10 @@ def run(params, call_api, log, call_api_parallel=None):
         for v in received + skipped
     ]
 
-    # The mode the SERVICE applied: the venue's setting, lowered by any
-    # ceiling passed here. This reported the incoming personal mode — always
-    # "unset" for receiving — while a 6 Sep run received 50 invoices.
+    # The mode the SERVICE applied: the person's setting, lowered by any
+    # ceiling passed here. Before Oct 2026 this was the venue's, and the file
+    # reported the incoming personal mode — always "unset" for receiving —
+    # while a 6 Sep run received 50 invoices.
     applied = result.get("mode") or mode
 
     log(
@@ -198,10 +200,9 @@ def run(params, call_api, log, call_api_parallel=None):
 
     return {
         "venue": venue,
-        # What actually happened, not what this file guessed would. The venue
-        # owns the rung and the server applies it, so predicting "dry run" from
-        # a personal mode this workflow no longer reads would report "nothing
-        # was received" over a batch that received.
+        # What actually happened, not what this file guessed would: the server
+        # applies the rung, so predicting "dry run" from the mode passed in
+        # would report "nothing was received" over a batch that received.
         "dry_run": not received_in,
         "from_date": from_date,
         "to_date": to_date,
@@ -215,7 +216,7 @@ def run(params, call_api, log, call_api_parallel=None):
         "fix_invoices": cards,
         "mode": applied,
         "mode_source": (
-            "the venue's setting (Settings → Preferences → Receiving invoices)"
+            "the person's own setting (Settings → Preferences → Approvals)"
             if result.get("mode")
             else "not reported by the review service"
         ),

@@ -105,6 +105,9 @@ _test_app.include_router(_mcp.router)
 _test_app.include_router(_well_known.router)
 _test_app.include_router(_mcp_admin.router, prefix="/api")
 _test_app.include_router(_mcp_oauth.router, prefix="/api")
+from app.routers import approval_preferences as _approval_preferences  # noqa: E402
+
+_test_app.include_router(_approval_preferences.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------

@@ -184,7 +184,8 @@ def safe_for_claude(anthropic_tools: list[dict], config_db: Session) -> list[dic
     - reads, by projection's multi-signal read check (never `method` alone);
     - non-GET writes, which suspend for approval in Norm;
     - pure drafts (`working_document` with no direct writes), reviewed in Norm;
-    - workflow-mode tools, whose autonomy the user set in Norm themselves.
+    - tools with levels (receiving, reconciling), whose level the person set
+      in Norm themselves.
 
     One rule, derived from each tool's own definition. It replaced a hand-kept
     tool list per playbook, which also narrowed Norm's chat and hid the tools a
@@ -194,7 +195,6 @@ def safe_for_claude(anthropic_tools: list[dict], config_db: Session) -> list[dic
     from app.connectors import spec_rows
     from app.mcp.projection import READ_METHODS, is_read_tool, raw_tool_defs
     from app.services import approvals
-    from app.services.workflow_modes import WORKFLOW_KEYS
 
     defs = raw_tool_defs(config_db)
 
@@ -216,7 +216,7 @@ def safe_for_claude(anthropic_tools: list[dict], config_db: Session) -> list[dic
             "allowed_write_actions"
         ):
             return True
-        return action in WORKFLOW_KEYS
+        return action in approvals.LEVELLED_ACTIONS
 
     return [t for t in anthropic_tools if keep(t)]
 

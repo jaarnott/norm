@@ -2326,18 +2326,21 @@ def execute_consolidator(
             "error": "consolidator_config must contain function_code — see Settings > Connectors to edit",
         }
 
-    # A run mode arriving IN the tool call is the model's say-so, not the
-    # user's. For the run-mode workflows it is set aside here and may only
-    # LOWER the mode resolved below — passed as an argument it used to beat
-    # the user's choice outright, so mode="autopilot" would have reconciled
+    # The two invoice tools run at a level — the PERSON's
+    # (approvals.level): the conversation's owner, i.e. whoever is asking, or
+    # a scheduled task's creator. A mode arriving IN the tool call is the
+    # model's say-so, and a task's own `mode` setting is the task's; either
+    # may only LOWER it. Passed as an argument the model's mode used to beat
+    # the person's choice outright, so mode="autopilot" would have reconciled
     # and auto-created statements for an approve_all user (consolidator
-    # review, 1 Oct 2026; no call ever did).
-    action = config.get("action")
-    from app.services.workflow_modes import MODE_VENUE_SCOPED, WORKFLOW_KEYS
+    # review, 1 Oct 2026; no call ever did). With no person (no thread), the
+    # level is the first — it writes nothing.
+    from app.services import approvals
 
-    governed = action in WORKFLOW_KEYS and action not in MODE_VENUE_SCOPED
-    passed_mode = input_params.get("mode") if governed else None
-    if governed:
+    action = config.get("action")
+    key = approvals.LEVELLED_ACTIONS.get(action)
+    passed_mode = input_params.get("mode") if key else None
+    if key:
         input_params = {k: v for k, v in input_params.items() if k != "mode"}
 
     # Merge the automated task's persistent configuration (set via
@@ -2352,31 +2355,12 @@ def execute_consolidator(
                 **input_params,
             }
 
-    # Inject the caller's per-workflow run mode (approve_all / approve_fixes /
-    # autopilot): the task's own setting if it has one, else the thread's
-    # user's. The consolidator reads it from params like dry_run; "unset" ⇒
-    # the safest behaviour + an ask. Receiving is excluded (MODE_VENUE_SCOPED):
-    # it is the VENUE's decision, resolved server-side in review_invoices —
-    # injecting a personal mode as well made it a second, invisible setting.
-    if governed:
-        from app.services import venue_autopilot as VA
-        from app.services.workflow_modes import MODE_IDS, user_mode
-
-        resolved = input_params.get("mode")
-        if resolved not in MODE_IDS:
-            user = None
-            if thread_id:
-                from app.db.models import Thread, User
-
-                thread = db.query(Thread).filter(Thread.id == thread_id).first()
-                user = (
-                    db.query(User).filter(User.id == thread.user_id).first()
-                    if thread and thread.user_id
-                    else None
-                )
-            resolved = (user_mode(user, action) if user else None) or "unset"
-        if resolved in MODE_IDS and passed_mode in MODE_IDS:
-            resolved = VA.at_most(resolved, passed_mode)
+    if key:
+        user = _user_for_thread(thread_id, db)
+        resolved = approvals.at_most(
+            approvals.level(user, key), input_params.get("mode")
+        )
+        resolved = approvals.at_most(resolved, passed_mode)
         input_params = {**input_params, "mode": resolved}
 
     from app.connectors.function_executor import execute_function
@@ -2552,101 +2536,100 @@ def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
     }
 
 
-@register("norm", "get_workflow_mode")
-def _get_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Return the caller's run mode for a workflow (or 'unset')."""
-    from app.services.workflow_modes import WORKFLOW_KEYS, user_mode
+def _preference_change(params: dict, db: Session, thread_id: str | None):
+    """(user, catalog entry, new value) for set_approval_preference, or an
+    error string. The new value is the full preference after the change."""
+    from app.db.engine import _ConfigSessionLocal
+    from app.services import approvals
 
-    workflow = params.get("workflow", "")
-    if workflow not in WORKFLOW_KEYS:
-        return {"success": False, "data": {}, "error": f"unknown workflow: {workflow}"}
     user = _user_for_thread(thread_id, db)
-    return {
-        "success": True,
-        "data": {"workflow": workflow, "mode": user_mode(user, workflow) or "unset"},
-    }
+    if user is None:
+        return "no person for this conversation"
+    cdb = _ConfigSessionLocal()
+    try:
+        entries = approvals.catalog(cdb)
+    finally:
+        cdb.close()
+    entry = approvals.find(entries, params.get("tool"))
+    if entry is None:
+        return (
+            f"no write tool called {params.get('tool')!r} — use one of: "
+            + ", ".join(e["key"] for e in entries)
+        )
+    setting = str(params.get("setting") or "").strip().lower() or None
+    options = params.get("options")
+    if isinstance(options, str):
+        import json as _json
+
+        try:
+            options = _json.loads(options)
+        except ValueError:
+            return "options must be an object of switch: true/false"
+    if (entry["row"].get("approval") or {}).get("levels"):
+        current = approvals.preference(user, entry["key"])
+        merged = dict(current.get("options") or {})
+        merged.update(options or {})
+        value = {
+            "level": setting or approvals.level(user, entry["key"]),
+            "options": merged,
+        }
+    else:
+        value = setting
+    try:
+        approvals.validate(entry["row"], value)
+    except ValueError as exc:
+        return str(exc)
+    return user, entry, value
 
 
-@previews("norm", "set_workflow_mode")
-def _set_workflow_mode_preview(params: dict, db: Session, thread_id: str | None):
-    from app.services.workflow_modes import (
-        MODE_IDS,
-        MODE_VENUE_SCOPED,
-        MODES,
-        WORKFLOWS,
-        user_mode,
-    )
+@previews("norm", "set_approval_preference")
+def _set_approval_preference_preview(
+    params: dict, db: Session, thread_id: str | None
+) -> dict:
+    from app.services import approvals
 
-    workflow = params.get("workflow", "")
-    mode = params.get("mode", "")
-    named = {w["key"]: w["label"] for w in WORKFLOWS}
-    if workflow not in named:
-        return {"error": f"unknown workflow: {workflow}"}
-    if workflow in MODE_VENUE_SCOPED:
-        # The handler refuses this too; say so before asking anyone.
-        return {"error": _set_workflow_mode(params, db, thread_id)["error"]}
-    if mode not in MODE_IDS:
-        return {"error": f"unknown mode: {mode}"}
-    user = _user_for_thread(thread_id, db)
-    if not user:
-        return {"error": "no user for this conversation"}
-    labels = {m["id"]: m["label"] for m in MODES}
-    current = user_mode(user, workflow)
-    if current == mode:
-        return {"done": {"workflow": workflow, "mode": mode, "result": "already set"}}
+    change = _preference_change(params, db, thread_id)
+    if isinstance(change, str):
+        return {"error": change}
+    user, entry, value = change
+    key, row = entry["key"], entry["row"]
+    before = approvals.describe(user, key, row)
+    after = approvals.describe_entry(row, approvals.validate(row, value))
+    if before == after:
+        return {"done": {"tool": key, "setting": after, "result": "already set"}}
+    label = (row.get("approval") or {}).get("label") or key
     return {
         "preview": {
-            "title": "Change how much Norm does on its own",
-            "target": named[workflow],
-            "changes": [
-                {
-                    "field": "Mode",
-                    "before": labels.get(current, "Not set (Norm asks)"),
-                    "after": labels[mode],
-                }
-            ],
-            "note": next(m["description"] for m in MODES if m["id"] == mode),
+            "title": "Change what Norm may do without asking you",
+            "target": label[:1].upper() + label[1:],
+            "changes": [{"field": "Setting", "before": before, "after": after}],
+            "note": "You can change this any time in Settings → Preferences.",
         }
     }
 
 
-@register("norm", "set_workflow_mode")
-def _set_workflow_mode(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Set the caller's run mode for a workflow."""
-    from sqlalchemy.orm.attributes import flag_modified
+@register("norm", "set_approval_preference")
+def _set_approval_preference(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Change one of the caller's approval preferences — always asked first
+    (the tool's own approval can't be skipped), so Norm never raises its own
+    autonomy without the person saying yes on a card."""
+    from app.services import approvals
 
-    from app.services.workflow_modes import MODE_IDS, WORKFLOW_KEYS
-
-    workflow = params.get("workflow", "")
-    mode = params.get("mode", "")
-    if workflow not in WORKFLOW_KEYS:
-        return {"success": False, "data": {}, "error": f"unknown workflow: {workflow}"}
-    from app.services.workflow_modes import MODE_VENUE_SCOPED
-
-    if workflow in MODE_VENUE_SCOPED:
-        # Nothing reads a personal mode for receiving — writing one here let
-        # the model confirm a change that never took effect (consolidator
-        # review, 1 Oct 2026).
-        return {
-            "success": False,
-            "data": {},
-            "error": (
-                "Receiving invoices is set per venue, not per person — change it "
-                "in Settings → Preferences → Receiving invoices. Nothing was "
-                "changed."
-            ),
-        }
-    if mode not in MODE_IDS:
-        return {"success": False, "data": {}, "error": f"unknown mode: {mode}"}
-    user = _user_for_thread(thread_id, db)
-    if not user:
-        return {"success": False, "data": {}, "error": "no user for this conversation"}
-    modes = dict(user.workflow_modes or {})
-    modes[workflow] = mode
-    user.workflow_modes = modes
-    flag_modified(user, "workflow_modes")
-    db.flush()
-    return {"success": True, "data": {"workflow": workflow, "mode": mode}}
+    change = _preference_change(params, db, thread_id)
+    if isinstance(change, str):
+        return {"success": False, "data": {}, "error": change}
+    user, entry, value = change
+    clean = approvals.set_preference(
+        db, user, entry["key"], entry["row"], value, via="chat"
+    )
+    return {
+        "success": True,
+        "data": {
+            "tool": entry["key"],
+            "setting": approvals.describe(user, entry["key"], entry["row"]),
+            "stored": clean,
+        },
+    }
 
 
 @register("norm", "match_stock_items")
@@ -2907,6 +2890,7 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
     ``require_valid_po``.
     """
     from app.db.engine import _ConfigSessionLocal
+    from app.services.approvals import receiving_settings_for_thread
     from app.services.invoice_review import review_invoices
 
     venue_id, venue_err = _scoped_venue_id(params, db)
@@ -2932,6 +2916,9 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
                 mode=str(params.get("mode") or "approve_all"),
                 max_sensei=int(params.get("max_sensei") or 0),
                 require_valid_po=params.get("require_valid_po") is not False,
+                # Whose rung and switches: the conversation's owner — the
+                # person asking, or a scheduled task's creator.
+                settings=receiving_settings_for_thread(db, thread_id),
             )
         finally:
             cdb.close()

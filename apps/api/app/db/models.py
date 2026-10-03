@@ -42,9 +42,13 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     dashboard_preferences = Column(JSON, nullable=True)  # {"hr": "report-id", ...}
-    # Per-workflow run mode, keyed by consolidator action name, e.g.
-    # {"review_and_receive_invoices": "autopilot"}. See services/workflow_modes.
+    # Superseded by approval_preferences (Oct 2026), which the migration filled
+    # from it. Kept until a later release drops it; nothing reads it.
     workflow_modes = Column(JSON, nullable=True)
+    # What Norm may do without asking this person, per write tool
+    # ("connector.action"): {"always": true}, or for a tool with levels
+    # {"level": "autopilot", "options": {...}}. See services/approvals.py.
+    approval_preferences = Column(JSON, nullable=True)
 
     threads = relationship("Thread", back_populates="user")
     memberships = relationship("OrganizationMembership", back_populates="user")
@@ -312,7 +316,9 @@ class Approval(Base):
     __tablename__ = "approvals"
 
     id = Column(String, primary_key=True, default=_uuid)
-    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
+    # Optional since Oct 2026: changing an approval preference in Settings is
+    # recorded here too, and happens outside any conversation.
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=True)
     action = Column(String, nullable=False)  # "approved" or "rejected"
     performed_by = Column(String, default="system")
     user_id = Column(String, ForeignKey("users.id"), nullable=True)

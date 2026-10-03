@@ -64,10 +64,17 @@ FALLBACK_AUTO = frozenset({("norm", "remember")})
 Gate = str
 
 
-def gate(row: dict | None, method: str | None, connector: str, action: str) -> Gate:
+def gate(
+    row: dict | None,
+    method: str | None,
+    connector: str,
+    action: str,
+    user: User | None = None,
+) -> Gate:
     """Whether a tool call runs now, runs as an auto-approved write, or asks.
 
-    Decided by the tool's declared ``effect``. A row that doesn't declare one
+    Decided by the tool's declared ``effect`` — and, for a write that asks, by
+    whether ``user`` always allows it. A row that doesn't declare an effect
     keeps the old rule, so nothing changes until a tool is labelled: a GET
     runs, ``remember`` is auto-approved, anything else asks.
     """
@@ -83,7 +90,9 @@ def gate(row: dict | None, method: str | None, connector: str, action: str) -> G
     policy = spec_rows.approval(row)
     if policy.get("levels"):
         return "run"
-    return "auto" if policy.get("default") == "auto" else "ask"
+    if policy.get("default") == "auto":
+        return "auto"
+    return "auto" if always_allowed(user, f"{connector}.{action}", row) else "ask"
 
 
 def is_tiered(row: dict | None) -> bool:
@@ -403,3 +412,280 @@ def post_outcome_to_task_conversation(db: Session, thread: Thread) -> None:
     except Exception:  # noqa: BLE001 — logging the outcome must not undo it
         db.rollback()
         logger.exception("Could not post approval outcome for %s", thread.id[:12])
+
+
+# ---------------------------------------------------------------------------
+# Preferences: what Norm may do without asking this person
+# ---------------------------------------------------------------------------
+#
+# One store, ``User.approval_preferences``, keyed by write tool
+# ("connector.action"). It replaced a personal run mode per workflow
+# (``users.workflow_modes``) and, for receiving only, a per-venue ladder
+# (``venues.invoice_autopilot``) — the same question with two homes. Anyone
+# sets their own; nobody sets someone else's.
+#
+#   {"loadedhub.manage_stock_item": {"always": true},
+#    "loadedhub.review_and_receive_invoices":
+#        {"level": "autopilot", "options": {"auto_strike_phantom_lines": true}},
+#    "loadedhub.reconcile_received_invoices": {"level": "approve_fixes"}}
+
+#: The levels both invoice tools share, least to most trusting.
+LEVELS = ("approve_all", "approve_fixes", "autopilot")
+RECEIVE_KEY = "loadedhub.review_and_receive_invoices"
+RECONCILE_KEY = "loadedhub.reconcile_received_invoices"
+#: Consolidator action -> its preference key, for the engine, which runs a
+#: consolidator knowing only its action.
+LEVELLED_ACTIONS = {
+    "review_and_receive_invoices": RECEIVE_KEY,
+    "reconcile_received_invoices": RECONCILE_KEY,
+}
+
+
+def _stored(user: User | None) -> dict:
+    prefs = getattr(user, "approval_preferences", None)
+    return prefs if isinstance(prefs, dict) else {}
+
+
+def preference(user: User | None, key: str) -> dict:
+    entry = _stored(user).get(key)
+    return entry if isinstance(entry, dict) else {}
+
+
+def always_allowed(user: User | None, key: str, row: dict | None) -> bool:
+    """Does this person let Norm run this write without asking?
+
+    Only when the tool allows it at all: changing an approval preference
+    always asks, so Norm can never raise its own autonomy silently.
+    """
+    from app.connectors import spec_rows
+
+    if user is None or not spec_rows.approval(row).get("allow_auto"):
+        return False
+    return preference(user, key).get("always") is True
+
+
+def level(user: User | None, key: str) -> str:
+    """This person's level for a tool with levels; the first (writes nothing)
+    when they haven't chosen one."""
+    chosen = preference(user, key).get("level")
+    return chosen if chosen in LEVELS else LEVELS[0]
+
+
+def at_most(chosen: str, ceiling: str | None) -> str:
+    """The lower of two levels. A run may ask for LESS than the person allows
+    (a task's own setting, the model's mode), never more."""
+    chosen = chosen if chosen in LEVELS else LEVELS[0]
+    if ceiling not in LEVELS:
+        return chosen
+    return LEVELS[min(LEVELS.index(chosen), LEVELS.index(ceiling))]
+
+
+def receiving_settings(user: User | None) -> dict:
+    """The receiving policy for this person, in the shape the review service
+    reads: ``{"mode": level, <switch>: bool, ...}``. No person — a background
+    review — is the safest policy."""
+    from app.services import venue_autopilot as VA
+
+    entry = preference(user, RECEIVE_KEY)
+    return VA.settings_from(
+        {"mode": level(user, RECEIVE_KEY), **(entry.get("options") or {})}
+    )
+
+
+def receiving_settings_for_thread(db: Session, thread_id: str | None) -> dict:
+    thread = (
+        db.query(Thread).filter(Thread.id == thread_id).first() if thread_id else None
+    )
+    user = (
+        db.query(User).filter(User.id == thread.user_id).first()
+        if thread is not None and thread.user_id
+        else None
+    )
+    return receiving_settings(user)
+
+
+def validate(row: dict | None, value) -> dict:
+    """A preference value for ``row``'s tool, checked against its policy.
+
+    ``"ask"`` / ``"always"`` for an ordinary write; a level id, or
+    ``{"level", "options"}``, for a tool with levels. Raises ValueError.
+    """
+    from app.connectors import spec_rows
+
+    if spec_rows.effect(row) != "write":
+        raise ValueError("only a tool that makes changes has an approval preference")
+    policy = spec_rows.approval(row)
+    if policy.get("levels"):
+        if isinstance(value, str):
+            value = {"level": value}
+        if not isinstance(value, dict):
+            raise ValueError("choose a level")
+        ids = [lv.get("id") for lv in policy["levels"] if isinstance(lv, dict)]
+        if value.get("level") not in ids:
+            raise ValueError(f"level must be one of {', '.join(ids)}")
+        known = {
+            o.get("id") for o in policy.get("options") or [] if isinstance(o, dict)
+        }
+        options = value.get("options") or {}
+        if not isinstance(options, dict) or set(options) - known:
+            raise ValueError(
+                "unknown switch: " + ", ".join(sorted(set(options) - known))
+            )
+        return {
+            "level": value["level"],
+            "options": {k: True for k, v in options.items() if v is True},
+        }
+    if policy.get("default") == "auto":
+        raise ValueError("Norm does this on its own; there is nothing to choose")
+    if value not in ("ask", "always"):
+        raise ValueError("choose ask or always")
+    if value == "always" and not policy.get("allow_auto"):
+        raise ValueError("this one always asks — Norm can't be told to skip it")
+    return {"always": value == "always"}
+
+
+def set_preference(
+    db: Session, user: User, key: str, row: dict | None, value, *, via: str
+) -> dict:
+    """Save one preference for ``user`` and record who changed what, where.
+
+    ``via`` says where it was set: "settings", "card" or "chat".
+    """
+    clean = validate(row, value)
+    prefs = dict(_stored(user))
+    before = prefs.get(key)
+    if clean == {"always": False}:
+        prefs.pop(key, None)  # asking is the default; store nothing
+    else:
+        prefs[key] = clean
+    user.approval_preferences = prefs
+    flag_modified(user, "approval_preferences")
+    db.add(
+        Approval(
+            thread_id=None,
+            action="approval_preference_set",
+            performed_by=user.email,
+            user_id=user.id,
+            notes=f"{key}: {before} -> {clean} (via {via})",
+        )
+    )
+    db.flush()
+    return clean
+
+
+def describe(user: User | None, key: str, row: dict | None) -> str:
+    """This person's setting for a tool, in words."""
+    return describe_entry(row, preference(user, key))
+
+
+def describe_entry(row: dict | None, entry: dict | None) -> str:
+    """A stored preference entry for ``row``'s tool, in words."""
+    from app.connectors import spec_rows
+
+    entry = entry if isinstance(entry, dict) else {}
+    policy = spec_rows.approval(row)
+    if policy.get("levels"):
+        chosen = entry.get("level") if entry.get("level") in LEVELS else LEVELS[0]
+        named = {lv.get("id"): lv.get("label") for lv in policy["levels"]}
+        text = named.get(chosen) or chosen
+        on = sorted(k for k, v in (entry.get("options") or {}).items() if v is True)
+        labels = {o.get("id"): o.get("label") for o in policy.get("options") or []}
+        if on and chosen == LEVELS[-1]:
+            text += " — may also " + "; ".join(labels.get(o, o) for o in on)
+        return text
+    if policy.get("default") == "auto":
+        return "does it without asking"
+    if entry.get("always") is True and policy.get("allow_auto"):
+        return "always allowed — no card"
+    return "asks first"
+
+
+def catalog(config_db: Session, apps: set[str] | None = None) -> list[dict]:
+    """Every write a person can set a preference for, as ``{key, row, app}``.
+
+    Tools an App claims (exposure is the App Map), labelled ``write``, that
+    ask — the automatic ones (remember, a task's summary) have nothing to
+    choose. ``apps`` narrows it to the Apps on for someone's organisation.
+    """
+    from app.connectors import spec_rows
+    from app.db.config_models import ConnectionSpec
+    from app.services.entitlements import tool_owners
+
+    owners = tool_owners(config_db)
+    out = []
+    for spec in config_db.query(ConnectionSpec).all():
+        for row in spec_rows.tools(spec):
+            key = f"{spec.connector_name}.{row.get('action')}"
+            app = owners.get(key)
+            if app is None or (apps is not None and app not in apps):
+                continue
+            if spec_rows.effect(row) != "write":
+                continue
+            if spec_rows.approval(row).get("default") == "auto":
+                continue
+            out.append({"key": key, "row": row, "app": app})
+
+    def order(e):
+        policy = e["row"].get("approval") or {}
+        # Levels first, then the writes a person can change, by name; the
+        # ones that always ask last.
+        return (
+            not policy.get("levels"),
+            not policy.get("allow_auto"),
+            str(policy.get("label") or e["key"]),
+        )
+
+    return sorted(out, key=order)
+
+
+def find(entries: list[dict], name: str | None) -> dict | None:
+    """The catalog entry ``name`` means: its key, its action, or its label."""
+    wanted = str(name or "").strip().lower()
+    if not wanted:
+        return None
+    for e in entries:
+        label = str((e["row"].get("approval") or {}).get("label") or "").lower()
+        if wanted in (e["key"].lower(), str(e["row"].get("action")).lower(), label):
+            return e
+    return None
+
+
+def record_always_allowed(
+    db: Session, thread: Thread, user: User | None, tc: ToolCall
+) -> None:
+    """A write that ran without a card because its owner always allows it."""
+    db.add(
+        Approval(
+            thread_id=thread.id,
+            action="tool_call_always_allowed",
+            performed_by=getattr(user, "email", None) or "system",
+            user_id=getattr(user, "id", None),
+            notes=f"{tc.connector_name}.{tc.action} ({tc.id})",
+        )
+    )
+    db.flush()
+
+
+def always_allow_from_card(
+    db: Session, config_db: Session, thread: Thread, user: User, keys: list[str]
+) -> list[str]:
+    """ "Always allow" ticked on a card: save it for the person who approved.
+
+    Only for tools on this card (a card can't switch on anything else), and
+    only where the tool allows it. Returns the keys saved.
+    """
+    from app.agents.tool_loop import _find_tool_def
+
+    on_card = {f"{tc.connector_name}.{tc.action}" for tc in _pending_calls(db, thread)}
+    saved = []
+    for key in keys or []:
+        if key not in on_card:
+            continue
+        connector, _, action = key.partition(".")
+        row = _find_tool_def(connector, action, db, config_db=config_db)
+        try:
+            set_preference(db, user, key, row, "always", via="card")
+        except ValueError:
+            continue
+        saved.append(key)
+    return saved

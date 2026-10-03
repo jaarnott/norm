@@ -39,10 +39,10 @@ from app.routers import (  # noqa: E402
     component_apis,
     apps as apps_router,
     invoice_fixes,
+    approval_preferences,
     recipe_editor,
     uploads,
     memories,
-    workflow_modes,
     playbooks,
     supplier_specs,
     supplier_tenders,
@@ -107,7 +107,6 @@ app.include_router(apps_router.router, prefix="/api")
 app.include_router(marketplace.router, prefix="/api")
 app.include_router(recipe_editor.router, prefix="/api")
 app.include_router(uploads.router, prefix="/api")
-app.include_router(workflow_modes.router, prefix="/api")
 app.include_router(memories.router, prefix="/api")
 app.include_router(playbooks.router, prefix="/api")
 app.include_router(supplier_specs.router, prefix="/api")
@@ -121,6 +120,7 @@ app.include_router(internal.router)
 app.include_router(mcp.router)
 app.include_router(well_known.router)  # /.well-known/* — must be at host root
 app.include_router(mcp_admin.router, prefix="/api")
+app.include_router(approval_preferences.router, prefix="/api")
 app.include_router(mcp_oauth.router, prefix="/api")
 
 

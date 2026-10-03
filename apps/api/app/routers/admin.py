@@ -803,7 +803,7 @@ def automated_task_diagnostics(
     recent run outcomes (including error messages, which are otherwise only
     visible in the database).
     """
-    from app.services.workflow_modes import DEFAULT_MODE, WORKFLOWS, user_mode
+    from app.services import approvals
 
     task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
     if not task:
@@ -829,19 +829,22 @@ def automated_task_diagnostics(
         _EMAIL_TOOL_ACTION in str(t) for t in tool_filter
     )
 
-    # The run mode each workflow's consolidator would see for this task's owner.
-    # An unset mode falls back to DEFAULT_MODE (approve_all), which runs the
-    # consolidators read-only — on an unattended schedule that means nothing is
-    # ever written, so it is the first thing to check on a "it runs but nothing
-    # happens" report.
-    effective_modes = {
-        w["key"]: {
-            "stored": (user_mode(owner, w["key"]) if owner else None),
-            "effective": (user_mode(owner, w["key"]) if owner else None)
-            or DEFAULT_MODE,
-        }
-        for w in WORKFLOWS
+    # The level each invoice tool runs at for this task's owner, and the writes
+    # they let Norm make without asking. A level never chosen is the first
+    # (approve_all), which writes nothing — on an unattended schedule that
+    # means nothing is ever written, so it is the first thing to check on a
+    # "it runs but nothing happens" report. A write that asks, unattended,
+    # waits for its owner.
+    effective_levels = {
+        key: approvals.level(owner, key) for key in approvals.LEVELLED_ACTIONS.values()
     }
+    always_allowed = sorted(
+        key
+        for key, entry in (
+            (owner.approval_preferences if owner else None) or {}
+        ).items()
+        if isinstance(entry, dict) and entry.get("always") is True
+    )
 
     return {
         "task": {
@@ -868,7 +871,7 @@ def automated_task_diagnostics(
                 "email": owner.email,
                 "full_name": owner.full_name,
                 "role": owner.role,
-                "workflow_modes": owner.workflow_modes,
+                "approval_preferences": owner.approval_preferences,
             }
             if owner
             else None
@@ -892,7 +895,8 @@ def automated_task_diagnostics(
             "email_tool_enabled": email_tool_enabled,
             "email_tool_action": _EMAIL_TOOL_ACTION,
             "is_scheduled": task.status == "active" and task.schedule_type != "manual",
-            "effective_run_modes": effective_modes,
-            "default_run_mode": DEFAULT_MODE,
+            "effective_levels": effective_levels,
+            "default_level": approvals.LEVELS[0],
+            "always_allowed": always_allowed,
         },
     }

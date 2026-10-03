@@ -341,19 +341,29 @@ async def approve(
     """Approve the proposed changes — all of them, or the ones ticked.
 
     ``tool_call_ids`` names the rows the person ticked on the card; the rest
-    are declined, and the model is told which.
+    are declined, and the model is told which. ``always_allow`` names tools on
+    the card the person ticked "always allow" for — saved as THEIR preference.
     """
     raw_thread = _thread_for_decision(db, thread_id, user)
     if raw_thread.status == "awaiting_tool_approval":
-        ticked = (body or {}).get("tool_call_ids") if isinstance(body, dict) else None
-        if ticked is not None and not (
-            isinstance(ticked, list) and all(isinstance(i, str) for i in ticked)
-        ):
-            raise HTTPException(
-                status_code=422, detail="tool_call_ids must be a list of ids"
-            )
+        body = body if isinstance(body, dict) else {}
+        ticked = body.get("tool_call_ids")
+        always = body.get("always_allow") or []
+        for ids in (ticked, always):
+            if ids is not None and not (
+                isinstance(ids, list) and all(isinstance(i, str) for i in ids)
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="tool_call_ids and always_allow must be lists of strings",
+                )
         return _approve_tool_calls(
-            db, raw_thread, user, config_db=config_db, tool_call_ids=ticked
+            db,
+            raw_thread,
+            user,
+            config_db=config_db,
+            tool_call_ids=ticked,
+            always_allow=always,
         )
 
     thread, domain = _find(db, thread_id)
@@ -513,6 +523,7 @@ def _decide_tool_calls(
     config_db: Session | None = None,
     notes: str | None = None,
     tool_call_ids: list[str] | None = None,
+    always_allow: list[str] | None = None,
 ) -> dict:
     """Decide a suspended turn's pending writes, then resume the loop.
 
@@ -531,6 +542,8 @@ def _decide_tool_calls(
         raise HTTPException(
             status_code=409, detail="These changes have already been decided."
         )
+    if approve and always_allow and config_db is not None:
+        approvals.always_allow_from_card(db, config_db, thread, user, always_allow)
     approvals.decide(
         db, thread, user, approve=approve, notes=notes, tool_call_ids=tool_call_ids
     )
@@ -551,6 +564,7 @@ def _approve_tool_calls(
     user: User,
     config_db: Session | None = None,
     tool_call_ids: list[str] | None = None,
+    always_allow: list[str] | None = None,
 ) -> dict:
     """Approve pending write tool calls (all, or the ticked ones) and resume."""
     return _decide_tool_calls(
@@ -560,6 +574,7 @@ def _approve_tool_calls(
         approve=True,
         config_db=config_db,
         tool_call_ids=tool_call_ids,
+        always_allow=always_allow,
     )
 
 

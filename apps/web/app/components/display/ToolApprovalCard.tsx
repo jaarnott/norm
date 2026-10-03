@@ -4,6 +4,7 @@ import { useState, type CSSProperties } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { getStoredUser } from '../../lib/api';
 import {
+  allowable,
   approveParams,
   cardLabel,
   declineParams,
@@ -151,6 +152,7 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
   const isAdmin = getStoredUser()?.role === 'admin';
 
   const [ticked, setTicked] = useState<Set<string>>(() => new Set(rows.map(r => r.id)));
+  const [always, setAlways] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
@@ -169,7 +171,7 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
 
   const approve = async () => {
     setLoading(true);
-    await onAction?.({ connector_name: '_system', action: 'tool_approve', params: approveParams(threadId, rows, ticked) });
+    await onAction?.({ connector_name: '_system', action: 'tool_approve', params: approveParams(threadId, rows, ticked, always) });
     setLoading(false);
   };
 
@@ -254,10 +256,33 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
         );
       })}
 
+      {pending && !declining && allowable(rows).length > 0 && (
+        <div style={{ padding: '0.55rem 0.9rem 0', borderTop: '1px solid #f0ebe5' }}>
+          {allowable(rows).map(t => (
+            <label key={t.key} style={{ display: 'flex', gap: '0.45rem', alignItems: 'baseline', fontSize: '0.74rem', color: '#555', cursor: 'pointer', marginBottom: '0.25rem' }}>
+              <input
+                type="checkbox"
+                checked={always.has(t.key)}
+                onChange={() => setAlways(prev => {
+                  const next = new Set(prev);
+                  if (next.has(t.key)) next.delete(t.key); else next.add(t.key);
+                  return next;
+                })}
+                style={{ accentColor: '#a08060', cursor: 'pointer' }}
+              />
+              <span>Always allow Norm to {t.label} without asking</span>
+            </label>
+          ))}
+          <div style={{ fontSize: '0.66rem', color: '#aaa', marginLeft: '1.25rem' }}>
+            Just for you. Change it any time in Settings → Preferences.
+          </div>
+        </div>
+      )}
+
       {pending && !declining && (
         <div style={{
           display: 'flex', justifyContent: 'flex-end', gap: '0.4rem',
-          padding: '0.6rem 0.9rem', borderTop: '1px solid #f0ebe5',
+          padding: '0.6rem 0.9rem', borderTop: allowable(rows).length > 0 ? 'none' : '1px solid #f0ebe5',
         }}>
           <button onClick={() => setDeclining(true)} disabled={loading} style={button(false, loading)}>
             Decline

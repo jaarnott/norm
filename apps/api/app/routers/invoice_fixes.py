@@ -1299,6 +1299,7 @@ def _squash_review_into_drafts(
     *,
     trigger_autostudy: bool = True,
     reference: dict | None = None,
+    settings: dict | None = None,
 ) -> None:
     """Run the review pipeline and store the result into every open draft.
 
@@ -1324,11 +1325,20 @@ def _squash_review_into_drafts(
 
     from app.services.invoice_review import carry_forward_decisions, review_invoice
 
-    # PO policy derives from the venue's receive_without_po gate (review_invoice
-    # default): the card must tell the story autopilot acts on — a PO-less
-    # invoice reads as blocked-from-auto-receive naming the toggle, unless the
-    # venue has said POs aren't required (18 Aug 2026).
-    fresh = review_invoice(db, config_db, venue_id, invoice_id, reference=reference)
+    # PO policy derives from the receive_without_po switch of the person
+    # looking (review_invoice default): the card must tell the story autopilot
+    # acts on — a PO-less invoice reads as blocked-from-auto-receive naming the
+    # toggle, unless they have said POs aren't required (18 Aug 2026). With no
+    # viewer (a background re-review), it is the draft's conversation's owner.
+    if settings is None:
+        from app.services.approvals import receiving_settings_for_thread
+
+        settings = receiving_settings_for_thread(
+            db, getattr(docs[0], "thread_id", None) if docs else None
+        )
+    fresh = review_invoice(
+        db, config_db, venue_id, invoice_id, reference=reference, settings=settings
+    )
     try:
         lh = _Loaded(db, config_db, venue_id)
         _attach_po_reference(fresh, lh)
@@ -1455,9 +1465,17 @@ def review_receive_draft(
     # rather than failing the review a human is waiting on.
     from app.services.spec_dojo import prefetch_replica_reference
 
+    from app.services.approvals import receiving_settings
+
     reference = prefetch_replica_reference(db, config_db, body.venue_id)
     _squash_review_into_drafts(
-        db, config_db, body.venue_id, body.invoice_id, docs, reference=reference
+        db,
+        config_db,
+        body.venue_id,
+        body.invoice_id,
+        docs,
+        reference=reference,
+        settings=receiving_settings(user),
     )
     db.refresh(doc)
     return _doc_to_dict(doc)

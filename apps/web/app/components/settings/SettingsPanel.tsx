@@ -20,7 +20,7 @@ import TemplatesPanel from './TemplatesPanel';
 import AgentsPanel from './AgentsPanel';
 import McpPanel from './McpPanel';
 import AdminThreadsPanel from './AdminThreadsPanel';
-import WorkflowModesTab from './WorkflowModesTab';
+import ApprovalPreferences from './ApprovalPreferences';
 import MemoryTab from './MemoryTab';
 import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
@@ -1422,10 +1422,9 @@ export default function SettingsPanel() {
         {/* ============ PREFERENCES TAB (all users) ============ */}
         {activeTab === 'preferences' && (
           <>
-            {/* Receiving lives INSIDE WorkflowModesTab — one section, one
-                control per workflow. Rendering it here as well is how the
-                same setting ended up with two homes. */}
-            <WorkflowModesTab />
+            {/* What Norm may do without asking — every write, receiving and
+                reconciling included. One home for one question. */}
+            <ApprovalPreferences />
             <div style={{ height: '2rem' }} />
             <MemoryTab />
           </>

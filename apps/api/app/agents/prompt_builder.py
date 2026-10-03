@@ -523,87 +523,59 @@ anything that will still be true next week goes through `remember`.
 """
 
 
-def workflow_modes_guidance(
+def approval_preferences_guidance(
     own_actions: set[str],
     db: Session,
     user_id: str | None,
-    active_venue_name: str | None,
+    config_db: Session,
 ) -> str:
-    """State each runnable workflow's CURRENT run mode, as context.
+    """What this person lets Norm do without asking, stated as context.
 
-    The two invoice playbooks used to open with a mandatory `get_workflow_mode`
-    call — 75 calls across 75 threads in the 60 days to 21 Sep 2026, exactly one
-    per conversation, spent learning a value the engine already holds:
-    `user_mode` is a local read of `User.workflow_modes`, and receiving's
-    effective mode is the VENUE's setting, which that call never even returned.
-    Stating it here removes a round-trip from every one of those conversations
-    and keeps the gate intact: a mode of "unset" still means ask first.
-
-    Only workflows this agent can actually run are listed — an agent without the
-    consolidator has no use for its mode.
+    The levels of the two invoice tools (receiving, reconciling), and any
+    write they always allow — so the model knows which writes act at once and
+    can say so, without a tool call to find out. Writes that ask show the
+    person a card; nothing else needs stating. Replaced the "Run modes" block
+    (Oct 2026), which also told the model to stop and ask for a mode before
+    running a workflow: a level now defaults to the first, which writes
+    nothing, so there is never a reason to wait.
     """
-    from app.services.workflow_modes import (
-        MODE_VENUE_SCOPED,
-        WORKFLOWS,
-        user_mode,
-    )
-
-    runnable = [w for w in WORKFLOWS if w["key"] in own_actions]
-    if not runnable:
-        return ""
-
-    from app.db.models import User, Venue
+    from app.db.models import User
+    from app.services import approvals
 
     user = db.query(User).filter(User.id == user_id).first() if user_id else None
-    venue = (
-        db.query(Venue).filter(Venue.name == active_venue_name).first()
-        if active_venue_name
-        else None
-    )
-
+    try:
+        entries = approvals.catalog(config_db)
+    except Exception:  # noqa: BLE001 — context, never a reason to fail a turn
+        return ""
     lines = []
-    any_unset = False
-    for w in runnable:
-        key = w["key"]
-        if key in MODE_VENUE_SCOPED:
-            # The venue owns this one; a per-user value would be a second,
-            # invisible setting (see execute_consolidator's note).
-            if venue is None:
-                continue
-            from app.services.venue_autopilot import settings_for
-
-            mode = (settings_for(venue) or {}).get("mode") or "unset"
-            whose = (
-                f"the VENUE's setting for {venue.name}, not a personal one — it "
-                "is changed in Settings → Preferences → Receiving invoices, "
-                "never with set_workflow_mode"
+    for e in entries:
+        if e["row"].get("action") not in own_actions:
+            continue
+        policy = e["row"].get("approval") or {}
+        label = policy.get("label") or e["key"]
+        if policy.get("levels"):
+            lines.append(
+                f"- {label} (`{e['key']}`): **{approvals.describe(user, e['key'], e['row'])}**"
             )
-        else:
-            mode = (user_mode(user, key) if user else None) or "unset"
-            whose = "this user's setting"
-        any_unset = any_unset or mode == "unset"
-        lines.append(f"- **{w['label']}** (`{key}`): **{mode}** — {whose}.")
-
+        elif approvals.always_allowed(user, e["key"], e["row"]):
+            lines.append(
+                f"- {label} (`{e['key']}`): **always allowed** — it runs without a card"
+            )
     if not lines:
         return ""
-
-    block = "\n\n## Run modes — already resolved, do not ask a tool for them\n"
-    block += "\n".join(lines)
+    block = "\n\n## What this person lets you do without asking\n" + "\n".join(lines)
     block += (
-        "\n\nThese are the live values; there is no tool to read them and you do "
-        "not need one."
+        "\n\nThese are live values — never ask a tool for them. Run a tool with "
+        "levels at once; it applies the level itself, and its result says what "
+        "it did. Any other write shows the person a card to approve. They "
+        "change these in Settings → Preferences"
     )
-    if any_unset:
+    if "set_approval_preference" in own_actions:
         block += (
-            " A mode shown as **unset** has never been chosen: do NOT run that "
-            "workflow yet. Explain the choices, ask the user to pick, save it "
-            "with `set_workflow_mode`, then continue."
+            ", or by asking you — call `set_approval_preference` (they approve "
+            "the change on a card)"
         )
-    block += (
-        " The user can change a personal mode any time by asking — that is what "
-        "`set_workflow_mode` is for; a venue's setting is changed in Settings.\n"
-    )
-    return block
+    return block + ".\n"
 
 
 def build_tool_definitions(
@@ -737,12 +709,9 @@ def build_tool_definitions(
     has_automated_tasks = bool({"manage_task", "create_automated_task"} & own_actions)
     system_prompt += automated_tasks_guidance(has_automated_tasks, automated_task)
 
-    # The run mode of any workflow this agent can run, stated rather than
-    # fetched — the playbooks used to spend a tool call per conversation
-    # asking for it.
-    system_prompt += workflow_modes_guidance(
-        own_actions, db, user_id, active_venue_name
-    )
+    # What this person lets Norm do without asking — the invoice tools'
+    # levels and any always-allowed write — stated rather than fetched.
+    system_prompt += approval_preferences_guidance(own_actions, db, user_id, _cdb)
 
     # Inject memory guidance when the remember tool is available, so the
     # agent proactively saves durable facts (ChatGPT/Claude-style capture).

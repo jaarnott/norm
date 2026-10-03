@@ -32,6 +32,8 @@ export interface ApprovalRow {
   summary: string;
   preview?: Preview | null;
   input_params?: Record<string, unknown> | null;
+  /** The tool, for "Always allow Norm to {label} without asking". */
+  approval?: { key: string; label?: string | null; allow_auto?: boolean } | null;
   /** The decision on this row: approved | rejected | superseded. */
   status?: string;
   /** What happened once approved: done | failed | changed. */
@@ -61,15 +63,34 @@ export function groupRows(rows: ApprovalRow[]): RowGroup[] {
   return groups;
 }
 
+/** The tools on this card the person may tell Norm to stop asking about. */
+export function allowable(rows: ApprovalRow[]): { key: string; label: string }[] {
+  const seen = new Map<string, string>();
+  for (const r of rows) {
+    const a = r.approval;
+    if (a?.allow_auto && a.key && !seen.has(a.key)) seen.set(a.key, a.label || r.action.replace(/_/g, ' '));
+  }
+  return [...seen].map(([key, label]) => ({ key, label }));
+}
+
 /**
  * What an Approve click sends. Every row ticked: no list (approve them all).
- * Some ticked: their ids, and the server declines the rest by name.
+ * Some ticked: their ids, and the server declines the rest by name. Any
+ * "always allow" ticked: those tools, saved as the approver's own preference.
  */
-export function approveParams(threadId: string, rows: ApprovalRow[], ticked: Set<string>) {
+export function approveParams(
+  threadId: string,
+  rows: ApprovalRow[],
+  ticked: Set<string>,
+  always: Set<string> = new Set(),
+) {
   const ids = rows.map(r => r.id).filter(id => ticked.has(id));
-  return ids.length === rows.length
-    ? { thread_id: threadId }
-    : { thread_id: threadId, tool_call_ids: ids };
+  const keys = allowable(rows).map(t => t.key).filter(k => always.has(k));
+  return {
+    thread_id: threadId,
+    ...(ids.length === rows.length ? {} : { tool_call_ids: ids }),
+    ...(keys.length ? { always_allow: keys } : {}),
+  };
 }
 
 export function declineParams(threadId: string, reason: string) {

@@ -677,26 +677,6 @@ class TestBlockingIssues:
 
 
 class TestPoPolicy:
-    class _VenueDb:
-        """A db stub answering the venue-settings lookup only."""
-
-        class _Venue:
-            def __init__(self, settings):
-                self.id = "v-1"
-                self.invoice_autopilot = settings
-
-        def __init__(self, settings):
-            self._venue = self._Venue(settings)
-
-        def query(self, *_a):
-            return self
-
-        def filter(self, *_a, **_k):
-            return self
-
-        def first(self):
-            return self._venue
-
     def test_no_po_blocks_under_the_batch_default(self):
         det = DETAIL(linkedPurchaseOrderId=None, purchaseOrderNumber=None)
         data = _review(detail=det)
@@ -713,17 +693,17 @@ class TestPoPolicy:
         assert compute_confidence(data) == "ready"
 
     def test_the_card_tells_the_story_autopilot_acts_on(self):
-        # No explicit policy → derived from the VENUE's receive_without_po
-        # gate. Gate off: the card shows blocked-from-auto-receive naming the
+        # No explicit policy → derived from the viewer's receive_without_po
+        # switch. Gate off: the card shows blocked-from-auto-receive naming the
         # toggle — no more "worth knowing" while autopilot silently parks
         # (user report, 18 Aug 2026). Gate on: an honest note.
         det = DETAIL(linkedPurchaseOrderId=None, purchaseOrderNumber=None)
-        data = _review(detail=det, db=self._VenueDb({}))
+        data = _review(detail=det, settings={})
         issue = next(i for i in data["issues"] if i["code"] == "po_missing")
         assert issue["blocking"] is True
         assert issue["gate"] == "receive_without_po"
 
-        data = _review(detail=det, db=self._VenueDb({"receive_without_po": True}))
+        data = _review(detail=det, settings={"receive_without_po": True})
         issue = next(i for i in data["issues"] if i["code"] == "po_missing")
         assert issue["blocking"] is False
         assert data["confidence"] == "ready"
@@ -830,19 +810,15 @@ class _BatchLh:
 
 
 class _VenueDb:
-    """Just enough session for review_invoices to read the venue's settings.
+    """A stand-in session carrying the receiving policy a batch runs under.
 
-    The venue now decides how far Norm may go, so a batch test has to say which
-    rung the venue is on — passing `mode=` alone can only ever lower it.
+    The PERSON's settings decide how far Norm may go (passed to
+    review_invoices as ``settings``), so a batch test has to say which rung
+    they are on — passing `mode=` alone can only ever lower it.
     """
 
-    class _Venue:
-        def __init__(self, settings):
-            self.id = "v-1"
-            self.invoice_autopilot = settings
-
     def __init__(self, settings):
-        self._venue = self._Venue(settings)
+        self.settings = settings
 
     def query(self, *_a):
         return self
@@ -851,7 +827,7 @@ class _VenueDb:
         return self
 
     def first(self):
-        return self._venue
+        return None
 
 
 class TestBatchModes:
@@ -879,7 +855,7 @@ class TestBatchModes:
             lambda lh_, req: received.append(req) or {"received": True},
         )
         monkeypatch.setattr(IR, "invalidate_conflicting_drafts", lambda *a, **k: None)
-        return review_invoices(db, None, "v-1", mode=mode)
+        return review_invoices(db, None, "v-1", mode=mode, settings=db.settings)
 
     def test_an_invoice_loaded_fails_to_return_is_reported_not_dropped(
         self, monkeypatch
@@ -908,7 +884,7 @@ class TestBatchModes:
             "app.services.spec_dojo.prefetch_replica_reference",
             lambda db, cdb, vid: REFERENCE(),
         )
-        out = review_invoices(db, None, "v-1", mode="autopilot")
+        out = review_invoices(db, None, "v-1", mode="autopilot", settings=db.settings)
         bad = [v for v in out["skipped"] if v["invoice_id"] == "inv-bad"]
         assert bad and bad[0]["outcome"] == "could not fetch from Loaded"
         assert "Loaded 502" in bad[0]["reasons"][0]
@@ -922,9 +898,9 @@ class TestBatchModes:
         assert out["mode"] == "autopilot"
         db = _VenueDb({"mode": "autopilot"})
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda d, c, v: _BatchLh({}))
-        assert review_invoices(db, None, "v-1", mode="approve_all")["mode"] == (
-            "approve_all"
-        )
+        assert review_invoices(
+            db, None, "v-1", mode="approve_all", settings=db.settings
+        )["mode"] == ("approve_all")
 
     def test_autopilot_accepts_and_receives_despite_diffs(self, monkeypatch):
         # "Trust the replica now": a qty diff never blocks autopilot — it is
@@ -994,7 +970,7 @@ class TestBatchModes:
         )
         monkeypatch.setattr(IR, "invalidate_conflicting_drafts", lambda *a, **k: None)
 
-        review_invoices(db, None, "v-1", mode="autopilot")
+        review_invoices(db, None, "v-1", mode="autopilot", settings=db.settings)
 
         assert received == []
 

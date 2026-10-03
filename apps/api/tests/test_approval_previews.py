@@ -917,7 +917,7 @@ class TestEveryWriteThatAsksCanPreview:
             ("gmail", "send_email"),
             ("norm_email", "send_report_email"),
             ("norm", "manage_task"),
-            ("norm", "set_workflow_mode"),
+            ("norm", "set_approval_preference"),
         ):
             row = {"action": action, "effect": "write", "approval": ASK}
             assert (

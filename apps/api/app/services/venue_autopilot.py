@@ -1,4 +1,4 @@
-"""How far a venue lets Norm go when receiving invoices.
+"""How far Norm may go when receiving invoices — the levels and switches.
 
 A ladder with three rungs, and the top rung has switches:
 
@@ -6,17 +6,21 @@ A ladder with three rungs, and the top rung has switches:
     approve_fixes  Norm receives an invoice it had nothing to say about.
     autopilot      Norm applies its own suggestions and receives — and may
                    create the things Loaded is missing, but ONLY the kinds
-                   this venue has ticked.
+                   that are ticked.
 
-Every toggle defaults OFF and every venue starts at ``approve_all``, because
+Every switch defaults OFF and the default rung is ``approve_all``, because
 each one authorises an irreversible write in someone else's system: a stock
 item, a unit, a brand or a supplier created in Loaded cannot be taken back from
 here. The ladder is meant to be climbed on evidence — the readiness report says
 how often Norm would have been right — rather than switched on hopefully.
 
-Venue-scoped, not user-scoped: invoices belong to a venue, and venues differ in
-how clean their Loaded catalogue is. `users.workflow_modes` still owns the
-statement-reconciliation workflow; only receiving moved here.
+Whose setting: the PERSON's, since Oct 2026 (``User.approval_preferences``,
+read through ``services.approvals.receiving_settings``). It was the venue's
+(``venues.invoice_autopilot``), which made receiving the one write with its
+own rules and its own settings page; the migration copied each venue's rung
+and switches to the people who can open it. This module keeps the vocabulary
+— rungs, switches, what each authorises — that the review service and the
+receive card share.
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ AUTO_STRIKE_PHANTOM_LINES = "auto_strike_phantom_lines"
 # The delete gates authorise autopilot's only DESTRUCTIVE writes — three
 # separate toggles on purpose: deleting a duplicate is evidence-backed,
 # deleting an unreadable-copy draft could discard a real delivery behind a
-# bad scan. A venue opts into each risk on its own.
+# bad scan. Each risk is opted into on its own.
 AUTO_DELETE_DUPLICATES = "auto_delete_duplicates"
 AUTO_DELETE_NON_INVOICES = "auto_delete_non_invoices"
 AUTO_DELETE_UNREADABLE = "auto_delete_unreadable"
@@ -73,43 +77,29 @@ GATES: dict[str, str] = {
 DEFAULTS: dict[str, object] = {"mode": DEFAULT_MODE, **{g: False for g in GATES}}
 
 
-def settings_for(venue) -> dict:
-    """This venue's settings, filled out and safe to read blind.
+def settings_from(stored: dict | None) -> dict:
+    """Receiving settings, filled out and safe to read blind.
 
     Unknown keys are dropped and a bad mode falls back to ``approve_all`` — a
     typo in stored JSON must never read as more permission than was granted.
     """
-    stored = getattr(venue, "invoice_autopilot", None) or {}
-    if not isinstance(stored, dict):
-        stored = {}
+    stored = stored if isinstance(stored, dict) else {}
     out = dict(DEFAULTS)
     mode = stored.get("mode")
     if mode in MODES:
         out["mode"] = mode
     for gate in GATES:
-        out[gate] = bool(stored.get(gate))
-    return out
-
-
-def normalise(payload: dict | None) -> dict:
-    """Validate a settings payload from the API before it is stored."""
-    payload = payload if isinstance(payload, dict) else {}
-    mode = payload.get("mode", DEFAULT_MODE)
-    if mode not in MODES:
-        raise ValueError(f"mode must be one of {', '.join(MODES)}")
-    out: dict = {"mode": mode}
-    for gate in GATES:
-        out[gate] = bool(payload.get(gate))
+        out[gate] = stored.get(gate) is True
     return out
 
 
 def at_most(mode: str, ceiling: str | None) -> str:
     """The lower of two rungs.
 
-    Callers may ask for LESS than the venue allows and never more: reviewing a
+    Callers may ask for LESS than the person allows and never more: reviewing a
     single invoice passes ``approve_all`` so opening one in the card can never
-    write to Loaded, and a chat request cannot talk a venue into autopilot it
-    was never put on.
+    write to Loaded, and a chat request cannot talk anyone into autopilot they
+    never chose.
 
     Only a RECOGNISED mode lowers anything. Treating an unrecognised ceiling as
     ``approve_all`` sounds like the safe reading and is actually a way to

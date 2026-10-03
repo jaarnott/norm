@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { approveParams, cardLabel, declineParams, groupRows, rowState, type ApprovalRow } from './approvalCard';
+import { allowable, approveParams, cardLabel, declineParams, groupRows, rowState, type ApprovalRow } from './approvalCard';
 
 function row(id: string, title?: string, extra: Partial<ApprovalRow> = {}): ApprovalRow {
   return {
@@ -41,6 +41,17 @@ describe('what a decision sends', () => {
     expect(approveParams('t', rows, new Set(['c', 'a']))).toEqual({
       thread_id: 't',
       tool_call_ids: ['a', 'c'],
+    });
+  });
+
+  it('offers "always allow" once per tool, and only where the tool allows it', () => {
+    const stock = { key: 'loadedhub.manage_stock_item', label: 'update stock items', allow_auto: true };
+    const locked = { key: 'norm.set_approval_preference', label: 'change what Norm may do', allow_auto: false };
+    const card = [row('a', undefined, { approval: stock }), row('b', undefined, { approval: stock }), row('c', undefined, { approval: locked })];
+    expect(allowable(card)).toEqual([{ key: 'loadedhub.manage_stock_item', label: 'update stock items' }]);
+    expect(approveParams('t', card, new Set(['a', 'b', 'c']), new Set(['loadedhub.manage_stock_item', 'norm.set_approval_preference']))).toEqual({
+      thread_id: 't',
+      always_allow: ['loadedhub.manage_stock_item'],
     });
   });
 
