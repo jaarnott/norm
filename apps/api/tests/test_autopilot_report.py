@@ -11,7 +11,7 @@ import pytest
 
 from app.db.models import InvoiceAutopilotOutcome
 
-from .conftest import _make_organization, _make_venue
+from .conftest import _make_organization, _make_venue, _make_venue_access
 
 
 def _venue(db, name="Bessie"):
@@ -146,11 +146,19 @@ class TestReport:
 
 class TestCannotReceive:
     def test_stages_records_and_never_receives(
-        self, client, manager_headers, db_session, monkeypatch, bind_recorder
+        self,
+        client,
+        manager_user,
+        manager_headers,
+        db_session,
+        monkeypatch,
+        bind_recorder,
     ):
         from app.routers import invoice_fixes as IF
 
         v = _venue(db_session, "Goose")
+        # The button acts only at a venue the presser can open.
+        _make_venue_access(db_session, manager_user, v)
         staged = {}
 
         def fake_stage(db, venue_id, invoice_id, *, draft):
@@ -201,11 +209,19 @@ class TestCannotReceive:
         assert row.detail["dojo"]["reason"] == "unit is wrong"
 
     def test_an_invoice_with_no_copy_still_records_the_verdict(
-        self, client, manager_headers, db_session, monkeypatch, bind_recorder
+        self,
+        client,
+        manager_user,
+        manager_headers,
+        db_session,
+        monkeypatch,
+        bind_recorder,
     ):
         # It cannot be staged, but the human's verdict IS the measurement —
         # losing it because Loaded has no PDF would defeat the feature.
         v = _venue(db_session, "Zeppa")
+        # The button acts only at a venue the presser can open.
+        _make_venue_access(db_session, manager_user, v)
 
         def no_copy(*a, **k):
             raise RuntimeError("no invoice copy attached — nothing to add")
@@ -228,13 +244,21 @@ class TestCannotReceive:
 
 class TestTheSupplierIsAttributed:
     def test_a_dojo_row_with_no_draft_still_names_the_supplier(
-        self, client, manager_headers, db_session, monkeypatch, bind_recorder
+        self,
+        client,
+        manager_user,
+        manager_headers,
+        db_session,
+        monkeypatch,
+        bind_recorder,
     ):
         """Pressing "Can't receive" on an invoice that was never opened has no
         working document to read the supplier from, so the row used to land in
         the report's "(no supplier)" bucket — losing exactly the attribution a
         supplier's training history is for. Staging has already resolved it."""
         v = _venue(db_session, "Freeman")
+        # The button acts only at a venue the presser can open.
+        _make_venue_access(db_session, manager_user, v)
 
         monkeypatch.setattr(
             "app.services.spec_dojo.stage_invoice_sample",

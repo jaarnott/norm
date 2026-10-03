@@ -358,12 +358,40 @@ async def execute_component_api(
 
     The execution itself lives in ``services.component_api`` so the MCP
     app-support tools run the identical path.
+
+    It acts only at a venue the caller can open (services/card_actions): it
+    took any venue_id the browser sent, and with none used whichever venue's
+    login came first. A call that writes — Place Order, a menu or roster save
+    — is the person's own change, made with a button, and is recorded.
     """
+    from app.db.config_models import ComponentApiConfig
+    from app.services import card_actions
     from app.services.component_api import ComponentApiError, execute_component_action
 
+    venue_id = card_actions.venue_for(db, user, body.venue_id)
+    cfg = (
+        config_db.query(ComponentApiConfig)
+        .filter(
+            ComponentApiConfig.component_key == component_key,
+            ComponentApiConfig.action_name == action_name,
+        )
+        .first()
+    )
+    writes = cfg is not None and (cfg.method or "GET").upper() != "GET"
     try:
-        return execute_component_action(
-            component_key, action_name, body.params, body.venue_id, db, config_db
+        result = execute_component_action(
+            component_key, action_name, body.params, venue_id, db, config_db
         )
     except ComponentApiError as e:
         raise HTTPException(e.status_code, str(e)) from e
+    if writes:
+        card_actions.record(
+            db,
+            user,
+            venue_id,
+            f"{component_key}.{action_name}",
+            f"HTTP {result.get('status_code')}"
+            + (" (failed)" if result.get("error") else ""),
+        )
+        db.commit()
+    return result

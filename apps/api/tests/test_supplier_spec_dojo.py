@@ -1266,9 +1266,21 @@ class TestCannotReceiveIntake:
         return FakeLoadedClient
 
     def test_creates_spec_and_sample_with_source_refs(
-        self, client, manager_headers, db_session, monkeypatch
+        self, client, manager_user, manager_headers, db_session, monkeypatch
     ):
+        from app.db.models import Venue
+        from tests.conftest import _make_organization, _make_venue_access
+
         self._fake_loaded(monkeypatch)
+        # Open to whoever hits the problem — at a venue they can open.
+        venue = Venue(
+            id="v1",
+            name="Tamar test",
+            organization_id=_make_organization(db_session).id,
+        )
+        db_session.add(venue)
+        db_session.flush()
+        _make_venue_access(db_session, manager_user, venue)
         # the request handler opens its own RW config session — point the
         # factory at the shared test session (and don't let it be closed)
         from app.db import engine as engine_mod

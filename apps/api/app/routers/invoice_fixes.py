@@ -45,6 +45,7 @@ from app.db.models import User
 # service so the web router and the MCP submit tool share ONE implementation.
 # Kept under the old private names here so the endpoints and tests below (and
 # test_invoice_fixes_handler.py) are untouched by the move.
+from app.services import card_actions
 from app.services.autopilot_metrics import record_receive_outcome
 from app.services.invoice_po_reference import (
     enrich_loaded_snapshot as _enrich_snapshot,
@@ -323,6 +324,7 @@ def accept_invoice_fix(
     normal PUT of the invoice (never sets ``isReceived``), then the draft is
     re-synced from the now-updated Loaded invoice and the review re-runs.
     """
+    card_actions.venue_for(db, user, body.venue_id)
     fix = body.fix or {}
     applier = _APPLIERS.get(fix.get("type"))
     if not applier:
@@ -333,6 +335,14 @@ def accept_invoice_fix(
     # created first). The appliers PUT the invoice with only the change set —
     # they never set isReceived, so the invoice stays unreceived.
     message = applier(lh, fix, db)
+    card_actions.record(
+        db,
+        user,
+        body.venue_id,
+        f"invoice fix: {fix.get('type')}",
+        f"invoice {body.invoice_id} — {message}"[:300],
+    )
+    db.commit()
 
     if fix.get("type") == "delete_invoice":
         # The invoice no longer exists in Loaded. The draft docs stay as
@@ -509,6 +519,7 @@ def create_stock_item(
     resolved. Verified live: POST /1.0/stock/internal/items with the variant
     embedded in ``suppliers[]`` returns the created item.
     """
+    card_actions.venue_for(db, user, body.venue_id)
     lh = _Loaded(db, config_db, body.venue_id)
     inv = lh.invoice(body.invoice_id)
     line = next(
@@ -579,6 +590,10 @@ def create_stock_item(
     # Creating the item (+ its supplier variant) is the only Loaded write
     # here. The LINE links locally in the editor and lands in Loaded at
     # receive time — nothing touches the invoice until Accept & Receive.
+    card_actions.record(
+        db, user, body.venue_id, "created a stock item", f"'{name}' ({item_id})"
+    )
+    db.commit()
     return {
         "message": f"Created stock item '{name}'",
         "item_id": item_id,
@@ -606,6 +621,7 @@ def create_stock_unit(
     create-item: the CREATE is the one Loaded write; the line takes the unit as
     a LOCAL edit in the editor and lands on the line + variant at receive).
     """
+    card_actions.venue_for(db, user, body.venue_id)
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "a unit name is required")
@@ -614,6 +630,11 @@ def create_stock_unit(
         unit, created = _get_or_create_unit(lh, name, db)
     except RuntimeError as exc:
         raise HTTPException(422, str(exc)) from exc
+    if created:
+        card_actions.record(
+            db, user, body.venue_id, "created a unit", f"'{unit.get('name')}'"
+        )
+        db.commit()
     return {
         "message": f"{'Created' if created else 'Found'} unit '{unit.get('name')}'",
         "created": created,
@@ -650,6 +671,7 @@ def create_stock_brand(
     ``POST /1.0/stock/internal/brands {name}`` → 201 ``{id, name, masterId,
     datestampDeleted}`` (verified live on the test venue, 11 Aug 2026).
     """
+    card_actions.venue_for(db, user, body.venue_id)
     from app.services.invoice_replica import fetch_brands
 
     name = body.name.strip()
@@ -672,6 +694,8 @@ def create_stock_brand(
     brand_id = created.get("id") if isinstance(created, dict) else None
     if not brand_id:
         raise HTTPException(502, "Loaded did not return the created brand")
+    card_actions.record(db, user, body.venue_id, "created a brand", f"'{name}'")
+    db.commit()
     return {
         "message": f"Created brand '{name}'",
         "created": True,
@@ -700,6 +724,7 @@ def create_supplier(
     write; the invoice takes the supplier as a LOCAL edit in the editor and
     lands on the header at receive.
     """
+    card_actions.venue_for(db, user, body.venue_id)
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "a supplier name is required")
@@ -730,6 +755,14 @@ def create_supplier(
     created = lh.request("POST", "/1.0/stock/internal/suppliers", {"name": name})
     if not isinstance(created, dict) or not created.get("id"):
         raise HTTPException(502, "Loaded did not return the created supplier")
+    card_actions.record(
+        db,
+        user,
+        body.venue_id,
+        "created a supplier",
+        f"'{created.get('name') or name}'",
+    )
+    db.commit()
     return {
         "message": f"Created supplier '{created.get('name') or name}'",
         "created": True,
@@ -757,6 +790,7 @@ def outstanding_invoices(
     connector loadAction), so the list refreshes on venue change and after a
     receive without a config-DB component-api row.
     """
+    card_actions.venue_for(db, user, venue_id)
     response.headers["Cache-Control"] = "no-store"
     from app.services.received_invoice import outstanding_invoice_rows
 
@@ -772,6 +806,7 @@ def list_units(
     user: User = Depends(get_current_user),
 ):
     """Loaded units catalog for the card's unit dropdown."""
+    card_actions.venue_for(db, user, venue_id)
     lh = _Loaded(db, config_db, venue_id)
     units = lh.get("/1.0/stock/internal/units")
     return {
@@ -796,6 +831,7 @@ def list_stock_groups(
     user: User = Depends(get_current_user),
 ):
     """Loaded stock groups (subcategories) for the create-stock-item form."""
+    card_actions.venue_for(db, user, venue_id)
     lh = _Loaded(db, config_db, venue_id)
     return {"groups": _fetch_stock_groups(lh)}
 
@@ -812,6 +848,7 @@ def list_suppliers(
     Reuses the purchase-order editor's configured `get_suppliers` component-api
     so we never hardcode a Loaded path here.
     """
+    card_actions.venue_for(db, user, venue_id)
     from app.services.component_api import ComponentApiError, execute_component_action
 
     try:
@@ -847,6 +884,7 @@ def list_stock_items(
     each item's default supplier-variant (code / unit / cost) the same way
     po_display._resolve_lines does — so an added line carries what Loaded needs.
     """
+    card_actions.venue_for(db, user, venue_id)
     from app.services.component_api import ComponentApiError, execute_component_action
 
     try:
@@ -901,6 +939,7 @@ def invoice_file(
     that detail route, so their copies are requested by ``file_id`` directly —
     the review captures it off the received feed (duplicate_of_file_id).
     """
+    card_actions.venue_for(db, user, venue_id)
     import base64
 
     if not invoice_id and not file_id:
@@ -935,6 +974,7 @@ def list_purchase_orders(
     user: User = Depends(get_current_user),
 ):
     """Loaded purchase orders for the card's Order Number picker."""
+    card_actions.venue_for(db, user, venue_id)
     # Never cache: POs change as invoices get received, and a stale list keeps
     # already-received POs in the picker (and can miss newly-added fields).
     response.headers["Cache-Control"] = "no-store"
@@ -981,6 +1021,7 @@ def receive_invoice(
     still carries explicit ``lines`` takes the legacy client-built path
     unchanged (older cards mid-deploy).
     """
+    card_actions.venue_for(db, user, body.venue_id)
     from app.services.received_invoice import (
         invalidate_conflicting_drafts,
         invoice_fingerprint,
@@ -1010,6 +1051,18 @@ def receive_invoice(
                 )
         req = receive_request_from_doc(data, body.venue_id, body.invoice_id)
     out = _do_receive(lh, req)
+    if isinstance(out, dict) and out.get("ok"):
+        card_actions.record(
+            db,
+            user,
+            body.venue_id,
+            "received an invoice"
+            if out.get("received")
+            else "saved changes to an invoice",
+            f"invoice {body.invoice_id}",
+            thread_id=docs[0].thread_id if docs else None,
+        )
+        db.commit()
     if req.receive and isinstance(out, dict) and out.get("received"):
         if data:
             # The units this receive actually used → the catalogue's
@@ -1116,6 +1169,7 @@ def create_receive_draft(
     accumulate locally and flush once via ``norm__receive_invoice`` /
     ``/invoice-fixes/receive`` — never per-keystroke through document_sync.
     """
+    card_actions.venue_for(db, user, body.venue_id)
     from app.db.models import WorkingDocument
     from app.routers.working_documents import _doc_to_dict
 
@@ -1248,6 +1302,7 @@ def reset_validation(
     no local line state. The editor's next /review then runs the whole
     validation from scratch, including the LLM extraction.
     """
+    card_actions.venue_for(db, user, body.venue_id)
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.routers.working_documents import _doc_to_dict
@@ -1443,6 +1498,7 @@ def review_receive_draft(
     ``force`` — the (LLM) PDF extraction runs once per invoice, not per open.
     Re-running REPLACES the doc payload wholesale (squash semantics).
     """
+    card_actions.venue_for(db, user, body.venue_id)
     from app.routers.working_documents import _doc_to_dict
     from app.services.invoice_review import DOC_SCHEMA
 
@@ -1542,6 +1598,7 @@ def cannot_receive(
     than doing nothing: the second press means the previous training did not
     solve it, which is exactly when another look is worth paying for.
     """
+    card_actions.venue_for(db, user, body.venue_id)
     docs = _open_docs_for(db, body.venue_id, body.invoice_id)
     data = (docs[0].data or {}) if docs else {}
 
