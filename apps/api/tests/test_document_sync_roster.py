@@ -11,6 +11,8 @@ is how the PATCH route orders it.
 
 import copy
 
+import pytest
+
 from app.routers.working_documents import _apply_op
 from app.services.document_sync import _build_params
 
@@ -230,3 +232,61 @@ def test_a_document_outside_a_conversation_saves(db_session, monkeypatch):
     assert doc.sync_status == "synced" and doc.pending_ops == []
     recorded = db_session.query(ToolCall).filter(ToolCall.id == seen[0]).one()
     assert recorded.thread_id is None and recorded.input_params["venue_id"] == venue.id
+
+
+class TestAdoptCreatedShift:
+    """The card's new shift has no id until Loaded gives it one — so it could
+    be neither edited nor deleted until the week was reloaded. Loaded answers
+    a create with the whole shift; the document takes it."""
+
+    OP = {
+        "op": "add_shift",
+        "fields": {
+            "rosterId": "",
+            "staffMemberId": "st-2",
+            "roleId": "role-1",
+            "clockinTime": "2027-01-15T16:30:00+13:00",
+            "clockoutTime": "2027-01-15T22:00:00+13:00",
+        },
+    }
+
+    @pytest.fixture(autouse=True)
+    def _plain_doc(self, monkeypatch):
+        # Doc is a stand-in, not a mapped row: nothing for flag_modified to mark.
+        import app.services.document_sync as DS
+
+        monkeypatch.setattr(DS, "flag_modified", lambda *a: None)
+
+    def _doc(self, roster_id):
+        data = [{"id": roster_id, "rosteredShifts": [dict(SHIFT)]}]
+        doc = Doc(_apply_op(data, copy.deepcopy(self.OP)))
+        doc.data = data
+        return doc
+
+    def test_the_new_shift_takes_its_id(self):
+        from app.services.document_sync import _adopt_created_shift
+
+        doc = self._doc("r-1")
+        created = {**self.OP["fields"], "id": "new-1", "rosterId": "r-1"}
+        _adopt_created_shift(doc, self.OP, created)
+        ids = [s.get("id") for s in doc.data[0]["rosteredShifts"]]
+        assert ids == ["s-1", "new-1"]
+
+    def test_an_empty_weeks_placeholder_roster_takes_the_real_id(self):
+        """Loaded shows an empty week as a roster with the all-zero id, and
+        creates the real roster on the first add."""
+        from app.services.document_sync import _adopt_created_shift
+
+        doc = self._doc("00000000-0000-0000-0000-000000000000")
+        _adopt_created_shift(
+            doc, self.OP, {**self.OP["fields"], "id": "new-1", "rosterId": "r-real"}
+        )
+        assert doc.data[0]["id"] == "r-real"
+
+    def test_a_create_without_an_id_changes_nothing(self):
+        from app.services.document_sync import _adopt_created_shift
+
+        doc = self._doc("r-1")
+        before = copy.deepcopy(doc.data)
+        _adopt_created_shift(doc, self.OP, {"status_code": 204})
+        assert doc.data == before

@@ -56,6 +56,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
   const [, setActiveVenue] = useActiveVenue();
   const [docVersion, setDocVersion] = useState<number>(1);
   const [syncStatus, setSyncStatus] = useState<string>('synced');
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [shifts, setShifts] = useState<Shift[]>(() => workingDocId ? [] : extractShifts(data));
   const [meta, setMeta] = useState<RosterMeta>(() => workingDocId ? { startDate: null, endDate: null, totalHours: 0, rosterId: '', publishedAt: null, lockedAt: null } : extractRosterMeta(data));
   const connectorName = (props?.connector_name as string) || 'loadedhub';
@@ -385,12 +386,25 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
       });
       if (res.ok) {
         const updated = await res.json();
-        console.log('[patchDoc] success, version:', updated.version, 'sync:', updated.sync_status);
         setDocData(updated.data);
         setDocVersion(updated.version);
         setSyncStatus(updated.sync_status);
         setShifts(extractShifts(updated.data));
         setMeta(extractRosterMeta(updated.data));
+        // The write to Loaded happens after this returns. Read the document
+        // again until it has: the dot then says whether it worked (it stayed
+        // amber forever, and a failed write was never shown), and a shift you
+        // just added gets the id Loaded gave it, so it can be edited or
+        // deleted without reloading the week (Oct 2026).
+        for (let i = 0; i < 15 && ['dirty', 'syncing'].includes(updated.sync_status); i++) {
+          await new Promise(r => setTimeout(r, 1500));
+          const doc = await apiFetch(docUrl).then(r => (r.ok ? r.json() : null)).catch(() => null);
+          if (!doc || ['dirty', 'syncing'].includes(doc.sync_status)) continue;
+          setDocData(doc.data); setDocVersion(doc.version);
+          setSyncStatus(doc.sync_status); setSyncError(doc.sync_error || null);
+          setShifts(extractShifts(doc.data)); setMeta(extractRosterMeta(doc.data));
+          break;
+        }
       } else if (res.status === 409) {
         // Someone else changed the document. Our optimistic edit was rejected,
         // so reload rather than leaving state the server never accepted.
@@ -784,7 +798,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
           {meta.lockedAt ? 'Locked' : meta.publishedAt ? 'Published' : 'Draft'}
         </span>
         {workingDocId && (
-          <span title={syncStatus} style={{
+          <span title={syncError || syncStatus} style={{
             width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
             backgroundColor: syncStatus === 'synced' ? 'var(--ok)' : syncStatus === 'syncing' || syncStatus === 'dirty' ? 'var(--warn)' : syncStatus === 'error' ? 'var(--error)' : 'var(--muted)',
           }} />

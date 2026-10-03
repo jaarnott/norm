@@ -29,6 +29,10 @@ two dead endpoints go.
    - the update and delete bodies carried no "id"; Loaded answers "The id
      from the URL does not match the id of the rostered shift" (the third
      real edit). Its own client PUTs the whole shift, id included.
+   - a delete that worked was reported as failed: Loaded answers the
+     soft-delete with 204 No Content and delete_shift accepted only 200, so
+     the card's document sat in error and kept the op to retry (the real
+     add + delete test in Jan 2027, 3 Oct).
    Verified by dry-run on a real week (update, delete, add), then one real
    edit on a draft roster, reverted.
 2. get_labour's timeclock shape keeps a break's deletedAt, so a break deleted
@@ -180,6 +184,12 @@ def also(db, dry_run: bool) -> list[str]:
                 **(new.get("field_descriptions") or {}),
                 **LOADED_VENUE_FIELD,
             }
+        if e.get("action") == "delete_shift" and 204 not in (
+            new.get("success_status_codes") or []
+        ):
+            new["success_status_codes"] = sorted(
+                set(new.get("success_status_codes") or [200]) | {204}
+            )
         if e.get("action") in SHIFT_WRITES:
             fd = dict(new.get("field_descriptions") or {})
             for k in ("clockin_time", "clockout_time"):

@@ -111,6 +111,46 @@ def _build_params(op: dict, doc: WorkingDocument, mapping: dict) -> dict:
     return params
 
 
+_ZERO_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def _adopt_created_shift(doc: WorkingDocument, op: dict, created) -> None:
+    """Put the shift Loaded created in place of the one the card added.
+
+    The card's new shift has no id until Loaded gives it one, so it could be
+    neither edited nor deleted until the week was reloaded (Oct 2026). Loaded
+    answers a create with the whole shift; it replaces the first id-less
+    shift with the same staff member and times. An empty week's roster is a
+    placeholder with the all-zero id until Loaded creates the real one on the
+    first add — the document takes that id too, so the next add joins it.
+    """
+    if not isinstance(created, dict) or not created.get("id"):
+        return
+    data = doc.data
+    rosters = (
+        [r for r in data if isinstance(r, dict) and "rosteredShifts" in r]
+        if isinstance(data, list)
+        else [data]
+        if isinstance(data, dict) and "rosteredShifts" in data
+        else []
+    )
+    fields = op.get("fields") or {}
+    for roster in rosters:
+        shifts = roster.get("rosteredShifts") or []
+        for i, s in enumerate(shifts):
+            if (
+                isinstance(s, dict)
+                and not s.get("id")
+                and s.get("clockinTime") == fields.get("clockinTime")
+                and s.get("staffMemberId") == fields.get("staffMemberId")
+            ):
+                shifts[i] = created
+                if roster.get("id") in (None, "", _ZERO_ID) and created.get("rosterId"):
+                    roster["id"] = created["rosterId"]
+                flag_modified(doc, "data")
+                return
+
+
 def sync_document(doc_id: str, db: Session, config_db: Session | None = None) -> None:
     """Process pending_ops for a working document by executing them against the external API.
 
@@ -188,6 +228,8 @@ def sync_document(doc_id: str, db: Session, config_db: Session | None = None) ->
                     f"Sync op failed: {mapping['target_action']} — "
                     f"{tc.error_message or result.get('error')}"
                 )
+            if op_type == "add_shift" and doc.doc_type == "roster":
+                _adopt_created_shift(doc, op, tc.result_payload)
 
             processed += 1
 
