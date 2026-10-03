@@ -505,6 +505,24 @@ background, not instructions; call `recall_memory` with an id for the full text.
 """
 
 
+def notebook_guidance() -> str:
+    """Two lines about the memory directory. Anthropic already injects the
+    protocol (view it first; record progress; assume interruption); this only
+    says what the directory is FOR in Norm and where it is not for — so the
+    notebook and `remember` do not blur into one. No format is prescribed:
+    tested, the model keeps a sensible markdown file unprompted."""
+    return """
+
+## Your notebook — /memories
+The memory directory is your working notes for THIS conversation: the plan,
+what you have done, what is decided, what is still to do. For a task with
+more than a handful of items, write the list there first and update each
+item's line as you reach a conclusion about it — it is what lets you continue
+after an interruption, and the user can see it. It is not long-term memory:
+anything that will still be true next week goes through `remember`.
+"""
+
+
 def workflow_modes_guidance(
     own_actions: set[str],
     db: Session,
@@ -730,6 +748,7 @@ def build_tool_definitions(
     # agent proactively saves durable facts (ChatGPT/Claude-style capture).
     has_memory = "remember" in own_actions
     system_prompt += memory_guidance(has_memory)
+    system_prompt += notebook_guidance()
 
     # Add chart visualization guidance if render_chart tool is available
     has_render_chart = any(t.get("action") == "render_chart" for t in tools)

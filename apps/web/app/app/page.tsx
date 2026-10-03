@@ -535,6 +535,10 @@ export default function Home() {
                 conversation: (t.conversation || []).filter(m => m.role !== 'streaming'),
               };
             }));
+          } else if (event.type === 'notebook') {
+            // The model wrote to its notebook (the memory tool). Show the
+            // card as it changes, not only after the turn.
+            setThreads(prev => prev.map(t => t.id === currentId ? { ...t, notebook: event.files || [] } : t));
           } else if (event.type === 'thinking') {
             // Reasoning — either a summarized thinking block from the model or
             // a tool-status line from the backend. Either way it is not the

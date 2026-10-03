@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import type { Thread, ProcurementThread, HrThread, ConversationMessage, ToolCallRecord, DisplayBlock, WidgetAction } from '../../types';
 import ActivityTimeline from './ActivityTimeline';
+import NotebookCard from './NotebookCard';
 import DisplayBlockRenderer, { FULL_WIDTH_COMPONENTS } from '../display/DisplayBlockRenderer';
 
 /** Check if a display block should render full-width above conversation. */
@@ -445,6 +446,8 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
       {(loading || task.status === 'in_progress') && task.thinking_steps && task.thinking_steps.length > 0 && (
         <ThinkingSteps steps={task.thinking_steps} isStreaming={loading || task.status === 'in_progress'} />
       )}
+      {/* The conversation's notebook — the model's working notes, as a card */}
+      {task.notebook && task.notebook.length > 0 && <NotebookCard files={task.notebook} />}
       {/* Tool call history — admin only */}
       {isAdmin && task.tool_calls && task.tool_calls.filter(tc => tc.status === 'executed' || tc.status === 'failed').length > 0 &&
         (() => { try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; } })() && (

@@ -188,8 +188,29 @@ def resume_tool_loop(
             continue
 
         if tc.status == "approved":
-            # Execute the approved write tool (transform applied inside _execute_tool_call)
-            result = _execute_tool_call(tc, db, config_db=config_db)
+            # Never run the same write twice in one conversation. A job that
+            # dies and is resumed re-plans from its notes, and the notes are
+            # advisory to the model — on resume it re-judged an item in the
+            # 3 Oct 2026 experiment. The record of what already RAN is not
+            # advisory; it is here, and it decides.
+            earlier = _already_executed_write(db, tc)
+            if earlier is not None:
+                result = {
+                    "duplicate_of": earlier.id,
+                    "executed_at": (
+                        earlier.created_at.isoformat() if earlier.created_at else None
+                    ),
+                    "message": (
+                        "Not run again: this exact write already ran in this "
+                        "conversation. Treat it as done; do not retry it."
+                    ),
+                }
+                tc.status = "executed"
+                tc.result_payload = result
+                db.flush()
+            else:
+                # Execute the approved write tool (transform applied inside _execute_tool_call)
+                result = _execute_tool_call(tc, db, config_db=config_db)
             tool_results_content.append(
                 {
                     "type": "tool_result",
@@ -285,6 +306,10 @@ def _execute_loop(
     anthropic_tools, tool_meta = _ensure_attachment_tool(
         anthropic_tools, tool_meta, task, db
     )
+    # The conversation's notebook (Anthropic's memory tool, Norm-backed). Not
+    # an App Map tool: every agent turn has it, because the point is that the
+    # model is pushed to use it by Anthropic's own injected protocol.
+    anthropic_tools, tool_meta = _ensure_memory_tool(anthropic_tools, tool_meta)
 
     thinking_steps: list[str] = []
     display_blocks: list[dict] = []
@@ -424,7 +449,11 @@ def _execute_loop(
             for block in response.content:
                 if block.type != "tool_use":
                     continue
-                if block.name in tool_meta and taken >= TOOL_FANOUT_CAP:
+                if (
+                    block.name in tool_meta
+                    and block.name != "memory"
+                    and taken >= TOOL_FANOUT_CAP
+                ):
                     # Over the per-round cap (see TOOL_FANOUT_CAP). Answered,
                     # not executed, so the model re-issues it next step.
                     unknown_tool_results[block.id] = {
@@ -474,9 +503,15 @@ def _execute_loop(
                     )
                     continue
                 connector, action = _parse_tool_name(block.name)
+                if block.name == "memory":
+                    # Anthropic-defined name; executes as the internal
+                    # ("norm", "memory") handler. Local and cheap, so it does
+                    # not count toward the fan-out cap.
+                    connector, action = "norm", "memory"
                 meta = tool_meta.get(block.name, {})
                 method = meta.get("method", "POST")
-                taken += 1
+                if block.name != "memory":
+                    taken += 1
                 if _is_read_only(method):
                     read_only_blocks.append((block, connector, action, method))
                 else:
@@ -499,16 +534,18 @@ def _execute_loop(
                 )
                 db.add(tc)
                 read_only_tcs[block.id] = tc
-                readable = action.replace("_", " ")
-                thinking_steps.append(
-                    _ts_step(f"Fetching {readable} from {connector}…")
-                )
-                _emit_event(
-                    {
-                        "type": "thinking",
-                        "text": f"Fetching {readable} from {connector}…",
-                    }
-                )
+                if action == "memory":
+                    cmd = str((block.input or {}).get("command") or "")
+                    step = (
+                        "Checking working notes…"
+                        if cmd == "view"
+                        else "Updating working notes…"
+                    )
+                else:
+                    readable = action.replace("_", " ")
+                    step = f"Fetching {readable} from {connector}…"
+                thinking_steps.append(_ts_step(step))
+                _emit_event({"type": "thinking", "text": step})
 
             if read_only_tcs:
                 db.flush()
@@ -608,6 +645,22 @@ def _execute_loop(
                 #
                 # Stripped from a COPY: tc.result_payload keeps the bodies, and
                 # the fan-out below still builds every document and card.
+                if action == "memory":
+                    # The memory tool's contract is TEXT — line-numbered views,
+                    # the docs' exact confirmation strings — not a JSON
+                    # envelope. Hand it over verbatim; nothing else below
+                    # (slimming, cards, documents) applies to a notebook op.
+                    data = result.get("data") if isinstance(result, dict) else None
+                    text = data.get("text") if isinstance(data, dict) else None
+                    read_only_tool_results[block.id] = {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": text if text is not None else json.dumps(result),
+                        "is_error": not (
+                            isinstance(result, dict) and result.get("success", True)
+                        ),
+                    }
+                    continue
                 for_llm = _without_card_bodies(result, tool_def)
                 # Transform already applied in _execute_tool_call — just slim for LLM context
                 slimmed = _slim_tool_result(
@@ -1322,7 +1375,14 @@ def _execute_tool_call_scoped(
         .first()
     )
 
-    if not spec:
+    # Check for internal handler first — works for any execution_mode, and
+    # for a tool that has no spec row at all: the memory tool is
+    # Anthropic-defined and injected by the loop, not configured.
+    from app.agents.internal_tools import get_handler
+
+    handler = get_handler(tc.connector_name, tc.action)
+
+    if not spec and not handler:
         tc.status = "failed"
         tc.error_message = f"Connector spec not found: {tc.connector_name}"
         db.flush()
@@ -1330,15 +1390,11 @@ def _execute_tool_call_scoped(
 
     # Find the matching tool definition
     tool_def = None
-    for t in spec_rows.rows(spec):
-        if t.get("action") == tc.action:
-            tool_def = t
-            break
-
-    # Check for internal handler first — works for any execution_mode
-    from app.agents.internal_tools import get_handler
-
-    handler = get_handler(tc.connector_name, tc.action)
+    if spec is not None:
+        for t in spec_rows.rows(spec):
+            if t.get("action") == tc.action:
+                tool_def = t
+                break
 
     if not handler and not tool_def:
         tc.status = "failed"
@@ -1359,7 +1415,7 @@ def _execute_tool_call_scoped(
             }
             return execute_consolidator(cfg, params, db_sess, tid)
 
-    if handler or spec.execution_mode == "internal":
+    if handler or (spec is not None and spec.execution_mode == "internal"):
         t0 = time.time()
         try:
             result = handler(tc.input_params or {}, db, tc.thread_id)
@@ -1628,6 +1684,53 @@ def _compact_messages(messages: list) -> list:
                 blocks.append(block)
         compacted.append({**msg, "content": blocks})
     return compacted
+
+
+def _already_executed_write(db: Session, tc: ToolCall) -> ToolCall | None:
+    """The earlier executed call in this thread with the same tool and the
+    same input, if any. Compared in Python: `input_params` is a JSON column,
+    which Postgres cannot test for equality in SQL, and the candidate set is a
+    thread's executed calls for one tool — a handful."""
+    if not tc.thread_id:
+        return None
+    rows = (
+        db.query(ToolCall)
+        .filter(
+            ToolCall.thread_id == tc.thread_id,
+            ToolCall.tool_name == tc.tool_name,
+            ToolCall.status == "executed",
+            ToolCall.id != tc.id,
+        )
+        .order_by(ToolCall.created_at)
+        .all()
+    )
+    for row in rows:
+        if row.input_params == tc.input_params and not (
+            isinstance(row.result_payload, dict)
+            and (
+                row.result_payload.get("error")
+                or row.result_payload.get("duplicate_of")
+            )
+        ):
+            return row
+    return None
+
+
+def _ensure_memory_tool(anthropic_tools: list, tool_meta: dict) -> tuple[list, dict]:
+    """Return (tools, meta) with the memory tool present — a copy, like
+    _ensure_search_tool, for the same cache-key reason. Placed FIRST so the
+    last tool, which carries the cache breakpoint, stays a custom one."""
+    from app.agents.memory_tool import MEMORY_TOOL
+
+    if any(t.get("name") == "memory" for t in anthropic_tools):
+        return anthropic_tools, tool_meta
+    return (
+        [MEMORY_TOOL, *anthropic_tools],
+        {
+            **tool_meta,
+            "memory": {"method": "GET", "connector": "norm", "action": "memory"},
+        },
+    )
 
 
 def _ensure_search_tool(

@@ -288,6 +288,8 @@ export interface BaseThread {
   llm_calls?: LlmCall[];
   tool_calls?: ToolCallRecord[];
   thinking_steps?: string[];
+  /** The conversation's notebook — the memory tool's files, rendered as a card. */
+  notebook?: NotebookFile[];
   /** The Apps whose tools this thread used — its label and sidebar filing. */
   apps?: ThreadApp[];
   integration_run?: {
@@ -493,4 +495,11 @@ export interface User {
   role: string;
   permissions: string[];
   org_role: { name: string; display_name: string } | null;
+}
+
+/** One file in a conversation's notebook (Anthropic's memory tool, backed by Norm). */
+export interface NotebookFile {
+  path: string;
+  content: string;
+  updated_at: string | null;
 }

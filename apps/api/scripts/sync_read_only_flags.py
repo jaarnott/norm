@@ -8,7 +8,6 @@ state:
     norm_email  send_report_email      norm  create_purchase_order
     norm        create_automated_task  norm  set_workflow_mode
     norm        update_task_config     norm  set_override
-    norm        update_thread_summary
 
 A delegated sub-agent is supposed to be read-only. If "read-only" were inferred
 from the method, a consulted agent could email a report or raise a purchase
@@ -58,7 +57,6 @@ DENY = {
     # a read-sounding name and every op mutates, so it belongs here for the
     # same reason they do — a consulted sub-agent must not rewrite a schedule.
     ("norm", "manage_task"),
-    ("norm", "update_thread_summary"),
     ("loadedhub", "review_and_receive_invoices"),
     ("loadedhub", "reconcile_received_invoices"),
 }

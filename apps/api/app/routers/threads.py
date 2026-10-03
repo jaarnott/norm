@@ -140,6 +140,8 @@ def _tool_use_thread_to_dict(thread: Thread) -> dict:
         "tool_calls": tool_calls,
         "llm_calls": llm_calls,
         "thinking_steps": thread.thinking_steps or [],
+        # The conversation's notebook (memory tool files), for the card.
+        "notebook": _notebook_files(thread),
     }
 
 
@@ -637,3 +639,14 @@ async def widget_action(
             "connector_name": body.connector_name,
             "params": body.params,
         }
+
+
+def _notebook_files(thread: Thread) -> list[dict]:
+    """The thread's memory-tool files. Reads through the thread's own session
+    so the serialiser's signature stays as every caller has it."""
+    from sqlalchemy.orm import object_session
+
+    from app.agents.memory_tool import notebook
+
+    db = object_session(thread)
+    return notebook(db, thread.id) if db is not None else []

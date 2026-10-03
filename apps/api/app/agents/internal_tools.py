@@ -2942,25 +2942,22 @@ def _manage_task(params: dict, db: Session, thread_id: str | None) -> dict:
     return handler({k: v for k, v in params.items() if k != "op"}, db, thread_id)
 
 
-@register("norm", "update_thread_summary")
-def _update_thread_summary(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Update the rolling summary of key decisions and instructions."""
-    summary = params.get("summary", "")
-    if not summary:
-        return {"success": False, "data": {}, "error": "summary is required"}
+@register("norm", "memory")
+def _memory(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Anthropic's memory tool — the conversation's notebook (see
+    app.agents.memory_tool). Registered here so the loop's internal dispatch
+    finds it; the loop maps the Anthropic-defined tool name "memory" onto
+    ("norm", "memory") and hands the model the text, not JSON."""
+    from app.agents.memory_tool import handle
 
-    at = _get_automated_task_for_conversation(thread_id, db)
-    if not at:
-        return {
-            "success": False,
-            "data": {},
-            "error": "No automated task found for this conversation",
-        }
+    return handle(params, db, thread_id)
 
-    at.thread_summary = summary
-    db.flush()
 
-    return {"success": True, "data": {"thread_summary": summary}}
+# `update_thread_summary` lived here until 3 Oct 2026. It wrote
+# automated_task.thread_summary, which nothing reads back into a prompt — two
+# API responses show it, for display — and its name invited confusion with the
+# automatic conversation summariser, which uses a different field. One call in
+# 90 days. Removed.
 
 
 def _principal_for_memory(thread_id: str | None, db: Session):

@@ -441,11 +441,16 @@ class TestReceivedItemsRollups:
         assert others["rows_rolled_up"] == 2
         assert others["spend"] == 70.0
 
-    def test_item_mode_unchanged(self):
-        out = run_items()
-        gin = next(r for r in out["rows"] if r["item_name"] == "GIN LONDON DRY")
+    def test_item_mode_is_quantity_and_spend_and_prices_live_on_item_supplier(self):
+        """The `item` row is the four-column table (3 Oct 2026 review); the
+        per-base-unit price figures moved to `item_supplier`, the mode that
+        compares suppliers. Both still convert through the unit ratio."""
+        gin = next(r for r in run_items()["rows"] if r["item_name"] == "GIN LONDON DRY")
         assert gin["quantity_base"] == 4.2  # 6 × 0.7
-        assert gin["unit_cost_avg"] == round(45.0 / 0.7, 4)
+        assert "unit_cost_avg" not in gin
+        by_supplier = run_items(group_by="item_supplier")["rows"]
+        gin_s = next(r for r in by_supplier if r["item_name"] == "GIN LONDON DRY")
+        assert gin_s["unit_cost_avg"] == round(45.0 / 0.7, 4)
 
 
 class TestReviewFixes:

@@ -232,7 +232,6 @@ APPS = [
         description="Norm's own foundations: memory, search, tasks, charts, email and connection setup.",
         tools=[
             "norm.search_tool_result",
-            "norm.update_thread_summary",
             "norm.remember",
             "norm.recall_memory",
             "norm.manage_task",

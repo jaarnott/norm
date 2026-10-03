@@ -1,3 +1,4 @@
+import type { NotebookFile } from '../types';
 const API = '';
 
 export function getToken(): string | null {
@@ -46,7 +47,7 @@ export function setStoredUser(user: { id: string; email: string; full_name: stri
 export async function apiStream(
   url: string,
   body: Record<string, unknown>,
-  onEvent: (event: { type: string; text?: string; message?: string; data?: unknown; domain?: string; thread_id?: string; title?: string; used?: number; quota?: number; drop_thinking?: number }) => void,
+  onEvent: (event: { type: string; text?: string; message?: string; data?: unknown; domain?: string; thread_id?: string; title?: string; used?: number; quota?: number; drop_thinking?: number; files?: NotebookFile[] }) => void,
 ): Promise<void> {
   const token = getToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };

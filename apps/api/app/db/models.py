@@ -1521,3 +1521,36 @@ class AppCall(Base):
 
 # ── Transitional alias (connector → Connection rename, 29 Aug 2026) ──
 ConnectorConfig = Connection
+
+
+class ThreadMemoryFile(Base):
+    """One file in a conversation's notebook — Anthropic's memory tool, backed
+    by Norm.
+
+    The memory tool is client-side: the model only REQUESTS file operations
+    (view / create / str_replace / insert / delete / rename) and Norm executes
+    them here. Scope is the conversation, deliberately: this is the model's
+    working notes for the task at hand, and it dies with the thread. Durable
+    facts about the business go through `remember`, which has admission rules
+    and a candidate-until-confirmed lifecycle that a free-text file does not.
+
+    Why it exists: a long job's state — which tender line matched which item,
+    what was decided, what was written — lived only in the conversation, so a
+    dead turn lost all of it (17 minutes on 1 Oct 2026, thread c6aad2d5). With
+    the memory tool present Anthropic injects "view your memory before anything
+    else; record progress; assume interruption" into every call, which is the
+    discipline Norm's own note tools never got (18 calls in 90 days).
+    """
+
+    __tablename__ = "thread_memory_files"
+    __table_args__ = (UniqueConstraint("thread_id", "path"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    thread_id = Column(
+        String, ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: Always under /memories — the handler rejects anything else.
+    path = Column(String, nullable=False)
+    content = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
