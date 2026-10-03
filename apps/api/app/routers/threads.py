@@ -299,6 +299,12 @@ async def get_thread_detail(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(require_permission("tasks:read")),
 ):
+    from app.services.thread_access import thread_for
+
+    # Only the owner, a platform admin, or (for a scheduled task's threads)
+    # the task creator's organisation may open a conversation.
+    if thread_for(db, thread_id, user) is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
     thread, _ = _find(db, thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")

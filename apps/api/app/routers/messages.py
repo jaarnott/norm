@@ -120,6 +120,21 @@ def _assert_venue_access(db: Session, user: User, venue_id: str | None) -> None:
         )
 
 
+def _assert_thread_access(db: Session, user: User, thread_id: str | None) -> None:
+    """Refuse to continue a conversation the caller may not open.
+
+    The send path took any thread id, so a message could be added to — and a
+    turn run in — another person's conversation (services/thread_access.py).
+    Not found rather than forbidden, so thread ids can't be probed.
+    """
+    if not thread_id:
+        return
+    from app.services.thread_access import thread_for
+
+    if thread_for(db, thread_id, user) is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+
 class PageContext(BaseModel):
     page_id: str
     agent: str
@@ -146,6 +161,7 @@ async def post_message(
     user: User = Depends(get_current_user),
 ):
     _assert_venue_access(db, user, req.venue_id)
+    _assert_thread_access(db, user, req.thread_id)
     from app.agents.tool_loop import set_turn_attachments
 
     set_turn_attachments(req.attachment_ids)
@@ -190,6 +206,7 @@ async def post_message_stream(
     # Validate before the stream opens — a 403 here is a clean HTTP error, not
     # an error event mid-stream. The worker below uses its own session.
     _assert_venue_access(db, user, req.venue_id)
+    _assert_thread_access(db, user, req.thread_id)
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_event_loop()

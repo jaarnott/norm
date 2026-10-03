@@ -59,19 +59,14 @@ class AlreadyDecided(Exception):
 
 
 def actionable_thread(db: Session, thread_id: str, user: User) -> Thread | None:
-    """The thread, if ``user`` may act on it: its owner, or a platform admin.
+    """The thread, if ``user`` may act on it (services/thread_access.py).
 
     None both when the thread doesn't exist and when it isn't theirs, so a
     caller can't tell another person's thread id from a made-up one.
     """
-    thread = db.query(Thread).filter(Thread.id == thread_id).first()
-    if thread is None:
-        return None
-    if getattr(user, "role", None) == "admin":
-        return thread
-    if thread.user_id and thread.user_id == user.id:
-        return thread
-    return None
+    from app.services.thread_access import thread_for
+
+    return thread_for(db, thread_id, user)
 
 
 def is_tool_loop_thread(thread: Thread) -> bool:
