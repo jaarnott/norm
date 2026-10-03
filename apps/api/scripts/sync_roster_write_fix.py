@@ -65,7 +65,7 @@ UPDATE_BODY = (
     '"roleId":"{{ role_id }}",'
     '"isFinalised":false,'
     '"showOnFinancialReports":true,'
-    '"venueId":"{{ venue_id }}",'
+    '"venueId":"{{ loaded_venue_id }}",'
     '"isFromOtherCompany":false,'
     '"datestampLocked":null,'
     '"datestampPublished":null,'

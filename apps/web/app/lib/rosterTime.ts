@@ -177,6 +177,46 @@ export function offsetToISO(date: string, offsetMinutes: number, prefs: VenueTim
   return formatInTz(instant, prefs.timeZone);
 }
 
+/** YYYY-MM-DD plus `n` days, on the calendar alone — no timezone involved. */
+function addDays(date: string, n: number): string {
+  const [y, m, d] = date.split('-').map(Number);
+  const t = new Date(Date.UTC(y, (m || 1) - 1, (d || 1) + n));
+  return `${t.getUTCFullYear()}-${pad2(t.getUTCMonth() + 1)}-${pad2(t.getUTCDate())}`;
+}
+
+/**
+ * The Monday (YYYY-MM-DD) of the business week an instant falls in. 3am on a
+ * Monday is still the previous week: its business day began on Sunday.
+ */
+export function tradingMonday(at: Date, prefs: VenueTimePrefs = DEFAULT_TIME_PREFS): string {
+  const day = companyDayDate(at, prefs);
+  const [y, m, d] = day.split('-').map(Number);
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0 = Sunday
+  return addDays(day, -((dow + 6) % 7));
+}
+
+/**
+ * The business week that starts on `monday` (YYYY-MM-DD), as Loaded's roster
+ * query wants it: Monday's day start to one second before the next Monday's,
+ * each with the offset in force at that instant.
+ *
+ * Midnight to midnight also caught the tail of the previous trading week
+ * (which runs to 7am Monday), so Loaded returned both weeks' rosters — the
+ * chat card and the Roster page showed, and would have edited, last week's.
+ * The page also hard-coded +13:00, wrong all winter (Oct 2026).
+ */
+export function tradingWeekRange(
+  monday: string,
+  prefs: VenueTimePrefs = DEFAULT_TIME_PREFS,
+): { start_datetime: string; end_datetime: string } {
+  const start = dayStartInstant(monday, prefs);
+  const end = new Date(dayStartInstant(addDays(monday, 7), prefs).getTime() - 1000);
+  return {
+    start_datetime: formatInTz(start, prefs.timeZone),
+    end_datetime: formatInTz(end, prefs.timeZone),
+  };
+}
+
 /** The venue's offset at an instant, e.g. "+12:00" — for building timestamps. */
 export function venueOffset(instant: Date, prefs: VenueTimePrefs): string {
   return formatOffset(tzOffsetMinutes(instant, prefs.timeZone));

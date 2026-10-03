@@ -180,22 +180,24 @@ def test_the_sync_writes_with_the_documents_venue(db_session, monkeypatch):
     assert doc.sync_status == "synced" and doc.pending_ops == []
 
 
-def test_a_document_outside_a_conversation_says_why_it_cannot_save(
-    db_session, monkeypatch
-):
-    """tool_calls.thread_id is NOT NULL, so a page document's sync died on a
-    database error every time. It now says why, and writes nothing."""
+def test_a_document_outside_a_conversation_saves(db_session, monkeypatch):
+    """The Roster page's document has no thread. tool_calls.thread_id was NOT
+    NULL, so every page edit failed on the insert; it is optional now, and the
+    write is still recorded."""
     import uuid
 
     import app.agents.tool_loop as TL
     import app.services.document_sync as DS
-    from app.db.models import WorkingDocument
+    from app.db.models import ToolCall, WorkingDocument
+    from tests.conftest import _make_venue
 
+    venue = _make_venue(db_session, name="Page Venue")
     doc = WorkingDocument(
         id=str(uuid.uuid4()),
         thread_id=None,
         doc_type="roster",
         connector_name="loadedhub",
+        venue_id=venue.id,
         sync_mode="auto",
         data=copy.deepcopy(DATA),
         external_ref={},
@@ -205,12 +207,26 @@ def test_a_document_outside_a_conversation_says_why_it_cannot_save(
     )
     db_session.add(doc)
     db_session.flush()
+    seen = []
+
+    def fake_execute(tc, db, config_db=None):
+        seen.append(tc.id)
+        return {"success": True}
+
+    monkeypatch.setattr(TL, "_execute_tool_call", fake_execute)
     monkeypatch.setattr(
-        TL, "_execute_tool_call", lambda *a, **k: (_ for _ in ()).throw(AssertionError)
+        DS,
+        "_get_mapping",
+        lambda op, d, db: {
+            "target_action": "delete_shift",
+            "method": "PUT",
+            "field_mapping": FULL,
+            "ref_fields": {},
+            "id_field": "shift_id",
+        },
     )
-    monkeypatch.setattr(DS, "_get_mapping", lambda op, d, db: {"target_action": "x"})
     monkeypatch.setattr(db_session, "commit", db_session.flush)
     DS.sync_document(doc.id, db_session, config_db=db_session)
-    assert doc.sync_status == "error"
-    assert "outside a conversation" in doc.sync_error
-    assert doc.pending_ops == [{"op": "delete_shift", "shift_id": "s-1"}]
+    assert doc.sync_status == "synced" and doc.pending_ops == []
+    recorded = db_session.query(ToolCall).filter(ToolCall.id == seen[0]).one()
+    assert recorded.thread_id is None and recorded.input_params["venue_id"] == venue.id

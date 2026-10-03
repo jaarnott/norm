@@ -12,6 +12,8 @@ import {
   formatClock,
   formatHourLabel,
   venueOffset,
+  tradingMonday,
+  tradingWeekRange,
   DEFAULT_TIME_PREFS,
 } from './rosterTime';
 
@@ -122,5 +124,34 @@ describe('venues outside New Zealand', () => {
   it('works for a negative offset with a half-hour day start', () => {
     const nyc = venueTimePrefs({ timezone: 'America/New_York', day_start_time: '05:30' });
     expect(dayStartISO('2026-07-17', nyc)).toBe('2026-07-17T05:30:00-04:00');
+  });
+});
+
+
+describe('the trading week a roster is read for', () => {
+  // Midnight-to-midnight caught the end of the previous trading week (to 7am
+  // Monday), so Loaded returned two rosters and the grid showed last week's.
+  it('runs from Monday 7am to just before the next Monday 7am', () => {
+    expect(tradingWeekRange('2026-10-12', NZ)).toEqual({
+      start_datetime: '2026-10-12T07:00:00+13:00',
+      end_datetime: '2026-10-19T06:59:59+13:00',
+    });
+  });
+
+  it('carries the right offset at each end across a daylight-saving change', () => {
+    // NZ daylight saving ends Sunday 5 April 2026.
+    expect(tradingWeekRange('2026-03-30', NZ)).toEqual({
+      start_datetime: '2026-03-30T07:00:00+13:00',
+      end_datetime: '2026-04-06T06:59:59+12:00',
+    });
+  });
+
+  it('finds the Monday of the business week an instant falls in', () => {
+    // Monday 5 Oct, 3am NZDT: still the business week that began 28 Sep.
+    expect(tradingMonday(new Date('2026-10-04T14:00:00Z'), NZ)).toBe('2026-09-28');
+    // Monday 5 Oct, 8am NZDT: the new week.
+    expect(tradingMonday(new Date('2026-10-04T19:00:00Z'), NZ)).toBe('2026-10-05');
+    // Saturday 3 Oct, noon NZDT.
+    expect(tradingMonday(new Date('2026-10-02T23:00:00Z'), NZ)).toBe('2026-09-28');
   });
 });

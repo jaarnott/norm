@@ -16,7 +16,21 @@ two dead endpoints go.
    - update_shift refused an open shift (no staff member) and a salaried one
      (hourly rate 0) as "missing required fields", though its body already
      writes both correctly; and a null rate rendered as the text None.
-   Verified by dry-run on a real week (update, delete, add) — never sent.
+   - the shift's Loaded venue rode in a param called `venue_id` — the name
+     Norm uses to pick the login, which it strips before the request
+     renders. So no update could ever send its venueId ("Missing required
+     fields: venue_id", found on the first real edit, 3 Oct 2026). It is
+     `loaded_venue_id` now; venue_id only picks the login.
+   - the start/finish time descriptions were copied from a URL-query
+     endpoint and said "%2B13:00" — and _normalize_fields URL-encodes any
+     field whose description says %2B. In a JSON body Loaded can't read it
+     ("could not be converted to System.DateTimeOffset", the second real
+     edit). The shift writes now describe a plain ISO time.
+   - the update and delete bodies carried no "id"; Loaded answers "The id
+     from the URL does not match the id of the rostered shift" (the third
+     real edit). Its own client PUTs the whole shift, id included.
+   Verified by dry-run on a real week (update, delete, add), then one real
+   edit on a draft roster, reverted.
 2. get_labour's timeclock shape keeps a break's deletedAt, so a break deleted
    in Loaded no longer shows as taken (_fmt_breaks skips deleted ones).
 3. Two duplicate Loaded endpoints go: create_stock_item and
@@ -58,7 +72,7 @@ SHIFT_FIELDS = {
     "roleId": "role_id",
     "clockinTime": "clockin_time",
     "clockoutTime": "clockout_time",
-    "venueId": "venue_id",
+    "venueId": "loaded_venue_id",
     "hourlyRate": "hourly_rate",
     "breaks": "breaks",
     "rules": "rules",
@@ -72,10 +86,22 @@ UPDATE_SHIFT_REQUIRED = [
     "shift_id",
     "roster_id",
     "role_id",
-    "venue_id",
+    "loaded_venue_id",
     "clockin_time",
     "clockout_time",
 ]
+
+#: The shift writes whose times go in a JSON body.
+SHIFT_WRITES = ("update_shift", "delete_shift", "add_shift", "create_rostered_shift")
+BODY_TIME = (
+    "ISO 8601 date-time with its offset, e.g. 2026-10-16T16:30:00+13:00 — "
+    "sent in the JSON body as it is, never URL-encoded."
+)
+
+LOADED_VENUE_FIELD = {
+    "loaded_venue_id": "The shift's venue as Loaded knows it (the shift's "
+    "venueId) — not Norm's venue_id, which only picks the login."
+}
 
 
 def updates() -> list[RowUpdate]:
@@ -87,6 +113,13 @@ def updates() -> list[RowUpdate]:
 def _component_changes(rows: dict) -> dict:
     """{action: {column: new value}} for the roster_editor mapping rows."""
     want = {}
+    update = rows.get("update_shift")
+    if update is not None:
+        fm = dict(update.field_mapping or {})
+        if fm.get("venueId") != "loaded_venue_id":
+            want["update_shift"] = {
+                "field_mapping": {**fm, "venueId": "loaded_venue_id"}
+            }
     delete = rows.get("delete_shift")
     if delete is not None:
         cols = {
@@ -134,7 +167,25 @@ def also(db, dry_run: bool) -> list[str]:
             body = new.get("request_body_template") or ""
             new["request_body_template"] = body.replace(
                 "{{ hourly_rate | default(0) }}", "{{ hourly_rate | default(0, true) }}"
-            )
+            ).replace('"venueId":"{{ venue_id }}"', '"venueId":"{{ loaded_venue_id }}"')
+            if not new["request_body_template"].lstrip().startswith('{"id":'):
+                new["request_body_template"] = (
+                    '{"id":"{{ shift_id }}",'
+                    + (new["request_body_template"].lstrip()[1:])
+                )
+            fm = {k: v for k, v in (new.get("field_mapping") or {}).items()}
+            fm.pop("venue_id", None)
+            new["field_mapping"] = {**fm, "loaded_venue_id": "loaded_venue_id"}
+            new["field_descriptions"] = {
+                **(new.get("field_descriptions") or {}),
+                **LOADED_VENUE_FIELD,
+            }
+        if e.get("action") in SHIFT_WRITES:
+            fd = dict(new.get("field_descriptions") or {})
+            for k in ("clockin_time", "clockout_time"):
+                if "%2b" in str(fd.get(k) or "").lower():
+                    fd[k] = BODY_TIME
+            new["field_descriptions"] = fd
         if new != e:
             diff = [k for k in new if new.get(k) != e.get(k)]
             lines.append(f"loadedhub endpoint {e['action']}: update {', '.join(diff)}")

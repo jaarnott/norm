@@ -443,7 +443,9 @@ class ToolCall(Base):
     __tablename__ = "tool_calls"
 
     id = Column(String, primary_key=True, default=_uuid)
-    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
+    # Optional since Oct 2026: a write synced from a document opened outside a
+    # conversation (the Roster page) has no thread, and must still be recorded.
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=True)
     llm_call_id = Column(
         String, ForeignKey("llm_calls.id", ondelete="SET NULL"), nullable=True
     )

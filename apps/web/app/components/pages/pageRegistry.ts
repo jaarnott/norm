@@ -1,4 +1,5 @@
 import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, Clock, Blocks, LayoutGrid, Grid2x2, Gavel, type LucideIcon } from 'lucide-react';
+import { tradingMonday, tradingWeekRange } from '../../lib/rosterTime';
 
 export interface FunctionalPageConfig {
   id: string;
@@ -23,23 +24,11 @@ export interface FunctionalPageConfig {
   componentProps?: Record<string, unknown>;
 }
 
+/** This business week, as the roster query wants it (lib/rosterTime). It was
+ * midnight to midnight with +13:00 hard-coded — two weeks' rosters back, and
+ * the wrong offset all winter (Oct 2026). */
 function getCurrentWeekRange(): { start_datetime: string; end_datetime: string } {
-  const now = new Date();
-  const day = now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
-  monday.setHours(0, 0, 0, 0);
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  sunday.setHours(23, 59, 59, 0);
-
-  const fmt = (d: Date) => {
-    const offset = '+13:00';
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${offset}`;
-  };
-
-  return { start_datetime: fmt(monday), end_datetime: fmt(sunday) };
+  return tradingWeekRange(tradingMonday(new Date()));
 }
 
 export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [

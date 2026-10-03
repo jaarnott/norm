@@ -138,22 +138,6 @@ def sync_document(doc_id: str, db: Session, config_db: Session | None = None) ->
         db.commit()
         return
 
-    if doc.thread_id is None and any(
-        _get_mapping(op.get("op", ""), doc, db) for op in doc.pending_ops
-    ):
-        # Every write is recorded as a ToolCall, and a ToolCall belongs to a
-        # thread (tool_calls.thread_id is NOT NULL) — so a document opened
-        # outside a conversation (the Roster page) failed here on a database
-        # error, every time. Say so plainly instead. The chat roster card ties
-        # its document to its thread, so its edits do save.
-        doc.sync_status = "error"
-        doc.sync_error = (
-            "Edits made outside a conversation can't be saved yet — open the "
-            "roster from a chat to edit it."
-        )
-        db.commit()
-        return
-
     doc.sync_status = "syncing"
     db.commit()
 

@@ -9,8 +9,7 @@ import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import { computeWarnings, summarise } from './roster/warnings';
 import type { LeaveRecord, UnavailabilityRecord } from './roster/warnings';
-import { venueTimePrefs, formatClock, venueOffset, formatInTz, wallClockToInstant } from '../../lib/rosterTime';
-import type { VenueTimePrefs } from '../../lib/rosterTime';
+import { venueTimePrefs, formatClock, formatInTz, wallClockToInstant, tradingWeekRange } from '../../lib/rosterTime';
 import WeekGrid from './roster/WeekGrid';
 import DayTimeline from './roster/DayTimeline';
 import ShiftModal from './roster/ShiftModal';
@@ -25,27 +24,6 @@ interface VenueOption {
   // the venue's clock rather than the viewer's.
   timezone?: string | null;
   day_start_time?: string | null;
-}
-
-/**
- * The venue's trading week as Loaded's roster query wants it: Monday's day
- * start to just before the next Monday's, written in the venue's own clock.
- * Midnight to midnight also caught the tail of the previous trading week
- * (which runs to 7am Monday), so Loaded returned both rosters and the card
- * showed — and edited — last week's (Oct 2026).
- */
-function tradingWeek(monday: Date, prefs: VenueTimePrefs) {
-  const day = (d: Date, add: number) => { const x = new Date(d); x.setDate(d.getDate() + add); return x; };
-  const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-  const at = (d: Date, mins: number, secs: string) => {
-    const key = dateKey(d);
-    return `${key}T${hhmm(mins)}:${secs}${venueOffset(wallClockToInstant(key, mins, prefs.timeZone), prefs)}`;
-  };
-  const start = prefs.dayStartMinutes;
-  return {
-    start_datetime: at(monday, start, '00'),
-    end_datetime: start > 0 ? at(day(monday, 7), start - 1, '59') : at(day(monday, 6), 23 * 60 + 59, '59'),
-  };
 }
 
 export default function RosterEditor({ data, props, onAction, threadId }: DisplayBlockProps) {
@@ -169,7 +147,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         body: JSON.stringify({
           connector_name: connectorName,
           action: 'get_roster',
-          params: { ...tradingWeek(monday, timePrefs), venue_id: venueId },
+          params: { ...tradingWeekRange(dateKey(monday), timePrefs), venue_id: venueId },
           doc_type: 'roster',
           venue_id: venueId,
           // A chat card's document belongs to its conversation: each saved
@@ -301,7 +279,7 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
         body: JSON.stringify({
           connector_name: connectorName,
           action: 'get_roster',
-          params: { ...tradingWeek(monday, timePrefs), venue_id: venueId },
+          params: { ...tradingWeekRange(dateKey(monday), timePrefs), venue_id: venueId },
           doc_type: 'roster',
           venue_id: venueId,
           // A chat card's document belongs to its conversation: each saved
