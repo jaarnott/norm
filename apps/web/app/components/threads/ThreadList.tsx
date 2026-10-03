@@ -15,9 +15,18 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'completed', label: 'Completed' },
 ];
 
+/** Waiting on a person's approval: a change Norm proposed in the thread, or a
+ *  scheduled task's run that stopped at one with nobody there. */
+export function awaitsApproval(t: Thread): boolean {
+  return t.status === 'awaiting_approval'
+    || t.status === 'awaiting_tool_approval'
+    || (t.automated_task?.waiting_for_approval ?? 0) > 0;
+}
+
 function applyFilter(threads: Thread[], filter: FilterKey): Thread[] {
   if (filter === 'all') return threads;
   if (filter === 'completed') return threads.filter(t => t.status === 'submitted' || t.status === 'rejected');
+  if (filter === 'awaiting_approval') return threads.filter(awaitsApproval);
   return threads.filter(t => t.status === filter || (filter === 'awaiting_user_input' && t.status === 'needs_clarification'));
 }
 

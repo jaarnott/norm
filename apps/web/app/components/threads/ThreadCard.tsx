@@ -178,6 +178,14 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
         }}>
           {isAutomated ? (thread.automated_task?.title || getThreadTitle(thread)) : (getThreadSummary(thread) || getThreadTitle(thread))}
         </span>
+        {(thread.automated_task?.waiting_for_approval ?? 0) > 0 && (
+          <span title="A run is waiting for your approval" style={{
+            fontSize: '0.62rem', fontWeight: 600, padding: '1px 6px', borderRadius: 10, flexShrink: 0,
+            backgroundColor: STATUS_STYLES.awaiting_tool_approval.bg, color: STATUS_STYLES.awaiting_tool_approval.color,
+          }}>
+            {STATUS_STYLES.awaiting_tool_approval.label}
+          </span>
+        )}
         <button
           onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
           title="Remove"
@@ -273,6 +281,16 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
           : getThreadSummary(thread)
         }
       </div>
+
+      {/* A scheduled task's run stopped at a change nobody was there to approve */}
+      {(thread.automated_task?.waiting_for_approval ?? 0) > 0 && (
+      <span style={{
+        fontSize: '0.72rem', fontWeight: 600, padding: '0.15rem 0.5rem', borderRadius: 10,
+        backgroundColor: STATUS_STYLES.awaiting_tool_approval.bg, color: STATUS_STYLES.awaiting_tool_approval.color,
+      }}>
+        {STATUS_STYLES.awaiting_tool_approval.label}
+      </span>
+      )}
 
       {/* Status badge — only show when user action is needed */}
       {['awaiting_approval', 'awaiting_tool_approval', 'awaiting_user_input', 'needs_clarification'].includes(thread.status) && (

@@ -745,7 +745,10 @@ class AutomatedTaskRun(Base):
     thread_id = Column(
         String, ForeignKey("threads.id"), nullable=True
     )  # execution Thread record
-    status = Column(String, nullable=False, default="running")  # running|success|error
+    # running | success | error | skipped_unhired | waiting_for_approval (it
+    # stopped at a write that asks) | declined (its changes were all declined)
+    # | superseded (a newer run replaced it while it waited)
+    status = Column(String, nullable=False, default="running")
     mode = Column(String, nullable=False, default="live")  # live|test
     result_summary = Column(Text, nullable=True)
     tool_calls_count = Column(Integer, default=0)

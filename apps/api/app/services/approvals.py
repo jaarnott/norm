@@ -249,11 +249,21 @@ def decide(
     db.flush()
 
 
-def supersede(db: Session, thread: Thread, user_id: str | None) -> bool:
-    """Decline a waiting thread's pending calls because a new message arrived.
+def supersede(
+    db: Session,
+    thread: Thread,
+    user_id: str | None,
+    *,
+    note: str = SUPERSEDED_NOTE,
+    card_note: str | None = None,
+    status_after: str = "in_progress",
+) -> bool:
+    """Decline a waiting thread's pending calls because something newer came.
 
-    Returns True if there was anything to supersede. Does not commit — the
-    caller commits it together with the new message.
+    In a conversation, a new message (the defaults). For a scheduled run, a
+    newer run of the same task (``supersede_waiting_runs``). Returns True if
+    there was anything to supersede. Does not commit — the caller commits it
+    with whatever replaced it.
     """
     if thread.status != AWAITING:
         return False
@@ -261,16 +271,18 @@ def supersede(db: Session, thread: Thread, user_id: str | None) -> bool:
     for tc in calls:
         if tc.status == "pending_approval":
             tc.status = "superseded"
-    messages = set_card_status(db, thread, [tc.id for tc in calls], "superseded")
+    messages = set_card_status(
+        db, thread, [tc.id for tc in calls], "superseded", note=card_note
+    )
     # The model reads its history from Message rows, not the discarded loop
     # state — so the note goes on the proposal itself, and the next turn knows
     # nothing was done.
     for msg in messages:
-        if msg.thread_id == thread.id and SUPERSEDED_NOTE not in (msg.content or ""):
-            msg.content = f"{(msg.content or '').rstrip()}\n\n{SUPERSEDED_NOTE}"
+        if msg.thread_id == thread.id and note not in (msg.content or ""):
+            msg.content = f"{(msg.content or '').rstrip()}\n\n{note}"
     thread.pending_tool_call_ids = None
     thread.agent_loop_state = None
-    thread.status = "in_progress"
+    thread.status = status_after
     user = db.query(User).filter(User.id == user_id).first() if user_id else None
     db.add(
         Approval(
@@ -351,15 +363,19 @@ def set_card_status(
     tool_call_ids: list[str],
     status: str,
     call_status: dict[str, str] | None = None,
+    note: str | None = None,
 ) -> list[Message]:
     """Set the status of the pending card(s) naming these calls, and of each row.
 
     Only cards still ``pending`` change — an earlier, superseded card keeps
-    saying so.
+    saying so. ``note`` says why, where the status alone doesn't ("a newer
+    run replaced it").
     """
 
     def change(data: dict) -> None:
         data["status"] = status
+        if note:
+            data["status_note"] = note
         for entry in data.get("tool_calls") or []:
             entry["status"] = (call_status or {}).get(entry.get("id"), status)
 
@@ -689,3 +705,136 @@ def always_allow_from_card(
             continue
         saved.append(key)
     return saved
+
+
+# ---------------------------------------------------------------------------
+# Scheduled runs that wait for a person
+# ---------------------------------------------------------------------------
+#
+# A scheduled run that reaches a write which asks has nobody watching. Until
+# Oct 2026 it suspended silently and was recorded as a "success": 20 runs in
+# production sat waiting for weeks, their cards copied into conversations
+# nobody opened. Now the run says it is waiting, its owner is emailed, the
+# task board shows it, and the next run of the same task replaces it.
+
+WAITING = "waiting_for_approval"
+RUN_SUPERSEDED_NOTE = (
+    "_Not done — a newer run of this task replaced these changes before they "
+    "were approved, so nothing was changed._"
+)
+
+
+def _run_for(db: Session, thread: Thread):
+    from app.db.models import AutomatedTaskRun
+
+    return (
+        db.query(AutomatedTaskRun)
+        .filter(AutomatedTaskRun.thread_id == thread.id)
+        .first()
+    )
+
+
+def waiting_runs(db: Session, task_id: str) -> list:
+    from app.db.models import AutomatedTaskRun
+
+    return (
+        db.query(AutomatedTaskRun)
+        .filter(
+            AutomatedTaskRun.automated_task_id == task_id,
+            AutomatedTaskRun.status == WAITING,
+        )
+        .all()
+    )
+
+
+def supersede_waiting_runs(db: Session, task_id: str) -> int:
+    """A new run of a task replaces any earlier run still waiting for approval:
+    its proposals were made against data the new run reads afresh."""
+    count = 0
+    for run in waiting_runs(db, task_id):
+        thread = db.query(Thread).filter(Thread.id == run.thread_id).first()
+        if thread is not None:
+            supersede(
+                db,
+                thread,
+                None,
+                note=RUN_SUPERSEDED_NOTE,
+                card_note="a newer run replaced it",
+                status_after="completed",
+            )
+        run.status = "superseded"
+        count += 1
+    if count:
+        db.flush()
+    return count
+
+
+def settle_task_run(db: Session, thread: Thread) -> None:
+    """After a waiting run's changes are decided: what the run came to.
+
+    ``success`` when anything was approved, ``declined`` when nothing was.
+    A run that stopped at ANOTHER card on resuming stays waiting.
+    """
+    import datetime as _dt
+
+    run = _run_for(db, thread)
+    if run is None or run.status != WAITING or thread.status == AWAITING:
+        return
+    calls = (
+        db.query(ToolCall).filter(ToolCall.thread_id == thread.id).all()
+        if thread.id
+        else []
+    )
+    approved = any(
+        tc.status in ("approved", "executed", "failed") for tc in calls if tc.preview
+    )
+    run.status = "success" if approved else "declined"
+    run.completed_at = _dt.datetime.now(_dt.timezone.utc)
+    last = (
+        db.query(Message)
+        .filter(Message.thread_id == thread.id, Message.role == "assistant")
+        .order_by(Message.created_at.desc())
+        .first()
+    )
+    if last is not None and last.content:
+        run.result_summary = last.content[:2000]
+    db.flush()
+
+
+def notify_task_waiting(db: Session, task, run, thread: Thread) -> str | None:
+    """Email a scheduled task's owner that a run is waiting for them.
+
+    Best-effort: the run is recorded as waiting whether or not this sends.
+    Returns the email log id.
+    """
+    from app.mcp.links import thread_link
+    from app.services.email_service import send_system_email
+
+    try:
+        owner = db.query(User).filter(User.id == task.created_by).first()
+        if owner is None or not owner.email:
+            return None
+        calls = _pending_calls(db, thread)
+        rows = []
+        for tc in calls:
+            shown = tc.preview or {}
+            title = shown.get("title") or tc.action.replace("_", " ")
+            rows.append(f"{title}: {shown['target']}" if shown.get("target") else title)
+        target = task.conversation_thread_id or thread.id
+        return send_system_email(
+            "task_waiting",
+            [owner.email],
+            {
+                "user_name": (owner.full_name or "").split(" ")[0] or "there",
+                "task_title": task.title,
+                "count": len(rows),
+                "changes": rows[:10],
+                "more": max(0, len(rows) - 10),
+                "link": thread_link(target),
+            },
+            db,
+            thread_id=thread.id,
+        )
+    except Exception:  # noqa: BLE001 — telling them must never undo the run
+        logger.exception("Could not email the owner of task %s", str(task.id)[:12])
+        return None

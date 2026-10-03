@@ -161,7 +161,7 @@ def _execute_claimed(task_ids: list[str]) -> None:
     """Run each claimed task in sequence. Intended to run off the request thread."""
     for task_id in task_ids:
         try:
-            execute_task_now(task_id, mode="live")
+            execute_task_now(task_id, mode="live", unattended=True)
         except Exception:
             logger.exception("run_due_tasks: task %s failed", task_id[:12])
 
@@ -279,7 +279,13 @@ def _post_run_to_conversation(
     when = (run.started_at or datetime.now(timezone.utc)).astimezone(tz)
     # "ran" not "success": the status only means no exception was raised. The
     # output below it is the evidence of what actually happened.
-    outcome = "✓ ran" if run.status == "success" else f"✗ {run.status}"
+    outcome = (
+        "✓ ran"
+        if run.status == "success"
+        else "⏸ waiting for your approval"
+        if run.status == "waiting_for_approval"
+        else f"✗ {run.status}"
+    )
     headline = [
         f"Run the scheduled task: {automated_task.title}",
         when.strftime("%-d %b %Y, %-I:%M%p").lower(),
@@ -333,10 +339,15 @@ def _post_run_to_conversation(
         logger.exception("Could not post run %s to task conversation", str(run.id)[:12])
 
 
-def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
+def execute_task_now(
+    task_id: str, mode: str = "live", db=None, unattended: bool = False
+) -> dict:
     """Execute an automated task immediately. Returns the run result dict.
 
-    Can be called by the scheduler (background thread) or by an API endpoint.
+    Can be called by the scheduler (background thread, ``unattended``) or by
+    an API endpoint. A run that stops at a write which asks is recorded as
+    ``waiting_for_approval``, not ``success``; unattended, its owner is
+    emailed. A live run first replaces any earlier run still waiting.
     """
     from app.db.engine import SessionLocal, _ConfigSessionLocal
     from app.db.models import AutomatedTask, AutomatedTaskRun, Thread, Message
@@ -355,6 +366,13 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
 
         # Ensure conversation task exists
         _ensure_conversation_task(task, db)
+
+        # An earlier run still waiting for approval proposed changes against
+        # data this run reads afresh: this run replaces it (services/approvals).
+        if mode == "live":
+            from app.services.approvals import supersede_waiting_runs
+
+            supersede_waiting_runs(db, task.id)
 
         # Create run record
         run = AutomatedTaskRun(
@@ -510,7 +528,13 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
             tool_calls_count = len(result.get("tool_calls", []))
             duration_ms = int((time.time() - t0) * 1000)
 
-            run.status = "success"
+            from app.services import approvals
+
+            # Stopped at a write that asks: nobody may be watching, so say so
+            # rather than record a "success" (20 such runs sat unseen in
+            # production for weeks, Oct 2026).
+            waiting = temp_task.status == approvals.AWAITING
+            run.status = approvals.WAITING if waiting else "success"
             run.result_summary = result_text[:2000] if result_text else None
             run.tool_calls_count = tool_calls_count
             run.completed_at = datetime.now(timezone.utc)
@@ -538,6 +562,8 @@ def execute_task_now(task_id: str, mode: str = "live", db=None) -> dict:
                 ),
                 display_blocks=result.get("display_blocks"),
             )
+            if waiting and unattended:
+                approvals.notify_task_waiting(db, task, run, temp_task)
 
             db.commit()
 

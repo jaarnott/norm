@@ -317,6 +317,8 @@ export interface BaseThread {
     thread_summary: string | null;
     tool_filter: string[] | null;
     last_run_at: string | null;
+    /** Runs that stopped at a change needing approval, nobody having been there. */
+    waiting_for_approval?: number;
   } | null;
 }
 
@@ -410,13 +412,15 @@ export interface AutomatedTask {
   next_run_at: string | null;
   created_at: string;
   updated_at?: string;
+  /** Runs that stopped at a change needing approval, nobody having been there. */
+  waiting_for_approval?: number;
 }
 
 export interface AutomatedTaskRun {
   id: string;
   automated_task_id: string;
   thread_id: string | null;
-  status: 'running' | 'success' | 'error';
+  status: 'running' | 'success' | 'error' | 'skipped_unhired' | 'waiting_for_approval' | 'declined' | 'superseded';
   mode: 'live' | 'test';
   result_summary: string | null;
   tool_calls_count: number;

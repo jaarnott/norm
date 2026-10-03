@@ -269,18 +269,25 @@ export default function Home() {
   const selectedThread = threads.find(t => t.id === selectedThreadId) || null;
   const openThread = threads.find(t => t.status === 'awaiting_user_input');
 
-  // Fetch full thread detail when selecting a thread that only has summary data
+  // Fetch full thread detail when the selected thread has only summary data —
+  // or isn't in the list at all. A deep link (?thread=, as the "waiting for
+  // your approval" email sends) selects the thread before the list has loaded;
+  // this used to run once, find nothing, and leave "No messages yet" on screen.
+  // It runs again whenever the selected thread is still not fully loaded.
+  const selectedLoaded = !!selectedThread?.conversation;
   useEffect(() => {
     if (!selectedThreadId || selectedThreadId.startsWith('_pending_')) return;
-    const thread = threads.find(t => t.id === selectedThreadId);
-    if (!thread || thread.conversation) return; // already has full data
+    if (selectedLoaded) return;
     apiFetch(`/api/threads/${selectedThreadId}`)
       .then(res => res.ok ? res.json() : null)
       .then(full => {
-        if (full) setThreads(prev => prev.map(t => t.id === selectedThreadId ? full : t));
+        if (!full) return;
+        setThreads(prev => prev.some(t => t.id === full.id)
+          ? prev.map(t => t.id === full.id ? full : t)
+          : [full, ...prev]);
       })
       .catch(() => {});
-  }, [selectedThreadId]);
+  }, [selectedThreadId, selectedLoaded]);
 
   // Poll an open thread whose turn is still running server-side. The load effect
   // above fetches once, so a thread left `in_progress` — its send's stream cut

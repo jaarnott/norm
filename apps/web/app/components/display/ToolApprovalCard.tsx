@@ -181,7 +181,7 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
     setLoading(false);
   };
 
-  const label = cardLabel(status, rows);
+  const label = cardLabel(status, rows, data.status_note as string | undefined);
   const tone: Tone = pending ? 'pending' : label === 'Declined' || label.startsWith('Not done') ? 'muted' : 'good';
 
   const button = (primary: boolean, disabled: boolean): CSSProperties => ({

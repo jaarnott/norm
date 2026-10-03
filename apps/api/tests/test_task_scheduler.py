@@ -123,7 +123,8 @@ class TestRunDueTasks:
 
         assert result["claimed"] == 1
         assert task.id in result["task_ids"]
-        mock_exec.assert_called_once_with(task.id, mode="live")
+        # A scheduled run is unattended: nobody is there if it needs approval.
+        mock_exec.assert_called_once_with(task.id, mode="live", unattended=True)
         # next_run_at advanced into the future so it won't be re-claimed
         assert task.next_run_at > datetime.now(timezone.utc)
 

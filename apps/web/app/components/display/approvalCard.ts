@@ -112,10 +112,11 @@ export function rowState(row: ApprovalRow, cardStatus: string): { label: string;
   return { label: 'Declined', tone: 'muted' };
 }
 
-/** The card's header badge. */
-export function cardLabel(cardStatus: string, rows: ApprovalRow[]): string {
+/** The card's header badge. ``note`` says why it was superseded, when not
+ *  by the person moving on ("a newer run replaced it"). */
+export function cardLabel(cardStatus: string, rows: ApprovalRow[], note?: string | null): string {
   if (cardStatus === 'pending') return 'Approval needed';
-  if (cardStatus === 'superseded') return 'Not done — you moved on';
+  if (cardStatus === 'superseded') return `Not done — ${note || 'you moved on'}`;
   if (cardStatus === 'approved') {
     return rows.some(r => r.status === 'rejected') ? 'Partly approved' : 'Approved';
   }

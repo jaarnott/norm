@@ -142,6 +142,12 @@ export default function AutomatedTaskBoard({ data, onAction }: DisplayBlockProps
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
                 <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#111', flex: 1 }}>{task.title}</span>
+                {(task.waiting_for_approval ?? 0) > 0 && (
+                  <span style={{
+                    fontSize: '0.6rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                    backgroundColor: '#e8daef', color: '#6c3483',
+                  }}>Waiting for your approval</span>
+                )}
                 <span style={{
                   fontSize: '0.6rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
                   backgroundColor: ss.bg, color: ss.color,

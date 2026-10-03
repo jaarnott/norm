@@ -82,5 +82,7 @@ describe('row and card state', () => {
     expect(cardLabel('approved', rows)).toBe('Partly approved');
     expect(cardLabel('approved', [rows[0]])).toBe('Approved');
     expect(cardLabel('pending', rows)).toBe('Approval needed');
+    expect(cardLabel('superseded', rows)).toBe('Not done — you moved on');
+    expect(cardLabel('superseded', rows, 'a newer run replaced it')).toBe('Not done — a newer run replaced it');
   });
 });

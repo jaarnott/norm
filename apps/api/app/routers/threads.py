@@ -27,6 +27,7 @@ router = APIRouter()
 def _get_automated_task_meta(db: Session, conversation_thread_id: str) -> dict | None:
     """Return automated task metadata for a conversation thread, or None."""
     from app.db.models import AutomatedTask as AT
+    from app.services import approvals
 
     at = (
         db.query(AT).filter(AT.conversation_thread_id == conversation_thread_id).first()
@@ -46,6 +47,9 @@ def _get_automated_task_meta(db: Session, conversation_thread_id: str) -> dict |
         "thread_summary": at.thread_summary,
         "tool_filter": at.tool_filter,
         "last_run_at": at.last_run_at.isoformat() if at.last_run_at else None,
+        # Runs that stopped at a write which asks — the thread list and the
+        # task header show it, since nobody was there when the run asked.
+        "waiting_for_approval": len(approvals.waiting_runs(db, at.id)),
     }
 
 
@@ -555,6 +559,10 @@ def _decide_tool_calls(
         thread, db, system_prompt, anthropic_tools, config_db=config_db
     )
     approvals.post_outcome_to_task_conversation(db, thread)
+    # A scheduled run that was waiting on this decision is now settled
+    # (success or declined) — unless it stopped at another card.
+    approvals.settle_task_run(db, thread)
+    db.commit()
     return result
 
 

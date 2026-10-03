@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Waiting for your approval</h1>
+<p>Hi {{ user_name }},</p>
+<p>Your scheduled task <strong>{{ task_title }}</strong> ran and stopped before making {{ count }} change{{ "" if count == 1 else "s" }} — Norm asks before it changes anything, and nobody was there to say yes:</p>
+<ul>
+{% for change in changes %}
+  <li>{{ change }}</li>
+{% endfor %}
+{% if more %}
+  <li>and {{ more }} more</li>
+{% endif %}
+</ul>
+<p>Nothing has been changed. Approve or decline {{ "it" if count == 1 else "them" }} in the task's conversation. If you leave {{ "it" if count == 1 else "them" }}, the next run of the task replaces {{ "it" if count == 1 else "them" }}.</p>
+<a href="{{ link }}" class="btn">Review the changes</a>
+<p style="font-size: 13px; color: #888;">Want this to run on its own next time? Tick "Always allow" on the card, or change it in Settings → Preferences.</p>
+{% endblock %}

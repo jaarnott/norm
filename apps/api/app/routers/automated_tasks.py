@@ -1,4 +1,10 @@
-"""REST endpoints for automated task management (UI board)."""
+"""REST endpoints for automated task management (UI board).
+
+A task belongs to its creator's organisation (services/thread_access.
+can_manage_task): every route here 404s on anyone else's — until Oct 2026 any
+signed-in user could list, run, edit or delete any organisation's tasks by id.
+Platform admins see all.
+"""
 
 import logging
 
@@ -55,7 +61,65 @@ class MessageBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _automated_task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dict:
+def _task_for(db: Session, task_id: str, user: User) -> AutomatedTask:
+    """The task, if ``user`` may see and change it; 404 otherwise."""
+    from app.services.thread_access import can_manage_task
+
+    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
+    if task is None or not can_manage_task(db, task, user):
+        raise HTTPException(404, "Automated task not found")
+    return task
+
+
+def _visible(query, db: Session, user: User):
+    """Narrow a task query to what ``user`` may see: their organisation's."""
+    from sqlalchemy import or_
+
+    from app.db.models import OrganizationMembership
+
+    if getattr(user, "role", None) == "admin":
+        return query
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(OrganizationMembership.user_id == user.id)
+        .first()
+    )
+    if membership is None:
+        return query.filter(AutomatedTask.created_by == user.id)
+    colleagues = db.query(OrganizationMembership.user_id).filter(
+        OrganizationMembership.organization_id == membership.organization_id
+    )
+    return query.filter(
+        or_(
+            AutomatedTask.created_by == user.id,
+            AutomatedTask.created_by.in_(colleagues),
+        )
+    )
+
+
+def _waiting_counts(db: Session, task_ids: list[str]) -> dict[str, int]:
+    """task id -> runs waiting for someone to approve their changes."""
+    from sqlalchemy import func
+
+    from app.services.approvals import WAITING
+
+    if not task_ids:
+        return {}
+    rows = (
+        db.query(AutomatedTaskRun.automated_task_id, func.count())
+        .filter(
+            AutomatedTaskRun.automated_task_id.in_(task_ids),
+            AutomatedTaskRun.status == WAITING,
+        )
+        .group_by(AutomatedTaskRun.automated_task_id)
+        .all()
+    )
+    return {task_id: n for task_id, n in rows}
+
+
+def _automated_task_to_dict(
+    t: AutomatedTask, include_runs: bool = False, waiting: int = 0
+) -> dict:
     d = {
         "id": t.id,
         "title": t.title,
@@ -75,6 +139,8 @@ def _automated_task_to_dict(t: AutomatedTask, include_runs: bool = False) -> dic
         "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        # Runs that stopped at a write which asks, waiting for someone.
+        "waiting_for_approval": waiting,
     }
     if include_runs:
         d["runs"] = [_run_to_dict(r) for r in (t.runs or [])[:10]]
@@ -125,23 +191,30 @@ async def list_tasks(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = db.query(AutomatedTask)
+    query = _visible(db.query(AutomatedTask), db, user)
     if agent_slug:
         query = query.filter(AutomatedTask.agent_slug == agent_slug)
     if status:
         query = query.filter(AutomatedTask.status == status)
     tasks = query.order_by(AutomatedTask.created_at.desc()).all()
-    return {"tasks": [_automated_task_to_dict(t) for t in tasks]}
+    waiting = _waiting_counts(db, [t.id for t in tasks])
+    return {
+        "tasks": [
+            _automated_task_to_dict(t, waiting=waiting.get(t.id, 0)) for t in tasks
+        ]
+    }
 
 
 @router.get("/automated-tasks/{task_id}")
 async def get_task(
     task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
-    return _automated_task_to_dict(task, include_runs=True)
+    task = _task_for(db, task_id, user)
+    return _automated_task_to_dict(
+        task,
+        include_runs=True,
+        waiting=_waiting_counts(db, [task.id]).get(task.id, 0),
+    )
 
 
 @router.post("/automated-tasks")
@@ -173,9 +246,7 @@ async def update_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
+    task = _task_for(db, task_id, user)
 
     for field in (
         "title",
@@ -205,9 +276,7 @@ async def run_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
+    _task_for(db, task_id, user)
 
     from app.services.task_scheduler import execute_task_now
 
@@ -223,9 +292,7 @@ async def run_task(
 async def pause_task(
     task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
+    task = _task_for(db, task_id, user)
     task.status = "paused"
 
     from app.services.task_scheduler import apply_schedule
@@ -239,9 +306,7 @@ async def pause_task(
 async def resume_task(
     task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
+    task = _task_for(db, task_id, user)
     task.status = "active"
 
     from app.services.task_scheduler import apply_schedule
@@ -255,9 +320,7 @@ async def resume_task(
 async def delete_task(
     task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
+    task = _task_for(db, task_id, user)
 
     db.delete(task)
     db.commit()
@@ -273,6 +336,7 @@ async def delete_task(
 async def list_runs(
     task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
+    _task_for(db, task_id, user)
     runs = (
         db.query(AutomatedTaskRun)
         .filter(AutomatedTaskRun.automated_task_id == task_id)
@@ -291,6 +355,7 @@ async def get_run_detail(
     user: User = Depends(get_current_user),
 ):
     """Get full detail for a specific run including its Task messages and tool calls."""
+    _task_for(db, task_id, user)
     run = (
         db.query(AutomatedTaskRun)
         .filter(
@@ -353,9 +418,7 @@ async def get_conversation(
     task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
     """Load the conversation thread for an automated task."""
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
+    task = _task_for(db, task_id, user)
 
     if not task.conversation_thread_id:
         return {
@@ -386,9 +449,7 @@ async def ensure_conversation(
     user: User = Depends(get_current_user),
 ):
     """Create the conversation task if it doesn't exist. Lightweight — no LLM call."""
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
+    task = _task_for(db, task_id, user)
 
     from app.services.task_scheduler import _ensure_conversation_task
 
@@ -410,9 +471,7 @@ async def send_message(
     user: User = Depends(get_current_user),
 ):
     """Send a user message to the automated task's conversation."""
-    task = db.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
-    if not task:
-        raise HTTPException(404, "Automated task not found")
+    task = _task_for(db, task_id, user)
 
     # Ensure conversation task exists
     from app.services.task_scheduler import _ensure_conversation_task

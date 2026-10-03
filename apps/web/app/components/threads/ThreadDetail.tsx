@@ -630,6 +630,11 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
         <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6b7280' }}>Saved Thread</span>
         <span style={{ fontSize: '0.65rem', fontWeight: 600, padding: '1px 8px', borderRadius: 10, backgroundColor: ats.bg, color: ats.color }}>{at.status}</span>
         <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>{formatAtSchedule(at.schedule_type, at.schedule_config)}</span>
+        {(at.waiting_for_approval ?? 0) > 0 && (
+          <span style={{ fontSize: '0.65rem', fontWeight: 600, padding: '1px 8px', borderRadius: 10, backgroundColor: '#e8daef', color: '#6c3483' }}>
+            A run is waiting for your approval — see its card below
+          </span>
+        )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.3rem' }}>
           <button onClick={handleRun} style={{
             padding: '3px 10px', fontSize: '0.68rem', fontWeight: 600,
