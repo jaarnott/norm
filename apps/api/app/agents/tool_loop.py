@@ -180,11 +180,22 @@ def resume_tool_loop(
         anthropic_tools, _build_tool_meta(anthropic_tools, db)
     )
     pending_ids = task.pending_tool_call_ids or []
-    tool_results_content = []
+    # Every tool_use in the suspended turn needs an answer: the calls that
+    # already ran (saved at suspension), then each pending one below.
+    tool_results_content = list(state.get("done_results") or [])
 
     for tc_id in pending_ids:
         tc = db.query(ToolCall).filter(ToolCall.id == tc_id).first()
         if not tc:
+            tool_results_content.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tc_id,
+                    "content": json.dumps(
+                        {"status": "not_run", "message": "This call was not run."}
+                    ),
+                }
+            )
             continue
 
         if tc.status == "approved":
@@ -220,13 +231,20 @@ def resume_tool_loop(
                     ),
                 }
             )
-        elif tc.status == "rejected":
+        else:
+            # Declined by the user, or by the approval step itself (e.g. a
+            # venue the approver can't act on) — error_message says which.
             tool_results_content.append(
                 {
                     "type": "tool_result",
                     "tool_use_id": tc.id,
                     "content": json.dumps(
-                        {"status": "rejected", "message": "User rejected this action."}
+                        {
+                            "status": tc.status
+                            if tc.status in ("rejected", "superseded")
+                            else "not_run",
+                            "message": tc.error_message or "User rejected this action.",
+                        }
                     ),
                 }
             )
@@ -1042,9 +1060,17 @@ def _execute_loop(
                 assistant_content = [_serialize_block(b) for b in response.content]
                 messages.append({"role": "assistant", "content": assistant_content})
 
+                pending_ids = {tc.id for tc in pending_writes}
                 task.agent_loop_state = {
                     "messages": messages,
                     "iteration": iteration,
+                    # Results for the OTHER calls in this response (reads,
+                    # drafts, auto-approved writes). Resume must answer every
+                    # tool_use in the turn; it used to send only the pending
+                    # ones, and the API refuses a turn with unanswered calls.
+                    "done_results": [
+                        r for r in tool_results if r["tool_use_id"] not in pending_ids
+                    ],
                     # Pin the agent that suspended this loop. The thread's
                     # domain can move on while an approval sits waiting (a
                     # follow-up can hand the conversation to another agent),

@@ -777,7 +777,12 @@ export default function Home() {
     // Handle tool approval/rejection from ToolApprovalCard
     if (action.action === 'tool_approve' || action.action === 'tool_reject') {
       const targetAction = action.action === 'tool_approve' ? 'approve' : 'reject';
-      await handleAction(threadId, targetAction);
+      // The card names the thread that is waiting. For a scheduled run that is
+      // the run's own (hidden) thread, not the task conversation it was copied
+      // into — deciding on the conversation used to run nothing at all.
+      const cardThread = (action.params?.thread_id as string | undefined) || threadId;
+      await handleAction(cardThread, targetAction);
+      if (cardThread !== threadId) await handleAction(threadId, 'reload');
       return { ok: true };
     }
 

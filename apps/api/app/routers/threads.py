@@ -306,6 +306,24 @@ async def get_thread_detail(
     return thread
 
 
+def _thread_for_decision(db: Session, thread_id: str, user: User) -> Thread:
+    """The thread ``user`` may decide on (theirs, or any for a platform admin).
+
+    A tool-loop thread that is no longer waiting answers 409, so a second click
+    can't fall through to the legacy domain flows below.
+    """
+    from app.services import approvals
+
+    thread = approvals.actionable_thread(db, thread_id, user)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if approvals.is_tool_loop_thread(thread) and thread.status != approvals.AWAITING:
+        raise HTTPException(
+            status_code=409, detail="These changes have already been decided."
+        )
+    return thread
+
+
 @router.post("/threads/{thread_id}/approve")
 async def approve(
     thread_id: str,
@@ -313,9 +331,8 @@ async def approve(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    # Check if this is a tool-approval request
-    raw_thread = db.query(Thread).filter(Thread.id == thread_id).first()
-    if raw_thread and raw_thread.status == "awaiting_tool_approval":
+    raw_thread = _thread_for_decision(db, thread_id, user)
+    if raw_thread.status == "awaiting_tool_approval":
         return _approve_tool_calls(db, raw_thread, user, config_db=config_db)
 
     thread, domain = _find(db, thread_id)
@@ -358,23 +375,23 @@ async def reject(
     ever populated Approval.notes, so the column had been write-only-in-theory
     since it was created. A supplied reason is banked as a learning signal.
     """
+    raw_thread = _thread_for_decision(db, thread_id, user)
     notes = (body or {}).get("notes") if isinstance(body, dict) else None
     if notes:
         from app.services.memory_signals import record_rejection
 
-        _t = db.query(Thread).filter(Thread.id == thread_id).first()
         record_rejection(
             db,
             organization_id=_rejection_org_id(db, user),
             user_id=getattr(user, "id", None),
-            thread_id=_t.id if _t else None,
+            thread_id=raw_thread.id,
             notes=notes,
         )
 
-    # Check if this is a tool-rejection request
-    raw_thread = db.query(Thread).filter(Thread.id == thread_id).first()
-    if raw_thread and raw_thread.status == "awaiting_tool_approval":
-        return _reject_tool_calls(db, raw_thread, user, config_db=config_db)
+    if raw_thread.status == "awaiting_tool_approval":
+        return _reject_tool_calls(
+            db, raw_thread, user, config_db=config_db, notes=notes
+        )
 
     thread, domain = _find(db, thread_id)
     if not thread:
@@ -394,6 +411,10 @@ async def submit(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    from app.services import approvals
+
+    if approvals.actionable_thread(db, thread_id, user) is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
     thread, domain = _find(db, thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -463,56 +484,48 @@ def _reject_report(db: Session, thread_id: str, user: User | None = None) -> dic
     return _report_thread_to_dict(thread)
 
 
-def _update_approval_display_block(thread: Thread, new_status: str) -> None:
-    """Update the tool_approval display block status in the approval message."""
-    from sqlalchemy.orm.attributes import flag_modified
+def _decide_tool_calls(
+    db: Session,
+    thread: Thread,
+    user: User,
+    approve: bool,
+    config_db: Session | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Decide a suspended turn's pending writes, then resume the loop.
 
-    for msg in thread.messages:
-        if msg.display_blocks:
-            blocks = list(msg.display_blocks)
-            updated = False
-            for block in blocks:
-                if block.get("component") == "tool_approval":
-                    block["data"]["status"] = new_status
-                    updated = True
-            if updated:
-                msg.display_blocks = blocks
-                flag_modified(msg, "display_blocks")
+    Claimed first (exactly once — a second click gets 409), decided per call
+    (approved, or declined for a venue the approver can't act on), then resumed:
+    approved writes run, and the model is told about the rest.
+    """
+    from app.agents.prompt_builder import build_tool_definitions
+    from app.agents.tool_loop import resume_tool_loop
+    from app.services import approvals
+
+    try:
+        approvals.claim(db, thread)
+    except approvals.AlreadyDecided:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="These changes have already been decided."
+        )
+    approvals.decide(db, thread, user, approve=approve, notes=notes)
+
+    system_prompt, anthropic_tools = build_tool_definitions(
+        _suspended_domain(thread), db, user_id=user.id, config_db=config_db
+    )
+    result = resume_tool_loop(
+        thread, db, system_prompt, anthropic_tools, config_db=config_db
+    )
+    approvals.post_outcome_to_task_conversation(db, thread)
+    return result
 
 
 def _approve_tool_calls(
     db: Session, thread: Thread, user: User, config_db: Session | None = None
 ) -> dict:
     """Approve pending write tool calls and resume the agentic loop."""
-    from app.agents.tool_loop import resume_tool_loop
-    from app.agents.prompt_builder import build_tool_definitions
-
-    # Mark pending tool calls as approved
-    for tc_id in thread.pending_tool_call_ids or []:
-        tc = db.query(ToolCall).filter(ToolCall.id == tc_id).first()
-        if tc and tc.status == "pending_approval":
-            tc.status = "approved"
-    _update_approval_display_block(thread, "approved")
-    db.flush()
-
-    # Record the approval
-    db.add(
-        Approval(
-            thread_id=thread.id,
-            action="tool_calls_approved",
-            performed_by=user.email,
-            user_id=user.id,
-        )
-    )
-    db.flush()
-
-    # Resume the loop
-    system_prompt, anthropic_tools = build_tool_definitions(
-        _suspended_domain(thread), db, user_id=user.id, config_db=config_db
-    )
-    return resume_tool_loop(
-        thread, db, system_prompt, anthropic_tools, config_db=config_db
-    )
+    return _decide_tool_calls(db, thread, user, approve=True, config_db=config_db)
 
 
 def _suspended_domain(thread: Thread) -> str:
@@ -527,37 +540,15 @@ def _suspended_domain(thread: Thread) -> str:
 
 
 def _reject_tool_calls(
-    db: Session, thread: Thread, user: User, config_db: Session | None = None
+    db: Session,
+    thread: Thread,
+    user: User,
+    config_db: Session | None = None,
+    notes: str | None = None,
 ) -> dict:
     """Reject pending write tool calls and resume the loop (tool results will say 'rejected')."""
-    from app.agents.tool_loop import resume_tool_loop
-    from app.agents.prompt_builder import build_tool_definitions
-
-    # Mark pending tool calls as rejected
-    for tc_id in thread.pending_tool_call_ids or []:
-        tc = db.query(ToolCall).filter(ToolCall.id == tc_id).first()
-        if tc and tc.status == "pending_approval":
-            tc.status = "rejected"
-    _update_approval_display_block(thread, "rejected")
-    db.flush()
-
-    # Record the rejection
-    db.add(
-        Approval(
-            thread_id=thread.id,
-            action="tool_calls_rejected",
-            performed_by=user.email,
-            user_id=user.id,
-        )
-    )
-    db.flush()
-
-    # Resume the loop — the tool results will contain rejection messages
-    system_prompt, anthropic_tools = build_tool_definitions(
-        _suspended_domain(thread), db, user_id=user.id, config_db=config_db
-    )
-    return resume_tool_loop(
-        thread, db, system_prompt, anthropic_tools, config_db=config_db
+    return _decide_tool_calls(
+        db, thread, user, approve=False, config_db=config_db, notes=notes
     )
 
 
@@ -582,9 +573,10 @@ async def widget_action(
 ):
     """Execute a tool call initiated from an interactive widget."""
     from app.agents.tool_loop import _execute_tool_call, _find_tool_def
+    from app.services import approvals
     import uuid
 
-    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    thread = approvals.actionable_thread(db, thread_id, user)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 

@@ -125,6 +125,12 @@ class BaseDomainAgent(ABC):
             # Use thread's venue if none provided
             if not venue_id and thread.venue_id:
                 venue_id = thread.venue_id
+            # A new message instead of a decision declines whatever was still
+            # waiting for approval — the card stops being live, and the history
+            # says nothing was changed (services/approvals.py).
+            from app.services import approvals
+
+            approvals.supersede(db, thread, user_id)
             # Add the user message (+ any files attached to this turn)
             attachments = (
                 link_chat_attachments(turn_attachment_ids, thread.id, user_id, db)

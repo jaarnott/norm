@@ -58,7 +58,13 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
           backgroundColor: isPending ? '#f5f0ea' : isApproved ? '#d4edda' : '#e2e3e5',
           color: isPending ? '#a08060' : isApproved ? '#155724' : '#666',
         }}>
-          {isPending ? 'Approval Required' : isApproved ? 'Approved' : 'Declined'}
+          {isPending
+            ? 'Approval Required'
+            : isApproved
+              ? 'Approved'
+              : status === 'superseded'
+                ? 'Not done — you moved on'
+                : 'Declined'}
         </span>
       </div>
 
