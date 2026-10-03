@@ -235,6 +235,31 @@ def _reachable_venues(db: Session, user) -> set[str] | None:
     }
 
 
+def _tool_writes(config_db: Session, connector: str, action: str, method: str) -> bool:
+    """Whether calling this tool from an app is a write (declared + approved).
+
+    A tool's declared effect decides it: ``write`` is a write whatever its
+    method — the GET-declared writers (report email, task changes, the invoice
+    tools) used to pass as reads here. Drafts and reads are not. A row with no
+    declared effect keeps the method rule below.
+    """
+    from app.db.config_models import ConnectionSpec
+
+    try:
+        spec = (
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == connector)
+            .first()
+        )
+        row = spec_rows.find_tool(spec, action) if spec else None
+    except Exception:  # noqa: BLE001 — unreadable: the method rule below decides
+        row = None
+    declared = spec_rows.effect(row)
+    if declared is not None:
+        return declared == "write"
+    return method != "GET" and not _tool_read_only(config_db, connector, action)
+
+
 def _tool_read_only(config_db: Session, connector: str, action: str) -> bool:
     """Does the spec explicitly mark this action read-only?
 
@@ -342,7 +367,7 @@ def call_action(
     # `method` is also what the audit row records, so resolve it once. An
     # action marked read_only is a read whatever its transport says.
     method = _tool_method(config_db, connector, action)
-    if method != "GET" and not _tool_read_only(config_db, connector, action):
+    if _tool_writes(config_db, connector, action, method):
         if not _declared(spec, "writes", connector, action):
             raise HTTPException(
                 403,

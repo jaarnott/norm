@@ -165,7 +165,15 @@ def write_signals(tool_def: dict) -> list[str]:
     disagreement is also a config bug worth fixing — config_validator reports
     it, and the admin endpoint shows it as the refusal reason.
     """
+    from app.connectors import spec_rows
+
     signals: list[str] = []
+
+    # The tool's own declaration comes first; the inferred signals below still
+    # apply, so a row labelled "read" by mistake is still caught by them.
+    declared = spec_rows.effect(tool_def)
+    if declared in ("draft", "write"):
+        signals.append(f"declared effect is {declared}")
 
     method = (tool_def.get("method") or "POST").upper()
     if method not in READ_METHODS:

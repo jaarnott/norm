@@ -191,8 +191,9 @@ def safe_for_claude(anthropic_tools: list[dict], config_db: Session) -> list[dic
     request needed (thread 8de7df19, 23 Sep 2026). In 87 production workflow
     runs to that date, none had used a tool this rule removes.
     """
-    from app.agents.tool_loop import _AUTO_APPROVED_WRITES
+    from app.connectors import spec_rows
     from app.mcp.projection import READ_METHODS, is_read_tool, raw_tool_defs
+    from app.services import approvals
     from app.services.workflow_modes import WORKFLOW_KEYS
 
     defs = raw_tool_defs(config_db)
@@ -202,10 +203,14 @@ def safe_for_claude(anthropic_tools: list[dict], config_db: Session) -> list[dic
         tdef = defs.get((connector, action))
         if tdef is None:  # code-defined helpers, e.g. norm__read_playbook
             return True
+        if spec_rows.effect(tdef) is not None:
+            # A labelled tool: everything except a write that runs without
+            # asking — that would act with nobody in Norm to approve it.
+            return approvals.gate(tdef, tdef.get("method"), connector, action) != "auto"
         if is_read_tool(tdef):
             return True
         if (tdef.get("method") or "POST").upper() not in READ_METHODS:
-            return (connector, action) not in _AUTO_APPROVED_WRITES
+            return (connector, action) not in approvals.FALLBACK_AUTO
         consolidator = tdef.get("consolidator_config") or {}
         if tdef.get("working_document") and not consolidator.get(
             "allowed_write_actions"

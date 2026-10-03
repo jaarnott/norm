@@ -259,11 +259,14 @@ class _CapabilityContext:
             else "missing"
         )
         method = str(t.get("method") or "GET").upper()
+        declared = spec_rows.effect(t) if t else None
         return {
             "key": key,
             "label": self.labels.get(key) or action.replace("_", " ").capitalize(),
             "description": _first_sentence(t.get("description") or ""),
-            "writes": method != "GET" and not t.get("read_only"),
+            "writes": declared == "write"
+            if declared
+            else method != "GET" and not t.get("read_only"),
             "type": kind,
             "exists": bool(t),
             "engine_only": bool(t.get("engine_only")),

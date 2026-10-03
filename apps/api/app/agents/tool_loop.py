@@ -305,6 +305,28 @@ def _execute_loop(
     # Build a lookup from tool name -> tool metadata
     tool_meta = _build_tool_meta(anthropic_tools, db)
 
+    # Each tool's row, read once per turn: its declared effect decides whether a
+    # call runs, is auto-approved, or waits for a person (services/approvals.gate).
+    from app.services import approvals
+
+    _rows: dict[tuple[str, str], dict | None] = {}
+
+    def _tool_row(connector: str, action: str) -> dict | None:
+        key = (connector, action)
+        if key not in _rows:
+            try:
+                _rows[key] = (
+                    _find_tool_def(connector, action, db, config_db=config_db)
+                    if config_db is not None
+                    else None
+                )
+            except Exception:  # noqa: BLE001 — unreadable row: fall back to method
+                _rows[key] = None
+        return _rows[key]
+
+    #: block id -> params actually run, when they differ from the model's.
+    _run_params: dict[str, dict] = {}
+
     # The search tool is always available, for two reasons.
     #
     # Correctness: tool results are not persisted as Messages, so a payload
@@ -530,7 +552,21 @@ def _execute_loop(
                 method = meta.get("method", "POST")
                 if block.name != "memory":
                     taken += 1
-                if _is_read_only(method):
+                row = _tool_row(connector, action)
+                runs_now = approvals.gate(row, method, connector, action) == "run"
+                # A non-GET row with a working document drafts from its inputs
+                # in the write branch below, however it is labelled.
+                if runs_now and not (
+                    row and row.get("working_document") and not _is_read_only(method)
+                ):
+                    if test_mode and approvals.is_tiered(row):
+                        # A test run of a tiered tool (receiving, reconciling)
+                        # runs at the level that writes nothing: the report is
+                        # real, Loaded is untouched.
+                        _run_params[block.id] = {
+                            **(block.input or {}),
+                            "mode": approvals.lowest_level(row),
+                        }
                     read_only_blocks.append((block, connector, action, method))
                 else:
                     write_blocks.append((block, connector, action, method))
@@ -547,7 +583,7 @@ def _execute_loop(
                     connector_name=connector,
                     action=action,
                     method=method,
-                    input_params=block.input,
+                    input_params=_run_params.get(block.id, block.input),
                     status="executed",
                 )
                 db.add(tc)
@@ -907,7 +943,7 @@ def _execute_loop(
                     )
                     continue
 
-                tool_def = _find_tool_def(connector, action, db, config_db=config_db)
+                tool_def = _tool_row(connector, action)
                 wd_config = tool_def.get("working_document") if tool_def else None
 
                 if wd_config:
@@ -967,7 +1003,7 @@ def _execute_loop(
                             }
                         ),
                     }
-                elif (connector, action) in _AUTO_APPROVED_WRITES:
+                elif approvals.gate(tool_def, method, connector, action) == "auto":
                     # Auto-approved internal write (memory): execute immediately,
                     # no approval card, no suspension. Same execution path as a
                     # read-only tool, but kept in the write branch so it runs on
@@ -2204,15 +2240,6 @@ def _is_read_only(method: str) -> bool:
     """Return True if the HTTP method is read-only."""
     return method.upper() == "GET"
 
-
-# Internal WRITE tools that execute WITHOUT a user-approval card. Memory capture
-# must be frictionless: prompting the user to approve remembering a fact defeats
-# the point, and the write is low-risk — bounded by admission control
-# (memory_rules) and reversible in Settings → Memory. It runs in the sequential
-# write path (its own db session), never the parallel read batch. This is a
-# narrow allow-list, NOT a general escape hatch — money/roster/order writes and
-# every connector write still pause for approval.
-_AUTO_APPROVED_WRITES = {("norm", "remember")}
 
 #: Appended when the model hits its output ceiling mid-answer, so a cut-off
 #: reply says so instead of passing for a finished one.

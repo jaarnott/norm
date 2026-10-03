@@ -61,7 +61,10 @@ def merged(live: dict, update: RowUpdate) -> dict:
     if update.shapes is not None:
         cc["shapes"] = update.shapes
     cc.update(update.config)
-    row["consolidator_config"] = cc
+    # A built-in has no consolidator_config; don't give it an empty one just
+    # because some other key on its row changed.
+    if cc or "consolidator_config" in live:
+        row["consolidator_config"] = cc
     return row
 
 

@@ -1113,6 +1113,78 @@ def check_endpoints_and_tools(
     return issues
 
 
+def check_approval_labels(
+    specs: list[tuple[str, list]], claims: dict[str, str]
+) -> list[ConfigIssue]:
+    """Every tool an App claims declares its effect, and a write its approval.
+
+    The agent loop, MCP, apps and the App Map all decide "does this change
+    something?" from the tool's declared ``effect`` (spec_rows.effect). A
+    claimed tool without one falls back to its HTTP method — which is how the
+    report email, task changes and both invoice tools (all declared GET) ran
+    without anyone being asked. ``scripts/sync_approval_labels.py`` installs them.
+    """
+    from app.connectors import spec_rows
+
+    rows = {
+        f"{name}.{t.get('action')}": t
+        for name, tools in specs
+        for t in tools or []
+        if isinstance(t, dict)
+    }
+    issues: list[ConfigIssue] = []
+    for key, app in sorted(claims.items()):
+        row = rows.get(key)
+        if row is None:
+            continue  # a missing row is reported elsewhere
+        declared = spec_rows.effect(row)
+        if declared is None:
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    key,
+                    f"is claimed by the {app} App but doesn't declare its effect "
+                    "(read, draft or write)",
+                    "Label it in scripts/sync_approval_labels.py and run it.",
+                )
+            )
+            continue
+        if declared != "write":
+            continue
+        policy = spec_rows.approval(row)
+        if not policy.get("label"):
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    key,
+                    "is a write tool without an approval label (what it does, "
+                    "in words a person reads on the approval card)",
+                    "Add approval.label in scripts/sync_approval_labels.py.",
+                )
+            )
+        if policy.get("default") not in (None, "ask", "auto"):
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    key,
+                    f"has approval.default {policy.get('default')!r} — use ask or auto",
+                    "Fix it in scripts/sync_approval_labels.py.",
+                )
+            )
+        levels = policy.get("levels") or []
+        if levels and (not isinstance(levels[0], dict) or levels[0].get("writes")):
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    key,
+                    "is a tiered write whose first level writes — the first level "
+                    "must change nothing, so a test run and 'ask' stay safe",
+                    "Reorder approval.levels in scripts/sync_approval_labels.py.",
+                )
+            )
+    return issues
+
+
 def validate_config(db=None, config_db=None) -> dict:
     """Run every check against the live databases. Returns a summary dict.
 
@@ -1293,6 +1365,13 @@ def validate_config(db=None, config_db=None) -> dict:
                     .filter(_McpCap.enabled == True, _McpCap.kind == "connector")  # noqa: E712
                     .all()
                 ],
+            )
+        )
+        # Every tool an App claims says what it does (approvals, Oct 2026).
+        issues.extend(
+            check_approval_labels(
+                [(s.connector_name, s.tools) for s in specs],
+                _claims,
             )
         )
 

@@ -54,6 +54,55 @@ SUPERSEDED_NOTE = (
 )
 
 
+#: Writes that run without a card on rows that don't declare an ``approval``
+#: yet. Once labelled, ``approval.default == "auto"`` says the same thing.
+FALLBACK_AUTO = frozenset({("norm", "remember")})
+
+#: What the loop does with a call: ``run`` it now (reads, drafts, and tiered
+#: writes, which apply the person's level themselves), ``auto``-approve it
+#: (a write that doesn't ask), or ``ask`` first (the approval card).
+Gate = str
+
+
+def gate(row: dict | None, method: str | None, connector: str, action: str) -> Gate:
+    """Whether a tool call runs now, runs as an auto-approved write, or asks.
+
+    Decided by the tool's declared ``effect``. A row that doesn't declare one
+    keeps the old rule, so nothing changes until a tool is labelled: a GET
+    runs, ``remember`` is auto-approved, anything else asks.
+    """
+    from app.connectors import spec_rows
+
+    eff = spec_rows.effect(row)
+    if eff is None:
+        if (method or "POST").upper() == "GET":
+            return "run"
+        return "auto" if (connector, action) in FALLBACK_AUTO else "ask"
+    if eff in ("read", "draft"):
+        return "run"
+    policy = spec_rows.approval(row)
+    if policy.get("levels"):
+        return "run"
+    return "auto" if policy.get("default") == "auto" else "ask"
+
+
+def is_tiered(row: dict | None) -> bool:
+    from app.connectors import spec_rows
+
+    return spec_rows.effect(row) == "write" and bool(
+        spec_rows.approval(row).get("levels")
+    )
+
+
+def lowest_level(row: dict | None) -> str | None:
+    """A tiered tool's first level — the one that writes nothing."""
+    from app.connectors import spec_rows
+
+    levels = spec_rows.approval(row).get("levels") or []
+    first = levels[0] if levels and isinstance(levels[0], dict) else None
+    return first.get("id") if first else None
+
+
 class AlreadyDecided(Exception):
     """The thread is no longer waiting — someone (or another click) got there first."""
 

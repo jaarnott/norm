@@ -113,6 +113,36 @@ def partition(
 
 
 # ---------------------------------------------------------------------------
+# What a tool does — its declared effect (approvals, Oct 2026)
+# ---------------------------------------------------------------------------
+
+#: ``read`` changes nothing; ``draft`` prepares something a person finishes in
+#: an editor (the editor's button is the approval); ``write`` changes something,
+#: and its ``approval`` says whether a person is asked. Every tool an App claims
+#: declares one (config_validator). Rows that don't yet fall back to the old
+#: rule — a GET runs, anything else asks (services/approvals.gate).
+EFFECTS = ("read", "draft", "write")
+
+
+def effect(row: Any) -> str | None:
+    """The tool's declared effect, or None when the row doesn't say."""
+    value = row.get("effect") if isinstance(row, dict) else None
+    return value if value in EFFECTS else None
+
+
+def approval(row: Any) -> dict:
+    """A write tool's approval policy (``{}`` when none is declared).
+
+    Keys: ``default`` ("ask" | "auto"), ``allow_auto`` (may a person switch it
+    to "always allow"), ``label`` (what it does, for the card and Settings),
+    and for a tiered tool ``levels`` ([{id, label, description, writes}], the
+    first writing nothing) and ``options`` (switches within a level).
+    """
+    value = row.get("approval") if isinstance(row, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+# ---------------------------------------------------------------------------
 # Reading a spec
 # ---------------------------------------------------------------------------
 
