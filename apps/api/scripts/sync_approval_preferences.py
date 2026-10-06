@@ -15,6 +15,9 @@ What Norm may do without asking is now each person's own setting
   instead of the venue setting and set_workflow_mode.
 - ``review_and_receive_invoices`` reports the person's setting as the source
   of its mode, not the venue's.
+- Agent bindings that named ``set_workflow_mode`` name the new tool, switched
+  on or off as before (added after the first run, 6 Oct 2026: validate_config
+  flagged procurement's).
 
 **Run AFTER the stage-4 code is deployed.** Code that predates it has no
 handler for set_approval_preference, and still reads the venue's receiving
@@ -166,7 +169,12 @@ def also(db, dry_run: bool) -> list[str]:
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.connectors import spec_rows
-    from app.db.config_models import ConnectionSpec, MarketplaceApp, Playbook
+    from app.db.config_models import (
+        AgentConnectionBinding,
+        ConnectionSpec,
+        MarketplaceApp,
+        Playbook,
+    )
 
     lines = []
     norm = (
@@ -211,7 +219,36 @@ def also(db, dry_run: bool) -> list[str]:
     backup = {
         "apps": {slug: app.composition for slug, app in apps.items()},
         "playbooks": {},
+        "bindings": {},
     }
+
+    # Agent bindings that list the old tool by name: the same capability under
+    # its new name, switched on or off as it was. validate_config flags a
+    # binding naming a tool that no longer exists — the agent silently loses
+    # it (procurement had set_workflow_mode switched on).
+    for binding in (
+        db.query(AgentConnectionBinding)
+        .filter(AgentConnectionBinding.connector_name == "norm")
+        .with_for_update()
+        .all()
+    ):
+        caps = list(binding.capabilities or [])
+        renamed = [
+            {
+                **c,
+                "action": NEW_ACTION,
+                "label": NEW_ROW["description"],
+            }
+            if isinstance(c, dict) and c.get("action") == OLD[1]
+            else c
+            for c in caps
+        ]
+        if renamed != caps:
+            lines.append(f"binding {binding.agent_slug}.norm: {OLD[1]} → {NEW_ACTION}")
+            backup["bindings"][binding.agent_slug] = caps
+            if not dry_run:
+                binding.capabilities = renamed
+                flag_modified(binding, "capabilities")
     for slug, head, until, new, others in PLAYBOOKS:
         pb = db.query(Playbook).filter(Playbook.slug == slug).with_for_update().one()
         text = reword(pb.instructions or "", head, until, new, others)
