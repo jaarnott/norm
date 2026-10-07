@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.interpreter.llm_interpreter import record_direct_call
 from app.services import caller_scope
 from app.db.engine import get_db, get_config_db, get_config_db_rw, SessionLocal
 from app.db.models import ConnectionSpec, Connection, User
@@ -722,10 +723,18 @@ User description: {body.description}
 Return ONLY valid JSON, no markdown fences."""
 
     client = anthropic.Anthropic(api_key=api_key)
+    model = agent_model(db)
     response = client.messages.create(
-        model=agent_model(db),
+        model=model,
         max_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
+    )
+    record_direct_call(
+        response,
+        model=model,
+        call_type="spec_generation",
+        user_id=user.id,
+        prompt=prompt,
     )
 
     return _parse_ai_json(response.content[0].text)
@@ -770,10 +779,18 @@ Important: Return the full updated config, not just the changed parts.
 Return ONLY valid JSON, no markdown fences."""
 
     client = anthropic.Anthropic(api_key=api_key)
+    model = agent_model(db)
     response = client.messages.create(
-        model=agent_model(db),
+        model=model,
         max_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
+    )
+    record_direct_call(
+        response,
+        model=model,
+        call_type="spec_generation",
+        user_id=user.id,
+        prompt=prompt,
     )
 
     return _parse_ai_json(response.content[0].text)
@@ -879,6 +896,13 @@ Return ONLY valid JSON, no markdown fences."""
             model=agent_model(db),
             max_tokens=2048,
             messages=[{"role": "user", "content": gen_prompt}],
+        )
+        record_direct_call(
+            response,
+            model=agent_model(db),
+            call_type="spec_generation",
+            user_id=user.id,
+            prompt=gen_prompt,
         )
         tool_config = _parse_ai_json(response.content[0].text)
         log.info(
@@ -988,6 +1012,13 @@ Return ONLY valid JSON, no markdown fences."""
                 model=agent_model(db),
                 max_tokens=2048,
                 messages=[{"role": "user", "content": fix_prompt}],
+            )
+            record_direct_call(
+                fix_response,
+                model=agent_model(db),
+                call_type="spec_generation",
+                user_id=user.id,
+                prompt=fix_prompt,
             )
             tool_config = _parse_ai_json(fix_response.content[0].text)
             log.info(
@@ -1251,6 +1282,13 @@ Keep responses concise. Show the key data from API responses (field names, IDs, 
                         system=system_prompt,
                         messages=messages,
                         tools=tools,
+                    )
+                    record_direct_call(
+                        response,
+                        model=agent_model(db),
+                        call_type="spec_generation",
+                        user_id=user.id,
+                        system_prompt=system_prompt,
                     )
 
                     # Collect all blocks

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.services.llm_cost import usage_fields
 from app.db.engine import get_db, get_config_db
 from app.db.models import Thread, Approval, ToolCall, User
 from app.auth.dependencies import get_current_user, require_permission
@@ -124,8 +125,8 @@ def _tool_use_thread_to_dict(thread: Thread) -> dict:
             "status": lc.status,
             "error_message": lc.error_message,
             "duration_ms": lc.duration_ms,
-            "input_tokens": lc.input_tokens,
-            "output_tokens": lc.output_tokens,
+            # Every part of the input (cache included), billable tokens, cost.
+            **usage_fields(lc),
             "tools_provided": lc.tools_provided,
             "created_at": lc.created_at.isoformat() if lc.created_at else None,
         }

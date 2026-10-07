@@ -438,15 +438,17 @@ class TestContextEditingAndTheCacheMarker:
 
     def test_the_stream_asks_anthropic_to_clear_old_tool_results(self, _patched):
         """Fails if context editing is dropped or its values drift from the
-        ones decided against production data (plan: context-editing.md)."""
+        ones decided against production data (plan: context-editing.md;
+        raised to 100k / 40k on 7 Oct 2026 — clearing at 50k caused a third
+        of all cache writes and cost more than it saved)."""
         from app.agents.tool_loop import TOOL_FANOUT_CAP
 
         kw = self._kwargs(_patched)
         assert "context-management-2025-06-27" in kw["betas"]
         edit = kw["context_management"]["edits"][0]
         assert edit["type"] == "clear_tool_uses_20250919"
-        assert edit["trigger"] == {"type": "input_tokens", "value": 50_000}
-        assert edit["clear_at_least"] == {"type": "input_tokens", "value": 10_000}
+        assert edit["trigger"] == {"type": "input_tokens", "value": 100_000}
+        assert edit["clear_at_least"] == {"type": "input_tokens", "value": 40_000}
         assert edit["keep"] == {"type": "tool_uses", "value": TOOL_FANOUT_CAP}
 
     def test_the_stream_sets_effort_and_opts_into_fallback(self, _patched):

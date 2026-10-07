@@ -14,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
     CheckConstraint,
+    Numeric,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -231,11 +232,15 @@ class Thread(Base):
         order_by="IntegrationRun.created_at",
         cascade="all, delete-orphan",
     )
+    # Not deleted with the thread: a deleted conversation was still paid for,
+    # and deleting its calls erased it from every usage figure (a thread
+    # deleted on 7 Oct 2026 took 31 calls with it). Deleting the thread
+    # unlinks them instead (thread_id → NULL).
     llm_calls = relationship(
         "LlmCall",
         back_populates="thread",
         order_by="LlmCall.created_at",
-        cascade="all, delete-orphan",
+        cascade="save-update, merge",
     )
     tool_calls = relationship(
         "ToolCall",
@@ -277,6 +282,13 @@ class Message(Base):
     # size}]. The bytes live in UploadedDocument; this is the render + rehydrate
     # reference. Only ever set on role="user" messages.
     attachments = Column(JSON, nullable=True)
+    #: A user turn exactly as the model was sent it — the text with the
+    #: context, memory index and manifests appended. Later turns replay it
+    #: verbatim so the conversation stays a byte-identical prefix and is read
+    #: from the prompt cache rather than written again. Replaying the bare
+    #: ``content`` instead changed the prompt at the very first message, so
+    #: every turn rewrote the whole history (Oct 2026). NULL for older rows.
+    sent_content = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
     thread = relationship("Thread", back_populates="messages")
@@ -354,6 +366,9 @@ class LlmCall(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     thread_id = Column(String, ForeignKey("threads.id"), nullable=True)
+    #: Whose call it was — from the thread's user, else the caller's scope
+    #: (an extraction has no thread). Usage totals and breakdowns read it.
+    organization_id = Column(String, nullable=True)
     call_type = Column(
         String, nullable=False
     )  # "routing" | "interpretation" | "execution" | "spec_generation"
@@ -365,8 +380,15 @@ class LlmCall(Base):
     status = Column(String, nullable=False, default="success")  # "success" | "error"
     error_message = Column(Text)
     duration_ms = Column(Integer)
+    # Full-price input only — Anthropic's ``usage.input_tokens`` excludes the
+    # cache. The cache parts, and what the call counted and cost, are below
+    # (app/services/llm_cost.py).
     input_tokens = Column(Integer, nullable=True)
     output_tokens = Column(Integer, nullable=True)
+    cache_read_tokens = Column(Integer, nullable=True)
+    cache_write_tokens = Column(Integer, nullable=True)
+    billable_tokens = Column(Integer, nullable=True)
+    cost_usd = Column(Numeric(14, 6), nullable=True)
     tools_provided = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
 
@@ -771,8 +793,13 @@ class TokenUsage(Base):
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
     user_id = Column(String, ForeignKey("users.id"), nullable=True)
     date = Column(String, nullable=False)  # YYYY-MM-DD
-    input_tokens = Column(Integer, default=0)
+    input_tokens = Column(Integer, default=0)  # full-price input only
     output_tokens = Column(Integer, default=0)
+    cache_read_tokens = Column(Integer, default=0)
+    cache_write_tokens = Column(Integer, default=0)
+    #: What plan limits count — see app/services/llm_cost.py.
+    billable_tokens = Column(Integer, default=0)
+    cost_usd = Column(Numeric(14, 6), default=0)
     llm_call_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)

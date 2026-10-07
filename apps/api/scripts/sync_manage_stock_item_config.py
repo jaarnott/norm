@@ -65,24 +65,20 @@ TOOL = {
     # deterministic merge decides what is actually written.
     "method": "PUT",
     "read_only": False,
+    # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
+    # every prompt).
     "description": (
-        "Create or change a stock item in Loaded. op picks the action: "
-        "'create' — pass the full `item` (name, groupId, unitType 0=Weight "
-        "1=Volume 2=Count, countingUnitId+countingUnitRatio, "
-        "orderingUnitId+orderingUnitRatio, defaultSupplierId, suppliers:[{"
-        "supplierId, stockCode, unitId, unitCost, defaultForSupplier}]). "
-        "'update' — item_id plus ONLY the deltas: `changes` (Loaded's field "
-        "names, e.g. {'minimumStockOnHandQuantity': 6}), `variant_changes` "
-        "(suppliers[] edits matched by variant_id or supplier_id+stock_code), "
-        "`add_suppliers` (new variants — Loaded has no variant-create endpoint); "
-        "the server fetches, merges and writes the whole item, never resend it, "
-        "and reads it back to report anything Loaded didn't keep. "
-        "'set_variant_unit' — variant_id + unit_id. New items are GST-rated "
-        "(globalSalesTaxSortOrder 1) unless you pass 0 for an exempt item. "
-        "Changing a unit also needs its paired ratio (units via get_stock view "
-        "'reference', kind 'units'); keep exactly one defaultForSupplier=true "
-        "per supplier — both are checked before anything is written. Ids and "
-        "units come from get_stock. This is a write — human-approved."
+        "Create or change a Loaded stock item — a write, human-approved. op 'create': "
+        "the full `item` (name, groupId, unitType 0 Weight / 1 Volume / 2 Count, "
+        "countingUnitId + countingUnitRatio, orderingUnitId + orderingUnitRatio, "
+        "defaultSupplierId, suppliers [{supplierId, stockCode, unitId, unitCost, "
+        "defaultForSupplier}]); GST-rated unless you pass globalSalesTaxSortOrder 0. "
+        "op 'update': item_id plus ONLY the deltas — `changes`, `variant_changes`, "
+        "`add_suppliers`; Norm merges, writes the whole item and reports anything "
+        "Loaded didn't keep — never resend the item. op 'set_variant_unit': variant_id "
+        "+ unit_id. A changed unit needs its ratio, and each supplier keeps exactly "
+        "one defaultForSupplier — both checked before writing. Ids and units come from "
+        "get_stock."
     ),
     "required_fields": ["op"],
     "optional_fields": [
@@ -96,18 +92,22 @@ TOOL = {
     ],
     "field_descriptions": {
         "op": "create | update | set_variant_unit. No default.",
-        "item": "create: the full stock item object.",
-        "item_id": "update: Loaded stock item id (from get_stock).",
-        "changes": "update: top-level fields to set, Loaded's field names, deltas only.",
+        "item": "create: the full stock item.",
+        "item_id": "update: the stock item id (from get_stock).",
+        "changes": (
+            "update: top-level fields to set, in Loaded's names (e.g. "
+            "{'minimumStockOnHandQuantity': 6}); deltas only."
+        ),
         "variant_changes": (
-            "update: list of edits to existing suppliers[] entries; each needs "
-            "variant_id OR supplier_id + stock_code, plus the fields to set in "
-            "Loaded's names (unitCost, unitId, brandId, defaultForSupplier, "
-            "description). A field a variant doesn't have is skipped."
+            "update: edits to existing suppliers[] entries — each by variant_id, or "
+            "supplier_id + stock_code, with the fields in Loaded's names (unitCost, "
+            "unitId, brandId, defaultForSupplier, description). A field a variant "
+            "doesn't have is skipped."
         ),
         "add_suppliers": (
-            "update: new suppliers[] entries to append — each needs supplierId "
-            "and unitId (plus stockCode, unitCost, defaultForSupplier)."
+            "update: new suppliers[] entries (Loaded has no variant-create) — each "
+            "needs supplierId and unitId, plus stockCode, unitCost, "
+            "defaultForSupplier."
         ),
         "variant_id": "set_variant_unit: the suppliers[] entry id (36 characters).",
         "unit_id": "set_variant_unit: the new unit id (36 characters).",

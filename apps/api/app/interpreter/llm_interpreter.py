@@ -99,6 +99,10 @@ def call_llm(
     client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
     llm_call_id = None
     t0 = time.time()
+    # Set once Anthropic has answered — from then on the call is billed, so a
+    # reply that fails to parse is recorded with its tokens, not as a free
+    # error (89 summarisation calls in a week, Oct 2026).
+    usage = None
     # On a model that always thinks (Opus 5.5), thinking counts toward
     # max_tokens even though its text is not returned, so the small budgets
     # these callers were written with (200–4096, for a model that did not
@@ -146,6 +150,9 @@ def call_llm(
                     time.sleep(_llm_retry_backoff(attempt))
                     continue
                 raise
+        from app.services.llm_cost import Usage
+
+        usage = Usage.from_response(response.usage)
         # First TEXT block, not content[0] — a response can lead with a
         # non-text block, and indexing blindly would read the wrong one.
         raw = next(
@@ -154,9 +161,6 @@ def call_llm(
         )
         duration_ms = int((time.time() - t0) * 1000)
         parsed = _parse_response(raw)
-
-        _input_tokens = response.usage.input_tokens if response.usage else None
-        _output_tokens = response.usage.output_tokens if response.usage else None
 
         # Persist LLM call record
         if db is not None:
@@ -171,8 +175,7 @@ def call_llm(
                 parsed_response=parsed,
                 status="success",
                 duration_ms=duration_ms,
-                input_tokens=_input_tokens,
-                output_tokens=_output_tokens,
+                usage=usage,
             )
 
         anthropic_breaker.record_success()
@@ -193,6 +196,7 @@ def call_llm(
                 status="error",
                 error_message=str(exc),
                 duration_ms=duration_ms,
+                usage=usage,
             )
         raise
 
@@ -214,11 +218,32 @@ def _persist_llm_call(
     input_tokens=None,
     output_tokens=None,
     user_id=None,
+    usage=None,
+    count_usage=True,
 ) -> str:
+    """Record one model call, with what it used and cost.
+
+    ``usage`` is an ``llm_cost.Usage`` — every part of the input, cache
+    included. ``input_tokens``/``output_tokens`` alone are the older form, kept
+    for callers that only ever had those (a call with no cache).
+    """
     from app.db.models import LlmCall
+    from app.services.llm_cost import Usage, billable_tokens, cost_usd
+
+    if usage is None and (input_tokens or output_tokens):
+        usage = Usage(input=input_tokens or 0, output=output_tokens or 0)
+    if usage:
+        input_tokens, output_tokens = usage.input, usage.output
+    if not user_id and thread_id:
+        from app.db.models import Thread
+
+        owner = db.query(Thread.user_id).filter(Thread.id == thread_id).first()
+        user_id = owner[0] if owner else None
+    org_id = _org_for_call(db, user_id)
 
     record = LlmCall(
         thread_id=thread_id,
+        organization_id=org_id,
         call_type=call_type,
         model=model,
         system_prompt=system_prompt,
@@ -230,28 +255,152 @@ def _persist_llm_call(
         duration_ms=duration_ms,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_read_tokens=usage.cache_read if usage else None,
+        cache_write_tokens=usage.cache_write if usage else None,
+        billable_tokens=billable_tokens(model, usage) if usage else None,
+        cost_usd=cost_usd(model, usage) if usage else None,
         tools_provided=tools_provided,
     )
     db.add(record)
     db.flush()
 
     # Aggregate daily usage for billing
-    if input_tokens or output_tokens:
-        try:
-            from app.services.usage_service import record_usage
-
-            # Resolve user_id from task if not provided
-            if not user_id and thread_id:
-                from app.db.models import Thread
-
-                task = db.query(Thread).filter(Thread.id == thread_id).first()
-                if task:
-                    user_id = task.user_id
-            record_usage(db, user_id, input_tokens, output_tokens)
-        except Exception:
-            pass  # Don't fail the LLM call if usage tracking fails
+    if usage and count_usage:
+        _count_usage(db, model=model, usage=usage, user_id=user_id, org_id=org_id)
 
     return record.id
+
+
+def _org_for_call(db: Session, user_id: str | None) -> str | None:
+    """The organisation a call belongs to: its user's, else the caller's scope
+    (an extraction runs with no thread or user, but always for some venue)."""
+    try:
+        if user_id:
+            from app.services.entitlements import org_id_for_user
+
+            org = org_id_for_user(user_id, db)
+            if org:
+                return org
+        from app.services.caller_scope import current
+
+        scope = current()
+        return scope.org_id if scope and scope.org_id else None
+    except Exception:  # noqa: BLE001 — attribution must never fail a call
+        return None
+
+
+def _count_usage(db: Session, *, model, usage, user_id=None, org_id=None) -> None:
+    """Add one call to its organisation's daily total (never raises)."""
+    try:
+        from app.services.llm_cost import billable_tokens, cost_usd
+        from app.services.usage_service import record_usage
+
+        record_usage(
+            db,
+            user_id,
+            usage.input,
+            usage.output,
+            cache_read=usage.cache_read,
+            cache_write=usage.cache_write,
+            billable=billable_tokens(model, usage),
+            cost=cost_usd(model, usage),
+            org_id=org_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass  # Don't fail the LLM call if usage tracking fails
+
+
+def _persist_llm_call_durable(db: Session, **kwargs) -> str:
+    """Record a successful agent call so a failing turn can't erase it.
+
+    On the turn's own session the row was rolled back whenever the turn later
+    failed — the call was paid for and vanished from the thread (4 of 294
+    production chat calls, 4–7 Oct 2026, scheduled reconcile runs among them).
+    So it is committed on its own session first. That needs the thread to be
+    committed already; when it isn't (an automation's thread mid-creation, the
+    test fixtures), the row goes on the turn's session as before. The daily
+    total is counted once, either way.
+    """
+    from app.db.engine import SessionLocal
+
+    session = SessionLocal()
+    try:
+        llm_call_id = _persist_llm_call(session, **{**kwargs, "count_usage": False})
+        session.commit()
+    except Exception:  # noqa: BLE001 — fall back to the turn's session
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        llm_call_id = None
+    finally:
+        session.close()
+    if llm_call_id is None:
+        return _persist_llm_call(db, **kwargs)
+    usage = kwargs.get("usage")
+    if usage:
+        from app.db.models import LlmCall
+
+        org_id = (
+            db.query(LlmCall.organization_id).filter(LlmCall.id == llm_call_id).scalar()
+        )
+        user_id = kwargs.get("user_id")
+        if not user_id and kwargs.get("thread_id"):
+            from app.db.models import Thread
+
+            owner = (
+                db.query(Thread.user_id)
+                .filter(Thread.id == kwargs["thread_id"])
+                .first()
+            )
+            user_id = owner[0] if owner else None
+        _count_usage(
+            db, model=kwargs.get("model"), usage=usage, user_id=user_id, org_id=org_id
+        )
+    return llm_call_id
+
+
+def record_direct_call(
+    response,
+    *,
+    model: str,
+    call_type: str,
+    user_id: str | None = None,
+    thread_id: str | None = None,
+    prompt: str = "",
+    system_prompt: str = "",
+    duration_ms: int | None = None,
+) -> None:
+    """Record a call made straight through the SDK, outside call_llm.
+
+    The admin builders (consolidator generate/edit/auto-build/chat), the
+    playbook and test generators, and the invoice reviewer's unit guess call
+    Claude directly — and recorded nothing, so their cost appeared nowhere
+    (Oct 2026). Written on its own session, like a failed call: the caller's
+    transaction is never touched, and recording never breaks the caller.
+    """
+    from app.services.llm_cost import Usage
+
+    try:
+        raw = next(
+            (b.text for b in response.content if getattr(b, "type", None) == "text"),
+            "",
+        )
+    except Exception:  # noqa: BLE001
+        raw = ""
+    _persist_llm_call_isolated(
+        thread_id=thread_id,
+        call_type=call_type,
+        model=model,
+        system_prompt=system_prompt[:20000],
+        user_prompt=prompt[:20000],
+        raw_response=raw[:20000],
+        parsed_response=None,
+        status="success",
+        duration_ms=duration_ms,
+        user_id=user_id,
+        usage=Usage.from_response(getattr(response, "usage", None)),
+    )
 
 
 def _persist_llm_call_isolated(**kwargs) -> None:
@@ -389,10 +538,20 @@ _LLM_MAX_ATTEMPTS = 3
 # own fresh answers.
 _CONTEXT_EDITING_BETA = "context-management-2025-06-27"
 #: Below this the request is left alone; a small job never clears at all.
-_CLEAR_TRIGGER_INPUT_TOKENS = 50_000
-#: A clear changes the cached prefix and costs one full-price step, so it must
-#: free at least this much to be worth doing — their docs' own advice.
-_CLEAR_AT_LEAST_INPUT_TOKENS = 10_000
+#:
+#: 100k (Anthropic's own default), raised from 50k on 7 Oct 2026. Every clear
+#: moves the point where the prompt changes, so everything after it is written
+#: to the cache again (5-minute writes cost 1.25x input; reads 0.05x on Opus
+#: 5.5). At 50k it armed on 31% of agent calls and caused a third of all cache
+#: writes in the week to 7 Oct — about $5 of rewrites to save about $0.30 of
+#: reads. Ordinary chats peak well below 100k (largest call that week: 109k),
+#: so they stop clearing; a runaway job (the 1 Oct tender reached 145k) is
+#: still pruned.
+_CLEAR_TRIGGER_INPUT_TOKENS = 100_000
+#: A clear must free at least this much to be worth the rewrite it causes —
+#: 40k (was 10k) so a long job clears a few times, in big batches, instead of
+#: every ~7 calls.
+_CLEAR_AT_LEAST_INPUT_TOKENS = 40_000
 
 
 def _context_management() -> dict:
@@ -546,6 +705,7 @@ def call_llm_with_tools(
     # Anthropic's recommendation for streamed requests (Opus 4.8 allows 128K);
     # a reply that still hits it carries tool_loop.TRUNCATION_NOTE.
     max_tokens: int = 64000,
+    tool_choice: dict | None = None,
 ):
     """Make an Anthropic API call with native tool use.
 
@@ -627,6 +787,11 @@ def call_llm_with_tools(
                     system=_cached_system(system_prompt),
                     messages=_cached_messages(messages),
                     tools=_cached_tools(tools),
+                    # A wrap-up that must answer in text sends the SAME tools
+                    # with tool_choice "none": dropping the tools instead
+                    # changed the start of the prompt, so the whole cached
+                    # conversation was written again (~50k tokens a time).
+                    **({"tool_choice": tool_choice} if tool_choice else {}),
                     betas=[_CONTEXT_EDITING_BETA, _FALLBACK_BETA],
                     context_management=_context_management(),
                     # `fallbacks` is not yet a named argument in this SDK
@@ -715,6 +880,8 @@ def call_llm_with_tools(
             else "[tool_results]"
         )
 
+        from app.services.llm_cost import Usage
+
         # Extract token usage from response
         _input_tokens = response.usage.input_tokens if response.usage else None
         _output_tokens = response.usage.output_tokens if response.usage else None
@@ -750,7 +917,7 @@ def call_llm_with_tools(
         )
 
         if db is not None:
-            llm_call_id = _persist_llm_call(
+            llm_call_id = _persist_llm_call_durable(
                 db,
                 thread_id=thread_id,
                 call_type=call_type,
@@ -762,8 +929,9 @@ def call_llm_with_tools(
                 status="success",
                 duration_ms=duration_ms,
                 tools_provided=tools if tools else None,
-                input_tokens=_input_tokens,
-                output_tokens=_output_tokens,
+                # Every part of the input — with the conversation cached,
+                # input_tokens alone is ~2 tokens on a ~100k-token call.
+                usage=Usage.from_response(response.usage),
             )
 
         return response, llm_call_id

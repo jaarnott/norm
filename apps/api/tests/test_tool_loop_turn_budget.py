@@ -38,6 +38,15 @@ class _Clock:
         self.now += self.step
 
 
+def _is_wrap_up(args, kwargs) -> bool:
+    """The wrap-up call: tool use switched off (tool_choice none) — it keeps
+    the tools so the cached conversation holds (Oct 2026); an empty tool list
+    is the older form."""
+    if kwargs.get("tool_choice") == {"type": "none"}:
+        return True
+    return not kwargs.get("tools", args[2] if len(args) > 2 else None)
+
+
 def _run(db_session, admin_user, monkeypatch, *, step, budget=None, tool_calls=True):
     """Drive the loop with a scripted LLM that always wants another tool call."""
     clock = _Clock(step)
@@ -47,7 +56,7 @@ def _run(db_session, admin_user, monkeypatch, *, step, budget=None, tool_calls=T
         calls["n"] += 1
         clock.tick()
         # Once tools are taken away (the wrap-up call), answer with text.
-        if not kwargs.get("tools", args[2] if len(args) > 2 else None):
+        if _is_wrap_up(args, kwargs):
             return (
                 _Response("end_turn", [_Block("text", text="Here is where I got to.")]),
                 "llm-x",
@@ -149,7 +158,11 @@ class TestTheBudgetStopsTheTurn:
             # Record whether this call could actually use tools. The wrap-up
             # call is deliberately tools-free, so counting calls alone would be
             # satisfied by the wrap-up and prove nothing.
-            tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+            tools = (
+                None
+                if _is_wrap_up(args, kwargs)
+                else kwargs.get("tools", args[2] if len(args) > 2 else None)
+            )
             calls["n"] += 1
             if tools:
                 calls["with_tools"] = calls.get("with_tools", 0) + 1
@@ -205,7 +218,7 @@ class TestWhatTheUserIsTold:
             msgs = kwargs.get("messages", args[1] if len(args) > 1 else [])
             if msgs and isinstance(msgs[-1].get("content"), str):
                 prompts.append(msgs[-1]["content"])
-            if not kwargs.get("tools", args[2] if len(args) > 2 else None):
+            if _is_wrap_up(args, kwargs):
                 return (
                     _Response("end_turn", [_Block("text", text="Progress so far.")]),
                     None,
@@ -274,7 +287,7 @@ class TestWhatTheUserIsTold:
             msgs = kwargs.get("messages", args[1] if len(args) > 1 else [])
             if msgs and isinstance(msgs[-1].get("content"), str):
                 prompts.append(msgs[-1]["content"])
-            if not kwargs.get("tools", args[2] if len(args) > 2 else None):
+            if _is_wrap_up(args, kwargs):
                 return (
                     _Response("end_turn", [_Block("text", text="Done some.")]),
                     None,

@@ -36,21 +36,18 @@ SHAPES_PATH = FUNCTION_CODE_PATH.parent / "shapes.json"
 TOOL = {
     "action": "get_labour",
     "method": "GET",  # read-only consolidator: auto-executes, nestable
+    # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
+    # every prompt).
     "description": (
-        "Labour for a period given in plain English, resolved against the "
-        "venue's trading day. THE labour tool — view picks the cut: "
-        "'attendance' (default; rostered vs actual hours and cost with "
-        "booked leave split out — leave is never counted as worked time; "
-        "group_by staff/day/detail, venues accepts a list or 'all' for "
-        "per-venue totals), 'roster' (the full roster, drawn as the "
-        "interactive grid), 'vs_actual' (rostered vs actual per day, venue "
-        "totals), 'timeclock' (clock-in entries; worked and leave hours "
-        "summed separately), 'staff' (the staff reference list — names, "
-        "roles, rates; no period needed). staff_name filters to one person "
-        "in every view except vs_actual, including a venues='all' answer. "
-        "Ask ONCE for the whole period per venue — not month by month. On "
-        "attendance, flag no-shows (rostered, never clocked in), unrostered "
-        "clock-ins, and hours more than 20% over roster."
+        "Labour for a period in plain English, on the venue's trading day — THE labour "
+        "tool. view: 'attendance' (default; rostered vs actual hours and cost, booked "
+        "leave split out and never counted as worked; group_by staff/day/detail; "
+        "venues takes a list or 'all') | 'roster' (the full roster, drawn as the grid) "
+        "| 'vs_actual' (rostered vs actual per day, venue totals) | 'timeclock' "
+        "(clock-ins; worked and leave hours summed separately) | 'staff' (names, "
+        "roles, rates; no period). staff_name narrows every view but vs_actual. Ask "
+        "ONCE for the whole period per venue. On attendance, flag no-shows (rostered, "
+        "never clocked in), unrostered clock-ins, and hours more than 20% over roster."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -66,36 +63,30 @@ TOOL = {
     ],
     "field_descriptions": {
         "period": (
-            "The period in plain English — 'yesterday', 'last week', 'this "
-            "week'. Norm resolves it against the venue's trading day. "
-            "Prefer this over start/end; do not work out dates yourself."
+            "Plain English — 'yesterday', 'last week', 'this week'. Prefer it to "
+            "start/end; never work out dates yourself."
         ),
-        "start": (
-            "Only when the user asked for exact clock times. ISO 8601 with "
-            "offset. Honoured verbatim after confirmation."
-        ),
-        "end": "Window end, with the same rule as start.",
+        "start": "Only for exact clock times the user asked for: ISO 8601 with offset.",
+        "end": "Window end; same rule as start.",
         "confirmed_by_user": (
-            "Only for an explicit start/end that is not a trading day, and "
-            "only when the user really did ask for those clock times."
+            "Only when the user really asked for a start/end that isn't a trading day."
         ),
         "view": (
             "'attendance' (default) | 'roster' | 'vs_actual' | 'timeclock' | 'staff'."
         ),
         "venues": (
-            "attendance view only: 'all' (every connected venue) or a list "
-            "of venue names — one row of totals per venue, computed here."
+            "attendance only: 'all' or a list of venue names — one row of totals per "
+            "venue."
         ),
         "staff_name": (
-            "Filter to one person — case-insensitive substring of their "
-            "first or last name. Not for vs_actual (venue totals)."
+            "One person — part of their first or last name, any case. Not for "
+            "vs_actual."
         ),
         "group_by": (
-            "attendance view: 'staff' (default, per-person totals) | 'day' "
-            "(per-day totals with unrostered count) | 'detail' "
-            "(shift-by-shift lists: rostered, clockins, leave)."
+            "attendance: 'staff' (default) | 'day' (with unrostered count) | 'detail' "
+            "(shift by shift: rostered, clock-ins, leave)."
         ),
-        "interval": "vs_actual view: bucket size d.hh:mm:ss (default daily).",
+        "interval": "vs_actual: bucket d.hh:mm:ss (default daily).",
     },
     "field_schema": {
         "venues": {"description": "'all' or a list of venue names"},

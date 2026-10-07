@@ -192,10 +192,12 @@ def build_conversation_messages(
     # into one, silently doubling it. Drop the persisted copy and let the append
     # below add it back with its [Context] block attached.
     new_attachments = None
+    persisted_turn = None
     if recent and recent[-1].role == "user" and recent[-1].content == new_message:
         # Carry this turn's attachments off the persisted row before dropping it,
         # so they can be re-attached (as blocks) to the re-appended turn below.
         new_attachments = getattr(recent[-1], "attachments", None)
+        persisted_turn = recent[-1]
         recent = recent[:-1]
 
     # date_history: date-anchor messages from previous days. Scheduled tasks
@@ -205,7 +207,15 @@ def build_conversation_messages(
     # silently not sent). Opt-in: interactive chats keep bare content.
     today = datetime.now(timezone.utc).date()
     for msg in recent:
-        msg_content = msg.content
+        # A user turn goes back exactly as it was first sent (sent_content),
+        # so the history is the same prefix as last time and comes from the
+        # prompt cache. Older rows have none and fall back to the bare text.
+        sent = getattr(msg, "sent_content", None)
+        msg_content = (
+            sent
+            if msg.role == "user" and isinstance(sent, str) and sent
+            else msg.content
+        )
         created = getattr(msg, "created_at", None)
         if date_history and created is not None:
             c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
@@ -264,6 +274,15 @@ def build_conversation_messages(
     att_manifest = attachment_manifest(thread, db)
     if att_manifest:
         content += "\n\n" + att_manifest
+
+    # Kept on the row so later turns replay this turn verbatim — see
+    # Message.sent_content. Attachment blocks are not kept: they ride only on
+    # the turn they were attached to (the manifest re-offers them later).
+    if persisted_turn is not None:
+        try:
+            persisted_turn.sent_content = content
+        except Exception:  # noqa: BLE001 — never fail a turn over this
+            logger.debug("could not keep the sent turn", exc_info=True)
 
     # This turn's attachments ride in front of the user's text as native
     # document/image (or extracted-text) blocks — the one place the chat loop
@@ -334,11 +353,16 @@ def _get_or_create_summary(older_messages: list, thread, db) -> str:
             # Incremental: only summarise new messages since last summary
             new_messages = older_messages[summarised_count:]
             summary = _summarise_with_llm(
-                new_messages, db, existing_summary=existing_summary
+                new_messages,
+                db,
+                existing_summary=existing_summary,
+                thread_id=getattr(thread, "id", None),
             )
         else:
             # First time: summarise all older messages
-            summary = _summarise_with_llm(older_messages, db)
+            summary = _summarise_with_llm(
+                older_messages, db, thread_id=getattr(thread, "id", None)
+            )
 
         # Persist the summary on the thread
         thread.conversation_summary = summary
@@ -357,7 +381,12 @@ def _get_or_create_summary(older_messages: list, thread, db) -> str:
         return _summarise_older_messages(older_messages)
 
 
-def _summarise_with_llm(messages: list, db, existing_summary: str | None = None) -> str:
+def _summarise_with_llm(
+    messages: list,
+    db,
+    existing_summary: str | None = None,
+    thread_id: str | None = None,
+) -> str:
     """Call Haiku to summarise conversation messages."""
     from app.interpreter.llm_interpreter import call_llm
     from app.services.models import router_model
@@ -380,6 +409,9 @@ def _summarise_with_llm(messages: list, db, existing_summary: str | None = None)
         user_prompt=user_prompt,
         model=router_model(db),
         db=db,
+        # Its conversation, so the call counts to that organisation — it ran
+        # with none and reached no usage total (88 calls, week to 7 Oct 2026).
+        thread_id=thread_id,
         call_type="summarisation",
         max_tokens=1024,
     )

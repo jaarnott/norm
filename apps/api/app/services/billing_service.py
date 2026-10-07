@@ -133,7 +133,13 @@ def _is_enforcement_enabled() -> bool:
 def get_monthly_usage(
     db: Session, org_id: str, cycle_start: datetime | None = None
 ) -> int:
-    """Sum total tokens for the current billing period."""
+    """Billable tokens used in the current billing period.
+
+    Billable tokens, not input + output (decided 7 Oct 2026): input + output
+    left out every cached token, so once conversations were cached a month
+    counted little more than its output. Days recorded before billable tokens
+    existed count input + output, as they always did. See llm_cost.py.
+    """
     from app.db.models import TokenUsage
 
     if cycle_start:
@@ -143,7 +149,14 @@ def get_monthly_usage(
         start_date = datetime.now(timezone.utc).strftime("%Y-%m-01")
 
     rows = (
-        db.query(func.sum(TokenUsage.input_tokens + TokenUsage.output_tokens))
+        db.query(
+            func.sum(
+                func.coalesce(
+                    func.nullif(TokenUsage.billable_tokens, 0),
+                    TokenUsage.input_tokens + TokenUsage.output_tokens,
+                )
+            )
+        )
         .filter(
             TokenUsage.organization_id == org_id,
             TokenUsage.date >= start_date,

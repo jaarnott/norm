@@ -72,24 +72,20 @@ SHAPES_PATH = FUNCTION_CODE_PATH.parent / "shapes.json"
 TOOL = {
     "action": ACTION,
     "method": "GET",  # consolidator dispatch; reads only, writes nothing ever
+    # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
+    # every prompt).
     "description": (
-        "What stock we received over a period — spend and quantity by item, or "
-        "the purchase-by-purchase history of one item. Takes a period in plain "
-        "English. group_by picks the mode and the shape: 'item' (default) — one "
-        "row per stock item with quantity in its base unit, spend, invoice and "
-        "supplier counts, top rows by spend; 'history' — one row per invoice "
-        "line for ONE item or supplier (date, supplier, invoice number, "
-        "quantity, unit, unit cost, spend), the answer to 'what did we pay for X "
-        "each time' — it REQUIRES item_id, query or suppliers; 'item_supplier' — "
-        "one row per item per supplier with that supplier's unit-cost "
-        "average/min/max/last, the answer to 'are we paying different prices'; "
-        "'group' / 'super_group' — spend rolled up to stock groups or Loaded's "
-        "three categories. Quantities use each line's unit ratio, so a 6x1L and "
-        "a 1L sum correctly. For a group-wide question pass venues='all' (or a "
-        "list): ONE call, one merged ranking, each row carrying its per-venue "
-        "split plus per-venue totals — never fetch venue by venue and merge "
-        "yourself. THE tool for 'how much of X did we buy over N months' — never "
-        "page invoices and sum lines yourself. Ask ONCE for the whole period."
+        "Stock received over a period, from invoices — spend and quantity by item, or "
+        "one item's purchase history. THE tool for 'how much of X did we buy' — never "
+        "page invoices and sum lines yourself. group_by: 'item' (default; per item: "
+        "base-unit quantity, spend, invoice and supplier counts, top rows by spend) | "
+        "'history' (per invoice line — date, supplier, invoice, quantity, unit, unit "
+        "cost — for ONE item or supplier; needs item_id, query or suppliers) | "
+        "'item_supplier' (each supplier's unit cost avg/min/max/last — 'are we paying "
+        "different prices') | 'group' / 'super_group' (spend by stock group / Loaded "
+        "category). Quantities use each line's unit ratio, so 6x1L and 1L add up. For "
+        "the group, venues='all' (or a list) gives ONE merged ranking with per-venue "
+        "splits — never fetch venue by venue. Ask ONCE for the whole period."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -107,37 +103,17 @@ TOOL = {
     ],
     "field_descriptions": {
         "period": (
-            "The period in plain English — 'last week', 'this month'. Norm "
-            "resolves it against this venue's trading day. Prefer this over "
-            "start/end; do not work out dates yourself."
+            "Plain English — 'last week', 'this month'. Prefer it to start/end; never "
+            "work out dates yourself."
         ),
-        "start": (
-            "Only when the user asked for exact clock times. ISO 8601 with "
-            "offset. Honoured verbatim."
-        ),
-        "end": "Window end, with the same rule as start.",
-        "group_by": (
-            "The mode, which sets the shape. item (default) — one row per stock "
-            "item: name, code, base unit, quantity, spend, invoice and supplier "
-            "counts, credits (+ a per-venue split across venues). history — one "
-            "row per invoice line for ONE item or supplier; needs item_id, query "
-            "or suppliers. item_supplier — one row per item per supplier with "
-            "unit cost avg/min/max/last. group — one row per stock group with "
-            "spend and top items. super_group — one row per Loaded category."
-        ),
-        "item_id": "Restrict to one stock item id — 'how much of X did we buy'",
-        "query": "Restrict to items whose catalogue name contains this text",
-        "group": "Restrict to lines whose stock group name contains this text",
-        "limit": (
-            "Max rows returned (default 25, top rows by spend; the rest roll "
-            "into an '(others)' row — totals stay exact in the summary)"
-        ),
-        "venues": (
-            "'all', or a list of venue names, for ONE merged answer across "
-            "venues: items are matched by catalogue name and base unit, each row "
-            "carries its per-venue split, and per-venue totals come back too. "
-            "Omit for the single venue."
-        ),
+        "start": "Only for exact clock times the user asked for: ISO 8601 with offset.",
+        "end": "Window end; same rule as start.",
+        "group_by": "The mode; it sets the row shape (default item).",
+        "item_id": "One stock item id.",
+        "query": "Items whose catalogue name contains this.",
+        "group": "Lines whose stock group name contains this.",
+        "limit": "Max rows (default 25); the rest roll into '(others)'.",
+        "venues": "'all', or a list of venue names — one merged answer.",
     },
     "field_schema": {
         "group_by": {

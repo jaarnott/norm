@@ -537,7 +537,14 @@ def extract_invoice_copies_parallel(
         finally:
             worker_db.close()
 
+    import contextvars
+
+    # Each worker keeps the caller's organisation (caller_scope) — a bare
+    # thread has none, and its extraction would count to nobody's usage.
+    contexts = [contextvars.copy_context() for _ in pending]
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for i, parsed in pool.map(_worker, pending):
+        for i, parsed in pool.map(
+            lambda cp: cp[0].run(_worker, cp[1]), zip(contexts, pending)
+        ):
             results[i] = parsed
     return results

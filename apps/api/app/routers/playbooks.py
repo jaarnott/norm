@@ -227,6 +227,15 @@ Return ONLY valid JSON, no markdown fences."""
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
+    from app.interpreter.llm_interpreter import record_direct_call
+
+    record_direct_call(
+        response,
+        model=agent_model(db),
+        call_type="playbook_generation",
+        user_id=user.id,
+        prompt=prompt,
+    )
 
     raw = response.content[0].text.strip()
     if raw.startswith("```"):

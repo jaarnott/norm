@@ -49,13 +49,13 @@ def _draft(message: str, api_key: str, model: str) -> dict:
         system=_SYSTEM,
         messages=[{"role": "user", "content": message[:2000]}],
     )
-    usage = response.usage
+    from app.services.llm_cost import Usage
+
     return {
         "title": response.content[0].text.strip().strip("\"'").rstrip("."),
         "model": model,
         "duration_ms": int((time.time() - t0) * 1000),
-        "input_tokens": usage.input_tokens if usage else None,
-        "output_tokens": usage.output_tokens if usage else None,
+        "usage": Usage.from_response(response.usage),
     }
 
 
@@ -77,20 +77,25 @@ def finish(job: Future | None, message: str, thread_id: str, db: Session) -> str
         logger.info("Thread title not drafted (%s) — using the message", exc)
         return fallback(message)
 
-    from app.db.models import LlmCall
+    from app.interpreter.llm_interpreter import _persist_llm_call
+    from app.services.llm_cost import Usage
 
-    db.add(
-        LlmCall(
-            thread_id=thread_id,
-            call_type="title",
-            model=out["model"],
-            system_prompt=_SYSTEM,
-            user_prompt=message[:2000],
-            raw_response=out["title"],
-            status="success",
-            duration_ms=out["duration_ms"],
-            input_tokens=out["input_tokens"],
-            output_tokens=out["output_tokens"],
-        )
+    # Through the shared recorder, so a title's tokens reach the daily totals
+    # and its cost is kept — it wrote its row directly and counted for nothing.
+    _persist_llm_call(
+        db,
+        thread_id=thread_id,
+        call_type="title",
+        model=out["model"],
+        system_prompt=_SYSTEM,
+        user_prompt=message[:2000],
+        raw_response=out["title"],
+        parsed_response=None,
+        status="success",
+        duration_ms=out["duration_ms"],
+        usage=out.get("usage")
+        or Usage(
+            input=out.get("input_tokens") or 0, output=out.get("output_tokens") or 0
+        ),
     )
     return out["title"][:120] or fallback(message)

@@ -119,11 +119,15 @@ def llm_chooser(db, model_call=None):
             f"Units available: {json.dumps(candidates)}"
         )
         client = anthropic.Anthropic(api_key=app_settings.ANTHROPIC_API_KEY)
+        model = router_model(db)
         res = client.messages.create(
-            model=router_model(db),
+            model=model,
             max_tokens=64,
             messages=[{"role": "user", "content": prompt}],
         )
+        from app.interpreter.llm_interpreter import record_direct_call
+
+        record_direct_call(res, model=model, call_type="unit_guess", prompt=prompt)
         raw = res.content[0].text.strip()
         if raw.startswith("```"):
             raw = "\n".join(

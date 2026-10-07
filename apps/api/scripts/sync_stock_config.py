@@ -38,31 +38,20 @@ SHAPES_PATH = FUNCTION_CODE_PATH.parent / "shapes.json"
 TOOL = {
     "action": "get_stock",
     "method": "GET",  # read-only consolidator: auto-executes
+    # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
+    # every prompt).
     "description": (
-        "THE stock read tool. view picks the cut — 'items' (default): query "
-        "(name substring) returns slim {id, name} matches, or item_id returns "
-        "ONE item at detail 'summary' (units, minimum, variants with codes and "
-        "costs) or 'full'. For ONE edit, look up that one item — don't scan "
-        "the list. For a BULK job (a tender, a supplier price list), do the "
-        "opposite: call once with no query and limit 1000 for the whole "
-        "catalogue (the default limit of 25 truncates it), match the printed "
-        "names against it YOURSELF, then ask for the shape of the ones you "
-        "matched with item_ids=[...], 5 per call. Never search "
-        "name by name — a search that misses is indistinguishable from an "
-        "item that isn't there, and you will report real items as missing. "
-        "'on_hand': stock on hand and value for one item_id (Norm "
-        "finds its stocktake template) or for a whole template (template = a "
-        "title, or 'Food' / 'Beverage' / 'Other Stock'; top rows by value plus "
-        "an '(others)' rollup). 'reference': kind = units | suppliers | groups "
-        "| templates, slim rows, filter with query. 'minimums': par levels in "
-        "counting units. Before an update, fetch just the item here, then call "
-        "manage_stock_item (op 'update') with only the fields to change. "
-        # Carried HERE rather than left to sync_unified_prompt's
-        # TOOL_GUIDANCE, which appends it only when the marker is absent:
-        # installing this row whole silently dropped the sentence on 1 Oct
-        # 2026. In the row, an install is self-sufficient and the append is a
-        # no-op.
-        "Never guess an item id — look it up here first."
+        "THE stock read tool. view 'items' (default): query (part of a name) returns "
+        "slim {id, name} matches; item_id returns ONE item ('summary': units, minimum, "
+        "variants with codes and costs; or 'full'). For one edit, look up that one "
+        "item. For a BULK job (a tender, a price list): call once with no query and "
+        "limit 1000, match the printed names yourself, then read the matched items "
+        "with item_ids (5 per call). Never search name by name — a missed search looks "
+        "exactly like a missing item. 'on_hand': stock and value for an item_id or a "
+        "whole template ('Food' / 'Beverage' / 'Other Stock' or a title; top rows plus "
+        "'(others)'). 'reference': units | suppliers | groups | templates. 'minimums': "
+        "par levels in counting units. Before manage_stock_item (op 'update'), fetch "
+        "the item here and change only what's needed. Never guess an item id."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -84,42 +73,31 @@ TOOL = {
     "field_descriptions": {
         "view": "'items' (default) | 'on_hand' | 'reference' | 'minimums'.",
         "item_id": (
-            "Loaded stock item id — items: exactly this item; on_hand: this "
-            "item's count; minimums: this item's par level."
+            "One stock item — items: that item; on_hand: its count; minimums: its par."
         ),
         "item_ids": (
-            "items: a LIST of stock item ids — their shape in one call, 5 per "
-            "call. Ask for as many as you like: anything past the first 5 "
-            "comes back as `remaining`, and you call again with those. Issue "
-            "those follow-up calls together rather than one at a time. This is "
-            "how a bulk job reads: get the catalogue once, match names "
-            "yourself, then page through the ids you matched."
+            "items: a list of ids, 5 per call; the rest come back as `remaining` — "
+            "fetch those together, not one by one."
         ),
-        "query": "Case-insensitive name substring — items, on_hand rows, reference, minimums.",
+        "query": "Part of a name, any case — items, on_hand rows, reference, minimums.",
         "groups": (
-            "items: a LIST of stock group names to narrow the catalogue (e.g. "
-            "['Dry Goods', 'Meats', 'Dairy']) — use it when an unfiltered list "
-            "comes back truncated. Group names come from view 'reference', "
-            "kind 'groups'."
+            "items: group names to narrow the catalogue (from reference 'groups'), "
+            "when a full list comes back truncated."
         ),
-        "detail": "items: 'summary' (default) or 'full' (the complete Loaded object).",
+        "detail": "items: 'summary' (default) or 'full'.",
         "limit": (
-            "Max rows (items default 25, units 100). Raise it only when a task "
-            "genuinely needs the whole list."
+            "Max rows (items 25, units 100); raise only when the task needs the whole "
+            "list."
         ),
         "template": (
-            "on_hand: a stocktake template title, or 'Food' / 'Beverage' / "
-            "'Other Stock' for that whole category."
+            "on_hand: a template title, or 'Food' / 'Beverage' / 'Other Stock'."
         ),
-        "template_id": "on_hand: a template id, when you already hold one.",
-        "as_of": (
-            "on_hand: the snapshot date YYYY-MM-DD (default today, at the "
-            "venue's own day start)."
-        ),
-        "top": "on_hand for a template: rows shown before the '(others)' rollup (default 50).",
-        "sort_by": "on_hand for a template: 'value' (default) | 'quantity' | 'name'.",
+        "template_id": "on_hand: a template id you already hold.",
+        "as_of": "on_hand: date YYYY-MM-DD (default today, at the venue's day start).",
+        "top": "on_hand template: rows before '(others)' (default 50).",
+        "sort_by": "on_hand template: 'value' (default) | 'quantity' | 'name'.",
         "kind": "reference: 'units' | 'suppliers' | 'groups' | 'templates'.",
-        "include_deleted": "reference: also return deleted units / removed suppliers.",
+        "include_deleted": "reference: include deleted units / removed suppliers.",
     },
     # A full-catalogue listing (~1,000 slim {id, name} rows) must survive the
     # tool-result slimmer when explicitly requested via limit.

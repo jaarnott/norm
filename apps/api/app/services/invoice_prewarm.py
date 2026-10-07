@@ -183,6 +183,24 @@ def _record_warmed(db, venue_id: str, invoice_id: str) -> None:
 def warm_one(venue_id: str, invoice_id: str) -> str:
     """Warm one invoice's extraction. Returns "warmed" | "cached" | "failed".
 
+    Runs as the venue's organisation (caller_scope), so the extraction's cost
+    counts to it — a background job has no thread or user to say whose it is.
+    """
+    from app.db.engine import SessionLocal
+    from app.services import caller_scope
+
+    scope_db = SessionLocal()
+    try:
+        scope = caller_scope.for_venue(scope_db, venue_id)
+    finally:
+        scope_db.close()
+    with caller_scope.use(scope):
+        return _warm_one(venue_id, invoice_id)
+
+
+def _warm_one(venue_id: str, invoice_id: str) -> str:
+    """Warm one invoice's extraction. Returns "warmed" | "cached" | "failed".
+
     Owns its sessions and closes them: never hold a session across a tick.
     The instructions are composed exactly as ``review_invoice`` composes them,
     because a cache key that differs by one character warms nothing.

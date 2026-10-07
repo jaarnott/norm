@@ -68,15 +68,17 @@ def _run(
 
     `script` answers the tool-bearing calls in order (the last entry repeats;
     a callable entry is given the call number, for fresh tool-use ids);
-    `wrap_up` answers the tools-free wrap-up call. Returns (calls seen, saved
+    `wrap_up` answers the wrap-up call (tool_choice none). Returns (calls seen, saved
     answer, thread)."""
     clock = _Clock(step)
     seen = []
 
-    def llm(system_prompt, messages, tools, db, thread_id, call_type):
+    def llm(system_prompt, messages, tools, db, thread_id, call_type, tool_choice=None):
         seen.append([dict(m) for m in messages])
         clock.tick()
-        if not tools and wrap_up is not None:
+        # The wrap-up keeps the tools and switches tool use off (Oct 2026: an
+        # empty tool list rewrote the whole cached conversation).
+        if (not tools or tool_choice == {"type": "none"}) and wrap_up is not None:
             return wrap_up, None
         entry = script[min(len(seen), len(script)) - 1]
         return (entry(len(seen)) if callable(entry) else entry), None

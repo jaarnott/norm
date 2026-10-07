@@ -137,7 +137,7 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
         )}
         {(call.input_tokens != null || call.output_tokens != null) && (
           <span style={{ color: '#bbb', fontSize: '0.68rem', marginLeft: '0.5rem' }}>
-            {call.input_tokens ?? 0}in / {call.output_tokens ?? 0}out tokens
+            {callUsageLine(call)}
           </span>
         )}
       </div>
@@ -337,6 +337,20 @@ const LLM_CALL_TYPE_LABELS: Record<string, string> = {
   spec_generation: 'Spec generation LLM call',
 };
 
+/** Every token one call processed: full-price input, both cache parts, output. */
+function callTokenTotal(c: LlmCall): number {
+  return (c.input_tokens ?? 0) + (c.cache_read_tokens ?? 0) + (c.cache_write_tokens ?? 0) + (c.output_tokens ?? 0);
+}
+
+function callUsageLine(c: LlmCall): string {
+  const parts = [`${(c.input_tokens ?? 0).toLocaleString()} in`];
+  if (c.cache_read_tokens) parts.push(`${c.cache_read_tokens.toLocaleString()} cache read`);
+  if (c.cache_write_tokens) parts.push(`${c.cache_write_tokens.toLocaleString()} cache write`);
+  parts.push(`${(c.output_tokens ?? 0).toLocaleString()} out`);
+  if (c.cost_usd != null) parts.push(`$${c.cost_usd.toFixed(3)}`);
+  return parts.join(' · ');
+}
+
 export default function ActivityTimeline({ messages, createdAt, domain, threadId, llmCalls, toolCalls, thinkingSteps, approval, integrationRun }: ActivityTimelineProps) {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
@@ -369,19 +383,31 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
     const tools = (toolCalls || []).filter(tc => tc.status !== 'pending_approval');
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    let billable = 0;
+    let cost = 0;
     let llmDuration = 0;
     let toolDuration = 0;
     for (const c of calls) {
       inputTokens += c.input_tokens ?? 0;
       outputTokens += c.output_tokens ?? 0;
+      cacheRead += c.cache_read_tokens ?? 0;
+      cacheWrite += c.cache_write_tokens ?? 0;
+      billable += c.billable_tokens ?? (c.input_tokens ?? 0) + (c.output_tokens ?? 0);
+      cost += c.cost_usd ?? 0;
       llmDuration += c.duration_ms ?? 0;
     }
     for (const t of tools) {
       toolDuration += t.duration_ms ?? 0;
     }
-    const totalTokens = inputTokens + outputTokens;
+    // Every token the model processed: full-price input, both cache parts, output.
+    const totalTokens = inputTokens + cacheRead + cacheWrite + outputTokens;
     const totalDuration = ((llmDuration + toolDuration) / 1000).toFixed(1);
-    return { inputTokens, outputTokens, totalTokens, llmCount: calls.length, toolCount: tools.length, totalDuration };
+    return {
+      inputTokens, outputTokens, cacheRead, cacheWrite, billable, cost, totalTokens,
+      llmCount: calls.length, toolCount: tools.length, totalDuration,
+    };
   }, [llmCalls, toolCalls]);
 
   if (!messages || messages.length === 0) return null;
@@ -561,7 +587,30 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
           padding: '0.4rem 0.6rem', backgroundColor: '#f8fafc', borderRadius: 6,
           border: '1px solid #e8e8e8', display: 'flex', gap: '0.6rem', flexWrap: 'wrap',
         }}>
-          <span><strong>{summary.totalTokens.toLocaleString()}</strong> tokens <span style={{ color: '#aaa' }}>({summary.inputTokens.toLocaleString()} in / {summary.outputTokens.toLocaleString()} out)</span></span>
+          {summary.cost > 0 && (
+            <>
+              <span><strong>${summary.cost.toFixed(2)}</strong></span>
+              <span style={{ color: '#ccc' }}>&middot;</span>
+            </>
+          )}
+          <span title="Every token the model processed, cache included">
+            <strong>{summary.totalTokens.toLocaleString()}</strong> tokens{' '}
+            <span style={{ color: '#aaa' }}>
+              ({summary.inputTokens.toLocaleString()} full-price in · {summary.cacheRead.toLocaleString()} cache read · {summary.cacheWrite.toLocaleString()} cache write · {summary.outputTokens.toLocaleString()} out)
+            </span>
+          </span>
+          <span style={{ color: '#ccc' }}>&middot;</span>
+          <span title="What plan limits count: cache reads count ~0.05, cache writes 1.25">
+            {summary.billable.toLocaleString()} billable
+          </span>
+          {summary.cacheWrite > 0 && (
+            <>
+              <span style={{ color: '#ccc' }}>&middot;</span>
+              <span title="Tokens read back from the cache for each token written to it — higher is better">
+                cache {(summary.cacheRead / summary.cacheWrite).toFixed(1)}:1
+              </span>
+            </>
+          )}
           <span style={{ color: '#ccc' }}>&middot;</span>
           <span>{summary.llmCount} LLM calls</span>
           <span style={{ color: '#ccc' }}>&middot;</span>
@@ -608,7 +657,8 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
                         fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
                         borderRadius: 8, backgroundColor: '#f0f0f0', color: '#666', marginLeft: '0.3rem',
                       }}>
-                        {((displayCall.input_tokens ?? 0) + (displayCall.output_tokens ?? 0)).toLocaleString()} tokens
+                        {callTokenTotal(displayCall).toLocaleString()} tokens
+                        {displayCall.cost_usd != null && ` · $${displayCall.cost_usd.toFixed(3)}`}
                       </span>
                     )}
                   </div>

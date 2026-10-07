@@ -573,6 +573,49 @@ async def set_user_venues(
     return {"ok": True, "venue_count": len(venue_ids)}
 
 
+_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "billable_tokens",
+    "cost_usd",
+    "llm_call_count",
+)
+
+
+def _require_usage_access(db: Session, user: User, org_id: str) -> None:
+    """Members of the organisation (and platform admins) only — usage showed
+    any organisation's figures to anyone signed in (Oct 2026)."""
+    if user.role == "admin":
+        return
+    member = (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.organization_id == org_id,
+            OrganizationMembership.user_id == user.id,
+        )
+        .first()
+    )
+    if not member:
+        raise HTTPException(403, "Not a member of this organization")
+
+
+def _usage_of(r) -> dict:
+    """One token_usage row's figures. ``billable_tokens`` falls back to input +
+    output for days recorded before it existed — what limits counted then."""
+    out = {k: (getattr(r, k) or 0) for k in _USAGE_FIELDS}
+    out["cost_usd"] = float(out["cost_usd"])
+    if not getattr(r, "billable_tokens", None):
+        out["billable_tokens"] = out["input_tokens"] + out["output_tokens"]
+    return out
+
+
+def _add(into: dict, more: dict) -> None:
+    for k, v in more.items():
+        into[k] = into.get(k, 0) + v
+
+
 @router.get("/organizations/{org_id}/usage")
 async def get_usage(
     org_id: str,
@@ -580,10 +623,12 @@ async def get_usage(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Get monthly token usage summary for an organization."""
+    """Monthly usage for an organization: every kind of token, the billable
+    tokens plan limits count, and the cost (see app/services/llm_cost.py)."""
     from app.db.models import TokenUsage
     import datetime as dt
 
+    _require_usage_access(db, user, org_id)
     if not month:
         month = dt.date.today().strftime("%Y-%m")
 
@@ -596,26 +641,32 @@ async def get_usage(
         .all()
     )
 
-    total_input = sum(r.input_tokens or 0 for r in rows)
-    total_output = sum(r.output_tokens or 0 for r in rows)
-    total_calls = sum(r.llm_call_count or 0 for r in rows)
-
-    # Per-user breakdown
+    totals: dict = {}
     by_user: dict[str, dict] = {}
     for r in rows:
-        uid = r.user_id or "system"
-        if uid not in by_user:
-            by_user[uid] = {"input_tokens": 0, "output_tokens": 0, "llm_call_count": 0}
-        by_user[uid]["input_tokens"] += r.input_tokens or 0
-        by_user[uid]["output_tokens"] += r.output_tokens or 0
-        by_user[uid]["llm_call_count"] += r.llm_call_count or 0
+        u = _usage_of(r)
+        _add(totals, u)
+        _add(by_user.setdefault(r.user_id or "system", {}), u)
 
     return {
         "month": month,
-        "total_input_tokens": total_input,
-        "total_output_tokens": total_output,
-        "total_tokens": total_input + total_output,
-        "total_llm_calls": total_calls,
+        "total_input_tokens": totals.get("input_tokens", 0),
+        "total_output_tokens": totals.get("output_tokens", 0),
+        "total_cache_read_tokens": totals.get("cache_read_tokens", 0),
+        "total_cache_write_tokens": totals.get("cache_write_tokens", 0),
+        # Every token processed, cache included.
+        "total_tokens": sum(
+            totals.get(k, 0)
+            for k in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            )
+        ),
+        "total_billable_tokens": totals.get("billable_tokens", 0),
+        "total_cost_usd": round(totals.get("cost_usd", 0), 4),
+        "total_llm_calls": totals.get("llm_call_count", 0),
         "by_user": by_user,
     }
 
@@ -628,10 +679,11 @@ async def get_daily_usage(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Get daily token usage breakdown for an organization, optionally filtered by user."""
+    """Daily usage for an organization, optionally for one user."""
     from app.db.models import TokenUsage
     import datetime as dt
 
+    _require_usage_access(db, user, org_id)
     if not month:
         month = dt.date.today().strftime("%Y-%m")
 
@@ -641,21 +693,106 @@ async def get_daily_usage(
     )
     if user_id:
         query = query.filter(TokenUsage.user_id == user_id)
-    rows = query.order_by(TokenUsage.date).all()
-
     by_day: dict[str, dict] = {}
-    for r in rows:
-        if r.date not in by_day:
-            by_day[r.date] = {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "llm_call_count": 0,
-            }
-        by_day[r.date]["input_tokens"] += r.input_tokens or 0
-        by_day[r.date]["output_tokens"] += r.output_tokens or 0
-        by_day[r.date]["llm_call_count"] += r.llm_call_count or 0
+    for r in query.order_by(TokenUsage.date).all():
+        _add(by_day.setdefault(r.date, {}), _usage_of(r))
 
     return {"month": month, "days": by_day}
+
+
+#: How the breakdown groups call types.
+_KIND = {
+    "tool_use": "chat",
+    "extraction": "invoice extraction",
+}
+
+
+@router.get("/organizations/{org_id}/usage/breakdown")
+async def get_usage_breakdown(
+    org_id: str,
+    month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Where a month's cost went: by kind of work, and the costliest chats."""
+    import datetime as dt
+
+    from sqlalchemy import func
+
+    from app.db.models import LlmCall, Thread
+
+    _require_usage_access(db, user, org_id)
+    if not month:
+        month = dt.date.today().strftime("%Y-%m")
+    start = dt.datetime.strptime(month + "-01", "%Y-%m-%d").replace(
+        tzinfo=dt.timezone.utc
+    )
+    end = (start + dt.timedelta(days=32)).replace(day=1)
+    in_month = (
+        LlmCall.organization_id == org_id,
+        LlmCall.created_at >= start,
+        LlmCall.created_at < end,
+    )
+
+    by_kind: dict[str, dict] = {}
+    for call_type, n, cost, billable, read, write in (
+        db.query(
+            LlmCall.call_type,
+            func.count(),
+            func.coalesce(func.sum(LlmCall.cost_usd), 0),
+            func.coalesce(func.sum(LlmCall.billable_tokens), 0),
+            func.coalesce(func.sum(LlmCall.cache_read_tokens), 0),
+            func.coalesce(func.sum(LlmCall.cache_write_tokens), 0),
+        )
+        .filter(*in_month)
+        .group_by(LlmCall.call_type)
+        .all()
+    ):
+        _add(
+            by_kind.setdefault(_KIND.get(call_type, "other"), {}),
+            {
+                "calls": n,
+                "cost_usd": float(cost),
+                "billable_tokens": int(billable),
+                "cache_read_tokens": int(read),
+                "cache_write_tokens": int(write),
+            },
+        )
+
+    top = (
+        db.query(
+            LlmCall.thread_id,
+            func.count(),
+            func.coalesce(func.sum(LlmCall.cost_usd), 0),
+            func.coalesce(func.sum(LlmCall.billable_tokens), 0),
+            func.coalesce(func.sum(LlmCall.cache_read_tokens), 0),
+            func.coalesce(func.sum(LlmCall.cache_write_tokens), 0),
+        )
+        .filter(*in_month, LlmCall.thread_id.isnot(None))
+        .group_by(LlmCall.thread_id)
+        .order_by(func.coalesce(func.sum(LlmCall.cost_usd), 0).desc())
+        .limit(10)
+        .all()
+    )
+    titles = {
+        t.id: (t.title or t.raw_prompt or "")[:120]
+        for t in db.query(Thread).filter(Thread.id.in_([r[0] for r in top])).all()
+    }
+    return {
+        "month": month,
+        "by_kind": by_kind,
+        "top_threads": [
+            {
+                "thread_id": tid,
+                "title": titles.get(tid, ""),
+                "calls": n,
+                "cost_usd": round(float(cost), 4),
+                "billable_tokens": int(billable),
+                "cache_ratio": round(int(read) / int(write), 1) if write else None,
+            }
+            for tid, n, cost, billable, read, write in top
+        ],
+    }
 
 
 @router.get("/users/by-email")

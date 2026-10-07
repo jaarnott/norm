@@ -68,34 +68,22 @@ SALES_TAX_ENDPOINT = {
 TOOL = {
     "action": "get_sales",
     "method": "GET",  # read-only consolidator: auto-executes, nestable
+    # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
+    # every prompt).
     "description": (
-        "Sales for a period given in plain English, resolved against each "
-        "venue's trading day. THE sales tool: one venue by default, venues "
-        "accepts a list or 'all' for the whole group. measure picks one of "
-        "two different things — 'sales' (default) is the MONEY taken: bills "
-        "as they were PAID, after discounts; 'orders' is what was ORDERED: "
-        "orders as they were PLACED on the POS, how many and their value as "
-        "rung up, paid yet or not. They differ — open tabs and unpaid orders "
-        "count as orders but not yet as sales, and orders are valued before "
-        "discounts. Use orders for 'how many orders', 'when did orders come "
-        "in', 'average order'; sales for revenue, takings and turnover. "
-        "Figures INCLUDE tax (GST) by default — what "
-        "the till took and what Loaded shows; pass tax 'exclude' only when "
-        "the user asks for figures excluding tax / ex-GST. breakdown picks "
-        "the cut — 'total' (default), 'daily' (interval sets the bucket: per "
-        "day by default, per week, or hourly / half-hourly through the "
-        "day), 'items' (product mix), 'staff' (sales by staff member; "
-        "staff_name drills into one person's items), or 'discounts'. compare "
-        "adds engine-computed columns to total/daily: 'budget' and/or "
-        "'last_year' (the aligned trading week exactly 52 weeks back — the "
-        "same baseline for every venue). time_windows cuts by clock time "
-        "(e.g. dinner 17:00-22:00) with trading-day attribution. Items/staff "
-        "return the top rows plus an '(others)' rollup so totals stay "
-        "honest; item sales are before discounts, so they add up to more "
-        "than total sales. Ask ONCE for the whole period per venue — not "
-        "month by month — unless the user wants a per-month breakdown. For "
-        "'top N items' use breakdown 'items', ranked by revenue unless the "
-        "user asks for quantity."
+        "Sales for a period in plain English, on each venue's trading day — THE sales "
+        "tool. One venue by default; venues takes a list or 'all'. measure 'sales' "
+        "(default) is the MONEY taken: bills as PAID, after discounts. 'orders' is "
+        "what was ORDERED: orders as PLACED, paid or not, before discounts — for order "
+        "counts, when orders came in, average order. Figures include GST; tax "
+        "'exclude' only when the user asks for ex-GST. breakdown: 'total' (default) | "
+        "'daily' (interval: per day, week, hourly, half-hourly) | 'items' (product "
+        "mix; top N by revenue unless asked by quantity) | 'staff' (staff_name drills "
+        "in) | 'discounts'. compare adds 'budget' and/or 'last_year' (the trading week "
+        "52 weeks back) to total/daily. time_windows cuts by clock time. Items/staff "
+        "show top rows plus '(others)'; item sales are pre-discount, so they sum to "
+        "more than total sales. Ask ONCE for the whole period per venue, not month by "
+        "month, unless asked per month."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -120,84 +108,50 @@ TOOL = {
     ],
     "field_descriptions": {
         "period": (
-            "The period in plain English — 'yesterday', 'last week', 'this "
-            "month'. Norm resolves it against the venue's trading day. "
-            "Prefer this over start/end; do not work out dates yourself."
+            "Plain English — 'yesterday', 'last week', 'this month'. Prefer it to "
+            "start/end; never work out dates yourself."
         ),
-        "start": (
-            "Only when the user asked for exact clock times. ISO 8601 with "
-            "offset. Honoured verbatim after confirmation."
-        ),
-        "end": "Window end, with the same rule as start.",
+        "start": "Only for exact clock times the user asked for: ISO 8601 with offset.",
+        "end": "Window end; same rule as start.",
         "confirmed_by_user": (
-            "Only for an explicit start/end that is not a trading day, and "
-            "only when the user really did ask for those clock times."
+            "Only when the user really asked for a start/end that isn't a trading day."
         ),
-        "venues": (
-            "'all' (every connected venue), a list of venue names, or omit "
-            "for the single venue in `venue`."
-        ),
+        "venues": "'all', a list of venue names, or omit for the venue in `venue`.",
         "measure": (
-            "'sales' (default): the money taken — bills when they were paid, "
-            "after discounts; rows carry `actual`. 'orders': orders when they "
-            "were placed — not bills (a bar tab can hold several rounds, each "
-            "its own order), people or items. Rows carry `orders` (how "
-            "many), `order_value` (their value as rung up, before discounts) "
-            "and `average_order` (order_value ÷ orders). An order counts the "
-            "moment it is placed, paid or not, so orders and sales differ: "
-            "hourly orders show when orders came in, hourly sales when money "
-            "was taken. With breakdown total or daily, and time_windows. "
-            "compare 'last_year' works for orders; 'budget' does not (budgets "
-            "are money taken)."
+            "'sales' (default; rows carry `actual`) or 'orders' (rows carry `orders`, "
+            "`order_value` before discounts, `average_order`). An order counts when "
+            "placed — a tab holds several — so hourly orders show when orders came in. "
+            "With total, daily and time_windows; compare 'budget' needs sales."
         ),
         "tax": (
-            "'include' (default): figures include tax (GST), as rung up and as "
-            "Loaded shows them — use this unless the user asks otherwise. "
-            "'exclude': tax taken off — sales lose the tax Loaded recorded in "
-            "them, budgets (set tax-inclusive) are divided by 1 + their tax "
-            "rate, and order values, item, staff and discount amounts (which "
-            "carry no tax split) are divided by 1 + the GST rate, as Loaded's "
-            "own reports do. The result's `tax` says which applied."
+            "'include' (default — as rung up and as Loaded shows) or 'exclude' (only "
+            "when asked; tax removed as Loaded's reports do). The result's `tax` says "
+            "which applied."
         ),
-        "breakdown": ("'total' (default) | 'daily' | 'items' | 'staff' | 'discounts'."),
+        "breakdown": "'total' (default) | 'daily' | 'items' | 'staff' | 'discounts'.",
         "compare": (
-            "'budget', 'last_year', or both (list or comma-separated) — "
-            "with breakdown total or daily. The joins and group totals are "
-            "computed here, never by the model."
+            "'budget', 'last_year', or both — total/daily only. Computed here, never "
+            "by you."
         ),
         "time_windows": (
-            'Clock-time cuts, e.g. [{"start_hour": 17, "end_hour": 22, '
-            '"label": "dinner"}]. Hours before the venue\'s day start '
-            "belong to the previous trading day. Works with breakdown "
-            "total/daily (sales per cut) and items (product mix per cut)."
+            'Clock cuts, e.g. [{"start_hour": 17, "end_hour": 22, "label": "dinner"}]. '
+            "Hours before day start belong to the previous trading day. With "
+            "total/daily and items."
         ),
-        "group_by": (
-            "Row grouping for time_windows: 'each' (per day) | 'week' | "
-            "'month' | 'total'."
-        ),
+        "group_by": "time_windows rows: 'each' (day) | 'week' | 'month' | 'total'.",
         "day_of_week": (
-            "Filter for time_windows rows: a day name, a comma list, "
-            "'weekday' or 'weekend'."
+            "time_windows filter: a day, a comma list, 'weekday' or 'weekend'."
         ),
-        "top": (
-            "Cap for items/staff rows (default 25 items); the rest roll "
-            "into '(others)' so totals stay honest."
-        ),
-        "category": "Items breakdown: keep items whose category contains this.",
-        "group": "Items breakdown: keep items whose group contains this.",
-        "sort_by": "Items breakdown: 'sales' (default) or 'quantity'.",
-        "staff_name": (
-            "Staff breakdown: drill into one person's product mix. "
-            "Case-insensitive substring of their POS name."
-        ),
+        "top": "items/staff rows before '(others)' (default 25 items).",
+        "category": "items: keep items whose category contains this.",
+        "group": "items: keep items whose group contains this.",
+        "sort_by": "items: 'sales' (default) or 'quantity'.",
+        "staff_name": "staff: one person's product mix (part of their POS name).",
         "interval": (
-            "Daily breakdown: the bucket, d.hh:mm:ss — '1.00:00:00' per day "
-            "(default), '7.00:00:00' per week, '01:00:00' hourly, '00:30:00' "
-            "half-hourly. Hourly and finer rows carry their trading date and "
-            "clock time (a 1am bucket belongs to the day before), without the "
-            "empty hours before opening and after close; compare 'budget' "
-            "needs a daily or longer bucket. Staff breakdown (one venue): "
-            "adds per-slot winners."
+            "daily bucket d.hh:mm:ss — '1.00:00:00' day (default), '7.00:00:00' week, "
+            "'01:00:00' hourly, '00:30:00' half-hourly. Hourly rows carry trading date "
+            "and clock time; budget needs a day or longer. staff (one venue): per-slot "
+            "winners."
         ),
     },
     "field_schema": {

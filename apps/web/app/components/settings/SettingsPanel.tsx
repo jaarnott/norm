@@ -503,8 +503,105 @@ function VenuesTab() {
 
 // --- Users Tab ---
 
-interface UsageByUser { input_tokens: number; output_tokens: number; llm_call_count: number }
-interface DailyUsageEntry { input_tokens: number; output_tokens: number; llm_call_count: number }
+/** One period's usage. input_tokens is full-price input only — the cache is
+ * counted separately; billable_tokens is what plan limits count. */
+interface UsageFigures {
+  input_tokens: number; output_tokens: number; llm_call_count: number;
+  cache_read_tokens?: number; cache_write_tokens?: number;
+  billable_tokens?: number; cost_usd?: number;
+}
+type UsageByUser = UsageFigures;
+type DailyUsageEntry = UsageFigures;
+interface UsageBreakdown {
+  by_kind: Record<string, { calls: number; cost_usd: number; billable_tokens: number }>;
+  top_threads: { thread_id: string; title: string; calls: number; cost_usd: number; billable_tokens: number; cache_ratio: number | null }[];
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
+}
+
+function fmtUsd(n: number | undefined): string {
+  return `$${(n || 0).toFixed(2)}`;
+}
+
+function usageTitle(d: UsageFigures): string {
+  return [
+    `Cost ${fmtUsd(d.cost_usd)}`,
+    `Billable ${(d.billable_tokens || 0).toLocaleString()}`,
+    `Full-price input ${(d.input_tokens || 0).toLocaleString()}`,
+    `Cache read ${(d.cache_read_tokens || 0).toLocaleString()}`,
+    `Cache write ${(d.cache_write_tokens || 0).toLocaleString()}`,
+    `Output ${(d.output_tokens || 0).toLocaleString()}`,
+  ].join('\n');
+}
+
+/** Daily bars by cost — the figure that matters — with every token on hover. */
+function DailyCostBars({ days, compact }: { days: Record<string, UsageFigures>; compact?: boolean }) {
+  const entries = Object.entries(days).sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return <div style={{ fontSize: '0.75rem', color: '#999' }}>No daily data yet</div>;
+  const max = Math.max(...entries.map(([, d]) => d.cost_usd || 0), 0.0001);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 2 : 3 }}>
+      {entries.map(([date, d]) => {
+        const label = new Date(date + 'T00:00:00').toLocaleDateString('en-NZ', compact
+          ? { weekday: 'short', day: 'numeric' } : { weekday: 'short', day: 'numeric', month: 'short' });
+        return (
+          <div key={date} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }} title={usageTitle(d)}>
+            <span style={{ fontSize: '0.68rem', color: '#999', width: compact ? 50 : 80, textAlign: 'right', flexShrink: 0 }}>{label}</span>
+            <div style={{ flex: 1, height: compact ? 12 : 16, backgroundColor: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ width: `${((d.cost_usd || 0) / max) * 100}%`, backgroundColor: '#6366f1', height: '100%' }} />
+            </div>
+            <span style={{ fontSize: '0.65rem', color: '#999', width: 90, flexShrink: 0 }}>
+              {fmtUsd(d.cost_usd)} · {fmtTokens(d.billable_tokens || 0)}
+            </span>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: '0.6rem', color: '#bbb', marginTop: '0.25rem' }}>Cost · billable tokens per day — hover a day for every token type</div>
+    </div>
+  );
+}
+
+const _KIND_LABEL: Record<string, string> = { chat: 'Chat', 'invoice extraction': 'Invoice extraction', other: 'Other' };
+
+/** Where the month's cost went: by kind of work, and the costliest chats. */
+function UsageBreakdownPanel({ data }: { data: UsageBreakdown | null }) {
+  if (!data) return <div style={{ fontSize: '0.75rem', color: '#999' }}>Loading breakdown…</div>;
+  const kinds = Object.entries(data.by_kind).sort(([, a], [, b]) => b.cost_usd - a.cost_usd);
+  const total = kinds.reduce((t, [, k]) => t + k.cost_usd, 0) || 1;
+  const head = { fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' as const, margin: '0.75rem 0 0.4rem' };
+  return (
+    <div>
+      <div style={head}>By kind of work</div>
+      {kinds.map(([kind, k]) => (
+        <div key={kind} style={{ display: 'flex', gap: '0.75rem', fontSize: '0.75rem', color: '#374151', padding: '2px 0' }}>
+          <span style={{ width: 140 }}>{_KIND_LABEL[kind] || kind}</span>
+          <span style={{ width: 70, fontWeight: 600 }}>{fmtUsd(k.cost_usd)}</span>
+          <span style={{ width: 50, color: '#999' }}>{Math.round((k.cost_usd / total) * 100)}%</span>
+          <span style={{ color: '#999' }}>{k.calls} calls · {fmtTokens(k.billable_tokens)} billable</span>
+        </div>
+      ))}
+      {data.top_threads.length > 0 && (
+        <>
+          <div style={head}>Most expensive chats</div>
+          {data.top_threads.map(t => (
+            <div key={t.thread_id} style={{ display: 'flex', gap: '0.75rem', fontSize: '0.75rem', color: '#374151', padding: '2px 0' }}
+              title="Cache ratio: tokens read back from the cache for each token written — higher is better">
+              <span style={{ width: 70, fontWeight: 600 }}>{fmtUsd(t.cost_usd)}</span>
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title || t.thread_id}</span>
+              <span style={{ color: '#999', whiteSpace: 'nowrap' }}>
+                {t.calls} calls{t.cache_ratio != null ? ` · cache ${t.cache_ratio}:1` : ''}
+              </span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
 
 function UsersTab() {
   const [org, setOrg] = useState<Organization | null>(null);
@@ -512,7 +609,10 @@ function UsersTab() {
   const [venues, setVenues] = useState<VenueDetail[]>([]);
   const [memberVenues, setMemberVenues] = useState<Record<string, string[]>>({});
   const [usage, setUsage] = useState<Record<string, UsageByUser>>({});
-  const [usageTotals, setUsageTotals] = useState<{ input: number; output: number; calls: number }>({ input: 0, output: 0, calls: 0 });
+  const [usageTotals, setUsageTotals] = useState<{
+    input: number; output: number; cacheRead: number; cacheWrite: number; billable: number; cost: number; calls: number;
+  }>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, billable: 0, cost: 0, calls: 0 });
+  const [usageBreakdown, setUsageBreakdown] = useState<UsageBreakdown | null>(null);
   const [loading, setLoading] = useState(true);
   const [addEmail, setAddEmail] = useState('');
   const [addRole, setAddRole] = useState('');
@@ -566,6 +666,10 @@ function UsersTab() {
           setUsageTotals({
             input: usageData.total_input_tokens || 0,
             output: usageData.total_output_tokens || 0,
+            cacheRead: usageData.total_cache_read_tokens || 0,
+            cacheWrite: usageData.total_cache_write_tokens || 0,
+            billable: usageData.total_billable_tokens || 0,
+            cost: usageData.total_cost_usd || 0,
             calls: usageData.total_llm_calls || 0,
           });
         }
@@ -680,6 +784,10 @@ function UsersTab() {
                     setDailyUsage(d.days || {});
                   }
                 }
+                if (next && org && !usageBreakdown) {
+                  const res = await apiFetch(`/api/organizations/${org.id}/usage/breakdown`);
+                  if (res.ok) setUsageBreakdown(await res.json());
+                }
               }}
               style={{ cursor: 'pointer' }}
             >
@@ -688,18 +796,23 @@ function UsersTab() {
                 <span style={{ fontSize: '0.55rem', transform: showDailyUsage ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>&#9654;</span>
               </div>
               <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111' }}>
-                {((usageTotals.input + usageTotals.output) / 1000).toFixed(1)}K
-                <span style={{ fontSize: '0.72rem', fontWeight: 400, color: '#999', marginLeft: 4 }}>tokens</span>
+                {fmtUsd(usageTotals.cost)}
+                <span style={{ fontSize: '0.72rem', fontWeight: 400, color: '#999', marginLeft: 4 }}>
+                  · {fmtTokens(usageTotals.billable)} billable tokens
+                </span>
               </div>
             </div>
-            <div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Input</div>
-              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{(usageTotals.input / 1000).toFixed(1)}K</div>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Output</div>
-              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{(usageTotals.output / 1000).toFixed(1)}K</div>
-            </div>
+            {([
+              ['Full-price input', usageTotals.input],
+              ['Cache read', usageTotals.cacheRead],
+              ['Cache write', usageTotals.cacheWrite],
+              ['Output', usageTotals.output],
+            ] as [string, number][]).map(([label, n]) => (
+              <div key={label}>
+                <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>{label}</div>
+                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{fmtTokens(n)}</div>
+              </div>
+            ))}
             <div>
               <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>LLM Calls</div>
               <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{usageTotals.calls}</div>
@@ -715,38 +828,8 @@ function UsersTab() {
               <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
                 Daily Usage
               </div>
-              {Object.keys(dailyUsage).length === 0 ? (
-                <div style={{ fontSize: '0.75rem', color: '#999' }}>No daily data yet</div>
-              ) : (() => {
-                const entries = Object.entries(dailyUsage).sort(([a], [b]) => a.localeCompare(b));
-                const maxTokens = Math.max(...entries.map(([, d]) => (d.input_tokens || 0) + (d.output_tokens || 0)), 1);
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    {entries.map(([date, d]) => {
-                      const total = (d.input_tokens || 0) + (d.output_tokens || 0);
-                      const inputPct = (d.input_tokens || 0) / maxTokens * 100;
-                      const outputPct = (d.output_tokens || 0) / maxTokens * 100;
-                      const dayLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' });
-                      return (
-                        <div key={date} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <span style={{ fontSize: '0.68rem', color: '#999', width: 80, textAlign: 'right', flexShrink: 0 }}>{dayLabel}</span>
-                          <div style={{ flex: 1, height: 16, backgroundColor: '#f3f4f6', borderRadius: 3, overflow: 'hidden', display: 'flex' }}>
-                            <div style={{ width: `${inputPct}%`, backgroundColor: '#93c5fd', height: '100%' }} title={`Input: ${(d.input_tokens || 0).toLocaleString()}`} />
-                            <div style={{ width: `${outputPct}%`, backgroundColor: '#6366f1', height: '100%' }} title={`Output: ${(d.output_tokens || 0).toLocaleString()}`} />
-                          </div>
-                          <span style={{ fontSize: '0.65rem', color: '#999', width: 50, flexShrink: 0 }}>
-                            {total >= 1000 ? `${(total / 1000).toFixed(1)}K` : total}
-                          </span>
-                        </div>
-                      );
-                    })}
-                    <div style={{ display: 'flex', gap: '1rem', marginTop: '0.25rem', fontSize: '0.6rem', color: '#bbb' }}>
-                      <span><span style={{ display: 'inline-block', width: 8, height: 8, backgroundColor: '#93c5fd', borderRadius: 2, marginRight: 3 }} />Input</span>
-                      <span><span style={{ display: 'inline-block', width: 8, height: 8, backgroundColor: '#6366f1', borderRadius: 2, marginRight: 3 }} />Output</span>
-                    </div>
-                  </div>
-                );
-              })()}
+              <DailyCostBars days={dailyUsage} />
+              <UsageBreakdownPanel data={usageBreakdown} />
             </div>
           )}
         </div>
@@ -925,10 +1008,9 @@ function UsersTab() {
                 {(() => {
                   const u = usage[m.user_id];
                   if (!u) return null;
-                  const total = (u.input_tokens || 0) + (u.output_tokens || 0);
                   return (
-                    <span style={{ fontSize: '0.68rem', color: '#999' }}>
-                      {total >= 1000000 ? `${(total / 1000000).toFixed(1)}M` : total >= 1000 ? `${(total / 1000).toFixed(1)}K` : total} tokens
+                    <span style={{ fontSize: '0.68rem', color: '#999' }} title={usageTitle(u)}>
+                      {fmtUsd(u.cost_usd)} · {fmtTokens(u.billable_tokens || 0)} billable
                     </span>
                   );
                 })()}
@@ -982,12 +1064,12 @@ function UsersTab() {
                     return (
                       <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '0.75rem', fontSize: '0.75rem' }}>
                         <div>
-                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Input</div>
-                          <div style={{ fontWeight: 600, color: '#111' }}>{((u.input_tokens || 0) / 1000).toFixed(1)}K</div>
+                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Cost</div>
+                          <div style={{ fontWeight: 600, color: '#111' }}>{fmtUsd(u.cost_usd)}</div>
                         </div>
-                        <div>
-                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Output</div>
-                          <div style={{ fontWeight: 600, color: '#111' }}>{((u.output_tokens || 0) / 1000).toFixed(1)}K</div>
+                        <div title={usageTitle(u)}>
+                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Billable tokens</div>
+                          <div style={{ fontWeight: 600, color: '#111' }}>{fmtTokens(u.billable_tokens || 0)}</div>
                         </div>
                         <div>
                           <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Calls</div>
@@ -998,37 +1080,12 @@ function UsersTab() {
                   })()}
 
                   {/* Daily usage chart */}
-                  {(() => {
-                    const days = memberDailyUsage[m.user_id] || {};
-                    const entries = Object.entries(days).sort(([a], [b]) => a.localeCompare(b));
-                    if (entries.length === 0) return null;
-                    const maxTokens = Math.max(...entries.map(([, d]) => (d.input_tokens || 0) + (d.output_tokens || 0)), 1);
-                    return (
-                      <div style={{ marginBottom: '0.75rem' }}>
-                        <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Daily Usage</div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          {entries.map(([date, d]) => {
-                            const total = (d.input_tokens || 0) + (d.output_tokens || 0);
-                            const inputPct = (d.input_tokens || 0) / maxTokens * 100;
-                            const outputPct = (d.output_tokens || 0) / maxTokens * 100;
-                            const dayLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric' });
-                            return (
-                              <div key={date} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                <span style={{ fontSize: '0.65rem', color: '#999', width: 50, textAlign: 'right', flexShrink: 0 }}>{dayLabel}</span>
-                                <div style={{ flex: 1, height: 12, backgroundColor: '#f3f4f6', borderRadius: 2, overflow: 'hidden', display: 'flex' }}>
-                                  <div style={{ width: `${inputPct}%`, backgroundColor: '#93c5fd', height: '100%' }} />
-                                  <div style={{ width: `${outputPct}%`, backgroundColor: '#6366f1', height: '100%' }} />
-                                </div>
-                                <span style={{ fontSize: '0.6rem', color: '#bbb', width: 40, flexShrink: 0 }}>
-                                  {total >= 1000 ? `${(total / 1000).toFixed(1)}K` : total}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })()}
+                  {Object.keys(memberDailyUsage[m.user_id] || {}).length > 0 && (
+                    <div style={{ marginBottom: '0.75rem' }}>
+                      <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Daily Usage</div>
+                      <DailyCostBars days={memberDailyUsage[m.user_id] || {}} compact />
+                    </div>
+                  )}
 
                   {/* Venues */}
                   <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Venue Access</div>

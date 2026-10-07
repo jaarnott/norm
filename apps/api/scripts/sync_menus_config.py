@@ -77,21 +77,18 @@ WRITE_TOOL = {
     # decides what is actually written.
     "method": "PUT",
     "read_only": False,
+    # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
+    # every prompt).
     "description": (
-        "Create or change a menu in Loaded. op picks the action: 'create' — "
-        "`menu` {name, sections:[{name, lines:[{name, price, recipe_id | "
-        "stock_item_id}]}]}. 'update' — menu_id plus ONLY the deltas: `changes` "
-        "{name}, `line_changes` [{line_id | name (+section), price, new_name, "
-        "move_to}], `add_lines` [{section, name, price, recipe_id | "
-        "stock_item_id}] (a missing section is created), `remove_lines` "
-        "[line_id | name], `remove_sections` [name]; the server fetches the "
-        "menu, merges, writes the whole model back and re-reads to confirm "
-        "added lines — never resend the menu yourself. A dish named on more "
-        "than one section needs `section` to say which. Prices are numbers "
-        "(0 if free; '$12.50' is read) — anything else is refused, never "
-        "saved as $0. 'delete' — menu_id AND the menu's name, checked before "
-        "anything is deleted. Look the menu up with get_menus first. This is a "
-        "write — human-approved."
+        "Create or change a Loaded menu — a write, human-approved. op 'create': `menu` "
+        "{name, sections [{name, lines [{name, price, recipe_id | stock_item_id}]}]}. "
+        "op 'update': menu_id plus ONLY the deltas — `changes` {name}, `line_changes`, "
+        "`add_lines` (a missing section is created), `remove_lines`, "
+        "`remove_sections`; Norm merges, writes the whole menu and re-reads to confirm "
+        "added lines — never resend it. A dish on more than one section needs "
+        "`section`. Prices are numbers (0 if free; '$12.50' is read) — anything else "
+        "is refused, never saved as $0. op 'delete': menu_id AND the menu's name, "
+        "checked first. Look menus up with get_menus."
     ),
     "required_fields": ["op"],
     "optional_fields": [
@@ -108,15 +105,18 @@ WRITE_TOOL = {
         "op": "create | update | delete. No default.",
         "menu": "create: the menu to create.",
         "menu_id": "update / delete: the menu's id (from get_menus).",
-        "name": "delete: the menu's name (from get_menus) — checked against the id before deleting.",
-        "changes": "update: {name} — the menu's own fields.",
+        "name": "delete: the menu's name (from get_menus), checked against the id.",
+        "changes": "update: {name}.",
         "line_changes": (
-            "update: edits to existing lines, matched by line_id or name (+ "
-            "section when that name is on more than one section)."
+            "update: [{line_id | name (+ section if the name is on several sections), "
+            "price, new_name, move_to}]."
         ),
-        "add_lines": "update: new lines; recipe_id / stock_item_id from get_recipes / get_stock.",
-        "remove_lines": "update: line ids or names to remove.",
-        "remove_sections": "update: section names to remove with their lines.",
+        "add_lines": (
+            "update: [{section, name, price, recipe_id | stock_item_id}] — ids from "
+            "get_recipes / get_stock."
+        ),
+        "remove_lines": "update: line ids or names.",
+        "remove_sections": "update: section names, removed with their lines.",
     },
     "field_schema": {
         "op": {"type": "string", "enum": ["create", "update", "delete"]},

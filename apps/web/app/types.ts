@@ -240,8 +240,14 @@ export interface LlmCall {
   status: 'success' | 'error';
   error_message: string | null;
   duration_ms: number | null;
+  /** Full-price input only — Anthropic's input_tokens excludes the cache. */
   input_tokens: number | null;
   output_tokens: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  /** What plan limits count (cache read ~0.05, cache write 1.25). */
+  billable_tokens?: number | null;
+  cost_usd?: number | null;
   tools_provided: Record<string, unknown>[] | null;
   created_at: string;
 }

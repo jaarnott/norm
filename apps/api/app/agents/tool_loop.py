@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
 
+from app.services.llm_cost import usage_fields
 from app.db.models import Thread, Message, ToolCall
 from app.connectors import spec_rows
 
@@ -1465,7 +1466,11 @@ def _execute_loop(
         final_response, _ = call_llm_with_tools(
             system_prompt,
             messages,
-            tools=[],  # No tools — forces text-only response
+            # The loop's own tools, with tool use switched off: a text-only
+            # answer without changing the start of the prompt. tools=[] made
+            # this one call rewrite the whole cached conversation.
+            tools=anthropic_tools,
+            tool_choice={"type": "none"},
             db=db,
             thread_id=task.id,
             call_type="tool_use",
@@ -2877,8 +2882,8 @@ def _build_response(
             "status": lc.status,
             "error_message": lc.error_message,
             "duration_ms": lc.duration_ms,
-            "input_tokens": lc.input_tokens,
-            "output_tokens": lc.output_tokens,
+            # Every part of the input (cache included), billable tokens, cost.
+            **usage_fields(lc),
             "created_at": lc.created_at.isoformat() if lc.created_at else None,
         }
         for lc in sorted(task.llm_calls, key=lambda x: x.created_at)

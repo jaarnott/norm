@@ -95,6 +95,14 @@ async def generate_test(description: str) -> dict:
             }
         ],
     )
+    from app.interpreter.llm_interpreter import record_direct_call
+
+    record_direct_call(
+        response,
+        model=agent_model(),
+        call_type="test_generation",
+        prompt=description,
+    )
 
     text = response.content[0].text.strip()
 
