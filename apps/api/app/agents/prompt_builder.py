@@ -583,6 +583,23 @@ def approval_preferences_guidance(
     return block + ".\n"
 
 
+def approval_card_guidance() -> str:
+    """The line shown above an approval card.
+
+    The card lists the changes; what the person reads above it is whatever
+    the model wrote as TEXT in the same response. On Opus 5.5 the notes the
+    model writes between tool calls come back as thinking blocks, which the
+    card cannot show, so the first live cards (7 Oct 2026) sat under the bare
+    "I'd like to:" list. One short sentence of text still arrives as text.
+    """
+    return (
+        "\n\n## Before changes that need approval\n"
+        "Say in one short sentence, as plain text to the person, what the batch "
+        "covers and where you are in the job — it is shown above the approval "
+        "card. Then make the calls.\n"
+    )
+
+
 def build_tool_definitions(
     domain: str,
     db: Session,
@@ -717,6 +734,7 @@ def build_tool_definitions(
     # What this person lets Norm do without asking — the invoice tools'
     # levels and any always-allowed write — stated rather than fetched.
     system_prompt += approval_preferences_guidance(own_actions, db, user_id, _cdb)
+    system_prompt += approval_card_guidance()
 
     # Inject memory guidance when the remember tool is available, so the
     # agent proactively saves durable facts (ChatGPT/Claude-style capture).
