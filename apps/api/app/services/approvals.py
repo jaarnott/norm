@@ -838,3 +838,132 @@ def notify_task_waiting(db: Session, task, run, thread: Thread) -> str | None:
     except Exception:  # noqa: BLE001 — telling them must never undo the run
         logger.exception("Could not email the owner of task %s", str(task.id)[:12])
         return None
+
+
+# ---------------------------------------------------------------------------
+# When the resume itself fails
+# ---------------------------------------------------------------------------
+
+RESUME_FAILED_AFTER_WRITES = (
+    "Your approval went through and the changes were made, but Norm hit an "
+    "error while carrying on afterwards. Say continue and it will pick up "
+    "from here."
+)
+RESUME_FAILED_DURING_WRITES = (
+    "Your approval was recorded, but Norm hit an error while carrying it out: "
+    "{ran} of {total} changes ran. The others are marked as failed and will "
+    "not run again. One may have been under way when the error hit, so check "
+    "the changes below before asking for them again."
+)
+RESUME_FAILED_UNKNOWN = (
+    "Your approval was recorded, but Norm hit an error while carrying it out "
+    "and can't confirm which of the {total} changes ran. They are marked as "
+    "failed and will not run again — check them in Loaded before asking for "
+    "them again."
+)
+RESUME_FAILED_AFTER_DECLINE = (
+    "Your decision was recorded, but Norm hit an error while carrying on. Say "
+    "continue and it will pick up from here."
+)
+RESUME_FAILED_NOTE = (
+    "Not confirmed: Norm hit an error while carrying out this decision. "
+    "Check it before asking again."
+)
+
+
+def executed_before_failure(db: Session, thread: Thread) -> dict | None:
+    """The pending calls this request had already run, read BEFORE rollback.
+
+    Nothing in a resume is committed until its writes are done, so a crash
+    part-way through rolls back the record of the writes that DID run in
+    Loaded. Read them from the request session first. Returns
+    ``{tool_call_id: result_payload}``, or None when the session cannot be
+    read (the error poisoned it) — then nothing is known.
+    """
+    try:
+        ran = {}
+        for tc_id in thread.pending_tool_call_ids or []:
+            tc = db.get(ToolCall, tc_id)
+            if tc is not None and tc.status == "executed":
+                ran[tc_id] = tc.result_payload
+        return ran
+    except Exception:  # noqa: BLE001 — best effort; None means "unknown"
+        return None
+
+
+def land_failed_resume(thread_id: str, approve: bool, ran: dict | None) -> dict:
+    """Settle a decided turn whose resume raised, and say what happened.
+
+    Until Oct 2026 a failure anywhere in ``resume_tool_loop`` surfaced as a
+    500 from /approve or /reject: the thread stayed ``in_progress``, nothing
+    was saved, and the person was not told whether their changes had run.
+    Runs on a fresh session; the caller has rolled the request's back (it may
+    be poisoned, and its uncommitted claim holds a lock on the thread row).
+
+    Once the approved writes have run, the resume clears
+    ``pending_tool_call_ids`` and commits — so pending ids still on the
+    thread mean it died before or during the writes. ``ran`` (from
+    ``executed_before_failure``) says which had run; the rest are marked
+    failed, so a second click can never re-run a write whose side effect may
+    already stand. The card keeps its decision and each row says what
+    happened to it. Never raises.
+    """
+    from app.agents.tool_loop import _build_response
+    from app.db.engine import SessionLocal
+
+    session = SessionLocal()
+    try:
+        thread = session.query(Thread).filter(Thread.id == thread_id).first()
+        if thread is None:
+            return {"id": thread_id, "status": "failed"}
+        pending = list(thread.pending_tool_call_ids or [])
+        if not pending:
+            text = (
+                RESUME_FAILED_AFTER_WRITES if approve else RESUME_FAILED_AFTER_DECLINE
+            )
+        else:
+            outcomes = {}
+            for tc in session.query(ToolCall).filter(ToolCall.id.in_(pending)).all():
+                if ran and tc.id in ran:
+                    tc.status = "executed"
+                    tc.result_payload = ran[tc.id]
+                    outcomes[tc.id] = {"outcome": "done", "outcome_note": None}
+                else:
+                    tc.status = "failed"
+                    tc.error_message = RESUME_FAILED_NOTE
+                    outcomes[tc.id] = {
+                        "outcome": "failed",
+                        "outcome_note": RESUME_FAILED_NOTE,
+                    }
+            set_card_status(
+                session, thread, pending, "approved" if approve else "rejected"
+            )
+            set_call_outcomes(session, thread, outcomes)
+            if not approve:
+                text = RESUME_FAILED_AFTER_DECLINE
+            elif ran is None:
+                text = RESUME_FAILED_UNKNOWN.format(total=len(pending))
+            else:
+                text = RESUME_FAILED_DURING_WRITES.format(
+                    ran=len(ran), total=len(pending)
+                )
+        try:
+            run = _run_for(session, thread)
+            if run is not None and run.status == "waiting_for_approval":
+                run.status = "failed"
+                run.error_message = RESUME_FAILED_NOTE
+        except Exception:  # noqa: BLE001 — the run's record must not block the landing
+            logger.exception("Could not settle the task run for %s", thread_id[:12])
+        session.add(Message(thread_id=thread.id, role="assistant", content=text))
+        thread.pending_tool_call_ids = None
+        thread.agent_loop_state = None
+        thread.status = "completed"
+        thread.remove_tag("approval_required")
+        session.commit()
+        return _build_response(thread, session, text)
+    except Exception:  # noqa: BLE001 — a net that raises is no net
+        logger.exception("Could not land the failed resume for %s", thread_id[:12])
+        session.rollback()
+        return {"id": thread_id, "status": "failed"}
+    finally:
+        session.close()

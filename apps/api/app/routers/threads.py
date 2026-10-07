@@ -1,5 +1,6 @@
 """Unified thread lifecycle endpoints."""
 
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -20,6 +21,8 @@ from app.services.hr_service import (
     submit_hr_thread,
 )
 from app.services.report_threads import _report_thread_to_dict
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -555,9 +558,16 @@ def _decide_tool_calls(
     system_prompt, anthropic_tools = build_tool_definitions(
         _suspended_domain(thread), db, user_id=user.id, config_db=config_db
     )
-    result = resume_tool_loop(
-        thread, db, system_prompt, anthropic_tools, config_db=config_db
-    )
+    thread_id = thread.id
+    try:
+        result = resume_tool_loop(
+            thread, db, system_prompt, anthropic_tools, config_db=config_db
+        )
+    except Exception:  # noqa: BLE001 — the decision must land where the person can see it
+        logger.exception("approval_resume_failed", extra={"thread_id": thread_id})
+        ran = approvals.executed_before_failure(db, thread)
+        db.rollback()
+        return approvals.land_failed_resume(thread_id, approve=approve, ran=ran)
     approvals.post_outcome_to_task_conversation(db, thread)
     # A scheduled run that was waiting on this decision is now settled
     # (success or declined) — unless it stopped at another card.
