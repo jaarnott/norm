@@ -376,6 +376,8 @@ def _execute_loop(
     answer_parts: list[str] = []
     #: Whether this turn has already shed its tool results to fit the window.
     compacted = False
+    #: Times this turn has sent the model back after an empty end_turn.
+    empty_nudges = 0
 
     iteration = start_iteration
     #: Why the loop stopped, which decides how the turn is wrapped up below.
@@ -461,9 +463,47 @@ def _execute_loop(
 
         # Check stop reason
         if response.stop_reason == "end_turn":
+            final_text = _extract_text(response)
+            if (
+                not final_text.strip()
+                and empty_nudges < MAX_EMPTY_END_TURN_NUDGES
+                and time.monotonic() - turn_started < budget
+            ):
+                # The API returned end_turn with no content at all. Anthropic
+                # documents this ("Empty responses with end_turn": 2–3 tokens,
+                # no content, most often straight after tool results), and its
+                # fallback is exactly this — a continuation prompt in a NEW
+                # user message, never a retry that replays the empty reply.
+                # Seen in production on 3 Oct 2026 (thread e016ed5c): the
+                # model had just recorded supplier ids in its notebook, at
+                # ~47k real tokens — inside the band where context editing
+                # warns that older results are about to be cleared — and sent
+                # nothing, so the user saw the interim narration and no word
+                # on what was done or what remained, with a 59-item job
+                # untouched. Bounded, and only while the turn budget allows
+                # another pass; past it the note below is the ending, here,
+                # so the thread settles in this branch and not in the wrap-up.
+                empty_nudges += 1
+                usage = getattr(response, "usage", None)
+                logger.warning(
+                    "empty_end_turn",
+                    extra={
+                        "thread_id": task.id,
+                        "iteration": iteration,
+                        "nudge": empty_nudges,
+                        "after_tools": _tools_in_last_round(messages),
+                        "input_tokens": getattr(usage, "input_tokens", None),
+                        "cache_read": getattr(usage, "cache_read_input_tokens", None),
+                    },
+                )
+                step = "Continuing…"
+                thinking_steps.append(_ts_step(step))
+                _emit_event({"type": "thinking", "text": step})
+                messages.append({"role": "user", "content": EMPTY_END_TURN_NUDGE})
+                continue
             # LLM is done — the answer is everything it wrote this turn, not
             # just this final iteration.
-            text = _join_answer(answer_parts, _extract_text(response))
+            text = _closing_text(answer_parts, final_text)
             db.add(
                 Message(
                     thread_id=task.id,
@@ -1327,8 +1367,29 @@ def _execute_loop(
             # Any other stop reason ends the turn with what was written. The one
             # that matters is max_tokens: the answer was cut off, and saving it
             # as though it were complete left the user staring at half a table
-            # with no sign anything went wrong (prod thread fa1cfd1c).
-            text = _join_answer(answer_parts, _extract_text(response))
+            # with no sign anything went wrong (prod thread fa1cfd1c). A stop
+            # with no text at all (a refusal, an empty pause_turn) gets the
+            # silent-end note, and the thread settles — this branch used to
+            # leave it in_progress, so the client polled "Working..." forever.
+            if response.stop_reason == "refusal":
+                # A safety classifier declined (HTTP 200, stop_reason refusal;
+                # Opus 5.5 adds "bio" to cyber and reasoning_extraction).
+                # Server-side fallback has already retried the categories it
+                # covers, so this is final for the turn: say so, instead of
+                # the silent-end note, which would read as a glitch.
+                logger.warning(
+                    "model_refusal",
+                    extra={
+                        "thread_id": task.id,
+                        "category": getattr(
+                            getattr(response, "stop_details", None), "category", None
+                        ),
+                    },
+                )
+                text = _join_answer(answer_parts, _extract_text(response))
+                text = (text + REFUSAL_NOTE) if text.strip() else REFUSAL_NOTE.lstrip()
+            else:
+                text = _closing_text(answer_parts, _extract_text(response))
             if response.stop_reason == "max_tokens":
                 logger.warning(
                     "answer_truncated_at_max_tokens", extra={"thread_id": task.id}
@@ -1342,6 +1403,7 @@ def _execute_loop(
                     display_blocks=display_blocks or None,
                 )
             )
+            task.status = "completed" if task.status == "in_progress" else task.status
             task.thinking_steps = thinking_steps or None
             db.commit()
             return _build_response(
@@ -1379,14 +1441,16 @@ def _execute_loop(
                     "and dates from the tool results so far, and do not claim "
                     "anything was done that was not. Anything a write tool "
                     "already sent STANDS: those changes are made, so list them "
-                    "as done and never suggest redoing them. End with: 'Say "
-                    "continue and I'll pick up from here.'"
+                    "as done and never suggest redoing them. This overrides any "
+                    "guidance to carry on. End with: 'Say continue and I'll "
+                    "pick up from here.'"
                 )
                 if out_of_time
                 else (
                     "You have used all available tool calls for this turn. "
                     "Please present your best answer using the data you have already collected. "
                     "Be specific — include numbers, names, and dates from the tool results. "
+                    "This overrides any guidance to carry on. "
                     "End with: 'I can keep researching if you'd like, or we can look at something else.'"
                 )
             ),
@@ -1406,7 +1470,9 @@ def _execute_loop(
             thread_id=task.id,
             call_type="tool_use",
         )
-        text = _join_answer(answer_parts, _extract_text(final_response))
+        # An empty wrap-up reply gets the silent-end note like any other
+        # empty ending — this was the one exit with no words for it.
+        text = _closing_text(answer_parts, _extract_text(final_response))
     except (anthropic.APIError, ValueError, RuntimeError):
         logger.exception(
             "Final summary LLM call failed after %s",
@@ -1439,6 +1505,11 @@ def _execute_loop(
             display_blocks=display_blocks or None,
         )
     )
+    # Settle the thread. This exit never did, so a turn that ran out of time
+    # or tool calls told the user "say continue" inside a thread the client
+    # still showed as working — two such threads from Aug 2026 were still
+    # in_progress on 3 Oct.
+    task.status = "completed" if task.status == "in_progress" else task.status
     task.thinking_steps = thinking_steps or None
     db.commit()
     return _build_response(
@@ -2455,6 +2526,32 @@ def _is_read_only(method: str) -> bool:
 
 #: Appended when the model hits its output ceiling mid-answer, so a cut-off
 #: reply says so instead of passing for a finished one.
+#: How many times one turn asks the model to go on after it ends a turn
+#: with no message at all. Two: the first nudge is the fix, the second is the
+#: retry; a third would be a loop.
+MAX_EMPTY_END_TURN_NUDGES = 2
+
+EMPTY_END_TURN_NUDGE = (
+    "Your last message was empty. If what you already wrote this turn is the "
+    "complete answer, reply with one short closing line rather than repeating "
+    "it. If the job is not finished, carry on with it now — you have the tools "
+    "and your notebook, and a note to yourself is not a stopping point. If you "
+    "need something from the user, ask for it. Anything a write tool already "
+    "sent STANDS: those changes are made, so list them as done and never redo "
+    "them. When you do have to stop, say exactly what is done and what remains."
+)
+
+REFUSAL_NOTE = (
+    "\n\n---\n*Norm's model declined to continue with this request. Rephrase "
+    "it, or ask for a different approach.*"
+)
+
+SILENT_END_NOTE = (
+    "\n\n---\n*Norm stopped here without a closing message. Nothing further "
+    "was done this turn; its notes and the results so far are kept, so it can "
+    "continue from here.*"
+)
+
 TRUNCATION_NOTE = (
     "\n\n---\n*This answer was cut off because it ran too long. Ask me to "
     "continue, or narrow the request (fewer venues, a shorter period, or a "
@@ -2475,6 +2572,32 @@ def _join_answer(parts: list[str], final: str) -> str:
         if chunk and chunk not in out:
             out.append(chunk)
     return "\n\n".join(out)
+
+
+def _closing_text(answer_parts: list[str], final: str) -> str:
+    """The saved answer for a turn that is ending: everything written this
+    turn plus the final text — and, when the final text is empty, a note that
+    the turn stopped without a closing message. Without it the user is left
+    with narration that reads like an unfinished thought, or with an empty
+    bubble the client cannot tell from a turn still running."""
+    text = _join_answer(answer_parts, final)
+    if final.strip():
+        return text
+    return text + SILENT_END_NOTE if text.strip() else SILENT_END_NOTE.lstrip()
+
+
+def _tools_in_last_round(messages: list) -> list[str]:
+    """Names of the tools the model called in the round just fed back — logged
+    with an empty end_turn so a recurrence can be matched to what preceded it
+    (a notebook write, a read, nothing)."""
+    for m in reversed(messages):
+        if m.get("role") == "assistant" and isinstance(m.get("content"), list):
+            return [
+                b.get("name")
+                for b in m["content"]
+                if isinstance(b, dict) and b.get("type") == "tool_use"
+            ]
+    return []
 
 
 def _extract_text(response) -> str:

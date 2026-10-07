@@ -518,8 +518,13 @@ The memory directory is your working notes for THIS conversation: the plan,
 what you have done, what is decided, what is still to do. For a task with
 more than a handful of items, write the list there first and update each
 item's line as you reach a conclusion about it — it is what lets you continue
-after an interruption, and the user can see it. It is not long-term memory:
-anything that will still be true next week goes through `remember`.
+after an interruption, and the user can see it. A note is a step, not an
+ending: after writing one, carry on with the next item or ask the user what
+you need — never end a turn without a message. When a multi-step job stops
+part-way, end with what is done and what is left. A notice that older tool
+results are about to be cleared is not a request to stop: save what you still
+need to the notebook and keep going. It is not long-term memory: anything that
+will still be true next week goes through `remember`.
 """
 
 
