@@ -11,6 +11,8 @@ import logging
 import time
 
 from sqlalchemy.orm import Session
+from app.config import settings
+from app.services.models import supports_effort
 
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,16 @@ def call_llm(
     client = anthropic.Anthropic(api_key=api_key, timeout=120.0)
     llm_call_id = None
     t0 = time.time()
+    # On a model that always thinks (Opus 5.5), thinking counts toward
+    # max_tokens even though its text is not returned, so the small budgets
+    # these callers were written with (200–4096, for a model that did not
+    # think) would cut the reply itself off. A floor of 16k is the documented
+    # non-streaming default; it is a cap, not a target, so a short answer costs
+    # the same as before. Effort stays low: these calls are schema-shaped.
+    extra_request: dict = {}
+    if supports_effort(resolved_model):
+        max_tokens = max(max_tokens, _ONE_SHOT_MIN_MAX_TOKENS)
+        extra_request["output_config"] = {"effort": settings.LLM_ONE_SHOT_EFFORT}
 
     try:
         # Retry transient failures, the same way call_llm_with_tools does. This
@@ -113,6 +125,7 @@ def call_llm(
                     max_tokens=max_tokens,
                     system=system_prompt,
                     messages=[{"role": "user", "content": user_content}],
+                    **extra_request,
                 )
                 break
             except Exception as call_exc:
@@ -290,6 +303,26 @@ MIN_CACHEABLE_TOKENS = 1024
 #: "high". Agent path only — the router runs Haiku, which predates adaptive
 #: thinking and would reject this.
 _THINKING = {"type": "adaptive", "display": "summarized"}
+
+#: One-shot calls (`call_llm`) on a model that always thinks get at least this
+#: many output tokens — see the comment at the call site.
+_ONE_SHOT_MIN_MAX_TOKENS = 16_000
+
+#: Opus 5.5's safety classifiers decline in more categories than Opus 4.8 did
+#: (bio joins cyber and reasoning_extraction), and a hospitality operator's
+#: questions — allergens, cleaning chemicals, pest control — can brush them.
+#: With server-side fallback the API re-runs a declined request on another
+#: model inside the same call; "default" routes by refusal category so there
+#: is no model list here to maintain. Claude API only, which is where Norm runs.
+_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+_FALLBACK = {"fallbacks": "default"}
+
+
+def _effort(model: str) -> dict:
+    """``output_config`` for the agent loop, or nothing for a model without it."""
+    if not supports_effort(model):
+        return {}
+    return {"output_config": {"effort": settings.LLM_AGENT_EFFORT}}
 
 
 def _cached_tools(tools: list[dict] | None) -> list[dict] | None:
@@ -594,8 +627,12 @@ def call_llm_with_tools(
                     system=_cached_system(system_prompt),
                     messages=_cached_messages(messages),
                     tools=_cached_tools(tools),
-                    betas=[_CONTEXT_EDITING_BETA],
+                    betas=[_CONTEXT_EDITING_BETA, _FALLBACK_BETA],
                     context_management=_context_management(),
+                    # `fallbacks` is not yet a named argument in this SDK
+                    # version; extra_body puts it in the request body as-is.
+                    extra_body=_FALLBACK,
+                    **_effort(resolved_model),
                     # Adaptive thinking makes reasoning a distinct content-block
                     # type, so the UI no longer has to guess which prose is
                     # "thinking" and which is the answer. `display` must be set

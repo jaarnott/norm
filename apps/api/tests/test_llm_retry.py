@@ -449,6 +449,26 @@ class TestContextEditingAndTheCacheMarker:
         assert edit["clear_at_least"] == {"type": "input_tokens", "value": 10_000}
         assert edit["keep"] == {"type": "tool_uses", "value": TOOL_FANOUT_CAP}
 
+    def test_the_stream_sets_effort_and_opts_into_fallback(self, _patched):
+        """Opus 5.5 always thinks and defaults to `medium` effort; the setting
+        makes that explicit and tunable. Fallback re-runs a classifier decline
+        on another model inside the same call (Claude API only)."""
+        from app.config import settings
+
+        kw = self._kwargs(_patched)
+        assert kw["output_config"] == {"effort": settings.LLM_AGENT_EFFORT}
+        assert "server-side-fallback-2026-07-01" in kw["betas"]
+        assert kw["extra_body"] == {"fallbacks": "default"}
+
+    def test_a_model_without_effort_is_not_sent_it(self, _patched, monkeypatch):
+        """Haiku 4.5 rejects output_config.effort with a 400."""
+        monkeypatch.setattr(
+            "app.services.models.agent_model",
+            lambda *a, **k: "claude-haiku-4-5-20251001",
+        )
+        kw = self._kwargs(_patched)
+        assert "output_config" not in kw
+
     def test_keep_can_never_be_below_the_fan_out_cap(self, _patched):
         """Fails if either side is edited alone. A round can fire up to
         TOOL_FANOUT_CAP calls; clearing runs on the request carrying those
@@ -503,3 +523,47 @@ class TestContextEditingAndTheCacheMarker:
 
         d = _build_search_tool_schema()["description"].lower()
         assert "cleared" in d and "placeholder" in d and "tool_call_id" in d
+
+
+class TestOneShotCallsOnAThinkingModel:
+    """`call_llm` was written for a model that did not think: budgets of
+    200–4096 output tokens. On Opus 5.5 thinking always runs and counts toward
+    max_tokens, so the budget gets a 16k floor (a cap, not a target) and
+    effort runs low. Haiku keeps its request exactly as before."""
+
+    def _create_kwargs(self, monkeypatch, model, **call_kwargs):
+        from unittest.mock import MagicMock, patch
+
+        from app.interpreter.llm_interpreter import call_llm
+
+        monkeypatch.setattr(
+            "app.services.secrets.get_api_key", lambda *a, **k: "sk-ant-test"
+        )
+        client = MagicMock()
+        block = MagicMock(type="text", text='{"ok": true}')
+        client.messages.create.return_value = MagicMock(
+            content=[block], usage=MagicMock(input_tokens=1, output_tokens=1)
+        )
+        with patch("anthropic.Anthropic", return_value=client):
+            call_llm(
+                system_prompt="s", user_prompt="u", db=None, model=model, **call_kwargs
+            )
+        return client.messages.create.call_args.kwargs
+
+    def test_opus_gets_a_floor_and_low_effort(self, monkeypatch):
+        from app.config import settings
+
+        kw = self._create_kwargs(monkeypatch, "claude-opus-5-5", max_tokens=500)
+        assert kw["max_tokens"] == 16_000
+        assert kw["output_config"] == {"effort": settings.LLM_ONE_SHOT_EFFORT}
+
+    def test_a_larger_budget_is_kept(self, monkeypatch):
+        kw = self._create_kwargs(monkeypatch, "claude-opus-5-5", max_tokens=32_000)
+        assert kw["max_tokens"] == 32_000
+
+    def test_haiku_is_untouched(self, monkeypatch):
+        kw = self._create_kwargs(
+            monkeypatch, "claude-haiku-4-5-20251001", max_tokens=500
+        )
+        assert kw["max_tokens"] == 500
+        assert "output_config" not in kw

@@ -871,10 +871,16 @@ def check_model_selection(
     selection overrides the code default, so a current default in config.py is
     no protection at all.
     """
+    from app.services.models import SUPERSEDED_MODEL_IDS
+
     issues: list[ConfigIssue] = []
 
     for key in ("interpreter_model", "router_model"):
         selected = (config or {}).get(key)
+        # A superseded id (the default has moved past it) is not an error: the
+        # resolver ignores it in favour of the current default.
+        if selected in SUPERSEDED_MODEL_IDS:
+            continue
         if selected and selected not in allowed_models:
             issues.append(
                 ConfigIssue(

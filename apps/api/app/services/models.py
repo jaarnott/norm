@@ -44,6 +44,30 @@ RETIRED_MODEL_IDS = frozenset(
     }
 )
 
+# Models the defaults have moved past. They still answer, so this is not
+# retirement — but a selector that holds one almost always holds it because it
+# WAS the default when someone last opened Settings (production's selector was
+# saved on 6 Aug 2026 with the then-default Opus 4.8), and leaving it in place
+# would quietly pin every environment to the old model after an upgrade. A
+# superseded selection resolves to the role's current default, which stays
+# overridable per environment through the Settings env var — that is the
+# rollback path. Models that are still a deliberate choice (Sonnet 5.5, Haiku
+# 4.5) are not in this set.
+SUPERSEDED_MODEL_IDS = frozenset(
+    {"claude-opus-4-8", "claude-opus-5", "claude-sonnet-5"}
+)
+
+
+def supports_effort(model: str) -> bool:
+    """Whether ``model`` accepts ``output_config.effort`` (and so always thinks).
+
+    Opus 4.7+ and Sonnet 5+ take an effort level; Haiku 4.5 and anything older
+    reject it with a 400 — those are the only models without it that Norm
+    still selects.
+    """
+    name = model.lower()
+    return "haiku" not in name and not name.startswith("claude-3")
+
 
 def _resolve(
     db: Session | None, selector_key: str, default: str, override: str | None
@@ -54,7 +78,16 @@ def _resolve(
         from app.services.secrets import get_api_key
 
         selected = get_api_key("anthropic", selector_key, db)
-        if selected and selected in RETIRED_MODEL_IDS:
+        if selected and selected in SUPERSEDED_MODEL_IDS:
+            logger.info(
+                "Selector %r holds %r, which the default has moved past; "
+                "using %r. Pick a model in Settings → Anthropic to choose "
+                "explicitly.",
+                selector_key,
+                selected,
+                default,
+            )
+        elif selected and selected in RETIRED_MODEL_IDS:
             logger.warning(
                 "Ignoring retired model %r saved in the %r selector; "
                 "falling back to %r. Re-pick the model in Settings → Anthropic "

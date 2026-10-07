@@ -7,7 +7,13 @@ resolution order: explicit override → DB selector → Settings default.
 
 from app.config import settings
 from app.db.models import Connection
-from app.services.models import RETIRED_MODEL_IDS, agent_model, router_model
+from app.services.models import (
+    RETIRED_MODEL_IDS,
+    SUPERSEDED_MODEL_IDS,
+    agent_model,
+    router_model,
+    supports_effort,
+)
 
 
 def _set_selector(db_session, **config):
@@ -28,20 +34,48 @@ class TestAgentModel:
         assert agent_model() == settings.LLM_INTERPRETER_MODEL
 
     def test_override_wins_without_db(self):
-        assert agent_model(override="claude-sonnet-5") == "claude-sonnet-5"
+        assert agent_model(override="claude-sonnet-5-5") == "claude-sonnet-5-5"
 
     def test_reads_selector_from_db(self, db_session):
-        _set_selector(db_session, interpreter_model="claude-sonnet-5")
-        assert agent_model(db_session) == "claude-sonnet-5"
+        _set_selector(db_session, interpreter_model="claude-sonnet-5-5")
+        assert agent_model(db_session) == "claude-sonnet-5-5"
 
     def test_override_beats_db_selector(self, db_session):
-        _set_selector(db_session, interpreter_model="claude-sonnet-5")
+        _set_selector(db_session, interpreter_model="claude-sonnet-5-5")
         assert agent_model(db_session, override="claude-opus-4-8") == "claude-opus-4-8"
 
     def test_falls_back_to_settings_when_selector_absent(self, db_session):
         # Anthropic config exists (e.g. just the api_key) but no model selected.
         _set_selector(db_session, api_key="sk-ant-test")
         assert agent_model(db_session) == settings.LLM_INTERPRETER_MODEL
+
+    def test_a_superseded_selection_yields_the_current_default(self, db_session):
+        """Production's selector was saved on 6 Aug 2026 with the then-default
+        Opus 4.8. Left alone it would pin every environment to the old model
+        after the upgrade to Opus 5.5 — so a superseded id resolves to the
+        role's default, which the Settings env var still overrides (rollback)."""
+        assert "claude-opus-4-8" in SUPERSEDED_MODEL_IDS
+        _set_selector(db_session, interpreter_model="claude-opus-4-8")
+        assert agent_model(db_session) == settings.LLM_INTERPRETER_MODEL
+        assert agent_model(db_session) == "claude-opus-5-5"
+
+    def test_a_deliberate_current_choice_is_honoured(self, db_session):
+        _set_selector(db_session, interpreter_model="claude-sonnet-5-5")
+        assert agent_model(db_session) == "claude-sonnet-5-5"
+
+
+class TestSupportsEffort:
+    """Effort (and always-on thinking) is sent only to models that take it;
+    Haiku 4.5 rejects `output_config.effort` with a 400."""
+
+    def test_current_opus_and_sonnet_take_effort(self):
+        assert supports_effort("claude-opus-5-5")
+        assert supports_effort("claude-sonnet-5-5")
+        assert supports_effort("claude-opus-4-8")
+
+    def test_haiku_does_not(self):
+        assert not supports_effort("claude-haiku-4-5-20251001")
+        assert not supports_effort("claude-3-5-haiku-20241022")
 
 
 class TestRetiredSelectionIsIgnored:
@@ -69,8 +103,8 @@ class TestRetiredSelectionIsIgnored:
 
     def test_current_selection_is_still_honoured(self, db_session):
         """The guard must not swallow a valid non-default choice."""
-        _set_selector(db_session, interpreter_model="claude-sonnet-5")
-        assert agent_model(db_session) == "claude-sonnet-5"
+        _set_selector(db_session, interpreter_model="claude-sonnet-5-5")
+        assert agent_model(db_session) == "claude-sonnet-5-5"
 
 
 class TestRouterModel:
@@ -83,4 +117,4 @@ class TestRouterModel:
 
     def test_override_wins(self, db_session):
         _set_selector(db_session, router_model="claude-haiku-4-5-20251001")
-        assert router_model(db_session, override="claude-sonnet-5") == "claude-sonnet-5"
+        assert router_model(db_session, override="claude-sonnet-5-5") == "claude-sonnet-5-5"

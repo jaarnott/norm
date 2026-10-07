@@ -21,7 +21,7 @@ class TestDefaultConfig:
         assert s.ENVIRONMENT == "local"
         assert s.JWT_SECRET == "dev-secret-change-in-production"
         assert s.CORS_ALLOWED_ORIGINS == "*"
-        assert s.LLM_INTERPRETER_MODEL == "claude-opus-4-8"
+        assert s.LLM_INTERPRETER_MODEL == "claude-opus-5-5"
         assert s.BILLING_ENFORCEMENT is False
 
     def test_is_local_true_by_default(self, monkeypatch):
@@ -47,7 +47,7 @@ class TestLLMModelConfig:
         monkeypatch.delenv("LLM_INTERPRETER_MODEL", raising=False)
         s = Settings(_env_file=None)
         assert s.LLM_INTERPRETER_MODEL not in RETIRED_MODEL_IDS
-        assert s.LLM_INTERPRETER_MODEL == "claude-opus-4-8"
+        assert s.LLM_INTERPRETER_MODEL == "claude-opus-5-5"
 
     def test_router_and_date_resolver_defaults_are_current(self, monkeypatch):
         monkeypatch.delenv("ROUTER_MODEL", raising=False)

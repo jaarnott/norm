@@ -27,7 +27,7 @@ from app.services.config_validator import (
     check_task_tool_filters,
 )
 
-CURRENT_MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
+CURRENT_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5-20251001"]
 
 
 class TestConsolidatorFormat:
@@ -143,6 +143,17 @@ class TestModelSelection:
     def test_current_model_is_fine(self):
         assert (
             check_model_selection(
+                "anthropic", {"interpreter_model": "claude-opus-5-5"}, CURRENT_MODELS
+            )
+            == []
+        )
+
+    def test_a_superseded_selection_is_not_an_error(self):
+        """Production's selector still says Opus 4.8 (saved 6 Aug 2026). The
+        resolver ignores a superseded id in favour of the current default, so
+        the validator must not fail the config over it."""
+        assert (
+            check_model_selection(
                 "anthropic", {"interpreter_model": "claude-opus-4-8"}, CURRENT_MODELS
             )
             == []
@@ -158,7 +169,7 @@ class TestModelSelection:
     def test_both_models_checked_independently(self):
         issues = check_model_selection(
             "anthropic",
-            {"interpreter_model": "claude-opus-4-8", "router_model": "retired-model"},
+            {"interpreter_model": "claude-opus-5-5", "router_model": "retired-model"},
             CURRENT_MODELS,
         )
         assert len(issues) == 1

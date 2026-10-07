@@ -42,14 +42,23 @@ class Settings(BaseSettings):
 
     # ── LLM ─────────────────────────────────────────────────────────────
     ANTHROPIC_API_KEY: str = ""
-    LLM_INTERPRETER_MODEL: str = "claude-opus-4-8"
+    LLM_INTERPRETER_MODEL: str = "claude-opus-5-5"
     ROUTER_MODEL: str = "claude-haiku-4-5-20251001"
     DATE_RESOLVER_MODEL: str = "claude-haiku-4-5-20251001"
     # The Dojo's analysis agent: studies a misread invoice with full context
     # (PDF + Loaded draft + current prompts) and drafts the supplier-spec
     # update. The strongest available model — the analysis runs rarely and its
     # output edits prompts that steer every future extraction.
-    DOJO_ANALYSIS_MODEL: str = "claude-opus-5"
+    DOJO_ANALYSIS_MODEL: str = "claude-opus-5-5"
+    # How hard the model thinks (low | medium | high | xhigh | max). On Opus 5.5
+    # thinking cannot be turned off; effort is the one lever on its depth, and
+    # so on latency and cost. Anthropic's testing puts Opus 5.5 at "medium"
+    # above Opus 5 at "high", so the agent starts there; one-shot calls
+    # (invoice extraction, matching, summaries) run "low" — they are
+    # schema-shaped and were written for a model that did not think at all.
+    # Models that predate effort (Haiku 4.5) are never sent it.
+    LLM_AGENT_EFFORT: str = "medium"
+    LLM_ONE_SHOT_EFFORT: str = "low"
 
     # ── Stripe / Billing ────────────────────────────────────────────────
     STRIPE_SECRET_KEY: str = ""
