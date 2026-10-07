@@ -165,6 +165,7 @@ def main() -> None:
         # 1 + 2: every call's cache parts, billable, cost, organisation
         day_totals: dict[tuple, dict] = defaultdict(lambda: defaultdict(Decimal))
         day_model: dict[str, str] = {}
+        day_cost: dict[str, Decimal] = defaultdict(Decimal)
         for r in rows:
             log = matched.get(r.id)
             usage = Usage(
@@ -185,7 +186,9 @@ def main() -> None:
                 r.billable_tokens = billable_tokens(r.model, usage)
                 r.cost_usd = cost_usd(r.model, usage)
                 r.organization_id = org
-            if org:
+            # A call with no usage (one that failed — the 5-6 Oct 2026 credit
+            # outage) counts nowhere, as record_usage skips it.
+            if org and usage:
                 t = day_totals[(org, user, r.created_at.date().isoformat())]
                 t["input_tokens"] += usage.input
                 t["output_tokens"] += usage.output
@@ -196,6 +199,9 @@ def main() -> None:
                 t["calls"] += 1
             if r.call_type == "tool_use":
                 day_model[r.created_at.date().isoformat()] = r.model
+            day_cost[r.created_at.date().isoformat()] += Decimal(
+                str(cost_usd(r.model, usage))
+            )
 
         # 3: daily totals
         existing = {
@@ -248,6 +254,8 @@ def main() -> None:
                         setattr(u, k, v)
         print(f"day totals to update/create: {changes}")
 
+        for day in sorted(day_cost):
+            print(f"  {day}  ${float(day_cost[day]):8,.2f}")
         cost = sum(float(t.get("cost_usd", 0)) for t in day_totals.values())
         print(f"cost of calls on record since {args.since}: ${cost:,.2f}")
         if args.dry_run:
