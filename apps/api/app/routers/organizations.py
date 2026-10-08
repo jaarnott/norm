@@ -118,6 +118,53 @@ def _get_user_org(user: User, db: Session) -> Organization | None:
     )
 
 
+def _require_org_permission(
+    db: Session, user: User, org_id: str | None, scope: str | None = None
+) -> None:
+    """403 unless the caller belongs to ``org_id`` — and, when ``scope`` is
+    given, holds it in THAT organisation. Platform admins pass.
+
+    ``require_permission`` alone is not enough for anything org-scoped: it
+    checks the scope in the caller's FIRST membership, never in the
+    organisation being acted on. So a manager of one organisation could edit,
+    delete or join another's, and PUT /venues/{id} had no check at all — any
+    signed-in user, a Team Member included, could rename any venue or change
+    its timezone (which moves its business-day boundary). Oct 2026.
+    """
+    if user.role == "admin":
+        return
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.organization_id == org_id,
+            OrganizationMembership.user_id == user.id,
+        )
+        .first()
+        if org_id
+        else None
+    )
+    if not membership:
+        raise HTTPException(403, "Not a member of this organization")
+    if scope is None:
+        return
+    role = membership.role_obj
+    if not role or scope not in (role.permissions or []):
+        raise HTTPException(403, f"Missing permissions: {scope}")
+
+
+def _orgs_where(db: Session, user_id: str, scope: str | None = None) -> set[str]:
+    """The organisations a user belongs to (holding ``scope`` there, when
+    given)."""
+    return {
+        m.organization_id
+        for m in db.query(OrganizationMembership)
+        .filter(OrganizationMembership.user_id == user_id)
+        .all()
+        if scope is None
+        or (m.role_obj is not None and scope in (m.role_obj.permissions or []))
+    }
+
+
 # --- Organization CRUD ---
 
 
@@ -216,12 +263,13 @@ async def update_organization(
     org_id: str,
     body: UpdateOrgBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("org:manage")),
+    user: User = Depends(get_current_user),
 ):
     """Update organization details."""
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
+    _require_org_permission(db, user, org_id, "org:manage")
 
     if body.name is not None:
         org.name = body.name
@@ -242,12 +290,13 @@ async def add_member(
     org_id: str,
     body: AddMemberBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("org:members")),
+    user: User = Depends(get_current_user),
 ):
     """Add a user to an organization."""
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
+    _require_org_permission(db, user, org_id, "org:members")
 
     target_user = db.query(User).filter(User.id == body.user_id).first()
     if not target_user:
@@ -281,9 +330,10 @@ async def remove_member(
     org_id: str,
     member_user_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("org:members")),
+    user: User = Depends(get_current_user),
 ):
     """Remove a user from an organization."""
+    _require_org_permission(db, user, org_id, "org:members")
     membership = (
         db.query(OrganizationMembership)
         .filter(
@@ -308,12 +358,13 @@ async def create_venue(
     org_id: str,
     body: CreateVenueBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("org:venues")),
+    user: User = Depends(get_current_user),
 ):
     """Create a venue within an organization."""
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
+    _require_org_permission(db, user, org_id, "org:venues")
 
     venue = Venue(
         name=body.name,
@@ -355,10 +406,11 @@ async def update_venue(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Update venue details."""
+    """Update venue details — needs ``org:venues`` in the venue's organisation."""
     venue = db.query(Venue).filter(Venue.id == venue_id).first()
     if not venue:
         raise HTTPException(404, "Venue not found")
+    _require_org_permission(db, user, venue.organization_id, "org:venues")
 
     if body.name is not None:
         venue.name = body.name
@@ -383,7 +435,7 @@ async def update_venue(
 async def delete_venue(
     venue_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("org:venues")),
+    user: User = Depends(get_current_user),
 ):
     """Delete a venue, its access grants and its connector configs.
 
@@ -426,6 +478,7 @@ async def delete_venue(
     venue = db.query(Venue).filter(Venue.id == venue_id).first()
     if not venue:
         raise HTTPException(404, "Venue not found")
+    _require_org_permission(db, user, venue.organization_id, "org:venues")
 
     org_id = venue.organization_id
 
@@ -517,6 +570,7 @@ async def list_venue_connectors(
     venue = db.query(Venue).filter(Venue.id == venue_id).first()
     if not venue:
         raise HTTPException(404, "Venue not found")
+    _require_org_permission(db, user, venue.organization_id)
 
     configs = db.query(Connection).filter(Connection.venue_id == venue_id).all()
     return {
@@ -543,10 +597,21 @@ async def list_venue_connectors(
 async def list_user_venues(
     user_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    """List venues a user has access to."""
+    """List venues a user has access to.
+
+    Yourself, a platform admin, or someone who shares an organisation with
+    the user — and then only the venues of the organisations you share.
+    """
+    shared = None
+    if user.role != "admin" and user_id != user.id:
+        shared = _orgs_where(db, user.id) & _orgs_where(db, user_id)
+        if not shared:
+            raise HTTPException(403, "Not a member of this organization")
     access = db.query(UserVenueAccess).filter(UserVenueAccess.user_id == user_id).all()
     venue_ids = [a.venue_id for a in access]
     venues = db.query(Venue).filter(Venue.id.in_(venue_ids)).all() if venue_ids else []
+    if shared is not None:
+        venues = [v for v in venues if v.organization_id in shared]
     return {
         "venues": [{"id": v.id, "name": v.name, "location": v.location} for v in venues]
     }
@@ -557,13 +622,43 @@ async def set_user_venues(
     user_id: str,
     body: dict,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("org:members")),
+    user: User = Depends(get_current_user),
 ):
-    """Set venue access for a user. Body: {"venue_ids": ["v1", "v2"]}."""
-    venue_ids = body.get("venue_ids", [])
+    """Set venue access for a user. Body: {"venue_ids": ["v1", "v2"]}.
 
-    # Remove existing access
-    db.query(UserVenueAccess).filter(UserVenueAccess.user_id == user_id).delete()
+    Needs ``org:members`` in an organisation the user belongs to, and touches
+    only that organisation's venues: it used to let a manager anywhere grant
+    themselves (or anyone) access to any venue, and wiped the user's access
+    in every other organisation on the way.
+    """
+    venue_ids = body.get("venue_ids", [])
+    if not isinstance(venue_ids, list) or not all(
+        isinstance(v, str) for v in venue_ids
+    ):
+        raise HTTPException(422, "venue_ids must be a list of venue ids")
+    venue_ids = list(dict.fromkeys(venue_ids))
+
+    scope = None  # every organisation — a platform admin
+    if user.role != "admin":
+        scope = _orgs_where(db, user.id, "org:members") & _orgs_where(db, user_id)
+        if not scope:
+            raise HTTPException(403, "Not a member of this organization")
+
+    venues = db.query(Venue).filter(Venue.id.in_(venue_ids)).all() if venue_ids else []
+    if len(venues) != len(venue_ids):
+        raise HTTPException(404, "Venue not found")
+    if scope is not None and any(v.organization_id not in scope for v in venues):
+        raise HTTPException(403, "Not a member of this organization")
+
+    # Remove existing access — within the caller's reach only
+    existing = db.query(UserVenueAccess).filter(UserVenueAccess.user_id == user_id)
+    if scope is not None:
+        existing = existing.filter(
+            UserVenueAccess.venue_id.in_(
+                db.query(Venue.id).filter(Venue.organization_id.in_(scope))
+            )
+        )
+    existing.delete(synchronize_session=False)
 
     # Add new access
     for vid in venue_ids:
